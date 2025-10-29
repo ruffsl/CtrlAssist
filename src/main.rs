@@ -44,7 +44,7 @@ fn main() {
 
     // Main event loop
     loop {
-        while let Some(Event { id, event, .. }) = gilrs.next_event() {
+        while let Some(Event { id: _id, event, .. }) = gilrs.next_event() {
             // Read deadman button state from assist controller
             let assist_deadman = gilrs.gamepad(assist_id).is_pressed(deadman_button);
 
