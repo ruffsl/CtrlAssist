@@ -16,6 +16,7 @@
             pkgs.cargo
             pkgs.clang
             pkgs.gcc
+            pkgs.jstest-gtk
             pkgs.pkg-config
             pkgs.rustc
             pkgs.udev
