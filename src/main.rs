@@ -6,8 +6,8 @@ use evdev::{uinput::UInputDevice, Device, InputEvent, AttributeSet, AbsoluteAxis
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Deadman button (e.g., South, East, etc.)
-    #[arg(long, default_value = "South")]
+    /// Deadman button (e.g., LeftTrigger, etc.)
+    #[arg(long, default_value = "LeftTrigger")]
     deadman: String,
     /// Primary controller index
     #[arg(long, default_value_t = 0)]
@@ -30,11 +30,8 @@ fn main() {
     let primary_id = GamepadId(args.primary);
     let assist_id = GamepadId(args.assist);
     let deadman_button = match args.deadman.as_str() {
-        "South" => Button::South,
-        "East" => Button::East,
-        "West" => Button::West,
-        "North" => Button::North,
-        _ => Button::South,
+        "LeftTrigger" => Button::LeftTrigger,
+        _ => Button::LeftTrigger,
     };
 
     // TODO: Create virtual device using evdev/uinput
@@ -46,7 +43,7 @@ fn main() {
     loop {
         while let Some(Event { id: _id, event, .. }) = gilrs.next_event() {
             // Read deadman button state from assist controller
-            let assist_deadman = gilrs.gamepad(assist_id).is_pressed(deadman_button);
+            let assist_deadman = !gilrs.gamepad(assist_id).is_pressed(deadman_button);
 
             // If assist deadman is held, assist controller takes priority
             let active_id = if assist_deadman { assist_id } else { primary_id };
