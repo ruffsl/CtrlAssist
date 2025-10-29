@@ -1,6 +1,6 @@
 use clap::Parser;
-use gilrs::{Gilrs, Event, GamepadId, Button};
-use evdev::{uinput::UInputDevice, Device, InputEvent, AttributeSet, AbsoluteAxisType, Key};
+use gilrs::{Gilrs, Event, Button};
+// use evdev::{Device, InputEvent}; // Uncomment when implementing virtual device logic
 
 /// CtrlAssist: Merge two gamepads into one virtual device with assist mode
 #[derive(Parser, Debug)]
@@ -21,14 +21,19 @@ fn main() {
     let args = Args::parse();
     let mut gilrs = Gilrs::new().expect("Failed to initialize gilrs");
 
-    // List available gamepads
+    // List available gamepads and collect their IDs
     println!("Available gamepads:");
-    for (id, gamepad) in gilrs.gamepads() {
-        println!("  [{}] {}", id.0, gamepad.name());
+    let gamepads: Vec<_> = gilrs.gamepads().collect();
+    for (idx, (_id, gamepad)) in gamepads.iter().enumerate() {
+        println!("  [{}] {}", idx, gamepad.name());
     }
 
-    let primary_id = GamepadId(args.primary);
-    let assist_id = GamepadId(args.assist);
+    // Get GamepadId from index
+    let primary_id = gamepads.get(args.primary).map(|(id, _)| *id)
+        .expect("Primary controller index out of range");
+    let assist_id = gamepads.get(args.assist).map(|(id, _)| *id)
+        .expect("Assist controller index out of range");
+
     let deadman_button = match args.deadman.as_str() {
         "LeftTrigger" => Button::LeftTrigger,
         _ => Button::LeftTrigger,
