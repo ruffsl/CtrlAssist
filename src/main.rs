@@ -1,137 +1,233 @@
-use clap::Parser;
-use gilrs::{Gilrs, Event, Button, Axis};
-use evdev::{InputEvent, KeyCode, AbsoluteAxisCode, AbsInfo, UinputAbsSetup};
+use clap::{Parser, Subcommand};
+use evdev::{AbsInfo, AbsoluteAxisCode, InputEvent, KeyCode, UinputAbsSetup};
+use gilrs::{Axis, Button, GamepadId, Gilrs};
 
-/// CtrlAssist: Merge two gamepads into one virtual device with assist mode
+/// A CLI tool to merge two gamepads into one virtual controller.
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Deadman button (e.g., LeftTrigger, etc.)
-    #[arg(long, default_value = "LeftTrigger")]
-    deadman: String,
-    /// Primary controller index
-    #[arg(long, default_value_t = 0)]
-    primary: usize,
-    /// Assist controller index
-    #[arg(long, default_value_t = 1)]
-    assist: usize,
+#[command(version, about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Lists all connected gamepads and their IDs.
+    List,
+
+    /// Starts the controller assist mode.
+    Start {
+        /// The ID of the primary controller (see 'list' command).
+        #[arg(short, long, default_value_t = 0)]
+        primary: usize,
+
+        /// The ID of the assist controller (see 'list' command).
+        #[arg(short, long, default_value_t = 1)]
+        assist: usize,
+    },
 }
 
 fn main() {
-    let args = Args::parse();
-    let mut gilrs = Gilrs::new().expect("Failed to initialize gilrs");
+    // Parse the command-line arguments
+    let cli = Cli::parse();
 
-    // List available gamepads and collect their IDs
-    println!("Available gamepads:");
-    let gamepads: Vec<_> = gilrs.gamepads().collect();
-    for (idx, (_id, gamepad)) in gamepads.iter().enumerate() {
-        println!("  [{}] {}", idx, gamepad.name());
+    // Match on the subcommand
+    match &cli.command {
+        Commands::List => {
+            if let Err(e) = list_gamepads() {
+                eprintln!("Error listing gamepads: {}", e);
+            }
+        }
+        Commands::Start { primary, assist } => {
+            let gilrs = Gilrs::new().expect("Failed to initialize Gilrs");
+            let gamepad_ids: Vec<GamepadId> = gilrs.gamepads().map(|(id, _)| id).collect();
+            let primary_id = *gamepad_ids
+                .get(*primary)
+                .expect("Invalid primary controller ID");
+            let assist_id = *gamepad_ids
+                .get(*assist)
+                .expect("Invalid assist controller ID");
+
+            println!("\nControllers found and verified:");
+            let primary_gamepad = gilrs.gamepad(primary_id);
+            let assist_gamepad = gilrs.gamepad(assist_id);
+            println!("Primary:");
+            println!("  ID: {} - Name: {}", primary_id, primary_gamepad.name());
+            println!("Assist:");
+            println!("  ID: {} - Name: {}", assist_id, assist_gamepad.name());
+
+            if let Err(e) = start_assist(primary_id, assist_id) {
+                eprintln!("Error in assist mode: {}", e);
+            }
+        }
+    }
+}
+
+/// Lists all connected gamepads.
+fn list_gamepads() -> Result<(), gilrs::Error> {
+    let gilrs = Gilrs::new()?;
+
+    println!("Connected Gamepads:");
+    if gilrs.gamepads().count() == 0 {
+        println!("  No gamepads found.");
     }
 
-    // Get GamepadId from index
-    let primary_id = gamepads.get(args.primary).map(|(id, _)| *id)
-        .expect("Primary controller index out of range");
-    let assist_id = gamepads.get(args.assist).map(|(id, _)| *id)
-        .expect("Assist controller index out of range");
+    for (id, gamepad) in gilrs.gamepads() {
+        println!("  ID: {} - Name: {}", id, gamepad.name());
+    }
 
-    let deadman_button = match args.deadman.as_str() {
-        "LeftTrigger" => Button::LeftTrigger,
-        _ => Button::LeftTrigger,
-    };
+    Ok(())
+}
 
+/// Stub function for starting the main assist logic.
+fn start_assist(
+    primary_id: GamepadId,
+    assist_id: GamepadId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if primary_id == assist_id {
+        return Err("The primary and assist controllers must be different devices.".into());
+    }
 
     // Setup axes for virtual device
     let abs_setup = AbsInfo::new(0, 0, 255, 0, 0, 0);
     let abs_x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_X, abs_setup);
     let abs_y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Y, abs_setup);
+    let abs_z = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Z, abs_setup);
     let abs_rx = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RX, abs_setup);
     let abs_ry = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RY, abs_setup);
-    let abs_z = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Z, abs_setup);
     let abs_rz = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RZ, abs_setup);
 
     // Create a virtual gamepad device using evdev/uinput
+    let virtual_name = "CtrlAssist Virtual Gamepad";
     let builder = evdev::uinput::VirtualDevice::builder().unwrap();
     let mut uinput_dev = builder
-        .name("CtrlAssist Virtual Gamepad")
+        .name(virtual_name)
         .with_keys(&evdev::AttributeSet::from_iter([
-            KeyCode::BTN_SOUTH, KeyCode::BTN_EAST, KeyCode::BTN_WEST, KeyCode::BTN_NORTH,
-            KeyCode::BTN_TL, KeyCode::BTN_TR, KeyCode::BTN_THUMBL, KeyCode::BTN_THUMBR,
-            KeyCode::BTN_SELECT, KeyCode::BTN_START, KeyCode::BTN_MODE,
-            KeyCode::KEY_UP, KeyCode::KEY_DOWN, KeyCode::KEY_LEFT, KeyCode::KEY_RIGHT
+            KeyCode::BTN_NORTH,
+            KeyCode::BTN_SOUTH,
+            KeyCode::BTN_EAST,
+            KeyCode::BTN_WEST,
+            KeyCode::BTN_TL,
+            KeyCode::BTN_TR,
+            KeyCode::BTN_THUMBL,
+            KeyCode::BTN_THUMBR,
+            KeyCode::BTN_SELECT,
+            KeyCode::BTN_START,
+            KeyCode::BTN_MODE,
+            KeyCode::KEY_UP,
+            KeyCode::KEY_DOWN,
+            KeyCode::KEY_LEFT,
+            KeyCode::KEY_RIGHT,
         ]))
         .unwrap()
         .with_absolute_axis(&abs_x)
         .unwrap()
         .with_absolute_axis(&abs_y)
         .unwrap()
+        .with_absolute_axis(&abs_z)
+        .unwrap()
         .with_absolute_axis(&abs_rx)
         .unwrap()
         .with_absolute_axis(&abs_ry)
-        .unwrap()
-        .with_absolute_axis(&abs_z)
         .unwrap()
         .with_absolute_axis(&abs_rz)
         .unwrap()
         .build()
         .unwrap();
 
-    println!("Starting assist mode: primary={}, assist={}, deadman={:?}", args.primary, args.assist, deadman_button);
+    // sleep to allow the virtual device to be recognized by the system
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
-    // Main event loop
+    // Gilrs needs to be mutable here for the event loop later.
+    let mut gilrs = Gilrs::new()?;
+
+    // Get the GamepadId for the virtual device by matching the name string used during creation
+    let virtual_id = gilrs
+        .gamepads()
+        .find_map(|(id, gamepad)| {
+            if gamepad.name() == virtual_name {
+                Some(id)
+            } else {
+                None
+            }
+        })
+        .expect("Virtual device not found in gilrs");
+    println!("Virtual:");
+    println!("  ID: {} - Name: {}", virtual_id, virtual_name);
+
+    // Set up Ctrl+C handler
+    ctrlc::set_handler(|| {
+        println!("\nShutdown signal received. Exiting.");
+        std::process::exit(0);
+    })?;
+
+    let deadman_button = Button::LeftTrigger;
+
+    // Main event loop stub
     loop {
-        while let Some(Event { id: _id, event, .. }) = gilrs.next_event() {
+        // We will poll gilrs events here later.
+        while let Some(event) = gilrs.next_event() {
+            // if event is from virtual device, ignore it
+            if event.id == virtual_id {
+                continue;
+            }
+
             // Read deadman button state from assist controller
             let assist_deadman = !gilrs.gamepad(assist_id).is_pressed(deadman_button);
-
             // If assist deadman is held, assist controller takes priority
-            let active_id = if assist_deadman { assist_id } else { primary_id };
+            let active_id = if assist_deadman {
+                assist_id
+            } else {
+                primary_id
+            };
+            // if event is not from active controller, ignore it
+            if event.id != active_id {
+                continue;
+            }
+
+            println!("Event: {:?}", event);
 
             // Forward input from active controller to virtual device
             // Map gilrs event to evdev InputEvent and send to uinput_dev
-            match event {
+            match event.event {
                 gilrs::EventType::ButtonPressed(button, _) => {
                     if let Some(key) = gilrs_button_to_evdev_key(button) {
-                        let input_event = InputEvent::new(
-                            evdev::EventType::KEY.0,
-                            key.0,
-                            1
-                        );
+                        let input_event = InputEvent::new(evdev::EventType::KEY.0, key.0, 1);
                         let _ = uinput_dev.emit(&[input_event]);
                     }
                 }
                 gilrs::EventType::ButtonReleased(button, _) => {
                     if let Some(key) = gilrs_button_to_evdev_key(button) {
-                        let input_event = InputEvent::new(
-                            evdev::EventType::KEY.0,
-                            key.0,
-                            0
-                        );
+                        let input_event = InputEvent::new(evdev::EventType::KEY.0, key.0, 0);
                         let _ = uinput_dev.emit(&[input_event]);
                     }
                 }
                 gilrs::EventType::AxisChanged(axis, value, _) => {
                     if let Some(abs_axis) = gilrs_axis_to_evdev_axis(axis) {
-                        let input_event = InputEvent::new(
-                            evdev::EventType::ABSOLUTE.0,
-                            abs_axis.0,
-                            value as i32
-                        );
+                        // Scale value from [-1.0, 1.0] to [0, 255]
+                        let scaled_value = ((value + 1.0) * 127.5).round() as i32;
+                        let input_event =
+                            InputEvent::new(evdev::EventType::ABSOLUTE.0, abs_axis.0, scaled_value);
                         let _ = uinput_dev.emit(&[input_event]);
                     }
                 }
                 _ => {}
             }
-            println!("Active controller: {:?}, Event: {:?}", active_id, event);
+            // Emit synchronization event after axis change
+            let syn_event = InputEvent::new(evdev::EventType::SYNCHRONIZATION.0, 0, 0);
+            let _ = uinput_dev.emit(&[syn_event]);
         }
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
+}
 
 // Helper: Map gilrs Button to evdev Key
 fn gilrs_button_to_evdev_key(button: Button) -> Option<KeyCode> {
     match button {
+        Button::North => Some(KeyCode::BTN_NORTH),
         Button::South => Some(KeyCode::BTN_SOUTH),
         Button::East => Some(KeyCode::BTN_EAST),
         Button::West => Some(KeyCode::BTN_WEST),
-        Button::North => Some(KeyCode::BTN_NORTH),
         Button::LeftTrigger => Some(KeyCode::BTN_TL),
         Button::RightTrigger => Some(KeyCode::BTN_TR),
         Button::LeftThumb => Some(KeyCode::BTN_THUMBL),
@@ -151,11 +247,10 @@ fn gilrs_axis_to_evdev_axis(axis: Axis) -> Option<AbsoluteAxisCode> {
     match axis {
         Axis::LeftStickX => Some(AbsoluteAxisCode::ABS_X),
         Axis::LeftStickY => Some(AbsoluteAxisCode::ABS_Y),
+        Axis::LeftZ => Some(AbsoluteAxisCode::ABS_Z),
         Axis::RightStickX => Some(AbsoluteAxisCode::ABS_RX),
         Axis::RightStickY => Some(AbsoluteAxisCode::ABS_RY),
-        Axis::LeftZ => Some(AbsoluteAxisCode::ABS_Z),
         Axis::RightZ => Some(AbsoluteAxisCode::ABS_RZ),
         _ => None,
     }
-}
 }
