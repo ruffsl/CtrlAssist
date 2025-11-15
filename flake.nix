@@ -4,26 +4,36 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      rust-overlay,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
-        pkgs = import nixpkgs { inherit system; };
-      in {
-        devShells.default = pkgs.mkShell {
-          buildInputs = [
-            pkgs.cargo
-            pkgs.clang
-            pkgs.gcc
-            pkgs.jstest-gtk
-            pkgs.pkg-config
-            pkgs.rustc
-            pkgs.udev
+        overlays = [ rust-overlay.overlays.default ];
+        pkgs = import nixpkgs { inherit overlays system; };
+        rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+      in
+      {
+        devShell = pkgs.mkShell {
+          packages = with pkgs; [
+            # clang
+            # gcc
+            jstest-gtk
+            pkg-config
+            rust
+            udev
           ];
-          shellHook = ''
-            echo "CtrlAssist Rust dev shell activated."
-          '';
         };
       }
     );
