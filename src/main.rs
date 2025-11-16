@@ -213,13 +213,15 @@ fn start_assist(
 fn create_virtual_gamepad(
     virtual_name: &str,
 ) -> Result<evdev::uinput::VirtualDevice, Box<dyn std::error::Error>> {
-    let abs_setup = AbsInfo::new(0, 0, 255, 0, 0, 0);
+    let max = 255;
+    let abs_setup = AbsInfo::new((max / 2) as i32, 0, max, 0, 0, 0);
+    let abs_z_setup = AbsInfo::new(0, 0, max, 0, 0, 0);
     let abs_x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_X, abs_setup);
     let abs_y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Y, abs_setup);
-    let abs_z = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Z, abs_setup);
+    let abs_z = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Z, abs_z_setup);
     let abs_rx = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RX, abs_setup);
     let abs_ry = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RY, abs_setup);
-    let abs_rz = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RZ, abs_setup);
+    let abs_rz = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RZ, abs_z_setup);
     let abs_hx = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0X, abs_setup);
     let abs_hy = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0Y, abs_setup);
 
