@@ -96,6 +96,8 @@ fn start_assist(
     let abs_rx = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RX, abs_setup);
     let abs_ry = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RY, abs_setup);
     let abs_rz = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RZ, abs_setup);
+    let abs_hx = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0X, abs_setup);
+    let abs_hy = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0Y, abs_setup);
 
     // Create a virtual gamepad device using evdev/uinput
     let virtual_name = "CtrlAssist Virtual Gamepad";
@@ -131,6 +133,10 @@ fn start_assist(
         .with_absolute_axis(&abs_ry)
         .unwrap()
         .with_absolute_axis(&abs_rz)
+        .unwrap()
+        .with_absolute_axis(&abs_hx)
+        .unwrap()
+        .with_absolute_axis(&abs_hy)
         .unwrap()
         .build()
         .unwrap();
@@ -215,9 +221,30 @@ fn start_assist(
                         let _ = uinput_dev.emit(&[input_event]);
                     }
                 }
+                gilrs::EventType::ButtonChanged(button, value, _) => {
+                    if let Some(abs_axis) = gilrs_button_to_evdev_axis(button) {
+
+                        let scaled_value;
+                        if button == Button::DPadUp || button == Button::DPadLeft {
+                            scaled_value = ((-value + 1.0) * 127.5).round() as i32;
+                        } else if button == Button::DPadDown || button == Button::DPadRight {
+                            scaled_value = ((value + 1.0) * 127.5).round() as i32;
+                        } else {
+                            scaled_value = ((value) * 255.0).round() as i32;
+                        }
+                        let input_event =
+                            InputEvent::new(evdev::EventType::ABSOLUTE.0, abs_axis.0, scaled_value);
+                        let _ = uinput_dev.emit(&[input_event]);
+                    }
+                }
                 gilrs::EventType::AxisChanged(axis, value, _) => {
                     if let Some(abs_axis) = gilrs_axis_to_evdev_axis(axis) {
-                        let scaled_value = ((value + 1.0) * 127.5).round() as i32;
+                        let scaled_value;
+                        if axis == Axis::LeftStickY || axis == Axis::RightStickY {
+                            scaled_value = ((-value + 1.0) * 127.5).round() as i32;
+                        } else {
+                            scaled_value = ((value + 1.0) * 127.5).round() as i32;
+                        }
                         let input_event =
                             InputEvent::new(evdev::EventType::ABSOLUTE.0, abs_axis.0, scaled_value);
                         let _ = uinput_dev.emit(&[input_event]);
@@ -241,6 +268,8 @@ fn gilrs_button_to_evdev_key(button: Button) -> Option<KeyCode> {
         Button::West => Some(KeyCode::BTN_WEST),
         Button::LeftTrigger => Some(KeyCode::BTN_TL),
         Button::RightTrigger => Some(KeyCode::BTN_TR),
+        Button::LeftTrigger2 => Some(KeyCode::BTN_TL2),
+        Button::RightTrigger2 => Some(KeyCode::BTN_TR2),
         Button::LeftThumb => Some(KeyCode::BTN_THUMBL),
         Button::RightThumb => Some(KeyCode::BTN_THUMBR),
         Button::Select => Some(KeyCode::BTN_SELECT),
@@ -250,6 +279,18 @@ fn gilrs_button_to_evdev_key(button: Button) -> Option<KeyCode> {
         Button::DPadDown => Some(KeyCode::BTN_DPAD_DOWN),
         Button::DPadLeft => Some(KeyCode::BTN_DPAD_LEFT),
         Button::DPadRight => Some(KeyCode::BTN_DPAD_RIGHT),
+        _ => None,
+    }
+}
+
+fn gilrs_button_to_evdev_axis(button: Button) -> Option<AbsoluteAxisCode> {
+    match button {
+        Button::LeftTrigger2 => Some(AbsoluteAxisCode::ABS_Z),
+        Button::RightTrigger2 => Some(AbsoluteAxisCode::ABS_RZ),
+        Button::DPadUp => Some(AbsoluteAxisCode::ABS_HAT0Y),
+        Button::DPadDown => Some(AbsoluteAxisCode::ABS_HAT0Y),
+        Button::DPadLeft => Some(AbsoluteAxisCode::ABS_HAT0X),
+        Button::DPadRight => Some(AbsoluteAxisCode::ABS_HAT0X),
         _ => None,
     }
 }
