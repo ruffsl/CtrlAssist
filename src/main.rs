@@ -124,7 +124,7 @@ fn start_assist(
     println!("  ID: {} - Name: {}", virtual_id, virtual_name);
 
     // Optionally restrict device permissions for only the selected primary and assist controllers
-    let mut restricted_paths = Vec::new();
+    let mut restricted_paths_per_gamepad = Vec::new();
     if hide {
         let gilrs = Gilrs::new()?;
         let gamepads = [primary_id, assist_id];
@@ -137,21 +137,29 @@ fn start_assist(
                 gamepad.vendor_id(),
                 gamepad.product_id()
             );
+            let mut restricted_paths = std::collections::HashSet::new();
             restrict_gamepad_devices(
                 gamepad.vendor_id(),
                 gamepad.product_id(),
                 &mut restricted_paths,
             );
+            restricted_paths_per_gamepad.push(restricted_paths);
         }
     }
-    let restore_paths = restricted_paths.clone();
+    let restore_paths_per_gamepad: Vec<Vec<_>> = restricted_paths_per_gamepad
+        .iter()
+        .map(|set| set.iter().cloned().collect())
+        .collect();
     ctrlc::set_handler(move || {
         println!("\nShutdown signal received.");
-        if hide && !restore_paths.is_empty() {
+        if hide {
             println!("Restoring device permissions...");
-            for path in restore_paths.iter() {
-                let _ = restore_device(path);
-                println!("Restored permissions for device: {}", path);
+            for (i, paths) in restore_paths_per_gamepad.iter().enumerate() {
+                println!("Gamepad {}:", i);
+                for path in paths {
+                    let _ = restore_device(path);
+                    println!("  Restored permissions for device: {}", path);
+                }
             }
         }
         std::process::exit(0);
@@ -349,7 +357,7 @@ fn gilrs_axis_to_evdev_axis(axis: Axis) -> Option<AbsoluteAxisCode> {
 fn restrict_gamepad_devices(
     vendor_id: Option<u16>,
     product_id: Option<u16>,
-    restricted_paths: &mut Vec<String>,
+    restricted_paths: &mut std::collections::HashSet<String>,
 ) {
     for subsystem in ["input", "hidraw"] {
         let mut enumerator = Enumerator::new().unwrap();
@@ -374,12 +382,11 @@ fn restrict_gamepad_devices(
                     _ => false,
                 };
                 if matches {
-                    println!("Restricting device node: {}", path_str);
                     let related_paths = find_related_input_paths(&path_str);
                     for path in related_paths {
-                        if restrict_device(&path).is_ok() {
-                            println!("Restricted permissions for device: {}", path);
-                            restricted_paths.push(path);
+                        if restrict_device(&path).is_ok() && !restricted_paths.contains(&path) {
+                            println!("  Restricted permissions for device: {}", path);
+                            restricted_paths.insert(path);
                         }
                     }
                 }
@@ -416,7 +423,6 @@ fn find_related_input_paths(js_path: &str) -> Vec<String> {
                     if let Some(parent) = device.parent() {
                         let syspath = parent.syspath();
                         if syspath == parent_syspath {
-                            println!("Found sibling path: {}", path_str);
                             paths.push(path_str.to_string());
                         }
                     }
