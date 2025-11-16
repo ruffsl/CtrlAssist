@@ -173,14 +173,15 @@ fn start_assist(
                 }
                 gilrs::EventType::ButtonChanged(button, value, _) => {
                     if let Some(abs_axis) = gilrs_button_to_evdev_axis(button) {
-                        let scaled_value;
-                        if button == Button::DPadUp || button == Button::DPadLeft {
-                            scaled_value = ((-value + 1.0) * 127.5).round() as i32;
-                        } else if button == Button::DPadDown || button == Button::DPadRight {
-                            scaled_value = ((value + 1.0) * 127.5).round() as i32;
-                        } else {
-                            scaled_value = ((value) * 255.0).round() as i32;
-                        }
+                        let scaled_value = match button {
+                            Button::DPadUp | Button::DPadLeft => {
+                                ((-value + 1.0) * 127.5).round() as i32
+                            }
+                            Button::DPadDown | Button::DPadRight => {
+                                ((value + 1.0) * 127.5).round() as i32
+                            }
+                            _ => (value * 255.0).round() as i32,
+                        };
                         let input_event =
                             InputEvent::new(evdev::EventType::ABSOLUTE.0, abs_axis.0, scaled_value);
                         let _ = virtual_dev.emit(&[input_event]);
@@ -188,12 +189,12 @@ fn start_assist(
                 }
                 gilrs::EventType::AxisChanged(axis, value, _) => {
                     if let Some(abs_axis) = gilrs_axis_to_evdev_axis(axis) {
-                        let scaled_value;
-                        if axis == Axis::LeftStickY || axis == Axis::RightStickY {
-                            scaled_value = ((-value + 1.0) * 127.5).round() as i32;
-                        } else {
-                            scaled_value = ((value + 1.0) * 127.5).round() as i32;
-                        }
+                        let scaled_value = match axis {
+                            Axis::LeftStickY | Axis::RightStickY => {
+                                ((-value + 1.0) * 127.5).round() as i32
+                            }
+                            _ => ((value + 1.0) * 127.5).round() as i32,
+                        };
                         let input_event =
                             InputEvent::new(evdev::EventType::ABSOLUTE.0, abs_axis.0, scaled_value);
                         let _ = virtual_dev.emit(&[input_event]);
