@@ -1,6 +1,9 @@
 use clap::{Parser, Subcommand};
 use evdev::{AbsInfo, AbsoluteAxisCode, InputEvent, KeyCode, UinputAbsSetup};
 use gilrs::{Axis, Button, GamepadId, Gilrs};
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use udev::Enumerator;
 
 /// A CLI tool to merge two gamepads into one virtual controller.
 #[derive(Parser, Debug)]
@@ -24,6 +27,10 @@ enum Commands {
         /// The ID of the assist controller (see 'list' command).
         #[arg(short, long, default_value_t = 1)]
         assist: usize,
+
+        /// Optionally restrict device permissions for selected controllers
+        #[arg(long, default_value_t = false)]
+        hide: bool,
     },
 }
 
@@ -38,7 +45,11 @@ fn main() {
                 eprintln!("Error listing gamepads: {}", e);
             }
         }
-        Commands::Start { primary, assist } => {
+        Commands::Start {
+            primary,
+            assist,
+            hide,
+        } => {
             let gilrs = Gilrs::new().expect("Failed to initialize Gilrs");
             let gamepad_ids: Vec<GamepadId> = gilrs.gamepads().map(|(id, _)| id).collect();
             let primary_id = *gamepad_ids
@@ -56,7 +67,7 @@ fn main() {
             println!("Assist:");
             println!("  ID: {} - Name: {}", assist_id, assist_gamepad.name());
 
-            if let Err(e) = start_assist(primary_id, assist_id) {
+            if let Err(e) = start_assist(primary_id, assist_id, *hide) {
                 eprintln!("Error in assist mode: {}", e);
             }
         }
@@ -83,6 +94,7 @@ fn list_gamepads() -> Result<(), gilrs::Error> {
 fn start_assist(
     primary_id: GamepadId,
     assist_id: GamepadId,
+    hide: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if primary_id == assist_id {
         return Err("The primary and assist controllers must be different devices.".into());
@@ -111,9 +123,37 @@ fn start_assist(
     println!("Virtual:");
     println!("  ID: {} - Name: {}", virtual_id, virtual_name);
 
-    // Set up Ctrl+C handler
-    ctrlc::set_handler(|| {
-        println!("\nShutdown signal received. Exiting.");
+    // Optionally restrict device permissions for only the selected primary and assist controllers
+    let mut restricted_paths = Vec::new();
+    if hide {
+        let gilrs = Gilrs::new()?;
+        let gamepads = [primary_id, assist_id];
+        for gp_id in gamepads.iter() {
+            let gamepad = gilrs.gamepad(*gp_id);
+            println!(
+                "Restricting for gamepad: ID={} Name={} Vendor={:?} Product={:?}",
+                gp_id,
+                gamepad.name(),
+                gamepad.vendor_id(),
+                gamepad.product_id()
+            );
+            restrict_gamepad_devices(
+                gamepad.vendor_id(),
+                gamepad.product_id(),
+                &mut restricted_paths,
+            );
+        }
+    }
+    let restore_paths = restricted_paths.clone();
+    ctrlc::set_handler(move || {
+        println!("\nShutdown signal received.");
+        if hide && !restore_paths.is_empty() {
+            println!("Restoring device permissions...");
+            for path in restore_paths.iter() {
+                let _ = restore_device(path);
+                println!("Restored permissions for device: {}", path);
+            }
+        }
         std::process::exit(0);
     })?;
 
@@ -303,4 +343,96 @@ fn gilrs_axis_to_evdev_axis(axis: Axis) -> Option<AbsoluteAxisCode> {
         Axis::RightZ => Some(AbsoluteAxisCode::ABS_RZ),
         _ => None,
     }
+}
+
+// Restrict access to gamepad devices matching vendor and product IDs
+fn restrict_gamepad_devices(
+    vendor_id: Option<u16>,
+    product_id: Option<u16>,
+    restricted_paths: &mut Vec<String>,
+) {
+    for subsystem in ["input", "hidraw"] {
+        let mut enumerator = Enumerator::new().unwrap();
+        enumerator.match_subsystem(subsystem).unwrap();
+        for device in enumerator.scan_devices().unwrap() {
+            if let Some(devnode) = device.devnode() {
+                let path_str = devnode.to_string_lossy();
+                let matches = match (vendor_id, product_id) {
+                    (Some(vendor), Some(product)) => {
+                        let sys_vendor = device.property_value("ID_VENDOR_ID");
+                        let sys_product = device.property_value("ID_MODEL_ID");
+                        let vendor_str = format!("{:04x}", vendor);
+                        let product_str = format!("{:04x}", product);
+                        let sys_vendor_match = sys_vendor
+                            .and_then(|v| v.to_str().map(|s| s == vendor_str))
+                            .unwrap_or(false);
+                        let sys_product_match = sys_product
+                            .and_then(|p| p.to_str().map(|s| s == product_str))
+                            .unwrap_or(false);
+                        sys_vendor_match && sys_product_match
+                    }
+                    _ => false,
+                };
+                if matches {
+                    println!("Restricting device node: {}", path_str);
+                    let related_paths = find_related_input_paths(&path_str);
+                    for path in related_paths {
+                        if restrict_device(&path).is_ok() {
+                            println!("Restricted permissions for device: {}", path);
+                            restricted_paths.push(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Find all related device nodes (event, hidraw, symlinks) for a js device path
+fn find_related_input_paths(js_path: &str) -> Vec<String> {
+    let mut paths = vec![js_path.to_string()];
+    let mut enumerator = Enumerator::new().unwrap();
+    enumerator.match_subsystem("input").unwrap();
+    // First, find the js device and its parent syspath
+    let mut js_parent_syspath: Option<std::path::PathBuf> = None;
+    for device in enumerator.scan_devices().unwrap() {
+        if let Some(devnode) = device.devnode() {
+            if devnode.to_str() == Some(js_path) {
+                if let Some(parent) = device.parent() {
+                    js_parent_syspath = Some(parent.syspath().to_path_buf());
+                }
+                break;
+            }
+        }
+    }
+    // Now, collect all event/hidraw siblings with the same parent syspath
+    if let Some(parent_syspath) = js_parent_syspath {
+        let mut enumerator = Enumerator::new().unwrap();
+        enumerator.match_subsystem("input").unwrap();
+        for device in enumerator.scan_devices().unwrap() {
+            if let Some(devnode) = device.devnode() {
+                let path_str = devnode.to_string_lossy();
+                if path_str.contains("/dev/input/event") || path_str.contains("/dev/hidraw") {
+                    if let Some(parent) = device.parent() {
+                        let syspath = parent.syspath();
+                        if syspath == parent_syspath {
+                            println!("Found sibling path: {}", path_str);
+                            paths.push(path_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    paths
+}
+
+fn restrict_device(path: &str) -> std::io::Result<()> {
+    fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?; // Only root rw
+    Ok(())
+}
+
+fn restore_device(path: &str) -> std::io::Result<()> {
+    fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?; // root+input group rw
+    Ok(())
 }
