@@ -161,34 +161,47 @@ fn start_assist(
         std::process::exit(0);
     })?;
 
-    let deadman_button = Button::LeftTrigger;
+    let deadman_button = Button::LeftThumb;
+    let mut active_id = primary_id;
 
-    // Main event loop stub
     loop {
-        // We will poll gilrs events here later.
         while let Some(event) = gilrs.next_event() {
-            // if event is from virtual device, ignore it
+            // Ignore events from virtual device
             if event.id == virtual_id {
                 continue;
             }
 
-            // Read deadman button state from assist controller
-            let assist_deadman = !gilrs.gamepad(assist_id).is_pressed(deadman_button);
-            // If assist deadman is held, assist controller takes priority
-            let active_id = if assist_deadman {
-                assist_id
-            } else {
-                primary_id
-            };
-            // if event is not from active controller, ignore it
+            // Deadman button toggles active controller on press
+            match event.event {
+                gilrs::EventType::ButtonPressed(button, _)
+                    if button == deadman_button && event.id == assist_id =>
+                {
+                    // Toggle active controller
+                    if active_id == primary_id {
+                        active_id = assist_id;
+                        println!("Toggled active controller to assist (ID: {})", assist_id);
+                    } else {
+                        active_id = primary_id;
+                        println!("Toggled active controller to primary (ID: {})", primary_id);
+                    }
+                    continue;
+                }
+                gilrs::EventType::ButtonReleased(button, _)
+                    if button == deadman_button && event.id == assist_id =>
+                {
+                    // No-op on release
+                    continue;
+                }
+                _ => {}
+            }
+
+            // Only relay events from the currently active controller
             if event.id != active_id {
                 continue;
             }
 
             println!("Event: {:?}", event);
 
-            // Forward input from active controller to virtual device
-            // Map gilrs event to evdev InputEvent and send to uinput_dev
             match event.event {
                 gilrs::EventType::ButtonPressed(button, _) => {
                     if let Some(key) = gilrs_button_to_evdev_key(button) {
@@ -204,7 +217,6 @@ fn start_assist(
                 }
                 gilrs::EventType::AxisChanged(axis, value, _) => {
                     if let Some(abs_axis) = gilrs_axis_to_evdev_axis(axis) {
-                        // Scale value from [-1.0, 1.0] to [0, 255]
                         let scaled_value = ((value + 1.0) * 127.5).round() as i32;
                         let input_event =
                             InputEvent::new(evdev::EventType::ABSOLUTE.0, abs_axis.0, scaled_value);
@@ -213,7 +225,6 @@ fn start_assist(
                 }
                 _ => {}
             }
-            // Emit synchronization event after axis change
             let syn_event = InputEvent::new(evdev::EventType::SYNCHRONIZATION.0, 0, 0);
             let _ = uinput_dev.emit(&[syn_event]);
         }
