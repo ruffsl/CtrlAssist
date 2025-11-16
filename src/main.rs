@@ -173,7 +173,7 @@ fn start_assist(
     loop {
         while let Some(event) = gilrs.next_event() {
             // Ignore events from virtual device
-            if event.id == virtual_id {
+            if event.id != primary_id && event.id != assist_id {
                 continue;
             }
 
