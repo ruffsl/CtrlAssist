@@ -88,58 +88,8 @@ fn start_assist(
         return Err("The primary and assist controllers must be different devices.".into());
     }
 
-    // Setup axes for virtual device
-    let abs_setup = AbsInfo::new(0, 0, 255, 0, 0, 0);
-    let abs_x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_X, abs_setup);
-    let abs_y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Y, abs_setup);
-    let abs_z = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Z, abs_setup);
-    let abs_rx = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RX, abs_setup);
-    let abs_ry = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RY, abs_setup);
-    let abs_rz = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RZ, abs_setup);
-    let abs_hx = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0X, abs_setup);
-    let abs_hy = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0Y, abs_setup);
-
-    // Create a virtual gamepad device using evdev/uinput
     let virtual_name = "CtrlAssist Virtual Gamepad";
-    let builder = evdev::uinput::VirtualDevice::builder().unwrap();
-    let mut uinput_dev = builder
-        .name(virtual_name)
-        .with_keys(&evdev::AttributeSet::from_iter([
-            KeyCode::BTN_NORTH,
-            KeyCode::BTN_SOUTH,
-            KeyCode::BTN_EAST,
-            KeyCode::BTN_WEST,
-            KeyCode::BTN_TL,
-            KeyCode::BTN_TR,
-            KeyCode::BTN_THUMBL,
-            KeyCode::BTN_THUMBR,
-            KeyCode::BTN_SELECT,
-            KeyCode::BTN_START,
-            KeyCode::BTN_MODE,
-            KeyCode::BTN_DPAD_UP,
-            KeyCode::BTN_DPAD_DOWN,
-            KeyCode::BTN_DPAD_LEFT,
-            KeyCode::BTN_DPAD_RIGHT,
-        ]))
-        .unwrap()
-        .with_absolute_axis(&abs_x)
-        .unwrap()
-        .with_absolute_axis(&abs_y)
-        .unwrap()
-        .with_absolute_axis(&abs_z)
-        .unwrap()
-        .with_absolute_axis(&abs_rx)
-        .unwrap()
-        .with_absolute_axis(&abs_ry)
-        .unwrap()
-        .with_absolute_axis(&abs_rz)
-        .unwrap()
-        .with_absolute_axis(&abs_hx)
-        .unwrap()
-        .with_absolute_axis(&abs_hy)
-        .unwrap()
-        .build()
-        .unwrap();
+    let mut virtual_dev = create_virtual_gamepad(virtual_name)?;
 
     // sleep to allow the virtual device to be recognized by the system
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -212,18 +162,17 @@ fn start_assist(
                 gilrs::EventType::ButtonPressed(button, _) => {
                     if let Some(key) = gilrs_button_to_evdev_key(button) {
                         let input_event = InputEvent::new(evdev::EventType::KEY.0, key.0, 1);
-                        let _ = uinput_dev.emit(&[input_event]);
+                        let _ = virtual_dev.emit(&[input_event]);
                     }
                 }
                 gilrs::EventType::ButtonReleased(button, _) => {
                     if let Some(key) = gilrs_button_to_evdev_key(button) {
                         let input_event = InputEvent::new(evdev::EventType::KEY.0, key.0, 0);
-                        let _ = uinput_dev.emit(&[input_event]);
+                        let _ = virtual_dev.emit(&[input_event]);
                     }
                 }
                 gilrs::EventType::ButtonChanged(button, value, _) => {
                     if let Some(abs_axis) = gilrs_button_to_evdev_axis(button) {
-
                         let scaled_value;
                         if button == Button::DPadUp || button == Button::DPadLeft {
                             scaled_value = ((-value + 1.0) * 127.5).round() as i32;
@@ -234,7 +183,7 @@ fn start_assist(
                         }
                         let input_event =
                             InputEvent::new(evdev::EventType::ABSOLUTE.0, abs_axis.0, scaled_value);
-                        let _ = uinput_dev.emit(&[input_event]);
+                        let _ = virtual_dev.emit(&[input_event]);
                     }
                 }
                 gilrs::EventType::AxisChanged(axis, value, _) => {
@@ -247,16 +196,62 @@ fn start_assist(
                         }
                         let input_event =
                             InputEvent::new(evdev::EventType::ABSOLUTE.0, abs_axis.0, scaled_value);
-                        let _ = uinput_dev.emit(&[input_event]);
+                        let _ = virtual_dev.emit(&[input_event]);
                     }
                 }
                 _ => {}
             }
             let syn_event = InputEvent::new(evdev::EventType::SYNCHRONIZATION.0, 0, 0);
-            let _ = uinput_dev.emit(&[syn_event]);
+            let _ = virtual_dev.emit(&[syn_event]);
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+}
+
+/// Helper to create the virtual gamepad device
+fn create_virtual_gamepad(
+    virtual_name: &str,
+) -> Result<evdev::uinput::VirtualDevice, Box<dyn std::error::Error>> {
+    let abs_setup = AbsInfo::new(0, 0, 255, 0, 0, 0);
+    let abs_x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_X, abs_setup);
+    let abs_y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Y, abs_setup);
+    let abs_z = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Z, abs_setup);
+    let abs_rx = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RX, abs_setup);
+    let abs_ry = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RY, abs_setup);
+    let abs_rz = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RZ, abs_setup);
+    let abs_hx = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0X, abs_setup);
+    let abs_hy = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0Y, abs_setup);
+
+    let builder = evdev::uinput::VirtualDevice::builder()?;
+    let dev = builder
+        .name(virtual_name)
+        .with_keys(&evdev::AttributeSet::from_iter([
+            KeyCode::BTN_NORTH,
+            KeyCode::BTN_SOUTH,
+            KeyCode::BTN_EAST,
+            KeyCode::BTN_WEST,
+            KeyCode::BTN_TL,
+            KeyCode::BTN_TR,
+            KeyCode::BTN_THUMBL,
+            KeyCode::BTN_THUMBR,
+            KeyCode::BTN_SELECT,
+            KeyCode::BTN_START,
+            KeyCode::BTN_MODE,
+            KeyCode::BTN_DPAD_UP,
+            KeyCode::BTN_DPAD_DOWN,
+            KeyCode::BTN_DPAD_LEFT,
+            KeyCode::BTN_DPAD_RIGHT,
+        ]))?
+        .with_absolute_axis(&abs_x)?
+        .with_absolute_axis(&abs_y)?
+        .with_absolute_axis(&abs_z)?
+        .with_absolute_axis(&abs_rx)?
+        .with_absolute_axis(&abs_ry)?
+        .with_absolute_axis(&abs_rz)?
+        .with_absolute_axis(&abs_hx)?
+        .with_absolute_axis(&abs_hy)?
+        .build()?;
+    Ok(dev)
 }
 
 // Helper: Map gilrs Button to evdev Key
