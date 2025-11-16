@@ -119,9 +119,10 @@ fn start_assist(
 
     let deadman_button = Button::LeftThumb;
     let mut active_id = primary_id;
+    let timeout = Some(std::time::Duration::from_millis(1000));
 
     loop {
-        while let Some(event) = gilrs.next_event() {
+        while let Some(event) = gilrs.next_event_blocking(timeout) {
             // Ignore events from virtual device
             if event.id != primary_id && event.id != assist_id {
                 continue;
@@ -205,7 +206,6 @@ fn start_assist(
             let syn_event = InputEvent::new(evdev::EventType::SYNCHRONIZATION.0, 0, 0);
             let _ = virtual_dev.emit(&[syn_event]);
         }
-        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
 
