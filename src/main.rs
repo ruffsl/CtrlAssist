@@ -114,10 +114,10 @@ fn start_assist(
             KeyCode::BTN_SELECT,
             KeyCode::BTN_START,
             KeyCode::BTN_MODE,
-            KeyCode::KEY_UP,
-            KeyCode::KEY_DOWN,
-            KeyCode::KEY_LEFT,
-            KeyCode::KEY_RIGHT,
+            KeyCode::BTN_DPAD_UP,
+            KeyCode::BTN_DPAD_DOWN,
+            KeyCode::BTN_DPAD_LEFT,
+            KeyCode::BTN_DPAD_RIGHT,
         ]))
         .unwrap()
         .with_absolute_axis(&abs_x)
@@ -246,10 +246,10 @@ fn gilrs_button_to_evdev_key(button: Button) -> Option<KeyCode> {
         Button::Select => Some(KeyCode::BTN_SELECT),
         Button::Start => Some(KeyCode::BTN_START),
         Button::Mode => Some(KeyCode::BTN_MODE),
-        Button::DPadUp => Some(KeyCode::KEY_UP),
-        Button::DPadDown => Some(KeyCode::KEY_DOWN),
-        Button::DPadLeft => Some(KeyCode::KEY_LEFT),
-        Button::DPadRight => Some(KeyCode::KEY_RIGHT),
+        Button::DPadUp => Some(KeyCode::BTN_DPAD_UP),
+        Button::DPadDown => Some(KeyCode::BTN_DPAD_DOWN),
+        Button::DPadLeft => Some(KeyCode::BTN_DPAD_LEFT),
+        Button::DPadRight => Some(KeyCode::BTN_DPAD_RIGHT),
         _ => None,
     }
 }
