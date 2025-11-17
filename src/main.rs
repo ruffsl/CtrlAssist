@@ -176,7 +176,9 @@ fn start_assist(
 
     println!("\nAssist mode active. Press Ctrl+C to exit.");
     let timeout = Some(Duration::from_millis(1000));
-    fn deadzone(_axis: gilrs::Axis) -> f32 { 0.1 }
+    fn deadzone(_axis: gilrs::Axis) -> f32 {
+        0.1
+    }
 
     loop {
         while let Some(event) = gilrs.next_event_blocking(timeout) {
@@ -241,7 +243,10 @@ fn start_assist(
                         }
                         // Only relay if greater than other trigger value
                         let other_greater = match button {
-                            Button::DPadUp | Button::DPadDown | Button::DPadLeft | Button::DPadRight=> false,
+                            Button::DPadUp
+                            | Button::DPadDown
+                            | Button::DPadLeft
+                            | Button::DPadRight => false,
                             _ => other_gamepad
                                 .button_data(button)
                                 .map_or(false, |d| d.value() >= value),
@@ -275,19 +280,19 @@ fn start_assist(
                         let other_pushed = match axis {
                             Axis::LeftStickX | Axis::LeftStickY => {
                                 other_gamepad
-                                .axis_data(Axis::LeftStickX)
-                                .map_or(false, |d| d.value().abs() >= deadzone(axis))
-                                || other_gamepad
-                                .axis_data(Axis::LeftStickY)
-                                .map_or(false, |d| d.value().abs() >= deadzone(axis))
+                                    .axis_data(Axis::LeftStickX)
+                                    .map_or(false, |d| d.value().abs() >= deadzone(axis))
+                                    || other_gamepad
+                                        .axis_data(Axis::LeftStickY)
+                                        .map_or(false, |d| d.value().abs() >= deadzone(axis))
                             }
                             Axis::RightStickX | Axis::RightStickY => {
                                 other_gamepad
-                                .axis_data(Axis::RightStickX)
-                                .map_or(false, |d| d.value().abs() >= deadzone(axis))
-                                || other_gamepad
-                                .axis_data(Axis::RightStickY)
-                                .map_or(false, |d| d.value().abs() >= deadzone(axis))
+                                    .axis_data(Axis::RightStickX)
+                                    .map_or(false, |d| d.value().abs() >= deadzone(axis))
+                                    || other_gamepad
+                                        .axis_data(Axis::RightStickY)
+                                        .map_or(false, |d| d.value().abs() >= deadzone(axis))
                             }
                             _ => false,
                         };
