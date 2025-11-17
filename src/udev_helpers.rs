@@ -1,13 +1,3 @@
-#[repr(C)]
-#[derive(Default, Debug)]
-struct InputId {
-    bustype: u16,
-    vendor: u16,
-    product: u16,
-    version: u16,
-}
-
-const EVIOCGID: libc::c_ulong = 0x80084502;
 use gilrs::Gamepad;
 use std::collections::HashSet;
 use std::error::Error;
@@ -15,159 +5,128 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use udev::Enumerator;
-use uuid::Uuid;
 
-/// Restrict access to gamepad devices matching vendor and product IDs
+/// Gets a udev property as an Option<String>.
+fn get_udev_prop(device: &udev::Device, prop: &str) -> Option<String> {
+    device
+        .property_value(prop)
+        .and_then(|s| s.to_str())
+        .map(String::from)
+}
+
+/// Finds the main parent device's syspath from a matching gamepad.
+/// This searches for a device matching the gamepad's Vendor and Product.
+fn find_parent_syspath(
+    enumerator: &mut Enumerator,
+    target_vendor: Option<&str>,
+    target_product: Option<&str>,
+) -> Result<Option<PathBuf>, Box<dyn Error>> {
+    for device in enumerator.scan_devices()? {
+        let dev_vendor = get_udev_prop(&device, "ID_VENDOR_ID");
+        let dev_product = get_udev_prop(&device, "ID_MODEL_ID");
+
+        // Check for a match only on vendor and product.
+        let is_match =
+            target_vendor == dev_vendor.as_deref() && target_product == dev_product.as_deref();
+
+        if is_match {
+            // Found a match. Now find its "physical" parent device.
+            // We walk up the tree until we find the main "usb_device" or "bluetooth" device.
+
+            // Get the immediate parent and clone it so we can walk up the tree
+            // without move/borrow conflicts.
+            if let Some(immediate_parent) = device.parent() {
+                let mut walker = immediate_parent.clone(); // Clone to own it
+                loop {
+                    let subsystem = walker.subsystem().and_then(|s| s.to_str());
+                    if subsystem == Some("usb") || subsystem == Some("bluetooth") {
+                        // Found the "physical" root for this device
+                        return Ok(Some(walker.syspath().to_path_buf()));
+                    }
+                    // Try to go up one more level
+                    if let Some(next_parent) = walker.parent() {
+                        walker = next_parent;
+                    } else {
+                        // We're at the root and didn't find "usb".
+                        // Fallback: return the syspath of the *immediate* parent.
+                        return Ok(Some(immediate_parent.syspath().to_path_buf()));
+                    }
+                }
+            }
+            // If the device has no parent, we find nothing.
+        }
+    }
+    Ok(None)
+}
+
+/// Restrict access to all device nodes related to a physical gamepad.
 pub fn restrict_gamepad_devices(
     gamepad: &Gamepad,
     restricted_paths: &mut HashSet<String>,
 ) -> Result<(), Box<dyn Error>> {
-    let target_uuid = Uuid::from_bytes(gamepad.uuid());
+    // 1. Get target properties from gilrs::Gamepad
+    // Format vendor/product as 4-digit hex strings to match udev properties
+    let target_vendor = gamepad.vendor_id().map(|v| format!("{:04x}", v));
+    let target_product = gamepad.product_id().map(|p| format!("{:04x}", p));
+
+    // 2. Find the single "parent" syspath for this physical device
+    // We scan "input" and "hidraw" as these are most likely to have the properties.
+    let mut parent_syspath = None;
+    let mut enumerator = Enumerator::new()?;
 
     for subsystem in ["input", "hidraw"] {
-        let mut enumerator = Enumerator::new()?;
         enumerator.match_subsystem(subsystem)?;
-
-        for device in enumerator.scan_devices()? {
-            let devnode = match device.devnode() {
-                Some(d) => d,
-                None => continue,
-            };
-            let path = &devnode;
-            let fd = match std::fs::File::open(path) {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
-            use std::os::unix::io::AsRawFd;
-            let raw_fd = fd.as_raw_fd();
-            let mut input_id = InputId::default();
-            if unsafe { libc::ioctl(raw_fd, EVIOCGID, &mut input_id) } != 0 {
-                continue;
-            }
-            let bus_u32 = (input_id.bustype as u32).to_be();
-            let vendor_u16 = input_id.vendor.to_be();
-            let product_u16 = input_id.product.to_be();
-            let version_u16 = input_id.version.to_be();
-            let uuid = Uuid::from_fields(
-                bus_u32,
-                vendor_u16,
-                0,
-                &[
-                    (product_u16 >> 8) as u8,
-                    product_u16 as u8,
-                    0,
-                    0,
-                    (version_u16 >> 8) as u8,
-                    version_u16 as u8,
-                    0,
-                    0,
-                ],
-            );
-            if uuid != target_uuid {
-                continue;
-            }
-            let path_str = devnode.to_string_lossy();
-            let related_paths = find_related_input_paths(&path_str)?;
-            for path in related_paths {
-                if restrict_device(&path).is_ok() && !restricted_paths.contains(&path) {
-                    println!("    Restricted: {}", path);
-                    restricted_paths.insert(path);
-                }
-            }
+        parent_syspath = find_parent_syspath(
+            &mut enumerator,
+            target_vendor.as_deref(),
+            target_product.as_deref(),
+        )?;
+        if parent_syspath.is_some() {
+            break;
         }
     }
-    Ok(())
-}
 
-/// Find all related device nodes (event, hidraw, js) for a given device path
-fn find_related_input_paths(dev_path: &str) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut paths = vec![dev_path.to_string()];
+    let Some(parent_syspath) = parent_syspath else {
+        // No matching device found in udev.
+        // This is not an error, just means we can't restrict.
+        eprintln!(
+            "Warning: Could not find matching udev device for {}.",
+            gamepad.name()
+        );
+        return Ok(());
+    };
 
-    // Find parent syspath from input subsystem
+    // 3. Find all child devnodes that share this parent
+    let mut paths_to_restrict = HashSet::new();
     let mut enumerator = Enumerator::new()?;
-    enumerator.match_subsystem("input")?;
-    let mut target_parent_syspath: Option<PathBuf> = None;
-    for device in enumerator.scan_devices()? {
-        if let Some(devnode) = device.devnode() {
-            if devnode.to_str() == Some(dev_path) {
-                if let Some(parent) = device.parent() {
-                    target_parent_syspath = Some(parent.syspath().to_path_buf());
-                }
-                break;
-            }
-        }
-    }
 
-    // Collect all siblings from input subsystem
-    if let Some(parent_syspath) = target_parent_syspath {
-        let mut enumerator = Enumerator::new()?;
-        enumerator.match_subsystem("input")?;
+    for subsystem in ["input", "hidraw"] {
+        enumerator.match_subsystem(subsystem)?;
         for device in enumerator.scan_devices()? {
-            if let Some(parent) = device.parent() {
+            // Clone device so we can walk up parent chain without move/borrow error
+            let mut current = device.clone();
+            while let Some(parent) = current.parent() {
                 if parent.syspath() == parent_syspath {
+                    // This device is a child. Get its devnode.
                     if let Some(devnode) = device.devnode() {
-                        paths.push(devnode.to_string_lossy().to_string());
+                        paths_to_restrict.insert(devnode.to_string_lossy().to_string());
                     }
+                    break; // Stop walking up
                 }
-            }
-        }
-
-        // Now, also search hidraw subsystem for matching vendor/product/serial
-        // First, get vendor/product/serial from the input device
-        let mut vendor_id = None;
-        let mut product_id = None;
-        let mut serial = None;
-        let mut enumerator_input = Enumerator::new()?;
-        enumerator_input.match_subsystem("input")?;
-        for device in enumerator_input.scan_devices()? {
-            if let Some(devnode) = device.devnode() {
-                if devnode.to_str() == Some(dev_path) {
-                    vendor_id = device
-                        .property_value("ID_VENDOR_ID")
-                        .map(|s| s.to_string_lossy().to_string());
-                    product_id = device
-                        .property_value("ID_MODEL_ID")
-                        .map(|s| s.to_string_lossy().to_string());
-                    serial = device
-                        .property_value("ID_SERIAL_SHORT")
-                        .map(|s| s.to_string_lossy().to_string());
-                    break;
-                }
-            }
-        }
-
-        if let (Some(vendor), Some(product)) = (vendor_id, product_id) {
-            let mut enumerator_hidraw = Enumerator::new()?;
-            enumerator_hidraw.match_subsystem("hidraw")?;
-            for device in enumerator_hidraw.scan_devices()? {
-                let v = device
-                    .property_value("ID_VENDOR_ID")
-                    .map(|s| s.to_string_lossy().to_string());
-                let p = device
-                    .property_value("ID_MODEL_ID")
-                    .map(|s| s.to_string_lossy().to_string());
-                let s = device
-                    .property_value("ID_SERIAL_SHORT")
-                    .map(|s| s.to_string_lossy().to_string());
-                if v == Some(vendor.clone()) && p == Some(product.clone()) {
-                    // If serial is present, match it too
-                    if let Some(ref serial_val) = serial {
-                        if s != Some(serial_val.clone()) {
-                            continue;
-                        }
-                    }
-                    if let Some(devnode) = device.devnode() {
-                        paths.push(devnode.to_string_lossy().to_string());
-                    }
-                }
+                current = parent;
             }
         }
     }
 
-    // Remove duplicates
-    paths.sort();
-    paths.dedup();
-    Ok(paths)
+    // 4. Restrict all found device paths
+    for path in paths_to_restrict {
+        if restrict_device(&path).is_ok() && !restricted_paths.contains(&path) {
+            println!("    Restricted: {}", path);
+            restricted_paths.insert(path);
+        }
+    }
+
+    Ok(())
 }
 
 /// Set permissions to root-only (read/write)
