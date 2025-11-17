@@ -175,37 +175,19 @@ fn start_assist(
     // --- 5. Main Event Loop ---
 
     println!("\nAssist mode active. Press Ctrl+C to exit.");
-    let deadman_button = Button::LeftThumb;
-    let mut active_id = primary_id;
     let timeout = Some(Duration::from_millis(1000));
 
     loop {
         while let Some(event) = gilrs.next_event_blocking(timeout) {
-            // Ignore events from our own virtual device
-            if event.id == virtual_id {
-                continue;
-            }
+            // Ignore events from devices other than primary and assist
+            let other_id = match event.id {
+                id if id == primary_id => assist_id,
+                id if id == assist_id => primary_id,
+                _ => continue,
+            };
 
-            // --- Deadman Button Logic ---
-            if event.id == assist_id {
-                if let gilrs::EventType::ButtonPressed(button, _) = event.event {
-                    if button == deadman_button {
-                        // Toggle active controller
-                        active_id = if active_id == primary_id {
-                            assist_id
-                        } else {
-                            primary_id
-                        };
-                        println!("Toggled active controller to: {}", active_id);
-                        continue; // Consume this event
-                    }
-                }
-            }
-
-            // Only relay events from the currently active controller
-            if event.id != active_id {
-                continue;
-            }
+            // Always get up-to-date gamepad handles from active gilrs instance
+            let other_gamepad = gilrs.gamepad(other_id);
 
             // --- Event Forwarding Logic ---
             let mut events = Vec::with_capacity(2);
@@ -219,6 +201,13 @@ fn start_assist(
                         } else {
                             0
                         };
+                        // Only relay if the other gamepad does not have the button pressed
+                        let other_pressed = other_gamepad
+                            .button_data(button)
+                            .map_or(false, |d| d.value() != 0.0);
+                        if other_pressed {
+                            continue;
+                        }
                         events.push(InputEvent::new(evdev::EventType::KEY.0, key.0, value));
                     }
                 }
@@ -226,6 +215,39 @@ fn start_assist(
                 // --- Analog Triggers / Pressure Buttons ---
                 gilrs::EventType::ButtonChanged(button, value, _) => {
                     if let Some(abs_axis) = evdev_helpers::gilrs_button_to_evdev_axis(button) {
+                        // Only relay if not conflicting with assist dpad
+                        let other_pressed = match button {
+                            Button::DPadUp | Button::DPadDown => {
+                                other_gamepad
+                                    .button_data(Button::DPadUp)
+                                    .map_or(false, |d| d.value() != 0.0)
+                                    | other_gamepad
+                                        .button_data(Button::DPadDown)
+                                        .map_or(false, |d| d.value() != 0.0)
+                            }
+                            Button::DPadLeft | Button::DPadRight => {
+                                other_gamepad
+                                    .button_data(Button::DPadLeft)
+                                    .map_or(false, |d| d.value() != 0.0)
+                                    | other_gamepad
+                                        .button_data(Button::DPadRight)
+                                        .map_or(false, |d| d.value() != 0.0)
+                            }
+                            _ => false,
+                        };
+                        if other_pressed && other_id == assist_id {
+                            continue;
+                        }
+                        // Only relay if greater than other trigger value
+                        let other_greater = match button {
+                            Button::DPadUp | Button::DPadDown | Button::DPadLeft | Button::DPadRight=> false,
+                            _ => other_gamepad
+                                .button_data(button)
+                                .map_or(false, |d| d.value() >= value),
+                        };
+                        if other_greater {
+                            continue;
+                        }
                         let scaled_value = match button {
                             // D-pad-as-axis (uncommon, but matches original logic)
                             Button::DPadUp | Button::DPadLeft => {
