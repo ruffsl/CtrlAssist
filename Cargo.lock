@@ -167,7 +167,9 @@ dependencies = [
  "ctrlc",
  "evdev",
  "gilrs",
+ "libc",
  "udev",
+ "uuid",
 ]
 
 [[package]]

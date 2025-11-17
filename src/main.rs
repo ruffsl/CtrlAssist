@@ -149,10 +149,7 @@ fn start_assist(
         // We can re-use the gamepad objects from the *first* gilrs instance
         for gamepad in [&primary_gamepad, &assist_gamepad] {
             println!("  Restricting: {}", gamepad.name());
-            udev_helpers::restrict_gamepad_devices(
-                gamepad,
-                &mut restore_paths,
-            )?;
+            udev_helpers::restrict_gamepad_devices(gamepad, &mut restore_paths)?;
         }
     }
 
