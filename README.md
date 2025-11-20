@@ -72,7 +72,6 @@ Avoiding in game conflicts by hiding physical controllers:
 
 ```sh
 $ sudo ctrlassist start --hide
-
 Controllers found and verified:
   Primary: ID: 0 - Name: Microsoft Xbox One
   Assist:  ID: 1 - Name: PS4 Controller
