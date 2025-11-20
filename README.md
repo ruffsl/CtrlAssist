@@ -114,6 +114,5 @@ Restoring device permissions...
 
 ## Background
 
-Similar accessibility features:
-- [Second Controller Assistance on PlayStation](https://www.playstation.com/en-us/support/hardware/second-controller-assistance/)
 - [Controller Assist on Xbox and Windows](https://gameaccess.info/xbox-controller-assist-on-windows-pc/)
+- [Second Controller Assistance on PlayStation](https://www.playstation.com/en-us/support/hardware/second-controller-assistance/)
