@@ -16,7 +16,6 @@
   - and permissions to create virtual input devices
 - Rust toolchain with cargo for installation
   - https://rust-lang.org/tools/install/
-- Supported gamepads (see `gilrs` compatibility)
 
 ## Install
 
@@ -72,7 +71,7 @@ Assist mode active. Press Ctrl+C to exit.
 Avoiding in game conflicts by hiding physical controllers:
 
 ```sh
-$ sudo ./target/debug/ctrlassist start --hide
+$ sudo ctrlassist start --hide
 
 Controllers found and verified:
   Primary: ID: 0 - Name: Microsoft Xbox One
