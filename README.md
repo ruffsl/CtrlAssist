@@ -1,21 +1,23 @@
 # CtrlAssist
 
-**CtrlAssist** brings "controller assist" functionality to gaming on Linux, allowing multiple physical controllers to act as a single virtual input device. This enables collaborative play and customized gamepad setups, making it easier for players of all ages and abilities—including those with limited mobility—to enjoy games together. While similar accessibility features are common on modern game consoles, CtrlAssist is an open source solution that makes this capability available for PC gaming on Linux.
+**CtrlAssist** brings "controller assist" functionality to gaming on Linux, allowing multiple physical controllers to act as a single virtual input device. This enables collaborative play and customized gamepad setups, making it easier for players of all ages and abilities to enjoy games together. While similar accessibility features are common on modern game consoles, CtrlAssist is an open source solution that makes this capability available for PC gaming on Linux.
 
 ## Features
 
 - Combine physical gamepads into one virtual device
   - Primary and Assist controllers are assignable
 - Customizable multiplexing of buttons and axes
-  - Combining or Toggling between inputs is flexible
-- Optionally hide gamepads for improved game compatibility
-  - Prevent unintended detection of physical controllers
+  - Logically merging or preempting events is flexible
+- Hide physical gamepads for improved game compatibility
+  - Avoid input interference from conflicting controllers
 
 ## Prerequisites
 - Linux system using udev (libudev-dev)
-  - and permissions to create virtual input devices
-- Rust toolchain with cargo for installation
+  - with user permissions to manage virtual devices
+  - already pre-configured on most distributions
+- Rust toolchain with included `cargo`
   - https://rust-lang.org/tools/install/
+  - configure `PATH` per Notes linked above
 
 ## Install
 
@@ -111,6 +113,8 @@ Restoring device permissions...
   - similar gamepads with matching IDs may also be hidden
 - Hiding must be done before starting games or launchers
   - processes with open file handles may retain device access
+- Reconnecting a hidden controller reverts its visibility
+  - custom udev rules should be used for persistent permissions
 
 ## Background
 
