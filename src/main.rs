@@ -127,9 +127,6 @@ fn mux_gamepads(
     let virtual_name = "CtrlAssist Virtual Gamepad";
     let mut virtual_dev = evdev_helpers::create_virtual_gamepad(virtual_name)?;
 
-    // Give the system time to recognize the new device
-    std::thread::sleep(Duration::from_millis(50));
-
     // --- 3. Re-init Gilrs and Handle Device Hiding ---
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(1);
