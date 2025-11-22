@@ -1,12 +1,12 @@
 use clap::{Parser, Subcommand};
 use evdev::InputEvent;
 use gilrs::{Axis, Button, GamepadId, Gilrs};
-use log;
 use std::collections::HashSet;
 use std::error::Error;
 use std::time::Duration;
 
 mod evdev_helpers;
+mod log_setup;
 mod udev_helpers;
 
 /// Multiplex multiple controllers into virtual gamepad.
@@ -39,7 +39,8 @@ enum Commands {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    env_logger::init();
+    log_setup::init_logger().expect("Failed to set logger");
+
     let cli = Cli::parse();
 
     match &cli.command {
