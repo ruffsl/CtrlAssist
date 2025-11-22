@@ -83,7 +83,7 @@ Hiding controllers... (requires root)
 
 Assist mode active. Press Ctrl+C to exit.
 ^C
-Shutdown signal received.
+Shutting down.
 
 Restoring controllers...
 ```

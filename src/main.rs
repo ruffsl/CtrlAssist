@@ -170,7 +170,7 @@ fn mux_gamepads(
     // Convert HashSet to Vec for the 'move' closure
     let restore_paths_vec: Vec<String> = restore_paths.into_iter().collect();
     ctrlc::set_handler(move || {
-        println!("\nShutdown signal received.");
+        println!("\nShutting down.");
         if hide {
             println!("\nRestoring controllers...");
             for path in &restore_paths_vec {
