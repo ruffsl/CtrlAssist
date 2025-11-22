@@ -80,30 +80,12 @@ Connected controllers:
   Virtual: ID: 2 - Name: CtrlAssist Virtual Gamepad
 
 Hiding controllers... (requires root)
-  Hiding: Microsoft Xbox One
-    Hidden: /dev/input/event16
-    Hidden: /dev/input/js0
-  Hiding: PS4 Controller
-    Hidden: /dev/hidraw16
-    Hidden: /dev/input/event17
-    Hidden: /dev/input/event18
-    Hidden: /dev/input/event19
-    Hidden: /dev/input/js2
-    Hidden: /dev/input/mouse0
 
 Assist mode active. Press Ctrl+C to exit.
 ^C
 Shutdown signal received.
 
 Restoring controllers...
-  Restored: /dev/input/event17
-  Restored: /dev/hidraw16
-  Restored: /dev/input/js0
-  Restored: /dev/input/js2
-  Restored: /dev/input/event16
-  Restored: /dev/input/mouse0
-  Restored: /dev/input/event19
-  Restored: /dev/input/event18
 ```
 
 ## Limitations

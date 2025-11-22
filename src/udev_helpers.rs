@@ -121,7 +121,7 @@ pub fn restrict_gamepad_devices(
     // 4. Restrict all found device paths
     for path in paths_to_restrict {
         if restrict_device(&path).is_ok() && !restricted_paths.contains(&path) {
-            println!("    Hidden: {}", path);
+            log::info!("Hidden: {}", path);
             restricted_paths.insert(path);
         }
     }

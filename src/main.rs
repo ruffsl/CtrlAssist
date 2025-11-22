@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use evdev::InputEvent;
 use gilrs::{Axis, Button, GamepadId, Gilrs};
+use log;
 use std::collections::HashSet;
 use std::error::Error;
 use std::time::Duration;
@@ -38,6 +39,7 @@ enum Commands {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    env_logger::init();
     let cli = Cli::parse();
 
     match &cli.command {
@@ -153,7 +155,7 @@ fn mux_gamepads(
         println!("\nHiding controllers... (requires root)");
         // We can re-use the gamepad objects from the *first* gilrs instance
         for gamepad in [&primary_gamepad, &assist_gamepad] {
-            println!("  Hiding: {}", gamepad.name());
+            log::info!("Hiding: {}", gamepad.name());
             udev_helpers::restrict_gamepad_devices(gamepad, &mut restore_paths)?;
         }
         // If restore paths is empty, throw an error
@@ -174,7 +176,7 @@ fn mux_gamepads(
                 if let Err(e) = udev_helpers::restore_device(path) {
                     eprintln!("  Failed to restore {}: {}", path, e);
                 } else {
-                    println!("  Restored: {}", path);
+                    log::info!("Restored: {}", path);
                 }
             }
         }
