@@ -32,10 +32,22 @@ enum Commands {
         #[arg(short, long, default_value_t = 1)]
         assist: usize,
 
-        /// Optionally restrict device permissions for selected controllers
+        /// Optionally hide primary and assist controllers
         #[arg(long, default_value_t = false)]
         hide: bool,
+
+        /// Spoof type for virtual device.
+        #[arg(long, value_enum, default_value_t = SpoofType::Primary)]
+        spoof: SpoofType,
     },
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, Default)]
+pub enum SpoofType {
+    #[default]
+    Primary,
+    Assist,
+    None,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -51,8 +63,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             primary,
             assist,
             hide,
+            spoof,
         } => {
-            mux_gamepads(*primary, *assist, *hide)?;
+            mux_gamepads(*primary, *assist, *hide, spoof.clone())?;
         }
     }
     Ok(())
@@ -81,6 +94,7 @@ fn mux_gamepads(
     primary_usize: usize,
     assist_usize: usize,
     hide: bool,
+    spoof: SpoofType,
 ) -> Result<(), Box<dyn Error>> {
     // --- 1. Setup and Validation ---
     if primary_usize == assist_usize {
