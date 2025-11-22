@@ -8,7 +8,7 @@ use std::time::Duration;
 mod evdev_helpers;
 mod udev_helpers;
 
-/// A CLI tool to merge two gamepads into one virtual controller.
+/// Multiplex multiple controllers into virtual gamepad.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -18,11 +18,11 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Lists all connected gamepads and their IDs.
+    /// List all detected controllers and respective IDs.
     List,
 
-    /// Starts the controller assist mode.
-    Start {
+    /// Multiplex connected controllers into virtual gamepad.
+    Mux {
         /// The ID of the primary controller (see 'list' command).
         #[arg(short, long, default_value_t = 0)]
         primary: usize,
@@ -44,22 +44,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::List => {
             list_gamepads()?;
         }
-        Commands::Start {
+        Commands::Mux {
             primary,
             assist,
             hide,
         } => {
-            start_assist(*primary, *assist, *hide)?;
+            mux_gamepads(*primary, *assist, *hide)?;
         }
     }
     Ok(())
 }
 
-/// Lists all connected gamepads.
+/// List all detected controllers.
 fn list_gamepads() -> Result<(), gilrs::Error> {
     let gilrs = Gilrs::new()?;
 
-    println!("Connected Gamepads:");
+    println!("Detected controllers:");
     let mut count = 0;
     for (id, gamepad) in gilrs.gamepads() {
         println!("  ID: {} - Name: {}", id, gamepad.name());
@@ -67,49 +67,47 @@ fn list_gamepads() -> Result<(), gilrs::Error> {
     }
 
     if count == 0 {
-        println!("  No gamepads found.");
+        println!("  No controllers found.");
     }
 
     Ok(())
 }
 
-/// Main function to run the assist mode logic.
-fn start_assist(
+/// Multiplex connected controllers.
+fn mux_gamepads(
     primary_usize: usize,
     assist_usize: usize,
     hide: bool,
 ) -> Result<(), Box<dyn Error>> {
+    // --- 1. Setup and Validation ---
     if primary_usize == assist_usize {
-        return Err("The primary and assist controllers must be different devices.".into());
+        return Err("Primary and Assist controllers must be separate devices.".into());
     }
 
-    // --- 1. Setup and Validation ---
-
-    // Create *one* gilrs instance for setup.
-    let gilrs_setup = Gilrs::new()?;
-
-    // Correctly find GamepadIds by matching the usize value.
-    let mut primary_id: Option<GamepadId> = None;
-    let mut assist_id: Option<GamepadId> = None;
-
-    for (id, _gamepad) in gilrs_setup.gamepads() {
+    // Find Gamepads by matching Ids.
+    let gilrs = Gilrs::new()?;
+    let mut primary_opt: Option<GamepadId> = None;
+    let mut assist_opt: Option<GamepadId> = None;
+    for (id, _gamepad) in gilrs.gamepads() {
         let id_usize: usize = id.into();
         if id_usize == primary_usize {
-            primary_id = Some(id);
+            primary_opt = Some(id);
         }
         if id_usize == assist_usize {
-            assist_id = Some(id);
+            assist_opt = Some(id);
+        }
+        if primary_opt.is_some() && assist_opt.is_some() {
+            break;
         }
     }
-
     let primary_id =
-        primary_id.ok_or_else(|| format!("Primary controller ID {} not found.", primary_usize))?;
+        primary_opt.ok_or_else(|| format!("Primary controller ID {} not found.", primary_usize))?;
     let assist_id =
-        assist_id.ok_or_else(|| format!("Assist controller ID {} not found.", assist_usize))?;
+        assist_opt.ok_or_else(|| format!("Assist controller ID {} not found.", assist_usize))?;
 
-    println!("\nControllers found and verified:");
-    let primary_gamepad = gilrs_setup.gamepad(primary_id);
-    let assist_gamepad = gilrs_setup.gamepad(assist_id);
+    println!("Connected controllers:");
+    let primary_gamepad = gilrs.gamepad(primary_id);
+    let assist_gamepad = gilrs.gamepad(assist_id);
     println!(
         "  Primary: ID: {} - Name: {}",
         primary_id,
@@ -125,31 +123,42 @@ fn start_assist(
 
     let virtual_name = "CtrlAssist Virtual Gamepad";
     let mut virtual_dev = evdev_helpers::create_virtual_gamepad(virtual_name)?;
-    println!("  Virtual: ID: ? - Name: {}", virtual_name);
 
     // Give the system time to recognize the new device
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(50));
 
     // --- 3. Re-init Gilrs and Handle Device Hiding ---
-
-    // Re-initialize gilrs to see the new virtual device
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(1);
+    let virtual_id = loop {
+        let gilrs = Gilrs::new()?;
+        if let Some((id, _)) = gilrs.gamepads().find(|(_, g)| g.name() == virtual_name) {
+            break id;
+        }
+        if start.elapsed() >= timeout {
+            return Err("Virtual gamepad not found.".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
     let mut gilrs = Gilrs::new()?;
-
-    // Find the virtual device's new ID from gilrs
-    let virtual_id = gilrs
-        .gamepads()
-        .find_map(|(id, gamepad)| (gamepad.name() == virtual_name).then_some(id))
-        .ok_or("Virtual device not found in gilrs after creation.")?;
-
-    println!("  Virtual device registered with ID: {}", virtual_id);
+    let virtual_gamepad = gilrs.gamepad(virtual_id);
+    println!(
+        "  Virtual: ID: {} - Name: {}",
+        virtual_id,
+        virtual_gamepad.name()
+    );
 
     let mut restore_paths = HashSet::new();
     if hide {
-        println!("\nRestricting device permissions (requires root)...");
+        println!("\nHiding controllers... (requires root)");
         // We can re-use the gamepad objects from the *first* gilrs instance
         for gamepad in [&primary_gamepad, &assist_gamepad] {
-            println!("  Restricting: {}", gamepad.name());
+            println!("  Hiding: {}", gamepad.name());
             udev_helpers::restrict_gamepad_devices(gamepad, &mut restore_paths)?;
+        }
+        // If restore paths is empty, throw an error
+        if restore_paths.is_empty() {
+            return Err("Devices could not be hidden. Check permissions.".into());
         }
     }
 
@@ -160,7 +169,7 @@ fn start_assist(
     ctrlc::set_handler(move || {
         println!("\nShutdown signal received.");
         if hide {
-            println!("Restoring device permissions...");
+            println!("\nRestoring controllers...");
             for path in &restore_paths_vec {
                 if let Err(e) = udev_helpers::restore_device(path) {
                     eprintln!("  Failed to restore {}: {}", path, e);

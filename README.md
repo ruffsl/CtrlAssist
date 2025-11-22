@@ -4,11 +4,11 @@
 
 ## Features
 
-- Combine physical gamepads into one virtual device
-  - Each controller is assigned as Primary or Assist
+- Combine physical controllers into one virtual gamepad
+  - Controllers are assigned as either Primary or Assist
 - Customizable multiplexing of buttons and axes
   - Logically merging or preempting events is flexible
-- Hide physical gamepads for improved game compatibility
+- Hide physical controllers for improved game compatibility
   - Avoid controller interference from conflicting inputs
 
 ## Prerequisites
@@ -27,26 +27,26 @@ cargo install ctrlassist
 
 ## Usage
 
-The CLI includes subcommands for locating and multiplexing gamepads.
+The CLI includes subcommands for locating and multiplexing controllers.
 
 ### list
 
-List all detected gamepads and respective their IDs:
+List all detected controllers and respective IDs:
 
 ```sh
 $ ctrlassist list
-Connected Gamepads:
+Detected controllers:
   ID: 0 - Name: Microsoft Xbox One
   ID: 1 - Name: PS4 Controller
 ```
 
-### start
+### mux
 
-Multiplex first two detected gamepads by default:
+Multiplex first two detected controllers by default:
 
 ```sh
-$ ctrlassist start
-Controllers found and verified:
+$ ctrlassist mux
+Connected controllers:
   Primary: ID: 0 - Name: Microsoft Xbox One
   Assist:  ID: 1 - Name: PS4 Controller
   Virtual: ID: 2 - Name: CtrlAssist Virtual Gamepad
@@ -59,8 +59,8 @@ Assist mode active. Press Ctrl+C to exit.
 Manually specify Primary and Assist controllers via IDs:
 
 ```sh
-$ ctrlassist start --primary 1 --assist 0
-Controllers found and verified:
+$ ctrlassist mux --primary 1 --assist 0
+Connected controllers:
   Primary: ID: 1 - Name: PS4 Controller
   Assist:  ID: 0 - Name: Microsoft Xbox One
   Virtual: ID: 2 - Name: CtrlAssist Virtual Gamepad
@@ -73,44 +73,45 @@ Assist mode active. Press Ctrl+C to exit.
 Avoiding in game conflicts by hiding physical controllers:
 
 ```sh
-$ sudo ctrlassist start --hide
-Controllers found and verified:
+$ sudo ctrlassist mux --hide
+Connected controllers:
   Primary: ID: 0 - Name: Microsoft Xbox One
   Assist:  ID: 1 - Name: PS4 Controller
   Virtual: ID: 2 - Name: CtrlAssist Virtual Gamepad
 
-Restricting device permissions (requires root)...
-  Restricting: Microsoft Xbox One
-    Restricted: /dev/input/event16
-    Restricted: /dev/input/js0
-  Restricting: PS4 Controller
-    Restricted: /dev/hidraw3
-    Restricted: /dev/input/event30
-    Restricted: /dev/input/event256
-    Restricted: /dev/input/mouse6
-    Restricted: /dev/input/event31
-    Restricted: /dev/input/js3
+Hiding controllers... (requires root)
+  Hiding: Microsoft Xbox One
+    Hidden: /dev/input/event16
+    Hidden: /dev/input/js0
+  Hiding: PS4 Controller
+    Hidden: /dev/hidraw16
+    Hidden: /dev/input/event17
+    Hidden: /dev/input/event18
+    Hidden: /dev/input/event19
+    Hidden: /dev/input/js2
+    Hidden: /dev/input/mouse0
 
 Assist mode active. Press Ctrl+C to exit.
 ^C
 Shutdown signal received.
-Restoring device permissions...
-  Restored: /dev/input/event30
+
+Restoring controllers...
+  Restored: /dev/input/event17
+  Restored: /dev/hidraw16
   Restored: /dev/input/js0
-  Restored: /dev/input/js3
+  Restored: /dev/input/js2
   Restored: /dev/input/event16
-  Restored: /dev/hidraw3
-  Restored: /dev/input/event256
-  Restored: /dev/input/mouse6
-  Restored: /dev/input/event31
+  Restored: /dev/input/mouse0
+  Restored: /dev/input/event19
+  Restored: /dev/input/event18
 ```
 
 ## Limitations
 
-- Hiding physical gamepads requires root access
+- Hiding physical input devices requires root access
   - temporarily modifies group permissions for selected devices
 - Hiding is by merely matching vendor and product IDs
-  - similar gamepads with matching IDs may also be hidden
+  - Any controller with similar IDs may also be hidden
 - Hiding must be done before starting games or launchers
   - processes with open file handles may retain device access
 - Reconnecting a hidden controller reverts its visibility
@@ -118,5 +119,5 @@ Restoring device permissions...
 
 ## Background
 
-- [Controller Assist on Xbox and Windows](https://gameaccess.info/xbox-controller-assist-on-windows-pc/)
+- [Controller Assist on Xbox and Windows](https://support.xbox.com/en-US/help/account-profile/accessibility/copilot)
 - [Second Controller Assistance on PlayStation](https://www.playstation.com/en-us/support/hardware/second-controller-assistance/)
