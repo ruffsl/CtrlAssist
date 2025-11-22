@@ -1,6 +1,6 @@
 # CtrlAssist
 
-**CtrlAssist** brings "controller assist" functionality to gaming on Linux, allowing multiple physical controllers to act as a single virtual input device. This enables collaborative play and customized gamepad setups, making it easier for players of all ages and abilities to enjoy games together. While similar accessibility features are common on modern game consoles, CtrlAssist is an open source solution that makes this capability available for PC gaming on Linux.
+**CtrlAssist** brings "controller assist" functionality to Linux gaming by allowing multiple physical controllers to operate as a single virtual input device. This enables collaborative play and customizable gamepad setups, making it easier for players of all ages and abilities to enjoy games together. While similar features exist on modern game consoles, CtrlAssist is an open source project that enhances accessibility for PC gaming, offering additional quality-of-life improvements through virtual input devices on Linux.
 
 ## Features
 
