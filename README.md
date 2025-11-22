@@ -52,8 +52,6 @@ Connected controllers:
   Primary: ID: 0 - Name: Microsoft Xbox One
   Assist:  ID: 1 - Name: PS4 Controller
   Virtual: ID: 2 - Name: CtrlAssist Virtual Gamepad
-
-Assist mode active. Press Ctrl+C to exit.
 ```
 
 #### Optional: Specify Device Mapping
@@ -66,8 +64,6 @@ Connected controllers:
   Primary: ID: 1 - Name: PS4 Controller
   Assist:  ID: 0 - Name: Microsoft Xbox One
   Virtual: ID: 2 - Name: CtrlAssist Virtual Gamepad
-
-Assist mode active. Press Ctrl+C to exit.
 ```
 
 #### Optional: Hide Physical Devices
@@ -100,8 +96,6 @@ Connected controllers:
   Primary: ID: 0 - Name: Microsoft Xbox One
   Assist:  ID: 1 - Name: PS4 Controller
   Virtual: ID: 2 - Name: Microsoft X-Box One pad (Firmware 2015)
-
-Assist mode active. Press Ctrl+C to exit.
 ```
 
 ## Limitations
