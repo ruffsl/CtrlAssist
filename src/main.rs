@@ -87,7 +87,7 @@ fn mux_gamepads(
         return Err("Primary and Assist controllers must be separate devices.".into());
     }
 
-    // Find Gamepads by matching Ids.
+    // Find connected controllers.
     let gilrs = Gilrs::new()?;
     let mut primary_opt: Option<GamepadId> = None;
     let mut assist_opt: Option<GamepadId> = None;
@@ -122,12 +122,25 @@ fn mux_gamepads(
         assist_gamepad.name()
     );
 
-    // --- 2. Create Virtual Device ---
+    // Hide connected controllers.
+    let mut restore_paths = HashSet::new();
+    if hide {
+        println!("\nHiding controllers... (requires root)");
+        // We can re-use the gamepad objects from the *first* gilrs instance
+        for gamepad in [&primary_gamepad, &assist_gamepad] {
+            log::info!("Hiding: {}", gamepad.name());
+            udev_helpers::restrict_gamepad_devices(gamepad, &mut restore_paths)?;
+        }
+        // If restore paths is empty, throw an error
+        if restore_paths.is_empty() {
+            return Err("Devices could not be hidden. Check permissions.".into());
+        }
+    }
 
+    // Create virtual gamepad.
     let virtual_name = "CtrlAssist Virtual Gamepad";
     let mut virtual_dev = evdev_helpers::create_virtual_gamepad(virtual_name)?;
-
-    // --- 3. Re-init Gilrs and Handle Device Hiding ---
+    // Find virtual gamepad.
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(1);
     let virtual_id = loop {
@@ -147,20 +160,6 @@ fn mux_gamepads(
         virtual_id,
         virtual_gamepad.name()
     );
-
-    let mut restore_paths = HashSet::new();
-    if hide {
-        println!("\nHiding controllers... (requires root)");
-        // We can re-use the gamepad objects from the *first* gilrs instance
-        for gamepad in [&primary_gamepad, &assist_gamepad] {
-            log::info!("Hiding: {}", gamepad.name());
-            udev_helpers::restrict_gamepad_devices(gamepad, &mut restore_paths)?;
-        }
-        // If restore paths is empty, throw an error
-        if restore_paths.is_empty() {
-            return Err("Devices could not be hidden. Check permissions.".into());
-        }
-    }
 
     // --- 4. Setup Graceful Shutdown (Ctrl+C) ---
 
