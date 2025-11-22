@@ -152,14 +152,26 @@ fn mux_gamepads(
     }
 
     // Create virtual gamepad.
-    let virtual_name = "CtrlAssist Virtual Gamepad";
-    let mut virtual_dev = evdev_helpers::create_virtual_gamepad(virtual_name)?;
+    use evdev_helpers::VirtualGamepadInfo;
+    let virtual_info = match spoof {
+        SpoofType::Primary => VirtualGamepadInfo::from(&primary_gamepad),
+        SpoofType::Assist => VirtualGamepadInfo::from(&assist_gamepad),
+        SpoofType::None => VirtualGamepadInfo {
+            name: "CtrlAssist Virtual Gamepad",
+            vendor_id: None,
+            product_id: None,
+        },
+    };
+    let mut virtual_dev = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
     // Find virtual gamepad.
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(1);
     let virtual_id = loop {
         let gilrs = Gilrs::new()?;
-        if let Some((id, _)) = gilrs.gamepads().find(|(_, g)| g.name() == virtual_name) {
+        if let Some((id, _)) = gilrs
+            .gamepads()
+            .find(|(id, g)| g.name() == virtual_info.name && *id != primary_id && *id != assist_id)
+        {
             break id;
         }
         if start.elapsed() >= timeout {

@@ -15,15 +15,34 @@ pub fn scale_stick(val: f32, invert: bool) -> i32 {
     ((val + 1.0) * AXIS_HALF).round() as i32
 }
 
-/// Scales a value from 0.0..1.0 range to 0..AXIS_MAX
+/// Scales a trigger value from 0.0..1.0 to 0..AXIS_MAX
 pub fn scale_trigger(val: f32) -> i32 {
     (val * AXIS_MAX).round() as i32
+}
+
+/// Struct to represent a virtual gamepad's identity (real or spoofed)
+pub struct VirtualGamepadInfo<'a> {
+    pub name: &'a str,
+    pub vendor_id: Option<u16>,
+    pub product_id: Option<u16>,
+}
+
+impl<'a> From<&'a gilrs::Gamepad<'a>> for VirtualGamepadInfo<'a> {
+    fn from(gp: &'a gilrs::Gamepad<'a>) -> Self {
+        Self {
+            name: gp.os_name(),
+            vendor_id: gp.vendor_id(),
+            product_id: gp.product_id(),
+        }
+    }
 }
 
 // --- evdev Device Creation ---
 
 /// Helper to create the virtual gamepad device
-pub fn create_virtual_gamepad(virtual_name: &str) -> Result<VirtualDevice, Box<dyn Error>> {
+pub fn create_virtual_gamepad<'a>(
+    info: &VirtualGamepadInfo<'a>,
+) -> Result<VirtualDevice, Box<dyn Error>> {
     let max = AXIS_MAX as i32;
     let mid = AXIS_HALF as i32;
     let abs_stick_setup = AbsInfo::new(mid, 0, max, 0, 0, 0);
@@ -60,9 +79,17 @@ pub fn create_virtual_gamepad(virtual_name: &str) -> Result<VirtualDevice, Box<d
         (AbsoluteAxisCode::ABS_HAT0Y, abs_stick_setup), // D-Pad Y
     ];
 
-    let mut builder = VirtualDevice::builder()?
-        .name(virtual_name)
-        .with_keys(&keys)?;
+    let mut builder = VirtualDevice::builder()?;
+    builder = builder.name(info.name);
+    if let (Some(vendor), Some(product)) = (info.vendor_id, info.product_id) {
+        builder = builder.input_id(evdev::InputId::new(
+            evdev::BusType::BUS_USB,
+            vendor,
+            product,
+            0x4242,
+        ));
+    }
+    builder = builder.with_keys(&keys)?;
 
     for (code, info) in abs_axes {
         let setup = UinputAbsSetup::new(code, info);
