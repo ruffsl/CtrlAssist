@@ -5,11 +5,11 @@
 ## Features
 
 - Combine physical gamepads into one virtual device
-  - Primary and Assist controllers are assignable
+  - Each controller is assigned as Primary or Assist
 - Customizable multiplexing of buttons and axes
   - Logically merging or preempting events is flexible
 - Hide physical gamepads for improved game compatibility
-  - Avoid input interference from conflicting controllers
+  - Avoid controller interference from conflicting inputs
 
 ## Prerequisites
 - Linux system using udev (libudev-dev)
