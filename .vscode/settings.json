@@ -1,9 +1,11 @@
 {
     "cSpell.words": [
+        "clippy",
         "ctrlassist",
         "evdev",
         "gamepads",
         "gilrs",
+        "libudev",
         "THUMBL",
         "THUMBR",
         "Uinput"
