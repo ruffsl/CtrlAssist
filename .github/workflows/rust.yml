@@ -16,7 +16,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v6
       - name: Setup
         run: |
           sudo apt-get update
@@ -32,9 +33,9 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Build
         run: cargo build --verbose
-      - name: Run tests
+      - name: Test
         run: cargo test --verbose
-      - name: Run clippy
+      - name: Clippy
         run: cargo clippy -- -D warnings
-      - name: Run fmt check
+      - name: Format
         run: cargo fmt -- --check
