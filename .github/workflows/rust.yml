@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "main"
+      - "init"
   pull_request:
     branches:
       - "main"
