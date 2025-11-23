@@ -17,6 +17,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Setup
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libudev-dev
       - name: Cache
         uses: actions/cache@v4
         with:
