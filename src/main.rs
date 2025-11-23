@@ -254,48 +254,46 @@ fn mux_gamepads(
                     if let Some(abs_axis) = evdev_helpers::gilrs_button_to_evdev_axis(button) {
                         let mut value = value;
                         let mut button = button;
-                        // Only relay if not conflicting with assist dpad
-                        let dpad_pair: &[Button] = match button {
+
+                        // Identify the Axis Pair (if this is a DPad button)
+                        let axis_pair = match button {
                             Button::DPadUp | Button::DPadDown => {
-                                &[Button::DPadUp, Button::DPadDown]
+                                Some([Button::DPadUp, Button::DPadDown])
                             }
                             Button::DPadLeft | Button::DPadRight => {
-                                &[Button::DPadLeft, Button::DPadRight]
+                                Some([Button::DPadLeft, Button::DPadRight])
                             }
-                            _ => &[],
+                            _ => None,
                         };
-                        let other_pressed = dpad_pair.iter().any(|&b| {
-                            other_gamepad
-                                .button_data(b)
-                                .map_or(false, |d| d.value() != 0.0)
-                        });
-                        if other_pressed {
-                            // If assist is pressed, skip
+
+                        // Apply Assist/Primary Logic
+                        if let Some(pair) = axis_pair {
+                            // Helper to check if the *other* gamepad is pressing a specific button
+                            let is_other_pressing = |b| {
+                                other_gamepad
+                                    .button_data(b)
+                                    .map_or(false, |d| d.value() > 0.0)
+                            };
+
                             if other_id == assist_id {
-                                continue;
-                            }
-                            // If primary is pressed, and assist released, restore value
-                            if other_id == primary_id && value == 0.0 {
-                                if let [a, b] = dpad_pair {
-                                    let (first, second) = (*a, *b);
-                                    let (first_val, second_val) = (
-                                        other_gamepad.button_data(first).map_or(0.0, |d| d.value()),
-                                        other_gamepad
-                                            .button_data(second)
-                                            .map_or(0.0, |d| d.value()),
-                                    );
-                                    match button {
-                                        b if b == first && first_val != 0.0 => value = first_val,
-                                        b if b == first => {
-                                            value = second_val;
-                                            button = second;
+                                // CASE A: We are Primary.
+                                // If Assist is pressing *anything* on this axis, we are blocked.
+                                if pair.iter().any(|&b| is_other_pressing(b)) {
+                                    continue;
+                                }
+                            } else if other_id == primary_id {
+                                // CASE B: We are Assist.
+                                // If we are releasing (value == 0.0), we must check if Primary is holding a button.
+                                if value == 0.0 {
+                                    for &b in &pair {
+                                        if is_other_pressing(b) {
+                                            // Primary is holding this button; adopt its state immediately.
+                                            // This effectively turns the "Release" event into a "Press" event
+                                            // for the button the Primary is holding.
+                                            button = b;
+                                            value = 1.0;
+                                            break;
                                         }
-                                        b if b == second && second_val != 0.0 => value = second_val,
-                                        b if b == second => {
-                                            value = first_val;
-                                            button = first;
-                                        }
-                                        _ => {}
                                     }
                                 }
                             }
