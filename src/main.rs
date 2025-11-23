@@ -255,7 +255,7 @@ fn mux_gamepads(
                         let mut value = value;
                         let mut button = button;
 
-                        // Identify the Axis Pair (if this is a DPad button)
+                        // 1. Identify the Axis Pair
                         let axis_pair = match button {
                             Button::DPadUp | Button::DPadDown => {
                                 Some([Button::DPadUp, Button::DPadDown])
@@ -266,35 +266,24 @@ fn mux_gamepads(
                             _ => None,
                         };
 
-                        // Apply Assist/Primary Logic
                         if let Some(pair) = axis_pair {
-                            // Helper to check if the *other* gamepad is pressing a specific button
+                            // Closure to check if the OTHER controller is pressing a button
                             let is_other_pressing = |b| {
                                 other_gamepad
                                     .button_data(b)
                                     .map_or(false, |d| d.value() > 0.0)
                             };
 
-                            if other_id == assist_id {
-                                // CASE A: We are Primary.
-                                // If Assist is pressing *anything* on this axis, we are blocked.
-                                if pair.iter().any(|&b| is_other_pressing(b)) {
-                                    continue;
-                                }
-                            } else if other_id == primary_id {
-                                // CASE B: We are Assist.
-                                // If we are releasing (value == 0.0), we must check if Primary is holding a button.
-                                if value == 0.0 {
-                                    for &b in &pair {
-                                        if is_other_pressing(b) {
-                                            // Primary is holding this button; adopt its state immediately.
-                                            // This effectively turns the "Release" event into a "Press" event
-                                            // for the button the Primary is holding.
-                                            button = b;
-                                            value = 1.0;
-                                            break;
-                                        }
-                                    }
+                            if other_id == assist_id && pair.iter().copied().any(is_other_pressing)
+                            {
+                                continue; // Primary is blocked because Assist is active on this axis
+                            } else if other_id == primary_id && value == 0.0 {
+                                // Assist released; if Primary is holding a button, adopt it
+                                if let Some(active_btn) =
+                                    pair.iter().copied().find(|&b| is_other_pressing(b))
+                                {
+                                    button = active_btn;
+                                    value = 1.0;
                                 }
                             }
                         }
