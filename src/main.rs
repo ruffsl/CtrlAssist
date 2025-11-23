@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 /// List all detected controllers.
-fn list_gamepads() -> Result<(), gilrs::Error> {
+fn list_gamepads() -> Result<(), Box<gilrs::Error>> {
     let gilrs = Gilrs::new()?;
 
     println!("Detected controllers:");
@@ -241,7 +241,7 @@ fn mux_gamepads(
                         // Only relay if the other gamepad does not have the button pressed
                         let other_pressed = other_gamepad
                             .button_data(button)
-                            .map_or(false, |d| d.value() != 0.0);
+                            .is_some_and(|d| d.value() != 0.0);
                         if other_pressed {
                             continue;
                         }
@@ -271,7 +271,7 @@ fn mux_gamepads(
                             let is_other_pressing = |b| {
                                 other_gamepad
                                     .button_data(b)
-                                    .map_or(false, |d| d.value() > 0.0)
+                                    .is_some_and(|d| d.value() > 0.0)
                             };
 
                             if other_id == assist_id && pair.iter().copied().any(is_other_pressing)
@@ -295,7 +295,7 @@ fn mux_gamepads(
                             | Button::DPadRight => false,
                             _ => other_gamepad
                                 .button_data(button)
-                                .map_or(false, |d| d.value() >= value),
+                                .is_some_and(|d| d.value() >= value),
                         };
                         if other_greater {
                             continue;
@@ -327,18 +327,18 @@ fn mux_gamepads(
                             Axis::LeftStickX | Axis::LeftStickY => {
                                 other_gamepad
                                     .axis_data(Axis::LeftStickX)
-                                    .map_or(false, |d| d.value().abs() >= deadzone(axis))
+                                    .is_some_and(|d| d.value().abs() >= deadzone(axis))
                                     || other_gamepad
                                         .axis_data(Axis::LeftStickY)
-                                        .map_or(false, |d| d.value().abs() >= deadzone(axis))
+                                        .is_some_and(|d| d.value().abs() >= deadzone(axis))
                             }
                             Axis::RightStickX | Axis::RightStickY => {
                                 other_gamepad
                                     .axis_data(Axis::RightStickX)
-                                    .map_or(false, |d| d.value().abs() >= deadzone(axis))
+                                    .is_some_and(|d| d.value().abs() >= deadzone(axis))
                                     || other_gamepad
                                         .axis_data(Axis::RightStickY)
-                                        .map_or(false, |d| d.value().abs() >= deadzone(axis))
+                                        .is_some_and(|d| d.value().abs() >= deadzone(axis))
                             }
                             _ => false,
                         };

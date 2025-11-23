@@ -1,4 +1,3 @@
-use env_logger;
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 
 struct FilterGilrsLogger(env_logger::Logger);
