@@ -252,28 +252,40 @@ fn mux_gamepads(
                 // --- Analog Triggers / Pressure Buttons ---
                 gilrs::EventType::ButtonChanged(button, value, _) => {
                     if let Some(abs_axis) = evdev_helpers::gilrs_button_to_evdev_axis(button) {
+                        let mut value = value;
+                        let mut button = button;
                         // Only relay if not conflicting with assist dpad
-                        let other_pressed = match button {
-                            Button::DPadUp | Button::DPadDown => {
-                                other_gamepad
-                                    .button_data(Button::DPadUp)
-                                    .map_or(false, |d| d.value() != 0.0)
-                                    | other_gamepad
-                                        .button_data(Button::DPadDown)
-                                        .map_or(false, |d| d.value() != 0.0)
-                            }
-                            Button::DPadLeft | Button::DPadRight => {
-                                other_gamepad
-                                    .button_data(Button::DPadLeft)
-                                    .map_or(false, |d| d.value() != 0.0)
-                                    | other_gamepad
-                                        .button_data(Button::DPadRight)
-                                        .map_or(false, |d| d.value() != 0.0)
-                            }
-                            _ => false,
+                        let dpad_pair: &[Button] = match button {
+                            Button::DPadUp | Button::DPadDown => &[Button::DPadUp, Button::DPadDown],
+                            Button::DPadLeft | Button::DPadRight => &[Button::DPadLeft, Button::DPadRight],
+                            _ => &[],
                         };
-                        if other_pressed && other_id == assist_id {
-                            continue;
+                        let other_pressed = dpad_pair.iter().any(|&b| {
+                            other_gamepad.button_data(b).map_or(false, |d| d.value() != 0.0)
+                        });
+                        if other_pressed {
+                            // If assist is the other that pressed, skip
+                            if other_id == assist_id {
+                                continue;
+                            }
+                            // If primary is the other that pressed, and assist released, restore value
+                            if other_id == primary_id && value == 0.0 {
+                                // Find the complement button in the dpad pair (the other direction)
+                                if let Some(&complement_button) = dpad_pair.iter().find(|&&b| b != button) {
+                                    let complement_value = other_gamepad
+                                        .button_data(complement_button)
+                                        .map_or(0.0, |d| d.value());
+                                    let primary_value = other_gamepad
+                                        .button_data(button)
+                                        .map_or(0.0, |d| d.value());
+                                    if primary_value != 0.0 {
+                                        value = primary_value;
+                                    } else {
+                                        value = complement_value;
+                                        button = complement_button;
+                                    }
+                                }
+                            }
                         }
                         // Only relay if greater than other trigger value
                         let other_greater = match button {
