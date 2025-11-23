@@ -113,3 +113,19 @@ Connected controllers:
 
 - [Controller Assist on Xbox and Windows](https://support.xbox.com/en-US/help/account-profile/accessibility/copilot)
 - [Second Controller Assistance on PlayStation](https://www.playstation.com/en-us/support/hardware/second-controller-assistance/)
+
+## Todo
+
+- [ ] Fix Primary axis value restoration for Preempt mode
+- [ ] Add back mux mode for toggling between Primary and Assist
+- [ ] Fix spoofing for play stations controllers (i.e. DualShock)
+- [ ] Add config file support for expressive multiplexing settings
+- [ ] Add GUI for easier configuration and usage
+- [ ] Add more robust error handling for dynamic device connectivity
+- [ ] Add CI/CD for automated testing and releases
+- [ ] Register project on crates.io for easier installation
+- [ ] Package project for popular Linux distributions
+- [ ] Write more comprehensive documentation and usage examples
+- [ ] Gather user feedback for future improvements and features
+- [ ] Optimize performance for low-latency input handling
+ 
