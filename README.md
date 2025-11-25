@@ -1,8 +1,8 @@
-# CtrlAssist
+![Banner](docs/artwork/banner.jpg)
 
 **CtrlAssist** brings "controller assist" functionality to Linux gaming by allowing multiple physical controllers to operate as a single virtual input device. This enables collaborative play and customizable gamepad setups, making it easier for players of all ages and abilities to enjoy games together. While similar features exist on modern game consoles, CtrlAssist is an open source project that enhances accessibility for PC gaming, offering additional quality-of-life improvements through virtual input devices on Linux.
 
-## Features
+# Features
 
 - Combine physical controllers into one virtual gamepad
   - Controllers are assigned as either Primary or Assist
@@ -13,7 +13,7 @@
 - Spoof gamepad vendor for in-game layout recognition
   - Mimic either Primary or Assist controller hardware
 
-## Prerequisites
+# Prerequisites
 - Linux system using udev (libudev-dev)
   - with user permissions to manage virtual devices
   - already pre-configured on most distributions
@@ -21,17 +21,17 @@
   - https://rust-lang.org/tools/install/
   - configure `PATH` per Notes linked above
 
-## Install
+# Install
 
 ```sh
 cargo install ctrlassist
 ```
 
-## Usage
+# Usage
 
 The CLI includes subcommands for locating and multiplexing controllers.
 
-### list
+## list
 
 List all detected controllers and respective IDs:
 
@@ -42,7 +42,7 @@ Detected controllers:
   ID: 1 - Name: PS4 Controller
 ```
 
-### mux
+## mux
 
 Multiplex first two detected controllers by default:
 
@@ -54,7 +54,7 @@ Connected controllers:
   Virtual: ID: 2 - Name: CtrlAssist Virtual Gamepad
 ```
 
-#### Optional: Specify Device Mapping
+### Optional: Specify Device Mapping
 
 Manually specify Primary and Assist controllers via IDs:
 
@@ -66,7 +66,7 @@ Connected controllers:
   Virtual: ID: 2 - Name: CtrlAssist Virtual Gamepad
 ```
 
-#### Optional: Hide Physical Devices
+### Optional: Hide Physical Devices
 
 Avoiding in game conflicts by hiding physical controllers:
 
@@ -86,7 +86,7 @@ Shutting down.
 Restoring controllers...
 ```
 
-#### Optional: Spoof Virtual Device
+### Optional: Spoof Virtual Device
 
 Mimic controller hardware for in-game layout recognition:
 
@@ -98,7 +98,7 @@ Connected controllers:
   Virtual: ID: 2 - Name: Microsoft X-Box One pad (Firmware 2015)
 ```
 
-## Limitations
+# Limitations
 
 - Hiding physical input devices requires root access
   - temporarily modifies group permissions for selected devices
@@ -109,12 +109,12 @@ Connected controllers:
 - Reconnecting a hidden controller reverts its visibility
   - custom udev rules should be used for persistent permissions
 
-## Background
+# Background
 
 - [Controller Assist on Xbox and Windows](https://support.xbox.com/en-US/help/account-profile/accessibility/copilot)
 - [Second Controller Assistance on PlayStation](https://www.playstation.com/en-us/support/hardware/second-controller-assistance/)
 
-## Todo
+# Todo
 
 - [ ] Fix Primary axis value restoration for Preempt mode
 - [ ] Add back mux mode for toggling between Primary and Assist
@@ -122,7 +122,6 @@ Connected controllers:
 - [ ] Add config file support for expressive multiplexing settings
 - [ ] Add GUI for easier configuration and usage
 - [ ] Add more robust error handling for dynamic device connectivity
-- [ ] Add CI/CD for automated testing and releases
 - [ ] Register project on crates.io for easier installation
 - [ ] Package project for popular Linux distributions
 - [ ] Write more comprehensive documentation and usage examples
