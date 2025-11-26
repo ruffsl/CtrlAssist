@@ -32,7 +32,7 @@ enum Commands {
         #[arg(short, long, default_value_t = 1)]
         assist: usize,
 
-        /// Optionally hide primary and assist controllers
+        /// Hide primary and assist controllers
         #[arg(long, default_value_t = false)]
         hide: bool,
 
