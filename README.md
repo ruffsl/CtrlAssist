@@ -29,7 +29,23 @@ cargo install ctrlassist
 
 # Usage
 
-The CLI includes subcommands for locating and multiplexing controllers.
+Use the `--help` flag for information on each CLI subcommand:
+
+```sh
+$ ctrlassist --help
+Multiplex multiple controllers into virtual gamepad
+
+Usage: ctrlassist <COMMAND>
+
+Commands:
+  list  List all detected controllers and respective IDs
+  mux   Multiplex connected controllers into virtual gamepad
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
 
 ## list
 
