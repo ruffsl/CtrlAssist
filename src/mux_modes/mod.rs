@@ -45,6 +45,6 @@ pub fn make_mode_handler(mode: ModeType) -> ModeHandler {
     match mode {
         ModeType::Average => ModeHandler::Average(average::AverageMode),
         ModeType::Priority => ModeHandler::Priority(priority::PriorityMode),
-        ModeType::Toggle => ModeHandler::Toggle(toggle::ToggleMode),
+        ModeType::Toggle => ModeHandler::Toggle(toggle::ToggleMode::new()),
     }
 }
