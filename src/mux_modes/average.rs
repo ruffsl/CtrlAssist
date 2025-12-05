@@ -12,7 +12,6 @@ impl MuxMode for AverageMode {
         assist_id: GamepadId,
         gilrs: &gilrs::Gilrs,
     ) -> Option<Vec<InputEvent>> {
-        // TODO: Move the current event handling logic here
-        None
+        todo!("Average mode not yet implemented");
     }
 }
