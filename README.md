@@ -6,12 +6,30 @@
 
 - Combine physical controllers into one virtual gamepad
   - Controllers are assigned as either Primary or Assist
-- Customizable multiplexing of buttons and axes
+- Customizable multiplexing modes for buttons and axes
   - Logically merging or preempting events is flexible
 - Hide physical controllers for improved game compatibility
   - Avoid controller interference from conflicting inputs
 - Spoof gamepad vendor for in-game layout recognition
   - Mimic either Primary or Assist controller hardware
+
+# Modes
+
+- **Priority** (default): Assist controller overrides when active
+  - Buttons: OR'ed between controllers
+  - Axes: Prioritize when Assist exceeds deadzone
+  - Ideal for partial and asynchronous assistance
+  - E.g. Assist coordinates movement while Primary handles actions
+- **Average**: Blend weighted inputs from both controllers
+  - Buttons: OR'ed between controllers
+  - Axes: Averaged when Assist exceeds deadzone
+  - Ideal for cooperative input and subtle corrections
+  - E.g. For counter steer/brake assist in racing games
+- **Toggle**: Switch active controller on demand
+  - All inputs forwarded from currently active controller
+  - Toggle active controller via assignable Assist button
+  - Ideal when fine-grain conflict-free control is needed
+  - E.g. Game menu navigation or precise interventions
 
 # Prerequisites
 - Linux system using udev (libudev-dev)
@@ -82,16 +100,22 @@ Connected controllers:
   Virtual: ID: 2 - Name: CtrlAssist Virtual Gamepad
 ```
 
+### Optional: Specify Mux Mode
+
+Manually specify mode for merging controllers:
+
+```sh
+$ ctrlassist mux --mode priority
+...
+```
+
 ### Optional: Hide Physical Devices
 
 Avoiding in game conflicts by hiding physical controllers:
 
 ```sh
 $ sudo ctrlassist mux --hide
-Connected controllers:
-  Primary: ID: 0 - Name: Microsoft Xbox One
-  Assist:  ID: 1 - Name: PS4 Controller
-  Virtual: ID: 2 - Name: CtrlAssist Virtual Gamepad
+...
 
 Hiding controllers... (requires root)
 
@@ -133,7 +157,6 @@ Connected controllers:
 # Todo
 
 - [ ] Fix Primary axis value restoration for Preempt mode
-- [ ] Add back mux mode for toggling between Primary and Assist
 - [ ] Fix spoofing for play stations controllers (i.e. DualShock)
 - [ ] Add config file support for expressive multiplexing settings
 - [ ] Add GUI for easier configuration and usage
