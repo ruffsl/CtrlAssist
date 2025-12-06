@@ -57,15 +57,7 @@ impl MuxMode for AverageMode {
                     let mut button = button;
 
                     // 1. Identify the Axis Pair
-                    let axis_pair = match button {
-                        Button::DPadUp | Button::DPadDown => {
-                            Some([Button::DPadUp, Button::DPadDown])
-                        }
-                        Button::DPadLeft | Button::DPadRight => {
-                            Some([Button::DPadLeft, Button::DPadRight])
-                        }
-                        _ => None,
-                    };
+                    let axis_pair = crate::evdev_helpers::dpad_axis_pair(button);
 
                     if let Some(pair) = axis_pair {
                         // Closure to check if the OTHER controller is pressing a button
