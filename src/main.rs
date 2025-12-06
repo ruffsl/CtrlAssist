@@ -42,8 +42,8 @@ enum Commands {
         spoof: SpoofType,
 
         /// Mode type for combining controller.
-        #[arg(long, value_enum, default_value_t = ModeType::Priority)]
-        mode: ModeType,
+        #[arg(long, value_enum, default_value_t = mux_modes::ModeType::Priority)]
+        mode: mux_modes::ModeType,
     },
 }
 
@@ -53,14 +53,6 @@ pub enum SpoofType {
     Primary,
     Assist,
     None,
-}
-
-#[derive(clap::ValueEnum, Clone, Debug, Default)]
-pub enum ModeType {
-    #[default]
-    Priority,
-    Average,
-    Toggle,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -109,7 +101,7 @@ fn mux_gamepads(
     assist_usize: usize,
     hide: bool,
     spoof: SpoofType,
-    mode: ModeType,
+    mode: mux_modes::ModeType,
 ) -> Result<(), Box<dyn Error>> {
     // --- 1. Setup and Validation ---
     if primary_usize == assist_usize {
@@ -227,7 +219,7 @@ fn mux_gamepads(
     let timeout = Some(Duration::from_millis(1000));
 
     // Select the mode handler using enum-based factory
-    use mux_modes::{MuxMode, make_mode_handler};
+    use mux_modes::make_mode_handler;
     let mut handler = make_mode_handler(mode);
 
     loop {
