@@ -27,7 +27,7 @@
   - E.g. For counter steer/brake assist in racing games
 - **Toggle**: Switch active controller on demand
   - All inputs forwarded from currently active controller
-  - Toggle active controller via assignable Assist button
+  - Toggle active controller via the Mode button on Assist
   - Ideal when fine-grain conflict-free control is needed
   - E.g. Game menu navigation or precise interventions
 
