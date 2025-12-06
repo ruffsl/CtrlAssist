@@ -6,6 +6,12 @@ use crate::evdev_helpers;
 
 pub struct PriorityMode;
 
+impl PriorityMode {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
 fn deadzone(_axis: gilrs::Axis) -> f32 {
     0.1
 }
