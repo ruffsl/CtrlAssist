@@ -30,16 +30,12 @@ impl MuxMode for PriorityMode {
 
         // --- Event Forwarding Logic ---
         let mut events = Vec::with_capacity(2);
-        let handled = match event.event {
+        match event.event {
             // --- Digital Buttons ---
             gilrs::EventType::ButtonPressed(button, _)
             | gilrs::EventType::ButtonReleased(button, _) => {
                 if let Some(key) = evdev_helpers::gilrs_button_to_evdev_key(button) {
-                    let value = if matches!(event.event, gilrs::EventType::ButtonPressed(..)) {
-                        1
-                    } else {
-                        0
-                    };
+                    let value = matches!(event.event, gilrs::EventType::ButtonPressed(..)) as i32;
                     // Only relay if the other gamepad does not have the button pressed
                     let other_pressed = other_gamepad
                         .button_data(button)
@@ -48,9 +44,6 @@ impl MuxMode for PriorityMode {
                         return None;
                     }
                     events.push(InputEvent::new(evdev::EventType::KEY.0, key.0, value));
-                    true
-                } else {
-                    false
                 }
             }
 
@@ -120,9 +113,6 @@ impl MuxMode for PriorityMode {
                         abs_axis.0,
                         scaled_value,
                     ));
-                    true
-                } else {
-                    false
                 }
             }
 
@@ -165,17 +155,14 @@ impl MuxMode for PriorityMode {
                         abs_axis.0,
                         scaled_value,
                     ));
-                    true
-                } else {
-                    false
                 }
             }
-            _ => false, // Ignore other events (Connected, Disconnected, etc.)
+            _ => {}
         };
-        if handled && !events.is_empty() {
-            Some(events)
-        } else {
+        if events.is_empty() {
             None
+        } else {
+            Some(events)
         }
     }
 }
