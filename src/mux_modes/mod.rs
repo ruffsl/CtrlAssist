@@ -25,8 +25,8 @@ pub trait MuxMode {
     ) -> Option<Vec<InputEvent>>;
 }
 
-/// Factory function to create the correct mode handler
-pub fn make_mode_handler(mode: ModeType) -> Box<dyn MuxMode> {
+/// Factory function to create the correct mux mode
+pub fn create_mux_mode(mode: ModeType) -> Box<dyn MuxMode> {
     match mode {
         ModeType::Average => Box::new(average::AverageMode::new()),
         ModeType::Priority => Box::new(priority::PriorityMode::new()),

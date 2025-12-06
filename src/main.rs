@@ -219,8 +219,8 @@ fn mux_gamepads(
     let timeout = Some(Duration::from_millis(1000));
 
     // Select the mode handler using enum-based factory
-    use mux_modes::make_mode_handler;
-    let mut handler = make_mode_handler(mode);
+    use mux_modes::create_mux_mode;
+    let mut mux_mode = create_mux_mode(mode);
 
     loop {
         while let Some(event) = gilrs.next_event_blocking(timeout) {
@@ -228,7 +228,7 @@ fn mux_gamepads(
             if event.id != primary_id && event.id != assist_id {
                 continue;
             }
-            if let Some(events) = handler.handle_event(&event, primary_id, assist_id, &gilrs)
+            if let Some(events) = mux_mode.handle_event(&event, primary_id, assist_id, &gilrs)
                 && !events.is_empty()
             {
                 // Always add SYN_REPORT
