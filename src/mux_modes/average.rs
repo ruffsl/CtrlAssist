@@ -7,12 +7,6 @@ use crate::evdev_helpers;
 #[derive(Default)]
 pub struct AverageMode;
 
-impl AverageMode {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 fn deadzone_axis(_axis: gilrs::Axis) -> f32 {
     0.1
 }

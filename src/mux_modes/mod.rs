@@ -28,8 +28,8 @@ pub trait MuxMode {
 /// Factory function to create the correct mux mode
 pub fn create_mux_mode(mode: ModeType) -> Box<dyn MuxMode> {
     match mode {
-        ModeType::Average => Box::new(average::AverageMode::new()),
-        ModeType::Priority => Box::new(priority::PriorityMode::new()),
-        ModeType::Toggle => Box::new(toggle::ToggleMode::new()),
+        ModeType::Average => Box::new(average::AverageMode),
+        ModeType::Priority => Box::new(priority::PriorityMode),
+        ModeType::Toggle => Box::new(toggle::ToggleMode::default()),
     }
 }

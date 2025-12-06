@@ -9,12 +9,6 @@ pub struct ToggleMode {
     active: Option<GamepadId>,
 }
 
-impl ToggleMode {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
 impl MuxMode for ToggleMode {
     fn handle_event(
         &mut self,
