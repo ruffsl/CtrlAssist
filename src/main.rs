@@ -25,15 +25,15 @@ enum Commands {
 
     /// Multiplex connected controllers into virtual gamepad.
     Mux {
-        /// The ID of the primary controller (see 'list' command).
+        /// Primary controller ID (see 'list' command).
         #[arg(short, long, default_value_t = 0)]
         primary: usize,
 
-        /// The ID of the assist controller (see 'list' command).
+        /// Assist controller ID (see 'list' command).
         #[arg(short, long, default_value_t = 1)]
         assist: usize,
 
-        /// Hide primary and assist controllers
+        /// Hide primary and assist controllers.
         #[arg(long, default_value_t = false)]
         hide: bool,
 
