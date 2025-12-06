@@ -84,14 +84,12 @@ impl MuxMode for AverageMode {
                     if !matches!(
                         button,
                         Button::DPadUp | Button::DPadDown | Button::DPadLeft | Button::DPadRight
-                    ) {
-                        if let Some(other_value) = other_gamepad
-                            .button_data(button)
-                            .map(|d| d.value())
-                            .filter(|&v| v >= deadzone())
-                        {
-                            value = (value + other_value) / 2.0;
-                        }
+                    ) && let Some(other_value) = other_gamepad
+                        .button_data(button)
+                        .map(|d| d.value())
+                        .filter(|&v| v >= deadzone())
+                    {
+                        value = (value + other_value) / 2.0;
                     }
                     let scaled_value = match button {
                         // D-pad-as-axis (uncommon, but matches original logic)
@@ -136,14 +134,10 @@ impl MuxMode for AverageMode {
                         }
                         _ => false,
                     };
-                    if other_pushed {
-                        if let Some(other_value) = other_gamepad
-                            .axis_data(axis)
-                            .map(|d| d.value())
-                            // .filter(|&v| v.abs() >= deadzone())
-                        {
-                            value = (value + other_value) / 2.0;
-                        }
+                    if other_pushed
+                        && let Some(other_value) = other_gamepad.axis_data(axis).map(|d| d.value())
+                    {
+                        value = (value + other_value) / 2.0;
                     }
                     let scaled_value = match axis {
                         // Invert Y axes
