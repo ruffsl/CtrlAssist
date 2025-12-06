@@ -87,17 +87,19 @@ impl MuxMode for AverageMode {
                             }
                         }
                     }
-                    let other_active = match button {
-                        Button::DPadUp
-                        | Button::DPadDown
-                        | Button::DPadLeft
-                        | Button::DPadRight => false,
-                        _ => other_gamepad
+
+                    // Only average if not a DPad direction and the other value is above deadzone
+                    if !matches!(
+                        button,
+                        Button::DPadUp | Button::DPadDown | Button::DPadLeft | Button::DPadRight
+                    ) {
+                        if let Some(other_value) = other_gamepad
                             .button_data(button)
-                            .is_some_and(|d| d.value() >= deadzone()),
-                    };
-                    if other_active {
-                        value = (value + other_gamepad.button_data(button).unwrap().value()) / 2.0;
+                            .map(|d| d.value())
+                            .filter(|&v| v >= deadzone())
+                        {
+                            value = (value + other_value) / 2.0;
+                        }
                     }
                     let scaled_value = match button {
                         // D-pad-as-axis (uncommon, but matches original logic)
