@@ -7,8 +7,10 @@ use crate::evdev_helpers;
 #[derive(Default)]
 pub struct PriorityMode;
 
-fn deadzone(_axis: gilrs::Axis) -> f32 {
-    0.1
+const DEFAULT_DEADZONE: f32 = 0.1;
+
+fn deadzone() -> f32 {
+    DEFAULT_DEADZONE
 }
 
 impl MuxMode for PriorityMode {
@@ -125,18 +127,18 @@ impl MuxMode for PriorityMode {
                         Axis::LeftStickX | Axis::LeftStickY => {
                             other_gamepad
                                 .axis_data(Axis::LeftStickX)
-                                .is_some_and(|d| d.value().abs() >= deadzone(axis))
+                                .is_some_and(|d| d.value().abs() >= deadzone())
                                 || other_gamepad
                                     .axis_data(Axis::LeftStickY)
-                                    .is_some_and(|d| d.value().abs() >= deadzone(axis))
+                                    .is_some_and(|d| d.value().abs() >= deadzone())
                         }
                         Axis::RightStickX | Axis::RightStickY => {
                             other_gamepad
                                 .axis_data(Axis::RightStickX)
-                                .is_some_and(|d| d.value().abs() >= deadzone(axis))
+                                .is_some_and(|d| d.value().abs() >= deadzone())
                                 || other_gamepad
                                     .axis_data(Axis::RightStickY)
-                                    .is_some_and(|d| d.value().abs() >= deadzone(axis))
+                                    .is_some_and(|d| d.value().abs() >= deadzone())
                         }
                         _ => false,
                     };

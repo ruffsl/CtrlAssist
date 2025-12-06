@@ -7,12 +7,10 @@ use crate::evdev_helpers;
 #[derive(Default)]
 pub struct AverageMode;
 
-fn deadzone_axis(_axis: gilrs::Axis) -> f32 {
-    0.1
-}
+const DEFAULT_DEADZONE: f32 = 0.1;
 
-fn deadzone_button(_button: gilrs::Button) -> f32 {
-    0.1
+fn deadzone() -> f32 {
+    DEFAULT_DEADZONE
 }
 
 impl MuxMode for AverageMode {
@@ -96,7 +94,7 @@ impl MuxMode for AverageMode {
                         | Button::DPadRight => false,
                         _ => other_gamepad
                             .button_data(button)
-                            .is_some_and(|d| d.value() >= deadzone_button(button)),
+                            .is_some_and(|d| d.value() >= deadzone()),
                     };
                     if other_active {
                         value = (value + other_gamepad.button_data(button).unwrap().value()) / 2.0;
@@ -129,18 +127,18 @@ impl MuxMode for AverageMode {
                         Axis::LeftStickX | Axis::LeftStickY => {
                             other_gamepad
                                 .axis_data(Axis::LeftStickX)
-                                .is_some_and(|d| d.value().abs() >= deadzone_axis(axis))
+                                .is_some_and(|d| d.value().abs() >= deadzone())
                                 || other_gamepad
                                     .axis_data(Axis::LeftStickY)
-                                    .is_some_and(|d| d.value().abs() >= deadzone_axis(axis))
+                                    .is_some_and(|d| d.value().abs() >= deadzone())
                         }
                         Axis::RightStickX | Axis::RightStickY => {
                             other_gamepad
                                 .axis_data(Axis::RightStickX)
-                                .is_some_and(|d| d.value().abs() >= deadzone_axis(axis))
+                                .is_some_and(|d| d.value().abs() >= deadzone())
                                 || other_gamepad
                                     .axis_data(Axis::RightStickY)
-                                    .is_some_and(|d| d.value().abs() >= deadzone_axis(axis))
+                                    .is_some_and(|d| d.value().abs() >= deadzone())
                         }
                         _ => false,
                     };
