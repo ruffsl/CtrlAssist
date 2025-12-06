@@ -145,7 +145,13 @@ impl MuxMode for AverageMode {
                         _ => false,
                     };
                     if other_pushed {
-                        value = (value + other_gamepad.axis_data(axis).unwrap().value()) / 2.0;
+                        if let Some(other_value) = other_gamepad
+                            .axis_data(axis)
+                            .map(|d| d.value())
+                            // .filter(|&v| v.abs() >= deadzone())
+                        {
+                            value = (value + other_value) / 2.0;
+                        }
                     }
                     let scaled_value = match axis {
                         // Invert Y axes
