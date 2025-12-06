@@ -156,7 +156,7 @@ Connected controllers:
 
 # Todo
 
-- [ ] Fix Primary axis value restoration for Preempt mode
+- [ ] Fix Primary axis value restoration for Priority mode
 - [ ] Fix spoofing for play stations controllers (i.e. DualShock)
 - [ ] Add config file support for expressive multiplexing settings
 - [ ] Add GUI for easier configuration and usage

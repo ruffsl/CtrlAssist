@@ -41,7 +41,7 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = SpoofType::Primary)]
         spoof: SpoofType,
 
-        /// Mode type for combining controller.
+        /// Mode type for combining controllers.
         #[arg(long, value_enum, default_value_t = mux_modes::ModeType::Priority)]
         mode: mux_modes::ModeType,
     },
