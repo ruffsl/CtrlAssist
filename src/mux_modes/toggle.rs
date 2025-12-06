@@ -4,13 +4,14 @@ use gilrs::{Axis, Button, Event, GamepadId};
 
 use crate::evdev_helpers;
 
+#[derive(Default)]
 pub struct ToggleMode {
     active: Option<GamepadId>,
 }
 
 impl ToggleMode {
     pub fn new() -> Self {
-        Self { active: None }
+        Self::default()
     }
 }
 

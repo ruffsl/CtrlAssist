@@ -4,11 +4,12 @@ use gilrs::{Axis, Button, Event, GamepadId};
 
 use crate::evdev_helpers;
 
+#[derive(Default)]
 pub struct PriorityMode;
 
 impl PriorityMode {
     pub fn new() -> Self {
-        Self {}
+        Self
     }
 }
 
