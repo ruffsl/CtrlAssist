@@ -22,7 +22,7 @@
   - E.g. Assist coordinates movement while Primary handles actions
 - **Average**: Blend weighted inputs from both controllers
   - Buttons: OR'ed between controllers
-  - Axes: Averaged when Assist exceeds deadzone
+  - Axes: Averaged when both exceed deadzone
   - Ideal for cooperative input and subtle corrections
   - E.g. For counter steer/brake assist in racing games
 - **Toggle**: Switch active controller on demand
