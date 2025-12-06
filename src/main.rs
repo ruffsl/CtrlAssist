@@ -38,11 +38,11 @@ enum Commands {
         hide: bool,
 
         /// Spoof type for virtual device.
-        #[arg(long, value_enum, default_value_t = SpoofType::Primary)]
+        #[arg(long, value_enum, default_value_t = SpoofType::default())]
         spoof: SpoofType,
 
         /// Mode type for combining controllers.
-        #[arg(long, value_enum, default_value_t = mux_modes::ModeType::Priority)]
+        #[arg(long, value_enum, default_value_t = mux_modes::ModeType::default())]
         mode: mux_modes::ModeType,
     },
 }
