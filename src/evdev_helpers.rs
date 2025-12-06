@@ -148,3 +148,12 @@ pub fn gilrs_axis_to_evdev_axis(axis: Axis) -> Option<AbsoluteAxisCode> {
         _ => None,
     }
 }
+
+/// Returns the DPad axis pair for a given button, if applicable
+pub fn dpad_axis_pair(button: Button) -> Option<[Button; 2]> {
+    match button {
+        Button::DPadUp | Button::DPadDown => Some([Button::DPadUp, Button::DPadDown]),
+        Button::DPadLeft | Button::DPadRight => Some([Button::DPadLeft, Button::DPadRight]),
+        _ => None,
+    }
+}

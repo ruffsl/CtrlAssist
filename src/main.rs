@@ -1,12 +1,13 @@
 use clap::{Parser, Subcommand};
 use evdev::InputEvent;
-use gilrs::{Axis, Button, GamepadId, Gilrs};
+use gilrs::{GamepadId, Gilrs};
 use std::collections::HashSet;
 use std::error::Error;
 use std::time::Duration;
 
 mod evdev_helpers;
 mod log_setup;
+mod mux_modes;
 mod udev_helpers;
 
 /// Multiplex multiple controllers into virtual gamepad.
@@ -24,21 +25,25 @@ enum Commands {
 
     /// Multiplex connected controllers into virtual gamepad.
     Mux {
-        /// The ID of the primary controller (see 'list' command).
+        /// Primary controller ID (see 'list' command).
         #[arg(short, long, default_value_t = 0)]
         primary: usize,
 
-        /// The ID of the assist controller (see 'list' command).
+        /// Assist controller ID (see 'list' command).
         #[arg(short, long, default_value_t = 1)]
         assist: usize,
 
-        /// Optionally hide primary and assist controllers
+        /// Hide primary and assist controllers.
         #[arg(long, default_value_t = false)]
         hide: bool,
 
         /// Spoof type for virtual device.
-        #[arg(long, value_enum, default_value_t = SpoofType::Primary)]
+        #[arg(long, value_enum, default_value_t = SpoofType::default())]
         spoof: SpoofType,
+
+        /// Mode type for combining controllers.
+        #[arg(long, value_enum, default_value_t = mux_modes::ModeType::default())]
+        mode: mux_modes::ModeType,
     },
 }
 
@@ -64,8 +69,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             assist,
             hide,
             spoof,
+            mode,
         } => {
-            mux_gamepads(*primary, *assist, *hide, spoof.clone())?;
+            mux_gamepads(*primary, *assist, *hide, spoof.clone(), mode.clone())?;
         }
     }
     Ok(())
@@ -95,6 +101,7 @@ fn mux_gamepads(
     assist_usize: usize,
     hide: bool,
     spoof: SpoofType,
+    mode: mux_modes::ModeType,
 ) -> Result<(), Box<dyn Error>> {
     // --- 1. Setup and Validation ---
     if primary_usize == assist_usize {
@@ -210,162 +217,22 @@ fn mux_gamepads(
 
     println!("\nAssist mode active. Press Ctrl+C to exit.");
     let timeout = Some(Duration::from_millis(1000));
-    fn deadzone(_axis: gilrs::Axis) -> f32 {
-        0.1
-    }
+
+    // Select the mode handler using enum-based factory
+    use mux_modes::create_mux_mode;
+    let mut mux_mode = create_mux_mode(mode);
 
     loop {
         while let Some(event) = gilrs.next_event_blocking(timeout) {
-            // Ignore events from devices other than primary and assist
-            let other_id = match event.id {
-                id if id == primary_id => assist_id,
-                id if id == assist_id => primary_id,
-                _ => continue,
-            };
-
-            // Always get up-to-date gamepad handles from active gilrs instance
-            let other_gamepad = gilrs.gamepad(other_id);
-
-            // --- Event Forwarding Logic ---
-            let mut events = Vec::with_capacity(2);
-            match event.event {
-                // --- Digital Buttons ---
-                gilrs::EventType::ButtonPressed(button, _)
-                | gilrs::EventType::ButtonReleased(button, _) => {
-                    if let Some(key) = evdev_helpers::gilrs_button_to_evdev_key(button) {
-                        let value = if matches!(event.event, gilrs::EventType::ButtonPressed(..)) {
-                            1
-                        } else {
-                            0
-                        };
-                        // Only relay if the other gamepad does not have the button pressed
-                        let other_pressed = other_gamepad
-                            .button_data(button)
-                            .is_some_and(|d| d.value() != 0.0);
-                        if other_pressed {
-                            continue;
-                        }
-                        events.push(InputEvent::new(evdev::EventType::KEY.0, key.0, value));
-                    }
-                }
-
-                // --- Analog Triggers / Pressure Buttons ---
-                gilrs::EventType::ButtonChanged(button, value, _) => {
-                    if let Some(abs_axis) = evdev_helpers::gilrs_button_to_evdev_axis(button) {
-                        let mut value = value;
-                        let mut button = button;
-
-                        // 1. Identify the Axis Pair
-                        let axis_pair = match button {
-                            Button::DPadUp | Button::DPadDown => {
-                                Some([Button::DPadUp, Button::DPadDown])
-                            }
-                            Button::DPadLeft | Button::DPadRight => {
-                                Some([Button::DPadLeft, Button::DPadRight])
-                            }
-                            _ => None,
-                        };
-
-                        if let Some(pair) = axis_pair {
-                            // Closure to check if the OTHER controller is pressing a button
-                            let is_other_pressing = |b| {
-                                other_gamepad
-                                    .button_data(b)
-                                    .is_some_and(|d| d.value() > 0.0)
-                            };
-
-                            if other_id == assist_id && pair.iter().copied().any(is_other_pressing)
-                            {
-                                continue; // Primary is blocked because Assist is active on this axis
-                            } else if other_id == primary_id && value == 0.0 {
-                                // Assist released; if Primary is holding a button, adopt it
-                                if let Some(active_btn) =
-                                    pair.iter().copied().find(|&b| is_other_pressing(b))
-                                {
-                                    button = active_btn;
-                                    value = 1.0;
-                                }
-                            }
-                        }
-                        // Only relay if greater than other trigger value
-                        let other_greater = match button {
-                            Button::DPadUp
-                            | Button::DPadDown
-                            | Button::DPadLeft
-                            | Button::DPadRight => false,
-                            _ => other_gamepad
-                                .button_data(button)
-                                .is_some_and(|d| d.value() >= value),
-                        };
-                        if other_greater {
-                            continue;
-                        }
-                        let scaled_value = match button {
-                            // D-pad-as-axis (uncommon, but matches original logic)
-                            Button::DPadUp | Button::DPadLeft => {
-                                evdev_helpers::scale_stick(value, true)
-                            }
-                            Button::DPadDown | Button::DPadRight => {
-                                evdev_helpers::scale_stick(value, false)
-                            }
-                            // Analog triggers (LT2/RT2)
-                            _ => evdev_helpers::scale_trigger(value),
-                        };
-                        events.push(InputEvent::new(
-                            evdev::EventType::ABSOLUTE.0,
-                            abs_axis.0,
-                            scaled_value,
-                        ));
-                    }
-                }
-
-                // --- Analog Sticks ---
-                gilrs::EventType::AxisChanged(axis, value, _) => {
-                    if let Some(abs_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(axis) {
-                        // Only relay if not conflicting with assist joysticks
-                        let other_pushed = match axis {
-                            Axis::LeftStickX | Axis::LeftStickY => {
-                                other_gamepad
-                                    .axis_data(Axis::LeftStickX)
-                                    .is_some_and(|d| d.value().abs() >= deadzone(axis))
-                                    || other_gamepad
-                                        .axis_data(Axis::LeftStickY)
-                                        .is_some_and(|d| d.value().abs() >= deadzone(axis))
-                            }
-                            Axis::RightStickX | Axis::RightStickY => {
-                                other_gamepad
-                                    .axis_data(Axis::RightStickX)
-                                    .is_some_and(|d| d.value().abs() >= deadzone(axis))
-                                    || other_gamepad
-                                        .axis_data(Axis::RightStickY)
-                                        .is_some_and(|d| d.value().abs() >= deadzone(axis))
-                            }
-                            _ => false,
-                        };
-                        if other_pushed && other_id == assist_id {
-                            continue;
-                        }
-                        let scaled_value = match axis {
-                            // Invert Y axes
-                            Axis::LeftStickY | Axis::RightStickY => {
-                                evdev_helpers::scale_stick(value, true)
-                            }
-                            // X axes
-                            _ => evdev_helpers::scale_stick(value, false),
-                        };
-                        events.push(InputEvent::new(
-                            evdev::EventType::ABSOLUTE.0,
-                            abs_axis.0,
-                            scaled_value,
-                        ));
-                    }
-                }
-                _ => {} // Ignore other events (Connected, Disconnected, etc.)
+            // Only process events from primary or assist
+            if event.id != primary_id && event.id != assist_id {
+                continue;
             }
-
-            // If we have events to send, add a SYN_REPORT and emit
-            if !events.is_empty() {
-                // println!("Relaying Event: {:?}", event.event); // Uncomment for debugging
+            if let Some(events) = mux_mode.handle_event(&event, primary_id, assist_id, &gilrs)
+                && !events.is_empty()
+            {
+                // Always add SYN_REPORT
+                let mut events = events;
                 events.push(InputEvent::new(evdev::EventType::SYNCHRONIZATION.0, 0, 0));
                 virtual_dev.emit(&events)?;
             }
