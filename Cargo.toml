@@ -1,7 +1,20 @@
 [package]
 name = "ctrlassist"
 version = "0.1.0"
+authors = ["ruffsl <roxfoxpox@gmail.com>"]
+license = "Apache-2.0"
+exclude = ["docs/artwork"]
+description = "Controller Assist for gaming on Linux"
+documentation = "https://docs.rs/ctrlassist/"
+repository = "https://github.com/ruffsl/CtrlAssist"
+readme = "README.md"
+keywords = ["gamepad", "joystick", "input"]
+categories = ["game-engines"]
 edition = "2024"
+rust-version = "1.91.1"
+
+[badges]
+github = { repository = "ruffsl/CtrlAssist" }
 
 [dependencies]
 clap = { version = "4.5.51", features = ["derive"] }
