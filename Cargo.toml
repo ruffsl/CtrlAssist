@@ -1,7 +1,32 @@
 [package]
 name = "ctrlassist"
 version = "0.1.0"
+authors = ["ruffsl <roxfoxpox@gmail.com>"]
 edition = "2024"
+rust-version = "1.91.1"
+description = "Controller Assist for gaming on Linux"
+documentation = "https://docs.rs/ctrlassist/"
+readme = "README.md"
+homepage = "https://github.com/ruffsl/CtrlAssist"
+repository = "https://github.com/ruffsl/CtrlAssist"
+license = "Apache-2.0"
+keywords = [
+    "gamepad",
+    "input",
+    "joystick",
+]
+categories = ["game-engines"]
+exclude = [
+    ".envrc",
+    ".github/",
+    ".vscode/",
+    "docs/",
+    "flake.*",
+    "rust-toolchain.toml",
+]
+
+[badges]
+github = { repository = "ruffsl/CtrlAssist" }
 
 [dependencies]
 clap = { version = "4.5.51", features = ["derive"] }
@@ -11,3 +36,13 @@ evdev = "0.13.2"
 gilrs = "0.11.0"
 log = "0.4.28"
 udev = "0.9.3"
+
+[package.metadata.deb]
+depends = "libudev1"
+section = "utils"
+
+# [profile.release]
+# codegen-units = 1
+# lto = true
+# opt-level = "z"
+# strip = true
