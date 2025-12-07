@@ -16,20 +16,20 @@
 # Modes
 
 - **Priority** (default): Assist controller overrides when active
-  - Buttons: OR'ed between controllers
   - Axes: Prioritize when Assist exceeds deadzone
+    - Buttons: OR'ed between controllers
   - Ideal for partial and asynchronous assistance
-  - E.g. Assist coordinates movement while Primary handles actions
+    - E.g. Assist for movement while Primary for actions
 - **Average**: Blend weighted inputs from both controllers
-  - Buttons: OR'ed between controllers
   - Axes: Averaged when both exceed deadzone
+    - Buttons: OR'ed between controllers
   - Ideal for cooperative input and subtle corrections
-  - E.g. For counter steer/brake assist in racing games
+    - E.g. For counter steer/brake assist in racing games
 - **Toggle**: Switch active controller on demand
   - All inputs forwarded from currently active controller
-  - Toggle active controller via the Mode button on Assist
+    - Toggle active controller via the Mode button on Assist
   - Ideal when fine-grain conflict-free control is needed
-  - E.g. Game menu navigation or precise interventions
+    - E.g. Game menu navigation or precise interventions
 
 # Prerequisites
 - Linux system using udev (libudev-dev)
@@ -153,17 +153,3 @@ Connected controllers:
 
 - [Controller Assist on Xbox and Windows](https://support.xbox.com/en-US/help/account-profile/accessibility/copilot)
 - [Second Controller Assistance on PlayStation](https://www.playstation.com/en-us/support/hardware/second-controller-assistance/)
-
-# Todo
-
-- [ ] Fix Primary axis value restoration for Priority mode
-- [ ] Fix spoofing for play stations controllers (i.e. DualShock)
-- [ ] Add config file support for expressive multiplexing settings
-- [ ] Add GUI for easier configuration and usage
-- [ ] Add more robust error handling for dynamic device connectivity
-- [ ] Register project on crates.io for easier installation
-- [ ] Package project for popular Linux distributions
-- [ ] Write more comprehensive documentation and usage examples
-- [ ] Gather user feedback for future improvements and features
-- [ ] Optimize performance for low-latency input handling
- 
