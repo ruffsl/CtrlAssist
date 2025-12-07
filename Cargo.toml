@@ -10,7 +10,11 @@ readme = "README.md"
 homepage = "https://github.com/ruffsl/CtrlAssist"
 repository = "https://github.com/ruffsl/CtrlAssist"
 license = "Apache-2.0"
-keywords = ["gamepad", "joystick", "input"]
+keywords = [
+    "gamepad",
+    "input",
+    "joystick",
+]
 categories = ["game-engines"]
 exclude = [
     ".envrc",
@@ -37,7 +41,7 @@ udev = "0.9.3"
 depends = "libudev1"
 section = "utils"
 
-[profile.release]
+# [profile.release]
 # codegen-units = 1
 # lto = true
 # opt-level = "z"
