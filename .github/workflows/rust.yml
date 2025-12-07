@@ -31,16 +31,10 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Build
-        run: cargo build --release --verbose
+        run: cargo build --verbose
       - name: Test
-        run: cargo test --release --verbose
+        run: cargo test --verbose
       - name: Clippy
         run: cargo clippy -- -D warnings
       - name: Format
         run: cargo fmt -- --check
-      - name: Upload
-        uses: actions/upload-artifact@v5
-        if: github.ref == 'refs/heads/main'
-        with:
-          name: ctrlassist-linux-x86_64
-          path: target/release/ctrlassist
