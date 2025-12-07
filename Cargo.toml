@@ -12,7 +12,14 @@ repository = "https://github.com/ruffsl/CtrlAssist"
 license = "Apache-2.0"
 keywords = ["gamepad", "joystick", "input"]
 categories = ["game-engines"]
-exclude = ["docs/artwork"]
+exclude = [
+    ".envrc",
+    ".github/",
+    ".vscode/",
+    "docs/",
+    "flake.*",
+    "rust-toolchain.toml",
+]
 
 [badges]
 github = { repository = "ruffsl/CtrlAssist" }
