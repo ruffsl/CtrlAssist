@@ -2,16 +2,17 @@
 name = "ctrlassist"
 version = "0.1.0"
 authors = ["ruffsl <roxfoxpox@gmail.com>"]
-license = "Apache-2.0"
-exclude = ["docs/artwork"]
-description = "Controller Assist for gaming on Linux"
-documentation = "https://docs.rs/ctrlassist/"
-repository = "https://github.com/ruffsl/CtrlAssist"
-readme = "README.md"
-keywords = ["gamepad", "joystick", "input"]
-categories = ["game-engines"]
 edition = "2024"
 rust-version = "1.91.1"
+description = "Controller Assist for gaming on Linux"
+documentation = "https://docs.rs/ctrlassist/"
+readme = "README.md"
+homepage = "https://github.com/ruffsl/CtrlAssist"
+repository = "https://github.com/ruffsl/CtrlAssist"
+license = "Apache-2.0"
+keywords = ["gamepad", "joystick", "input"]
+categories = ["game-engines"]
+exclude = ["docs/artwork"]
 
 [badges]
 github = { repository = "ruffsl/CtrlAssist" }
