@@ -29,3 +29,9 @@ udev = "0.9.3"
 [package.metadata.deb]
 depends = "libudev1"
 section = "utils"
+
+[profile.release]
+# codegen-units = 1
+# lto = true
+# opt-level = "z"
+# strip = true
