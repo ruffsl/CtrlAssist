@@ -1,8 +1,10 @@
 use clap::{Parser, Subcommand};
-use evdev::InputEvent;
+use evdev::InputEvent; // EventType}; // Added EventType
+// use gilrs::ff::{BaseEffect, BaseEffectType, EffectBuilder, Replay}; // Added FF imports
 use gilrs::{GamepadId, Gilrs};
 use std::collections::HashSet;
 use std::error::Error;
+use std::sync::{Arc, Mutex}; // Added for thread safety
 use std::time::Duration;
 
 mod evdev_helpers;
@@ -44,6 +46,14 @@ enum Commands {
         /// Mode type for combining controllers.
         #[arg(long, value_enum, default_value_t = mux_modes::ModeType::default())]
         mode: mux_modes::ModeType,
+
+        /// Enable rumble/force feedback for primary controller.
+        #[arg(long, default_value_t = true)]
+        rumble_primary: bool,
+
+        /// Enable rumble/force feedback for assist controller.
+        #[arg(long, default_value_t = true)]
+        rumble_assist: bool,
     },
 }
 
@@ -70,8 +80,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             hide,
             spoof,
             mode,
+            rumble_primary,
+            rumble_assist,
         } => {
-            mux_gamepads(*primary, *assist, *hide, spoof.clone(), mode.clone())?;
+            mux_gamepads(
+                *primary,
+                *assist,
+                *hide,
+                spoof.clone(),
+                mode.clone(),
+                *rumble_primary,
+                *rumble_assist,
+            )?;
         }
     }
     Ok(())
@@ -102,6 +122,8 @@ fn mux_gamepads(
     hide: bool,
     spoof: SpoofType,
     mode: mux_modes::ModeType,
+    _rumble_primary: bool,
+    _rumble_assist: bool,
 ) -> Result<(), Box<dyn Error>> {
     // --- 1. Setup and Validation ---
     if primary_usize == assist_usize {
@@ -109,7 +131,7 @@ fn mux_gamepads(
     }
 
     // Find connected controllers.
-    let gilrs = Gilrs::new()?;
+    let mut gilrs = Gilrs::new()?;
     let mut primary_opt: Option<GamepadId> = None;
     let mut assist_opt: Option<GamepadId> = None;
     for (id, _gamepad) in gilrs.gamepads() {
@@ -120,18 +142,16 @@ fn mux_gamepads(
         if id_usize == assist_usize {
             assist_opt = Some(id);
         }
-        if primary_opt.is_some() && assist_opt.is_some() {
-            break;
-        }
     }
     let primary_id =
         primary_opt.ok_or_else(|| format!("Primary controller ID {} not found.", primary_usize))?;
     let assist_id =
         assist_opt.ok_or_else(|| format!("Assist controller ID {} not found.", assist_usize))?;
 
-    println!("Connected controllers:");
     let primary_gamepad = gilrs.gamepad(primary_id);
     let assist_gamepad = gilrs.gamepad(assist_id);
+
+    println!("Connected controllers:");
     println!(
         "  Primary: ID: {} - Name: {}",
         primary_id,
@@ -143,7 +163,7 @@ fn mux_gamepads(
         assist_gamepad.name()
     );
 
-    // Hide connected controllers.
+    // --- 2. Hide Controllers (Optional) ---
     let mut restore_paths = HashSet::new();
     if hide {
         println!("\nHiding controllers... (requires root)");
@@ -158,35 +178,42 @@ fn mux_gamepads(
         }
     }
 
-    // Create virtual gamepad.
+    // --- 3. Create Virtual Gamepad ---
     use evdev_helpers::VirtualGamepadInfo;
     let virtual_info = match spoof {
         SpoofType::Primary => VirtualGamepadInfo::from(&primary_gamepad),
         SpoofType::Assist => VirtualGamepadInfo::from(&assist_gamepad),
         SpoofType::None => VirtualGamepadInfo {
-            name: "CtrlAssist Virtual Gamepad",
+            name: "CtrlAssist Virtual Gamepad".to_string(),
             vendor_id: None,
             product_id: None,
         },
     };
-    let mut virtual_dev = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
-    // Find virtual gamepad.
+
+    let virtual_dev = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
+
+    // Wrap virtual_dev in Arc<Mutex> for thread sharing
+    let virtual_dev = Arc::new(Mutex::new(virtual_dev));
+
+    // Wait for virtual device to appear in /dev/input
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(1);
-    let virtual_id = loop {
-        let gilrs = Gilrs::new()?;
+    let mut virtual_id_opt = None;
+    loop {
+        gilrs = Gilrs::new()?;
         if let Some((id, _)) = gilrs
             .gamepads()
             .find(|(id, g)| g.name() == virtual_info.name && *id != primary_id && *id != assist_id)
         {
-            break id;
+            virtual_id_opt = Some(id);
+            break;
         }
         if start.elapsed() >= timeout {
             return Err("Virtual gamepad not found.".into());
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
-    };
-    let mut gilrs = Gilrs::new()?;
+    }
+    let virtual_id = virtual_id_opt.ok_or("Could not find virtual device ID")?;
     let virtual_gamepad = gilrs.gamepad(virtual_id);
     println!(
         "  Virtual: ID: {} - Name: {}",
@@ -194,9 +221,9 @@ fn mux_gamepads(
         virtual_gamepad.name()
     );
 
-    // --- 4. Setup Graceful Shutdown (Ctrl+C) ---
+    // --- 4. Prepare Shared State ---
 
-    // Convert HashSet to Vec for the 'move' closure
+    // --- 5. Setup Graceful Shutdown ---
     let restore_paths_vec: Vec<String> = restore_paths.into_iter().collect();
     ctrlc::set_handler(move || {
         println!("\nShutting down.");
@@ -213,29 +240,72 @@ fn mux_gamepads(
         std::process::exit(0);
     })?;
 
-    // --- 5. Main Event Loop ---
-
+    // --- 6. Main Threads ---
+    use std::thread;
     println!("\nAssist mode active. Press Ctrl+C to exit.");
+
+    // INPUT THREAD: Proxies Real -> Virtual
+    let virtual_dev_input = virtual_dev.clone();
     let timeout = Some(Duration::from_millis(1000));
 
-    // Select the mode handler using enum-based factory
-    use mux_modes::create_mux_mode;
-    let mut mux_mode = create_mux_mode(mode);
+    let input_thread = thread::spawn(move || {
+        use mux_modes::create_mux_mode;
+        let mut mux_mode = create_mux_mode(mode);
 
-    loop {
-        while let Some(event) = gilrs.next_event_blocking(timeout) {
-            // Only process events from primary or assist
-            if event.id != primary_id && event.id != assist_id {
-                continue;
-            }
-            if let Some(events) = mux_mode.handle_event(&event, primary_id, assist_id, &gilrs)
-                && !events.is_empty()
-            {
-                // Always add SYN_REPORT
-                let mut events = events;
-                events.push(InputEvent::new(evdev::EventType::SYNCHRONIZATION.0, 0, 0));
-                virtual_dev.emit(&events)?;
+        loop {
+            while let Some(event) = gilrs.next_event_blocking(timeout) {
+                // Only process events from primary or assist
+                if event.id != primary_id && event.id != assist_id {
+                    continue;
+                }
+                if let Some(mut events) =
+                    mux_mode.handle_event(&event, primary_id, assist_id, &gilrs)
+                    && !events.is_empty()
+                {
+                    events.push(InputEvent::new(evdev::EventType::SYNCHRONIZATION.0, 0, 0));
+                    let mut v_dev = virtual_dev_input.lock().unwrap();
+                    if let Err(e) = v_dev.emit(&events) {
+                        log::error!("Emit failed: {}", e);
+                    }
+                }
             }
         }
-    }
+    });
+
+    // // FF THREAD: Proxies Virtual -> Real
+    // // let gilrs_ff = Gilrs::new()?;
+    // let virtual_dev_ff = virtual_dev.clone();
+
+    // let ff_thread = thread::spawn(move || {
+    //     loop {
+    //         // 1. Fetch events from the Virtual Device (OS sending Rumble commands)
+    //         let ff_events: Vec<InputEvent> = {
+    //             let mut v_dev = virtual_dev_ff.lock().unwrap();
+    //             // fetch_events reads from the FD. If OS sends EV_FF, it appears here.
+    //             match v_dev.fetch_events() {
+    //                 Ok(iter) => iter.collect(),
+    //                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => vec![],
+    //                 Err(e) => {
+    //                     log::error!("Error fetching FF events: {}", e);
+    //                     vec![]
+    //                 }
+    //             }
+    //         };
+    //         for ff_event in ff_events {
+    //             println!("FF Event: {:?}", ff_event);
+    //             match ff_event.destructure() {
+    //                 // TODO: Forward force feedback effects to real devices
+    //                 _ => {
+    //                     println!("  event = {:?}", ff_event);
+    //                 }
+    //             }
+    //         }
+    //         // Sleep to prevent busy loop
+    //         thread::sleep(Duration::from_millis(10));
+    //     }
+    // });
+
+    let _ = input_thread.join();
+    // let _ = ff_thread.join();
+    Ok(())
 }

@@ -1,5 +1,6 @@
 use evdev::{
-    AbsInfo, AbsoluteAxisCode, AttributeSet, KeyCode, UinputAbsSetup, uinput::VirtualDevice,
+    AbsInfo, AbsoluteAxisCode, AttributeSet, FFEffectCode, KeyCode, UinputAbsSetup,
+    uinput::VirtualDevice,
 };
 use gilrs::{Axis, Button};
 use std::error::Error;
@@ -21,16 +22,17 @@ pub fn scale_trigger(val: f32) -> i32 {
 }
 
 /// Struct to represent a virtual gamepad's identity (real or spoofed)
-pub struct VirtualGamepadInfo<'a> {
-    pub name: &'a str,
+#[derive(Clone)]
+pub struct VirtualGamepadInfo {
+    pub name: String,
     pub vendor_id: Option<u16>,
     pub product_id: Option<u16>,
 }
 
-impl<'a> From<&'a gilrs::Gamepad<'a>> for VirtualGamepadInfo<'a> {
+impl<'a> From<&'a gilrs::Gamepad<'a>> for VirtualGamepadInfo {
     fn from(gp: &'a gilrs::Gamepad<'a>) -> Self {
         Self {
-            name: gp.os_name(),
+            name: gp.os_name().to_string(),
             vendor_id: gp.vendor_id(),
             product_id: gp.product_id(),
         }
@@ -40,9 +42,7 @@ impl<'a> From<&'a gilrs::Gamepad<'a>> for VirtualGamepadInfo<'a> {
 // --- evdev Device Creation ---
 
 /// Helper to create the virtual gamepad device
-pub fn create_virtual_gamepad<'a>(
-    info: &VirtualGamepadInfo<'a>,
-) -> Result<VirtualDevice, Box<dyn Error>> {
+pub fn create_virtual_gamepad(info: &VirtualGamepadInfo) -> Result<VirtualDevice, Box<dyn Error>> {
     let max = AXIS_MAX as i32;
     let mid = AXIS_HALF as i32;
     let abs_stick_setup = AbsInfo::new(mid, 0, max, 0, 0, 0);
@@ -80,7 +80,7 @@ pub fn create_virtual_gamepad<'a>(
     ];
 
     let mut builder = VirtualDevice::builder()?;
-    builder = builder.name(info.name);
+    builder = builder.name(&info.name);
     if let (Some(vendor), Some(product)) = (info.vendor_id, info.product_id) {
         builder = builder.input_id(evdev::InputId::new(
             evdev::BusType::BUS_USB,
@@ -95,6 +95,14 @@ pub fn create_virtual_gamepad<'a>(
         let setup = UinputAbsSetup::new(code, info);
         builder = builder.with_absolute_axis(&setup)?;
     }
+
+    // Add force feedback support (rumble)
+    let ff_effects = AttributeSet::from_iter([
+        FFEffectCode::FF_RUMBLE,
+        // Add more effect codes if needed
+    ]);
+    builder = builder.with_ff(&ff_effects)?;
+    builder = builder.with_ff_effects_max(16);
 
     Ok(builder.build()?)
 }
