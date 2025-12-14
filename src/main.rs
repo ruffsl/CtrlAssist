@@ -272,40 +272,141 @@ fn mux_gamepads(
         }
     });
 
-    // // FF THREAD: Proxies Virtual -> Real
-    // // let gilrs_ff = Gilrs::new()?;
-    // let virtual_dev_ff = virtual_dev.clone();
+    // FF THREAD: Proxies Virtual -> Real
+    // let gilrs_ff = Gilrs::new()?;
+    let virtual_dev_ff = virtual_dev.clone();
+    // Let's assume the device event path is known for primary and assist
+    let primary_path = "/dev/input/event256"; // Replace X with actual event number later
+    let assist_path = "/dev/input/event29"; // Replace Y with actual event number later
+    let physical_dev_paths = vec![primary_path, assist_path];
 
-    // let ff_thread = thread::spawn(move || {
-    //     loop {
-    //         // 1. Fetch events from the Virtual Device (OS sending Rumble commands)
-    //         let ff_events: Vec<InputEvent> = {
-    //             let mut v_dev = virtual_dev_ff.lock().unwrap();
-    //             // fetch_events reads from the FD. If OS sends EV_FF, it appears here.
-    //             match v_dev.fetch_events() {
-    //                 Ok(iter) => iter.collect(),
-    //                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => vec![],
-    //                 Err(e) => {
-    //                     log::error!("Error fetching FF events: {}", e);
-    //                     vec![]
-    //                 }
-    //             }
-    //         };
-    //         for ff_event in ff_events {
-    //             println!("FF Event: {:?}", ff_event);
-    //             match ff_event.destructure() {
-    //                 // TODO: Forward force feedback effects to real devices
-    //                 _ => {
-    //                     println!("  event = {:?}", ff_event);
-    //                 }
-    //             }
-    //         }
-    //         // Sleep to prevent busy loop
-    //         thread::sleep(Duration::from_millis(10));
-    //     }
-    // });
+    // Bookkeeping struct for each physical device
+    use std::collections::HashMap;
+    struct PhysicalFFDev {
+        dev: evdev::Device,
+        effect_map: HashMap<i16, i16>, // virtual_effect_id -> physical_effect_id
+    }
 
-    let _ = input_thread.join();
-    // let _ = ff_thread.join();
+    // Collect only devices that support FF, and move them into the thread
+    let mut ff_devs: Vec<PhysicalFFDev> = physical_dev_paths
+        .iter()
+        .filter_map(|path| evdev::Device::open(path).ok())
+        .filter(|dev| dev.supported_ff().is_some())
+        .map(|dev| PhysicalFFDev { dev, effect_map: HashMap::new() })
+        .collect();
+
+    let ff_thread = thread::spawn(move || {
+        use evdev::{
+            EventSummary, FFStatusCode, InputEvent, UInputCode,
+        };
+        use std::collections::BTreeSet;
+        let mut ids: BTreeSet<u16> = (0..16).collect();
+
+        const STOPPED: i32 = FFStatusCode::FF_STATUS_STOPPED.0 as i32;
+        const PLAYING: i32 = FFStatusCode::FF_STATUS_PLAYING.0 as i32;
+        loop {
+            let mut v_dev = virtual_dev_ff.lock().unwrap();
+            let events: Vec<InputEvent> = match v_dev.fetch_events() {
+                Ok(evts) => evts.collect(),
+                Err(e) => {
+                    log::error!("Failed to fetch events from virtual device: {}", e);
+                    continue;
+                }
+            };
+            for event in events {
+                println!("FF Event: {:?}", event);
+                match event.destructure() {
+                    EventSummary::UInput(event, UInputCode::UI_FF_UPLOAD, ..) => {
+                        let mut event = match v_dev.process_ff_upload(event) {
+                            Ok(ev) => ev,
+                            Err(e) => {
+                                log::error!("Failed to process FF upload: {}", e);
+                                continue;
+                            }
+                        };
+                        let id = ids.iter().next().copied();
+                        match id {
+                            Some(id) => {
+                                ids.remove(&id);
+                                event.set_effect_id(id as i16);
+                                event.set_retval(0);
+                            }
+                            None => {
+                                event.set_retval(-1);
+                            }
+                        }
+                        let virt_id = event.effect_id();
+                        println!("    upload effect {:?}", event.effect());
+                        for phys_dev in &mut ff_devs {
+                            let effect = event.effect();
+                            match phys_dev.dev.upload_ff_effect(effect) {
+                                Ok(real_id) => {
+                                    let phys_id = real_id.id() as i16;
+                                    phys_dev.effect_map.insert(virt_id, phys_id);
+                                    println!(
+                                        "    mapped virtual effect ID {} to physical effect ID {}",
+                                        virt_id, phys_id
+                                    );
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to upload FF effect: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    EventSummary::UInput(event, UInputCode::UI_FF_ERASE, ..) => {
+                        let event = match v_dev.process_ff_erase(event) {
+                            Ok(ev) => ev,
+                            Err(e) => {
+                                log::error!("Failed to process FF erase: {}", e);
+                                continue;
+                            }
+                        };
+                        let virt_id = event.effect_id();
+                        ids.insert(virt_id as u16);
+                        println!("    erase effect ID = {}", virt_id);
+                        for phys_dev in &mut ff_devs {
+                            phys_dev.effect_map.remove(&(virt_id as i16));
+                        }
+                    }
+                    EventSummary::ForceFeedback(.., effect_id, STOPPED) => {
+                        println!("    stopped effect ID = {}", effect_id.0);
+                        for phys_dev in &mut ff_devs {
+                            let virt_id = effect_id.0 as i16;
+                            if let Some(&phys_id) = phys_dev.effect_map.get(&virt_id) {
+                                let play_event = evdev::InputEvent::new(
+                                    evdev::EventType::FORCEFEEDBACK.0,
+                                    phys_id as u16,
+                                    0, // 1 = play, 0 = stop
+                                );
+                                let _ = phys_dev.dev.send_events(&[play_event]);
+                            }
+                        }
+                    }
+                    EventSummary::ForceFeedback(.., effect_id, PLAYING) => {
+                        println!("    playing effect ID = {}", effect_id.0);
+                        for phys_dev in &mut ff_devs {
+                            let virt_id = effect_id.0 as i16;
+                            if let Some(&phys_id) = phys_dev.effect_map.get(&virt_id) {
+                                let play_event = evdev::InputEvent::new(
+                                    evdev::EventType::FORCEFEEDBACK.0,
+                                    phys_id as u16,
+                                    1, // 1 = play, 0 = stop
+                                );
+                                let _ = phys_dev.dev.send_events(&[play_event]);
+                            }
+                        }
+                    }
+                    _ => {
+                        println!("  event = {:?}", event);
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    });
+
+    // let _ = input_thread.join();
+    let _ = ff_thread.join();
     Ok(())
 }
