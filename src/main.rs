@@ -190,7 +190,6 @@ fn mux_gamepads(
         },
     };
 
-
     // Create the virtual device
     let mut virtual_dev = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
 
@@ -211,7 +210,11 @@ fn mux_gamepads(
         if virtual_event_path.is_none() {
             if let Ok(mut nodes) = virtual_dev.enumerate_dev_nodes_blocking() {
                 while let Some(Ok(path)) = nodes.next() {
-                    if path.file_name().map(|n| n.to_string_lossy().starts_with("event")).unwrap_or(false) {
+                    if path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().starts_with("event"))
+                        .unwrap_or(false)
+                    {
                         virtual_event_path = Some(path);
                         break;
                     }
@@ -308,13 +311,14 @@ fn mux_gamepads(
         .iter()
         .filter_map(|path| evdev::Device::open(path).ok())
         .filter(|dev| dev.supported_ff().is_some())
-        .map(|dev| PhysicalFFDev { dev, effect_map: HashMap::new() })
+        .map(|dev| PhysicalFFDev {
+            dev,
+            effect_map: HashMap::new(),
+        })
         .collect();
 
     let ff_thread = thread::spawn(move || {
-        use evdev::{
-            EventSummary, FFStatusCode, InputEvent, UInputCode,
-        };
+        use evdev::{EventSummary, FFStatusCode, InputEvent, UInputCode};
         use std::collections::BTreeSet;
         let mut ids: BTreeSet<u16> = (0..16).collect();
 
