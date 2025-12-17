@@ -397,7 +397,12 @@ fn handle_ff_erase(
             let virt_id_i16 = virt_id as i16;
             for phys_dev in phys_devs {
                 if let Some(mut effect) = phys_dev.effect_map.remove(&virt_id_i16) {
-                    let _ = effect.stop();
+                    if let Err(e) = effect.stop() {
+                        error!(
+                            "Failed to stop effect during erase (id: {}): {}",
+                            virt_id_i16, e
+                        );
+                    }
                 }
             }
         }
