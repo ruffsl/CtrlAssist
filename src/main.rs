@@ -284,7 +284,7 @@ fn run_input_loop(
 
 struct PhysicalFFDev {
     dev: Device,
-    effect_map: HashMap<i16, FFEffect>,
+    effect_map: HashMap<u32, FFEffect>,
 }
 
 fn run_ff_loop(
@@ -302,13 +302,7 @@ fn run_ff_loop(
         })
         .collect();
 
-    let mut virt_id_pool: BTreeSet<u16> = (0..MAX_FF_EFFECTS as u16).collect();
-
-    // Compile-time assertion to ensure pool and device max stay in sync
-    const _: () = assert!(
-        MAX_FF_EFFECTS <= u16::MAX as usize,
-        "MAX_FF_EFFECTS must fit in u16"
-    );
+    let mut virt_id_pool: BTreeSet<u32> = (0..MAX_FF_EFFECTS).collect();
 
     info!("FF Thread started.");
 
@@ -332,7 +326,7 @@ fn process_ff_event(
     event: InputEvent,
     v_dev: &mut VirtualDevice,
     phys_devs: &mut Vec<PhysicalFFDev>,
-    id_pool: &mut BTreeSet<u16>,
+    id_pool: &mut BTreeSet<u32>,
 ) {
     // Destructure returns EventSummary, which contains UInputEvent for upload/erase
     match event.destructure() {
@@ -353,7 +347,7 @@ fn handle_ff_upload(
     ev: evdev::UInputEvent,
     v_dev: &mut VirtualDevice,
     phys_devs: &mut Vec<PhysicalFFDev>,
-    id_pool: &mut BTreeSet<u16>,
+    id_pool: &mut BTreeSet<u32>,
 ) {
     // process_ff_upload is a method on VirtualDevice
     let mut event = match v_dev.process_ff_upload(ev) {
@@ -377,7 +371,7 @@ fn handle_ff_upload(
         }
     }
 
-    let virt_id = event.effect_id();
+    let virt_id = event.effect_id() as u32;
     let effect_data = event.effect();
 
     for phys_dev in phys_devs {
@@ -394,20 +388,19 @@ fn handle_ff_erase(
     ev: evdev::UInputEvent,
     v_dev: &mut VirtualDevice,
     phys_devs: &mut Vec<PhysicalFFDev>,
-    id_pool: &mut BTreeSet<u16>,
+    id_pool: &mut BTreeSet<u32>,
 ) {
     match v_dev.process_ff_erase(ev) {
         Ok(ev) => {
             let virt_id = ev.effect_id();
-            id_pool.insert(virt_id as u16);
+            id_pool.insert(virt_id);
 
-            let virt_id_i16 = virt_id as i16;
             for phys_dev in phys_devs {
-                if let Some(mut effect) = phys_dev.effect_map.remove(&virt_id_i16) {
+                if let Some(mut effect) = phys_dev.effect_map.remove(&virt_id) {
                     if let Err(e) = effect.stop() {
                         error!(
                             "Failed to stop effect during erase (id: {}): {}",
-                            virt_id_i16, e
+                            virt_id, e
                         );
                     }
                 }
@@ -418,7 +411,7 @@ fn handle_ff_erase(
 }
 
 fn handle_ff_playback(effect_id: u16, status: i32, phys_devs: &mut Vec<PhysicalFFDev>) {
-    let virt_id = effect_id as i16;
+    let virt_id = effect_id as u32;
     let is_playing = status == FFStatusCode::FF_STATUS_PLAYING.0 as i32;
 
     for phys_dev in phys_devs {
