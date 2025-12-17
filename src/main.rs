@@ -396,6 +396,10 @@ fn mux_gamepads(
                                     0, // 1 = play, 0 = stop
                                 );
                                 let _ = phys_dev.dev.send_events(&[play_event]);
+                                println!(
+                                    "    Stopping virtual effect ID {} to physical effect ID {}",
+                                    virt_id, phys_id
+                                );
                             }
                         }
                     }
@@ -410,6 +414,10 @@ fn mux_gamepads(
                                     1, // 1 = play, 0 = stop
                                 );
                                 let _ = phys_dev.dev.send_events(&[play_event]);
+                                println!(
+                                    "    Playing virtual effect ID {} to physical effect ID {}",
+                                    virt_id, phys_id
+                                );
                             }
                         }
                     }
