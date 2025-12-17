@@ -120,6 +120,8 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     let assist_id = find_id(args.assist)?;
     let primary_gp = gilrs.gamepad(primary_id);
     let assist_gp = gilrs.gamepad(assist_id);
+    let primary_name = primary_gp.name().to_string();
+    let assist_name = assist_gp.name().to_string();
     let primary_path = udev_helpers::resolve_event_path(primary_id)
         .ok_or("Could not find filesystem path for primary device")?;
     let assist_path = udev_helpers::resolve_event_path(assist_id)
@@ -128,13 +130,13 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     info!(
         "Primary: ({}) {} @ {}",
         primary_id,
-        primary_gp.name(),
+        primary_name,
         primary_path.display()
     );
     info!(
         "Assist:  ({}) {} @ {}",
         assist_id,
-        assist_gp.name(),
+        assist_name,
         assist_path.display()
     );
 
@@ -149,8 +151,8 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     }
 
     let virtual_info = match args.spoof {
-        SpoofTarget::Primary => evdev_helpers::VirtualGamepadInfo::from(&primary_gp),
-        SpoofTarget::Assist => evdev_helpers::VirtualGamepadInfo::from(&assist_gp),
+        SpoofTarget::Primary => evdev_helpers::VirtualGamepadInfo::from(&gilrs.gamepad(primary_id)),
+        SpoofTarget::Assist => evdev_helpers::VirtualGamepadInfo::from(&gilrs.gamepad(assist_id)),
         SpoofTarget::None => evdev_helpers::VirtualGamepadInfo {
             name: "CtrlAssist Virtual Gamepad".to_string(),
             vendor_id: None,
@@ -198,9 +200,12 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     });
 
     let phys_paths = match args.rumble {
-        RumbleTarget::Primary => vec![primary_path.clone()],
-        RumbleTarget::Assist => vec![assist_path.clone()],
-        RumbleTarget::Both => vec![primary_path.clone(), assist_path.clone()],
+        RumbleTarget::Primary => vec![(primary_id, primary_path.clone(), primary_name.clone())],
+        RumbleTarget::Assist => vec![(assist_id, assist_path.clone(), assist_name.clone())],
+        RumbleTarget::Both => vec![
+            (primary_id, primary_path.clone(), primary_name.clone()),
+            (assist_id, assist_path.clone(), assist_name.clone()),
+        ],
         RumbleTarget::None => vec![],
     };
     let ff_thread = thread::spawn(move || {
@@ -299,18 +304,38 @@ struct PhysicalFFDev {
 
 fn run_ff_loop(
     mut v_dev: VirtualDevice,
-    phys_paths: Vec<std::path::PathBuf>,
+    phys_paths: Vec<(GamepadId, std::path::PathBuf, String)>,
     running: Arc<AtomicBool>,
 ) {
-    let mut phys_devs: Vec<PhysicalFFDev> = phys_paths
-        .iter()
-        .filter_map(|p| Device::open(p).ok())
-        .filter(|d| d.supported_ff().is_some())
-        .map(|dev| PhysicalFFDev {
-            dev,
-            effect_map: HashMap::new(),
-        })
-        .collect();
+    let mut phys_devs: Vec<PhysicalFFDev> = Vec::new();
+    for (id, path, name) in &phys_paths {
+        match Device::open(path) {
+            Ok(dev) => {
+                if dev.supported_ff().is_some() {
+                    phys_devs.push(PhysicalFFDev {
+                        dev,
+                        effect_map: HashMap::new(),
+                    });
+                } else {
+                    log::warn!(
+                        "Controller ({}) '{}' at '{}' does not support force feedback (FF)",
+                        id,
+                        name,
+                        path.display()
+                    );
+                }
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to open controller ({}) '{}' at '{}': {}",
+                    id,
+                    name,
+                    path.display(),
+                    e
+                );
+            }
+        }
+    }
 
     let mut virt_id_pool: BTreeSet<i16> = (0..MAX_FF_EFFECTS).collect();
 
