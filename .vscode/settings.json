@@ -6,13 +6,17 @@
         "devnode",
         "devnodes",
         "evdev",
+        "evts",
+        "FORCEFEEDBACK",
         "gamepads",
         "gilrs",
         "hidraw",
         "libudev",
+        "retval",
         "syspath",
         "THUMBL",
         "THUMBR",
-        "Uinput"
+        "Uinput",
+        "virt"
     ]
 }
