@@ -301,7 +301,7 @@ fn mux_gamepads(
     use std::collections::HashMap;
     struct PhysicalFFDev {
         dev: evdev::Device,
-        effect_map: HashMap<i16, i16>, // virtual_effect_id -> physical_effect_id
+        effect_map: HashMap<i16, evdev::FFEffect>, // virtual_effect_id -> FFEffect
     }
 
     // Collect only devices that support FF, and move them into the thread
@@ -356,14 +356,13 @@ fn mux_gamepads(
                         let virt_id = event.effect_id();
                         println!("    upload effect {:?}", event.effect());
                         for phys_dev in &mut ff_devs {
-                            let effect = event.effect();
-                            match phys_dev.dev.upload_ff_effect(effect) {
-                                Ok(real_id) => {
-                                    let phys_id = real_id.id() as i16;
-                                    phys_dev.effect_map.insert(virt_id, phys_id);
+                            let effect_data = event.effect();
+                            match phys_dev.dev.upload_ff_effect(effect_data) {
+                                Ok(ff_effect) => {
+                                    phys_dev.effect_map.insert(virt_id, ff_effect);
                                     println!(
-                                        "    mapped virtual effect ID {} to physical effect ID {}",
-                                        virt_id, phys_id
+                                        "    mapped virtual effect ID {} to FFEffect",
+                                        virt_id
                                     );
                                 }
                                 Err(e) => {
@@ -384,24 +383,32 @@ fn mux_gamepads(
                         ids.insert(virt_id as u16);
                         println!("    erase effect ID = {}", virt_id);
                         for phys_dev in &mut ff_devs {
-                            phys_dev.effect_map.remove(&(virt_id as i16));
+                            let virt_id_i16 = virt_id as i16;
+                            if let Some(mut ff_effect) = phys_dev.effect_map.remove(&virt_id_i16) {
+                                if let Err(e) = ff_effect.stop() {
+                                    log::error!("Failed to stop FF effect before erase: {}", e);
+                                } else {
+                                    println!(
+                                        "    Stopped and erased virtual effect ID {} (FFEffect)",
+                                        virt_id_i16
+                                    );
+                                }
+                            }
                         }
                     }
                     EventSummary::ForceFeedback(.., effect_id, STOPPED) => {
                         println!("    stopped effect ID = {}", effect_id.0);
                         for phys_dev in &mut ff_devs {
                             let virt_id = effect_id.0 as i16;
-                            if let Some(&phys_id) = phys_dev.effect_map.get(&virt_id) {
-                                let play_event = evdev::InputEvent::new(
-                                    evdev::EventType::FORCEFEEDBACK.0,
-                                    phys_id as u16,
-                                    0, // 1 = play, 0 = stop
-                                );
-                                let _ = phys_dev.dev.send_events(&[play_event]);
-                                println!(
-                                    "    Stopping virtual effect ID {} to physical effect ID {}",
-                                    virt_id, phys_id
-                                );
+                            if let Some(ff_effect) = phys_dev.effect_map.get_mut(&virt_id) {
+                                if let Err(e) = ff_effect.stop() {
+                                    log::error!("Failed to stop FF effect: {}", e);
+                                } else {
+                                    println!(
+                                        "    Stopped virtual effect ID {} (FFEffect)",
+                                        virt_id
+                                    );
+                                }
                             }
                         }
                     }
@@ -409,17 +416,15 @@ fn mux_gamepads(
                         println!("    playing effect ID = {}", effect_id.0);
                         for phys_dev in &mut ff_devs {
                             let virt_id = effect_id.0 as i16;
-                            if let Some(&phys_id) = phys_dev.effect_map.get(&virt_id) {
-                                let play_event = evdev::InputEvent::new(
-                                    evdev::EventType::FORCEFEEDBACK.0,
-                                    phys_id as u16,
-                                    1, // 1 = play, 0 = stop
-                                );
-                                let _ = phys_dev.dev.send_events(&[play_event]);
-                                println!(
-                                    "    Playing virtual effect ID {} to physical effect ID {}",
-                                    virt_id, phys_id
-                                );
+                            if let Some(ff_effect) = phys_dev.effect_map.get_mut(&virt_id) {
+                                if let Err(e) = ff_effect.play(1) {
+                                    log::error!("Failed to play FF effect: {}", e);
+                                } else {
+                                    println!(
+                                        "    Played virtual effect ID {} (FFEffect)",
+                                        virt_id
+                                    );
+                                }
                             }
                         }
                     }
