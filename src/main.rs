@@ -364,7 +364,10 @@ fn handle_ff_upload(
             event.set_effect_id(id as i16);
             event.set_retval(0);
         }
-        None => event.set_retval(-1),
+        None => {
+            event.set_retval(-1);
+            return;
+        }
     }
 
     let virt_id = event.effect_id();
