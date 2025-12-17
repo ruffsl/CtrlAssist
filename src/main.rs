@@ -207,8 +207,18 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
         run_ff_loop(virtual_dev, phys_paths, running);
     });
 
-    let _ = input_thread.join();
-    let _ = ff_thread.join();
+    let mut errors = Vec::new();
+    if input_thread.join().is_err() {
+        error!("Input thread panicked");
+        errors.push("Input thread panicked");
+    }
+    if ff_thread.join().is_err() {
+        error!("Force feedback thread panicked");
+        errors.push("Force feedback thread panicked");
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("; ").into());
+    }
     Ok(())
 }
 
