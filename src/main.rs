@@ -373,10 +373,10 @@ fn handle_ff_upload(
     let virt_id = event.effect_id();
     let effect_data = event.effect();
 
-    for p in phys_devs {
-        match p.dev.upload_ff_effect(effect_data) {
+    for phys_dev in phys_devs {
+        match phys_dev.dev.upload_ff_effect(effect_data) {
             Ok(ff_effect) => {
-                p.effect_map.insert(virt_id, ff_effect);
+                phys_dev.effect_map.insert(virt_id, ff_effect);
             }
             Err(e) => error!("Failed to upload effect to physical device: {}", e),
         }
@@ -395,8 +395,8 @@ fn handle_ff_erase(
             id_pool.insert(virt_id as u16);
 
             let virt_id_i16 = virt_id as i16;
-            for p in phys_devs {
-                if let Some(mut effect) = p.effect_map.remove(&virt_id_i16) {
+            for phys_dev in phys_devs {
+                if let Some(mut effect) = phys_dev.effect_map.remove(&virt_id_i16) {
                     let _ = effect.stop();
                 }
             }
@@ -409,8 +409,8 @@ fn handle_ff_playback(effect_id: u16, status: i32, phys_devs: &mut Vec<PhysicalF
     let virt_id = effect_id as i16;
     let is_playing = status == FFStatusCode::FF_STATUS_PLAYING.0 as i32;
 
-    for p in phys_devs {
-        if let Some(effect) = p.effect_map.get_mut(&virt_id) {
+    for phys_dev in phys_devs {
+        if let Some(effect) = phys_dev.effect_map.get_mut(&virt_id) {
             let result = if is_playing {
                 effect.play(1)
             } else {
