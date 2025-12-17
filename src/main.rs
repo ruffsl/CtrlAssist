@@ -190,35 +190,47 @@ fn mux_gamepads(
         },
     };
 
-    let virtual_dev = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
 
-    // Wrap virtual_dev in Arc<Mutex> for thread sharing
-    let virtual_dev = Arc::new(Mutex::new(virtual_dev));
+    // Create the virtual device
+    let mut virtual_dev = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
 
-    // Wait for virtual device to appear in /dev/input
+    // Wait for the virtual device to appear in /dev/input and get its event node path
     let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(1);
+    let timeout = std::time::Duration::from_secs(2);
     let mut virtual_id_opt = None;
-    loop {
+    let mut virtual_event_path = None;
+    while start.elapsed() < timeout {
         gilrs = Gilrs::new()?;
         if let Some((id, _)) = gilrs
             .gamepads()
             .find(|(id, g)| g.name() == virtual_info.name && *id != primary_id && *id != assist_id)
         {
             virtual_id_opt = Some(id);
-            break;
         }
-        if start.elapsed() >= timeout {
-            return Err("Virtual gamepad not found.".into());
+        // Use evdev's enumerate_dev_nodes_blocking to get the event node
+        if virtual_event_path.is_none() {
+            if let Ok(mut nodes) = virtual_dev.enumerate_dev_nodes_blocking() {
+                while let Some(Ok(path)) = nodes.next() {
+                    if path.file_name().map(|n| n.to_string_lossy().starts_with("event")).unwrap_or(false) {
+                        virtual_event_path = Some(path);
+                        break;
+                    }
+                }
+            }
+        }
+        if virtual_id_opt.is_some() && virtual_event_path.is_some() {
+            break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let virtual_id = virtual_id_opt.ok_or("Could not find virtual device ID")?;
     let virtual_gamepad = gilrs.gamepad(virtual_id);
+    let virtual_event_path = virtual_event_path.ok_or("Could not find virtual event node path")?;
     println!(
-        "  Virtual: ID: {} - Name: {}",
+        "  Virtual: ID: {} - Name: {} - Event: {}",
         virtual_id,
-        virtual_gamepad.name()
+        virtual_gamepad.name(),
+        virtual_event_path.display()
     );
 
     // --- 4. Prepare Shared State ---
@@ -245,13 +257,19 @@ fn mux_gamepads(
     println!("\nAssist mode active. Press Ctrl+C to exit.");
 
     // INPUT THREAD: Proxies Real -> Virtual
-    let virtual_dev_input = virtual_dev.clone();
-    let timeout = Some(Duration::from_millis(1000));
-
+    let input_event_path = virtual_event_path.clone();
     let input_thread = thread::spawn(move || {
         use mux_modes::create_mux_mode;
         let mut mux_mode = create_mux_mode(mode);
-
+        let timeout = Some(Duration::from_millis(1000));
+        // Open the event node for writing input events
+        let mut v_dev = match evdev::Device::open(&input_event_path) {
+            Ok(dev) => dev,
+            Err(e) => {
+                log::error!("Failed to open virtual event node for input: {}", e);
+                return;
+            }
+        };
         loop {
             while let Some(event) = gilrs.next_event_blocking(timeout) {
                 // Only process events from primary or assist
@@ -263,8 +281,7 @@ fn mux_gamepads(
                     && !events.is_empty()
                 {
                     events.push(InputEvent::new(evdev::EventType::SYNCHRONIZATION.0, 0, 0));
-                    let mut v_dev = virtual_dev_input.lock().unwrap();
-                    if let Err(e) = v_dev.emit(&events) {
+                    if let Err(e) = v_dev.send_events(&events) {
                         log::error!("Emit failed: {}", e);
                     }
                 }
@@ -273,8 +290,7 @@ fn mux_gamepads(
     });
 
     // FF THREAD: Proxies Virtual -> Real
-    // let gilrs_ff = Gilrs::new()?;
-    let virtual_dev_ff = virtual_dev.clone();
+    // Only the FF thread owns the VirtualDevice
     // Let's assume the device event path is known for primary and assist
     let primary_path = "/dev/input/event256"; // Replace X with actual event number later
     let assist_path = "/dev/input/event29"; // Replace Y with actual event number later
@@ -304,8 +320,8 @@ fn mux_gamepads(
 
         const STOPPED: i32 = FFStatusCode::FF_STATUS_STOPPED.0 as i32;
         const PLAYING: i32 = FFStatusCode::FF_STATUS_PLAYING.0 as i32;
+        let mut v_dev = virtual_dev;
         loop {
-            let mut v_dev = virtual_dev_ff.lock().unwrap();
             let events: Vec<InputEvent> = match v_dev.fetch_events() {
                 Ok(evts) => evts.collect(),
                 Err(e) => {
@@ -406,7 +422,7 @@ fn mux_gamepads(
         }
     });
 
-    // let _ = input_thread.join();
+    let _ = input_thread.join();
     let _ = ff_thread.join();
     Ok(())
 }
