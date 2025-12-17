@@ -15,6 +15,7 @@ mod log_setup;
 mod mux_modes;
 mod udev_helpers;
 
+const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
 const RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const VIRTUAL_DEV_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -264,7 +265,7 @@ fn run_input_loop(
     let mut mux_mode = mux_modes::create_mux_mode(mode);
 
     loop {
-        while let Some(event) = gilrs.next_event() {
+        while let Some(event) = gilrs.next_event_blocking(Some(NEXT_EVENT_TIMEOUT)) {
             if event.id != p_id && event.id != a_id {
                 continue;
             }
