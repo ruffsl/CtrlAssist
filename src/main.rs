@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use evdev::uinput::VirtualDevice;
 use evdev::{Device, EventSummary, EventType, FFEffect, FFStatusCode, InputEvent, UInputCode};
+use evdev_helpers::MAX_FF_EFFECTS;
 use gilrs::{GamepadId, Gilrs};
 use log::{error, info};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -301,7 +302,13 @@ fn run_ff_loop(
         })
         .collect();
 
-    let mut virt_id_pool: BTreeSet<u16> = (0..16).collect();
+    let mut virt_id_pool: BTreeSet<u16> = (0..MAX_FF_EFFECTS as u16).collect();
+
+    // Compile-time assertion to ensure pool and device max stay in sync
+    const _: () = assert!(
+        MAX_FF_EFFECTS <= u16::MAX as usize,
+        "MAX_FF_EFFECTS must fit in u16"
+    );
 
     info!("FF Thread started.");
 

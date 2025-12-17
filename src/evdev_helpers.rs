@@ -5,6 +5,9 @@ use evdev::{
 use gilrs::{Axis, Button};
 use std::error::Error;
 
+/// Shared constant for the maximum number of force feedback effects.
+pub const MAX_FF_EFFECTS: usize = 16;
+
 // --- Scaling Helper Functions ---
 
 pub const AXIS_MAX: f32 = u16::MAX as f32;
@@ -102,7 +105,7 @@ pub fn create_virtual_gamepad(info: &VirtualGamepadInfo) -> Result<VirtualDevice
         // Add more effect codes if needed
     ]);
     builder = builder.with_ff(&ff_effects)?;
-    builder = builder.with_ff_effects_max(16);
+    builder = builder.with_ff_effects_max(MAX_FF_EFFECTS as u32);
 
     Ok(builder.build()?)
 }
