@@ -6,6 +6,33 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use udev::Enumerator;
 
+use gilrs::Gilrs;
+
+/// Attempts to find the /dev/input/event* path for a given Gilrs GamepadID
+/// by matching the device name.
+pub fn resolve_event_path(target_id: gilrs::GamepadId) -> Option<PathBuf> {
+    // We need a fresh Gilrs instance to get the name of the target ID
+    let gilrs = Gilrs::new().ok()?;
+    let binding = gilrs.gamepad(target_id);
+    let target_name = binding.os_name();
+
+    // Iterate over all evdev devices to find a name match
+    for entry in std::fs::read_dir("/dev/input").ok()? {
+        let entry = entry.ok()?;
+        let path = entry.path();
+
+        // precise filtering for event* nodes
+        if path.file_name()?.to_string_lossy().starts_with("event")
+            && let Ok(device) = evdev::Device::open(&path)
+            && let Some(name) = device.name()
+            && name == target_name
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
 /// Gets a udev property as an Option<String>.
 fn get_udev_prop(device: &udev::Device, prop: &str) -> Option<String> {
     device
