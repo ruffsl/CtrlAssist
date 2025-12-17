@@ -4,7 +4,6 @@ use evdev::InputEvent; // EventType}; // Added EventType
 use gilrs::{GamepadId, Gilrs};
 use std::collections::HashSet;
 use std::error::Error;
-use std::sync::{Arc, Mutex}; // Added for thread safety
 use std::time::Duration;
 
 mod evdev_helpers;
@@ -207,8 +206,8 @@ fn mux_gamepads(
             virtual_id_opt = Some(id);
         }
         // Use evdev's enumerate_dev_nodes_blocking to get the event node
-        if virtual_event_path.is_none() {
-            if let Ok(mut nodes) = virtual_dev.enumerate_dev_nodes_blocking() {
+        if virtual_event_path.is_none()
+            && let Ok(mut nodes) = virtual_dev.enumerate_dev_nodes_blocking() {
                 while let Some(Ok(path)) = nodes.next() {
                     if path
                         .file_name()
@@ -220,7 +219,6 @@ fn mux_gamepads(
                     }
                 }
             }
-        }
         if virtual_id_opt.is_some() && virtual_event_path.is_some() {
             break;
         }
@@ -297,7 +295,7 @@ fn mux_gamepads(
     // Let's assume the device event path is known for primary and assist
     let primary_path = "/dev/input/event256"; // Replace X with actual event number later
     let assist_path = "/dev/input/event29"; // Replace Y with actual event number later
-    let physical_dev_paths = vec![primary_path, assist_path];
+    let physical_dev_paths = [primary_path, assist_path];
 
     // Bookkeeping struct for each physical device
     use std::collections::HashMap;
