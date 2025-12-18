@@ -1,6 +1,6 @@
 use evdev::uinput::VirtualDevice;
 use evdev::{EventSummary, FFStatusCode, InputEvent, UInputCode};
-use log::{error, debug};
+use log::{debug, error};
 
 use crate::PhysicalFFDev;
 
