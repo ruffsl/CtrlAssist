@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use evdev::uinput::VirtualDevice;
-use evdev::{Device, EventSummary, EventType, FFEffect, FFStatusCode, InputEvent, UInputCode};
+use evdev::{Device, EventType, FFEffect, InputEvent};
 use evdev_helpers::MAX_FF_EFFECTS;
+use ff_helpers::process_ff_event;
 use gilrs::{GamepadId, Gilrs};
 use log::{error, info};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -12,6 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 mod evdev_helpers;
+mod ff_helpers;
 mod log_setup;
 mod mux_modes;
 mod udev_helpers;
@@ -353,112 +355,6 @@ fn run_ff_loop(
 
         for event in events {
             process_ff_event(event, &mut v_dev, &mut phys_devs, &mut virt_id_pool);
-        }
-    }
-}
-
-fn process_ff_event(
-    event: InputEvent,
-    v_dev: &mut VirtualDevice,
-    phys_devs: &mut Vec<PhysicalFFDev>,
-    id_pool: &mut BTreeSet<i16>,
-) {
-    // Destructure returns EventSummary, which contains UInputEvent for upload/erase
-    match event.destructure() {
-        EventSummary::UInput(ev, UInputCode::UI_FF_UPLOAD, ..) => {
-            handle_ff_upload(ev, v_dev, phys_devs, id_pool);
-        }
-        EventSummary::UInput(ev, UInputCode::UI_FF_ERASE, ..) => {
-            handle_ff_erase(ev, v_dev, phys_devs, id_pool);
-        }
-        EventSummary::ForceFeedback(.., effect_id, status) => {
-            handle_ff_playback(effect_id.0, status, phys_devs);
-        }
-        _ => {}
-    }
-}
-
-fn handle_ff_upload(
-    ev: evdev::UInputEvent,
-    v_dev: &mut VirtualDevice,
-    phys_devs: &mut Vec<PhysicalFFDev>,
-    id_pool: &mut BTreeSet<i16>,
-) {
-    // process_ff_upload is a method on VirtualDevice
-    let mut event = match v_dev.process_ff_upload(ev) {
-        Ok(e) => e,
-        Err(e) => {
-            error!("FF Upload Process failed: {}", e);
-            return;
-        }
-    };
-
-    let new_id = id_pool.iter().next().copied();
-    match new_id {
-        Some(id) => {
-            id_pool.remove(&id);
-            event.set_effect_id(id);
-            event.set_retval(0);
-        }
-        None => {
-            event.set_retval(-1);
-            return;
-        }
-    }
-
-    let virt_id = event.effect_id();
-    let effect_data = event.effect();
-
-    for phys_dev in phys_devs {
-        match phys_dev.dev.upload_ff_effect(effect_data) {
-            Ok(ff_effect) => {
-                phys_dev.effect_map.insert(virt_id, ff_effect);
-            }
-            Err(e) => error!("Failed to upload effect to physical device: {}", e),
-        }
-    }
-}
-
-fn handle_ff_erase(
-    ev: evdev::UInputEvent,
-    v_dev: &mut VirtualDevice,
-    phys_devs: &mut Vec<PhysicalFFDev>,
-    id_pool: &mut BTreeSet<i16>,
-) {
-    match v_dev.process_ff_erase(ev) {
-        Ok(ev) => {
-            let virt_id = ev.effect_id() as i16;
-            id_pool.insert(virt_id);
-
-            for phys_dev in phys_devs {
-                if let Some(mut effect) = phys_dev.effect_map.remove(&virt_id)
-                    && let Err(e) = effect.stop()
-                {
-                    error!(
-                        "Failed to stop effect during erase (id: {}): {}",
-                        virt_id, e
-                    );
-                }
-            }
-        }
-        Err(e) => error!("FF Erase Process failed: {}", e),
-    }
-}
-
-fn handle_ff_playback(effect_id: u16, status: i32, phys_devs: &mut Vec<PhysicalFFDev>) {
-    let virt_id = effect_id as i16;
-    let is_playing = status == FFStatusCode::FF_STATUS_PLAYING.0 as i32;
-
-    for phys_dev in phys_devs {
-        if let Some(effect) = phys_dev.effect_map.get_mut(&virt_id) {
-            let result = if is_playing {
-                effect.play(1)
-            } else {
-                effect.stop()
-            };
-            if let Err(e) = result {
-                error!("FF Playback error (id: {}): {}", virt_id, e);
-            }
         }
     }
 }
