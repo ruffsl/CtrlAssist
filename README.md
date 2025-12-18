@@ -19,6 +19,8 @@
   - Avoid controller interference from conflicting inputs
 - Spoof gamepad vendor for in-game layout recognition
   - Mimic either Primary or Assist controller hardware
+- Rumble routing from virtual to physical devices
+  - Forward force feedback to either or both controllers
 
 # Modes
 
@@ -78,9 +80,8 @@ List all detected controllers and respective IDs:
 
 ```sh
 $ ctrlassist list
-Detected controllers:
-  ID: 0 - Name: Microsoft Xbox One
-  ID: 1 - Name: PS4 Controller
+(0) Microsoft Xbox One
+(1) PS4 Controller
 ```
 
 ## mux
@@ -89,10 +90,10 @@ Multiplex first two detected controllers by default:
 
 ```sh
 $ ctrlassist mux
-Connected controllers:
-  Primary: ID: 0 - Name: Microsoft Xbox One
-  Assist:  ID: 1 - Name: PS4 Controller
-  Virtual: ID: 2 - Name: CtrlAssist Virtual Gamepad
+Primary: (0) Microsoft Xbox One
+Assist:  (1) PS4 Controller
+...
+Mux Active. Press Ctrl+C to exit.
 ```
 
 ### Optional: Specify Device Mapping
@@ -101,10 +102,9 @@ Manually specify Primary and Assist controllers via IDs:
 
 ```sh
 $ ctrlassist mux --primary 1 --assist 0
-Connected controllers:
-  Primary: ID: 1 - Name: PS4 Controller
-  Assist:  ID: 0 - Name: Microsoft Xbox One
-  Virtual: ID: 2 - Name: CtrlAssist Virtual Gamepad
+Primary: (1) PS4 Controller
+Assist:  (0) Microsoft Xbox One
+...
 ```
 
 ### Optional: Specify Mux Mode
@@ -123,14 +123,6 @@ Avoiding in game conflicts by hiding physical controllers:
 ```sh
 $ sudo ctrlassist mux --hide
 ...
-
-Hiding controllers... (requires root)
-
-Assist mode active. Press Ctrl+C to exit.
-^C
-Shutting down.
-
-Restoring controllers...
 ```
 
 ### Optional: Spoof Virtual Device
@@ -139,10 +131,18 @@ Mimic controller hardware for in-game layout recognition:
 
 ```sh
 $ ctrlassist mux --spoof primary
-Connected controllers:
-  Primary: ID: 0 - Name: Microsoft Xbox One
-  Assist:  ID: 1 - Name: PS4 Controller
-  Virtual: ID: 2 - Name: Microsoft X-Box One pad (Firmware 2015)
+Primary: (0) Microsoft Xbox One
+Assist:  (1) PS4 Controller
+Virtual: (2) Microsoft X-Box One pad (Firmware 2015)
+```
+
+### Optional: Proxy Rumble Effects
+
+Target force feedback to either or both physical controllers:
+
+```sh
+$ ctrlassist mux --rumble both
+...
 ```
 
 # Limitations

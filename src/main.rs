@@ -1,14 +1,24 @@
-use clap::{Parser, Subcommand};
-use evdev::InputEvent;
+use clap::{Parser, Subcommand, ValueEnum};
+use evdev::uinput::VirtualDevice;
+use evdev::{Device, EventType, FFEffect, InputEvent};
+use ff_helpers::process_ff_event;
 use gilrs::{GamepadId, Gilrs};
-use std::collections::HashSet;
+use log::{error, info};
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 mod evdev_helpers;
-mod log_setup;
+mod ff_helpers;
 mod mux_modes;
 mod udev_helpers;
+
+const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
+const RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const VIRTUAL_DEV_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Multiplex multiple controllers into virtual gamepad.
 #[derive(Parser, Debug)]
@@ -17,225 +27,339 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
-
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// List all detected controllers and respective IDs.
     List,
 
     /// Multiplex connected controllers into virtual gamepad.
-    Mux {
-        /// Primary controller ID (see 'list' command).
-        #[arg(short, long, default_value_t = 0)]
-        primary: usize,
-
-        /// Assist controller ID (see 'list' command).
-        #[arg(short, long, default_value_t = 1)]
-        assist: usize,
-
-        /// Hide primary and assist controllers.
-        #[arg(long, default_value_t = false)]
-        hide: bool,
-
-        /// Spoof type for virtual device.
-        #[arg(long, value_enum, default_value_t = SpoofType::default())]
-        spoof: SpoofType,
-
-        /// Mode type for combining controllers.
-        #[arg(long, value_enum, default_value_t = mux_modes::ModeType::default())]
-        mode: mux_modes::ModeType,
-    },
+    Mux(MuxArgs),
 }
+#[derive(clap::Args, Debug)]
+struct MuxArgs {
+    /// Primary controller ID (see 'list' command).
+    #[arg(short, long, default_value_t = 0)]
+    primary: usize,
 
-#[derive(clap::ValueEnum, Clone, Debug, Default)]
-pub enum SpoofType {
+    /// Assist controller ID (see 'list' command).
+    #[arg(short, long, default_value_t = 1)]
+    assist: usize,
+
+    /// Hide primary and assist controllers.
+    #[arg(long, default_value_t = false)]
+    hide: bool,
+
+    /// Spoof target for virtual device.
+    #[arg(long, value_enum, default_value_t = SpoofTarget::default())]
+    spoof: SpoofTarget,
+
+    /// Mode type for combining controllers.
+    #[arg(long, value_enum, default_value_t = mux_modes::ModeType::default())]
+    mode: mux_modes::ModeType,
+
+    /// Rumble target for virtual device.
+    #[arg(long, value_enum, default_value_t = RumbleTarget::default())]
+    rumble: RumbleTarget,
+}
+#[derive(ValueEnum, Clone, Debug, Default)]
+pub enum SpoofTarget {
     #[default]
     Primary,
     Assist,
     None,
 }
-
-fn main() -> Result<(), Box<dyn Error>> {
-    log_setup::init_logger().expect("Failed to set logger");
-
-    let cli = Cli::parse();
-
-    match &cli.command {
-        Commands::List => {
-            list_gamepads()?;
-        }
-        Commands::Mux {
-            primary,
-            assist,
-            hide,
-            spoof,
-            mode,
-        } => {
-            mux_gamepads(*primary, *assist, *hide, spoof.clone(), mode.clone())?;
-        }
-    }
-    Ok(())
+#[derive(ValueEnum, Clone, Debug, Default)]
+pub enum RumbleTarget {
+    Primary,
+    Assist,
+    #[default]
+    Both,
+    None,
 }
 
-/// List all detected controllers.
-fn list_gamepads() -> Result<(), Box<gilrs::Error>> {
-    let gilrs = Gilrs::new()?;
-
-    println!("Detected controllers:");
-    let mut count = 0;
-    for (id, gamepad) in gilrs.gamepads() {
-        println!("  ID: {} - Name: {}", id, gamepad.name());
-        count += 1;
+fn main() -> Result<(), Box<dyn Error>> {
+    env_logger::init();
+    let cli = Cli::parse();
+    match cli.command {
+        Commands::List => list_gamepads(),
+        Commands::Mux(args) => run_mux(args),
     }
+}
 
+fn list_gamepads() -> Result<(), Box<dyn Error>> {
+    let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let count = gilrs
+        .gamepads()
+        .map(|(id, gamepad)| {
+            let msg = format!("({}) {}", id, gamepad.name());
+            info!("{}", msg);
+            println!("{}", msg);
+        })
+        .count();
     if count == 0 {
         println!("  No controllers found.");
     }
-
     Ok(())
 }
 
-/// Multiplex connected controllers.
-fn mux_gamepads(
-    primary_usize: usize,
-    assist_usize: usize,
-    hide: bool,
-    spoof: SpoofType,
-    mode: mux_modes::ModeType,
-) -> Result<(), Box<dyn Error>> {
-    // --- 1. Setup and Validation ---
-    if primary_usize == assist_usize {
+fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
+    if args.primary == args.assist {
         return Err("Primary and Assist controllers must be separate devices.".into());
     }
 
-    // Find connected controllers.
-    let gilrs = Gilrs::new()?;
-    let mut primary_opt: Option<GamepadId> = None;
-    let mut assist_opt: Option<GamepadId> = None;
-    for (id, _gamepad) in gilrs.gamepads() {
-        let id_usize: usize = id.into();
-        if id_usize == primary_usize {
-            primary_opt = Some(id);
-        }
-        if id_usize == assist_usize {
-            assist_opt = Some(id);
-        }
-        if primary_opt.is_some() && assist_opt.is_some() {
-            break;
-        }
-    }
-    let primary_id =
-        primary_opt.ok_or_else(|| format!("Primary controller ID {} not found.", primary_usize))?;
-    let assist_id =
-        assist_opt.ok_or_else(|| format!("Assist controller ID {} not found.", assist_usize))?;
+    let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
 
-    println!("Connected controllers:");
-    let primary_gamepad = gilrs.gamepad(primary_id);
-    let assist_gamepad = gilrs.gamepad(assist_id);
-    println!(
-        "  Primary: ID: {} - Name: {}",
+    let find_id = |target_idx: usize| -> Result<GamepadId, Box<dyn Error>> {
+        gilrs
+            .gamepads()
+            .find(|(id, _)| usize::from(*id) == target_idx)
+            .map(|(id, _)| id)
+            .ok_or_else(|| format!("Controller ID {} not found", target_idx).into())
+    };
+
+    let primary_id = find_id(args.primary)?;
+    let assist_id = find_id(args.assist)?;
+    let primary_gp = gilrs.gamepad(primary_id);
+    let assist_gp = gilrs.gamepad(assist_id);
+    let primary_name = primary_gp.name().to_string();
+    let assist_name = assist_gp.name().to_string();
+    let primary_path = udev_helpers::resolve_event_path(primary_id)
+        .ok_or("Could not find filesystem path for primary device")?;
+    let assist_path = udev_helpers::resolve_event_path(assist_id)
+        .ok_or("Could not find filesystem path for assist device")?;
+
+    let primary_msg = format!(
+        "Primary: ({}) {} @ {}",
         primary_id,
-        primary_gamepad.name()
+        primary_name,
+        primary_path.display()
     );
-    println!(
-        "  Assist:  ID: {} - Name: {}",
+    info!("{}", primary_msg);
+    println!("{}", primary_msg);
+    let assist_msg = format!(
+        "Assist:  ({}) {} @ {}",
         assist_id,
-        assist_gamepad.name()
+        assist_name,
+        assist_path.display()
     );
+    info!("{}", assist_msg);
+    println!("{}", assist_msg);
 
-    // Hide connected controllers.
     let mut restore_paths = HashSet::new();
-    if hide {
-        println!("\nHiding controllers... (requires root)");
-        // We can re-use the gamepad objects from the *first* gilrs instance
-        for gamepad in [&primary_gamepad, &assist_gamepad] {
-            log::info!("Hiding: {}", gamepad.name());
-            udev_helpers::restrict_gamepad_devices(gamepad, &mut restore_paths)?;
-        }
-        // If restore paths is empty, throw an error
+    if args.hide {
+        info!("Hiding controllers (requires root)...");
+        udev_helpers::restrict_gamepad_devices(&primary_gp, &mut restore_paths)?;
+        udev_helpers::restrict_gamepad_devices(&assist_gp, &mut restore_paths)?;
         if restore_paths.is_empty() {
             return Err("Devices could not be hidden. Check permissions.".into());
         }
     }
 
-    // Create virtual gamepad.
-    use evdev_helpers::VirtualGamepadInfo;
-    let virtual_info = match spoof {
-        SpoofType::Primary => VirtualGamepadInfo::from(&primary_gamepad),
-        SpoofType::Assist => VirtualGamepadInfo::from(&assist_gamepad),
-        SpoofType::None => VirtualGamepadInfo {
-            name: "CtrlAssist Virtual Gamepad",
+    let virtual_info = match args.spoof {
+        SpoofTarget::Primary => evdev_helpers::VirtualGamepadInfo::from(&gilrs.gamepad(primary_id)),
+        SpoofTarget::Assist => evdev_helpers::VirtualGamepadInfo::from(&gilrs.gamepad(assist_id)),
+        SpoofTarget::None => evdev_helpers::VirtualGamepadInfo {
+            name: "CtrlAssist Virtual Gamepad".to_string(),
             vendor_id: None,
             product_id: None,
         },
     };
+
     let mut virtual_dev = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
-    // Find virtual gamepad.
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(1);
-    let virtual_id = loop {
-        let gilrs = Gilrs::new()?;
-        if let Some((id, _)) = gilrs
-            .gamepads()
-            .find(|(id, g)| g.name() == virtual_info.name && *id != primary_id && *id != assist_id)
-        {
-            break id;
-        }
-        if start.elapsed() >= timeout {
-            return Err("Virtual gamepad not found.".into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    };
-    let mut gilrs = Gilrs::new()?;
-    let virtual_gamepad = gilrs.gamepad(virtual_id);
-    println!(
-        "  Virtual: ID: {} - Name: {}",
+    let (virtual_id, virtual_path) =
+        wait_for_virtual_device(&virtual_info, primary_id, assist_id, &mut virtual_dev)?;
+
+    let virtual_msg = format!(
+        "Virtual: ({}) {} @ {}",
         virtual_id,
-        virtual_gamepad.name()
+        virtual_info.name,
+        virtual_path.display()
     );
+    info!("{}", virtual_msg);
+    println!("{}", virtual_msg);
 
-    // --- 4. Setup Graceful Shutdown (Ctrl+C) ---
-
-    // Convert HashSet to Vec for the 'move' closure
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
     let restore_paths_vec: Vec<String> = restore_paths.into_iter().collect();
+
     ctrlc::set_handler(move || {
-        println!("\nShutting down.");
-        if hide {
-            println!("\nRestoring controllers...");
+        println!("\nShutting down...");
+        r.store(false, Ordering::SeqCst);
+        if !restore_paths_vec.is_empty() {
+            println!("Restoring controllers...");
             for path in &restore_paths_vec {
                 if let Err(e) = udev_helpers::restore_device(path) {
-                    eprintln!("  Failed to restore {}: {}", path, e);
+                    error!("Failed to restore {}: {}", path, e);
                 } else {
-                    log::info!("Restored: {}", path);
+                    info!("Restored: {}", path);
                 }
             }
         }
         std::process::exit(0);
     })?;
 
-    // --- 5. Main Event Loop ---
+    let mux_msg = "Mux Active. Press Ctrl+C to exit.";
+    info!("{}", mux_msg);
+    println!("{}", mux_msg);
 
-    println!("\nAssist mode active. Press Ctrl+C to exit.");
-    let timeout = Some(Duration::from_millis(1000));
+    let input_path = virtual_path.clone();
+    let mode_type = args.mode.clone();
+    let input_thread = thread::spawn(move || {
+        run_input_loop(input_path, mode_type, primary_id, assist_id);
+    });
 
-    // Select the mode handler using enum-based factory
-    use mux_modes::create_mux_mode;
-    let mut mux_mode = create_mux_mode(mode);
+    let phys_paths = match args.rumble {
+        RumbleTarget::Primary => vec![(primary_id, primary_path.clone(), primary_name.clone())],
+        RumbleTarget::Assist => vec![(assist_id, assist_path.clone(), assist_name.clone())],
+        RumbleTarget::Both => vec![
+            (primary_id, primary_path.clone(), primary_name.clone()),
+            (assist_id, assist_path.clone(), assist_name.clone()),
+        ],
+        RumbleTarget::None => vec![],
+    };
+    let ff_thread = thread::spawn(move || {
+        run_ff_loop(virtual_dev, phys_paths, running);
+    });
+
+    let mut errors = Vec::new();
+    if input_thread.join().is_err() {
+        error!("Input thread panicked");
+        errors.push("Input thread panicked");
+    }
+    if ff_thread.join().is_err() {
+        error!("Force feedback thread panicked");
+        errors.push("Force feedback thread panicked");
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("; ").into());
+    }
+    Ok(())
+}
+
+fn wait_for_virtual_device(
+    info: &evdev_helpers::VirtualGamepadInfo,
+    p_id: GamepadId,
+    a_id: GamepadId,
+    v_dev: &mut VirtualDevice,
+) -> Result<(GamepadId, std::path::PathBuf), Box<dyn Error>> {
+    let start = Instant::now();
+    while start.elapsed() < VIRTUAL_DEV_TIMEOUT {
+        let gilrs = Gilrs::new().map_err(|_| "Failed to refresh gilrs")?;
+        let found_id = gilrs
+            .gamepads()
+            .find(|(id, g)| g.name() == info.name && *id != p_id && *id != a_id)
+            .map(|(id, _)| id);
+
+        if let Some(id) = found_id {
+            let mut nodes = v_dev.enumerate_dev_nodes_blocking()?;
+            if let Some(Ok(path)) = nodes.find(|p| match p {
+                Ok(pb) => pb.to_string_lossy().contains("event"),
+                Err(_) => false,
+            }) {
+                return Ok((id, path));
+            }
+        }
+        thread::sleep(RETRY_INTERVAL);
+    }
+    Err("Timed out waiting for virtual device creation".into())
+}
+
+fn run_input_loop(
+    virtual_path: std::path::PathBuf,
+    mode: mux_modes::ModeType,
+    p_id: GamepadId,
+    a_id: GamepadId,
+) {
+    let mut gilrs = match Gilrs::new() {
+        Ok(g) => g,
+        Err(e) => {
+            error!("Input Thread Gilrs init failed: {}", e);
+            return;
+        }
+    };
+
+    // Open the virtual device as a generic Device for WRITING input
+    let mut v_dev = match Device::open(&virtual_path) {
+        Ok(d) => d,
+        Err(e) => {
+            error!("Failed to open virtual output node: {}", e);
+            return;
+        }
+    };
+
+    let mut mux_mode = mux_modes::create_mux_mode(mode);
 
     loop {
-        while let Some(event) = gilrs.next_event_blocking(timeout) {
-            // Only process events from primary or assist
-            if event.id != primary_id && event.id != assist_id {
+        while let Some(event) = gilrs.next_event_blocking(Some(NEXT_EVENT_TIMEOUT)) {
+            if event.id != p_id && event.id != a_id {
                 continue;
             }
-            if let Some(events) = mux_mode.handle_event(&event, primary_id, assist_id, &gilrs)
-                && !events.is_empty()
+            if let Some(mut out_events) = mux_mode.handle_event(&event, p_id, a_id, &gilrs)
+                && !out_events.is_empty()
             {
-                // Always add SYN_REPORT
-                let mut events = events;
-                events.push(InputEvent::new(evdev::EventType::SYNCHRONIZATION.0, 0, 0));
-                virtual_dev.emit(&events)?;
+                out_events.push(InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0));
+                if let Err(e) = v_dev.send_events(&out_events) {
+                    error!("Failed to write input events: {}", e);
+                }
             }
+        }
+    }
+}
+
+struct PhysicalFFDev {
+    dev: Device,
+    effect_map: HashMap<i16, FFEffect>,
+}
+
+fn run_ff_loop(
+    mut v_dev: VirtualDevice,
+    phys_paths: Vec<(GamepadId, std::path::PathBuf, String)>,
+    running: Arc<AtomicBool>,
+) {
+    let mut phys_devs: Vec<PhysicalFFDev> = Vec::new();
+    for (id, path, name) in &phys_paths {
+        match Device::open(path) {
+            Ok(dev) => {
+                if dev.supported_ff().is_some() {
+                    phys_devs.push(PhysicalFFDev {
+                        dev,
+                        effect_map: HashMap::new(),
+                    });
+                } else {
+                    log::warn!(
+                        "Controller ({}) '{}' at '{}' does not support force feedback (FF)",
+                        id,
+                        name,
+                        path.display()
+                    );
+                }
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to open controller ({}) '{}' at '{}': {}",
+                    id,
+                    name,
+                    path.display(),
+                    e
+                );
+            }
+        }
+    }
+
+    info!("FF Thread started.");
+
+    while running.load(Ordering::Relaxed) {
+        let events: Vec<_> = match v_dev.fetch_events() {
+            Ok(iter) => iter.collect(),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => vec![],
+            Err(e) => {
+                error!("Error fetching FF events: {}", e);
+                vec![]
+            }
+        };
+
+        for event in events {
+            process_ff_event(event, &mut v_dev, &mut phys_devs);
         }
     }
 }

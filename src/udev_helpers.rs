@@ -6,6 +6,53 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use udev::Enumerator;
 
+use gilrs::Gilrs;
+
+/// Resolves the `/dev/input/event*` path for a given Gilrs `GamepadId` by matching
+/// the device's name and, if available, its vendor and product IDs. This function attempts
+/// to uniquely identify the correct event node for a gamepad, but may return the wrong device
+/// if multiple devices share the same name and hardware IDs (e.g., identical controllers).
+///
+/// # Parameters
+/// - `target_id`: The `GamepadId` of the target gamepad as provided by Gilrs.
+///
+/// # Returns
+/// - `Some(PathBuf)`: The path to the matching `/dev/input/event*` node if found.
+/// - `None`: If no matching device is found or an error occurs.
+///
+/// # Caveats
+/// - If multiple devices have the same name and hardware IDs, the first match is returned.
+///   This may not always be the intended device.
+/// - If vendor/product IDs are unavailable, only the device name is used for matching.
+///
+/// # Failure Cases
+/// - Returns `None` if the Gilrs context cannot be created, the gamepad is not found,
+///   or no matching event device is found.
+pub fn resolve_event_path(target_id: gilrs::GamepadId) -> Option<PathBuf> {
+    let gilrs = Gilrs::new().ok()?;
+    let gamepad = gilrs.gamepad(target_id);
+    let target_name = gamepad.os_name();
+    let target_vendor = gamepad.vendor_id();
+    let target_product = gamepad.product_id();
+
+    std::fs::read_dir("/dev/input")
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .map(|f| f.to_string_lossy().starts_with("event"))
+                .unwrap_or(false)
+                && evdev::Device::open(path).ok().is_some_and(|device| {
+                    let name_match = device.name().map(|n| n == target_name).unwrap_or(false);
+                    let input_id = device.input_id();
+                    let vendor_match = target_vendor.is_none_or(|tv| tv == input_id.vendor());
+                    let product_match = target_product.is_none_or(|tp| tp == input_id.product());
+                    name_match && vendor_match && product_match
+                })
+        })
+}
+
 /// Gets a udev property as an Option<String>.
 fn get_udev_prop(device: &udev::Device, prop: &str) -> Option<String> {
     device

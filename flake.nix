@@ -30,6 +30,7 @@
             # clang
             # gcc
             jstest-gtk
+            linuxConsoleTools
             pkg-config
             rust
             udev
