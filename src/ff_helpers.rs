@@ -1,7 +1,6 @@
 use evdev::uinput::VirtualDevice;
 use evdev::{EventSummary, FFStatusCode, InputEvent, UInputCode};
 use log::{error, info};
-use std::collections::BTreeSet;
 
 use crate::PhysicalFFDev;
 
@@ -9,16 +8,15 @@ pub fn process_ff_event(
     event: InputEvent,
     v_dev: &mut VirtualDevice,
     phys_devs: &mut Vec<PhysicalFFDev>,
-    id_pool: &mut BTreeSet<i16>,
 ) {
     match event.destructure() {
         EventSummary::UInput(ev, UInputCode::UI_FF_UPLOAD, ..) => {
             info!("FF Upload Event: {:?}", ev);
-            handle_ff_upload(ev, v_dev, phys_devs, id_pool);
+            handle_ff_upload(ev, v_dev, phys_devs);
         }
         EventSummary::UInput(ev, UInputCode::UI_FF_ERASE, ..) => {
             info!("FF Erase Event: {:?}", ev);
-            handle_ff_erase(ev, v_dev, phys_devs, id_pool);
+            handle_ff_erase(ev, v_dev, phys_devs);
         }
         EventSummary::ForceFeedback(.., effect_id, status) => {
             info!("FF Playback Event: id={:?}, status={}", effect_id, status);
@@ -32,28 +30,14 @@ pub fn handle_ff_upload(
     ev: evdev::UInputEvent,
     v_dev: &mut VirtualDevice,
     phys_devs: &mut Vec<PhysicalFFDev>,
-    id_pool: &mut BTreeSet<i16>,
 ) {
-    let mut event = match v_dev.process_ff_upload(ev) {
+    let event = match v_dev.process_ff_upload(ev) {
         Ok(e) => e,
         Err(e) => {
             error!("FF Upload Process failed: {}", e);
             return;
         }
     };
-
-    let new_id = id_pool.iter().next().copied();
-    match new_id {
-        Some(id) => {
-            id_pool.remove(&id);
-            event.set_effect_id(id);
-            event.set_retval(0);
-        }
-        None => {
-            event.set_retval(-1);
-            return;
-        }
-    }
 
     let virt_id = event.effect_id();
     let effect_data = event.effect();
@@ -77,12 +61,10 @@ pub fn handle_ff_erase(
     ev: evdev::UInputEvent,
     v_dev: &mut VirtualDevice,
     phys_devs: &mut Vec<PhysicalFFDev>,
-    id_pool: &mut BTreeSet<i16>,
 ) {
     match v_dev.process_ff_erase(ev) {
         Ok(ev) => {
             let virt_id = ev.effect_id() as i16;
-            id_pool.insert(virt_id);
 
             for phys_dev in phys_devs {
                 if let Some(mut effect) = phys_dev.effect_map.remove(&virt_id)

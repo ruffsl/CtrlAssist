@@ -1,11 +1,10 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use evdev::uinput::VirtualDevice;
 use evdev::{Device, EventType, FFEffect, InputEvent};
-use evdev_helpers::MAX_FF_EFFECTS;
 use ff_helpers::process_ff_event;
 use gilrs::{GamepadId, Gilrs};
 use log::{error, info};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -339,8 +338,6 @@ fn run_ff_loop(
         }
     }
 
-    let mut virt_id_pool: BTreeSet<i16> = (0..MAX_FF_EFFECTS).collect();
-
     info!("FF Thread started.");
 
     while running.load(Ordering::Relaxed) {
@@ -354,7 +351,7 @@ fn run_ff_loop(
         };
 
         for event in events {
-            process_ff_event(event, &mut v_dev, &mut phys_devs, &mut virt_id_pool);
+            process_ff_event(event, &mut v_dev, &mut phys_devs);
         }
     }
 }
