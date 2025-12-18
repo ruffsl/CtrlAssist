@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 
 mod evdev_helpers;
 mod ff_helpers;
-mod log_setup;
 mod mux_modes;
 mod udev_helpers;
 
@@ -79,7 +78,7 @@ pub enum RumbleTarget {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    log_setup::init_logger().expect("Failed to set logger");
+    env_logger::init();
     let cli = Cli::parse();
     match cli.command {
         Commands::List => list_gamepads(),
