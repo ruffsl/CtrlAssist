@@ -88,11 +88,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn list_gamepads() -> Result<(), Box<dyn Error>> {
     let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
-    println!("Detected controllers:");
     let count = gilrs
         .gamepads()
         .map(|(id, gamepad)| {
-            println!("  ({}) {}", id, gamepad.name());
+            let msg = format!("({}) {}", id, gamepad.name());
+            info!("{}", msg);
+            println!("{}", msg);
         })
         .count();
     if count == 0 {
@@ -127,18 +128,22 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     let assist_path = udev_helpers::resolve_event_path(assist_id)
         .ok_or("Could not find filesystem path for assist device")?;
 
-    info!(
+    let primary_msg = format!(
         "Primary: ({}) {} @ {}",
         primary_id,
         primary_name,
         primary_path.display()
     );
-    info!(
+    info!("{}", primary_msg);
+    println!("{}", primary_msg);
+    let assist_msg = format!(
         "Assist:  ({}) {} @ {}",
         assist_id,
         assist_name,
         assist_path.display()
     );
+    info!("{}", assist_msg);
+    println!("{}", assist_msg);
 
     let mut restore_paths = HashSet::new();
     if args.hide {
@@ -164,12 +169,14 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     let (virtual_id, virtual_path) =
         wait_for_virtual_device(&virtual_info, primary_id, assist_id, &mut virtual_dev)?;
 
-    info!(
+    let virtual_msg = format!(
         "Virtual: ({}) {} @ {}",
         virtual_id,
         virtual_info.name,
         virtual_path.display()
     );
+    info!("{}", virtual_msg);
+    println!("{}", virtual_msg);
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -191,7 +198,9 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
         std::process::exit(0);
     })?;
 
-    info!("Mux Active. Press Ctrl+C to exit.");
+    let mux_msg = "Mux Active. Press Ctrl+C to exit.";
+    info!("{}", mux_msg);
+    println!("{}", mux_msg);
 
     let input_path = virtual_path.clone();
     let mode_type = args.mode.clone();
