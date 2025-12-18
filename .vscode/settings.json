@@ -6,8 +6,6 @@
         "devnode",
         "devnodes",
         "evdev",
-        "evts",
-        "FORCEFEEDBACK",
         "gamepads",
         "gilrs",
         "hidraw",
