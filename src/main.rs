@@ -165,16 +165,10 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
         },
     };
 
-    let mut virtual_dev = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
-    let (virtual_id, virtual_path) =
-        wait_for_virtual_device(&virtual_info, primary_id, assist_id, &mut virtual_dev)?;
+    let mut vf_dev = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
+    let vi_dev = wait_for_virtual_device(&mut vf_dev)?;
 
-    let virtual_msg = format!(
-        "Virtual: ({}) {} @ {}",
-        virtual_id,
-        virtual_info.name,
-        virtual_path.display()
-    );
+    let virtual_msg = format!("Virtual: ({}) {}", "#", virtual_info.name);
     info!("{}", virtual_msg);
     println!("{}", virtual_msg);
 
@@ -202,10 +196,9 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     info!("{}", mux_msg);
     println!("{}", mux_msg);
 
-    let input_path = virtual_path.clone();
     let mode_type = args.mode.clone();
     let input_thread = thread::spawn(move || {
-        run_input_loop(input_path, mode_type, primary_id, assist_id);
+        run_input_loop(vi_dev, mode_type, primary_id, assist_id);
     });
 
     let phys_paths = match args.rumble {
@@ -218,7 +211,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
         RumbleTarget::None => vec![],
     };
     let ff_thread = thread::spawn(move || {
-        run_ff_loop(virtual_dev, phys_paths, running);
+        run_ff_loop(vf_dev, phys_paths, running);
     });
 
     let mut errors = Vec::new();
@@ -236,53 +229,28 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn wait_for_virtual_device(
-    info: &evdev_helpers::VirtualGamepadInfo,
-    p_id: GamepadId,
-    a_id: GamepadId,
-    v_dev: &mut VirtualDevice,
-) -> Result<(GamepadId, std::path::PathBuf), Box<dyn Error>> {
+fn wait_for_virtual_device(v_dev: &mut VirtualDevice) -> Result<Device, Box<dyn Error>> {
+    let v_path = v_dev
+        .enumerate_dev_nodes_blocking()?
+        .filter_map(Result::ok)
+        .find(|pb| pb.to_string_lossy().contains("event"))
+        .ok_or("Could not find virtual device path")?;
+
     let start = Instant::now();
     while start.elapsed() < VIRTUAL_DEV_TIMEOUT {
-        let gilrs = Gilrs::new().map_err(|_| "Failed to refresh gilrs")?;
-        let found_id = gilrs
-            .gamepads()
-            .find(|(id, g)| g.name() == info.name && *id != p_id && *id != a_id)
-            .map(|(id, _)| id);
-
-        if let Some(id) = found_id {
-            let mut nodes = v_dev.enumerate_dev_nodes_blocking()?;
-            if let Some(Ok(path)) = nodes.find(|p| match p {
-                Ok(pb) => pb.to_string_lossy().contains("event"),
-                Err(_) => false,
-            }) {
-                return Ok((id, path));
-            }
+        match Device::open(&v_path) {
+            Ok(dev) => return Ok(dev),
+            Err(_) => thread::sleep(RETRY_INTERVAL),
         }
-        thread::sleep(RETRY_INTERVAL);
     }
     Err("Timed out waiting for virtual device creation".into())
 }
 
-fn run_input_loop(
-    virtual_path: std::path::PathBuf,
-    mode: mux_modes::ModeType,
-    p_id: GamepadId,
-    a_id: GamepadId,
-) {
+fn run_input_loop(mut v_dev: Device, mode: mux_modes::ModeType, p_id: GamepadId, a_id: GamepadId) {
     let mut gilrs = match Gilrs::new() {
         Ok(g) => g,
         Err(e) => {
             error!("Input Thread Gilrs init failed: {}", e);
-            return;
-        }
-    };
-
-    // Open the virtual device as a generic Device for WRITING input
-    let mut v_dev = match Device::open(&virtual_path) {
-        Ok(d) => d,
-        Err(e) => {
-            error!("Failed to open virtual output node: {}", e);
             return;
         }
     };
