@@ -238,10 +238,11 @@ fn wait_for_virtual_device(v_dev: &mut VirtualDevice) -> Result<Device, Box<dyn 
 
     let start = Instant::now();
     while start.elapsed() < VIRTUAL_DEV_TIMEOUT {
-        match Device::open(&v_path) {
-            Ok(dev) => return Ok(dev),
-            Err(_) => thread::sleep(RETRY_INTERVAL),
+        if let Ok(dev) = Device::open(&v_path) {
+            info!("Virtual device available at '{}'", v_path.to_string_lossy());
+            return Ok(dev);
         }
+        thread::sleep(RETRY_INTERVAL);
     }
     Err("Timed out waiting for virtual device creation".into())
 }
