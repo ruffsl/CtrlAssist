@@ -123,9 +123,9 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     let assist_gp = gilrs.gamepad(assist_id);
     let primary_name = primary_gp.name().to_string();
     let assist_name = assist_gp.name().to_string();
-    let primary_path = udev_helpers::resolve_event_path(primary_id)
+    let primary_path = udev_helpers::resolve_event_path(&gilrs, primary_id)
         .ok_or("Could not find filesystem path for primary device")?;
-    let assist_path = udev_helpers::resolve_event_path(assist_id)
+    let assist_path = udev_helpers::resolve_event_path(&gilrs, assist_id)
         .ok_or("Could not find filesystem path for assist device")?;
 
     let primary_msg = format!(
@@ -198,7 +198,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
 
     let mode_type = args.mode.clone();
     let input_thread = thread::spawn(move || {
-        run_input_loop(vi_dev, mode_type, primary_id, assist_id);
+        run_input_loop(gilrs, vi_dev, mode_type, primary_id, assist_id);
     });
 
     let phys_paths = match args.rumble {
@@ -247,15 +247,13 @@ fn wait_for_virtual_device(v_dev: &mut VirtualDevice) -> Result<Device, Box<dyn 
     Err("Timed out waiting for virtual device creation".into())
 }
 
-fn run_input_loop(mut v_dev: Device, mode: mux_modes::ModeType, p_id: GamepadId, a_id: GamepadId) {
-    let mut gilrs = match Gilrs::new() {
-        Ok(g) => g,
-        Err(e) => {
-            error!("Input Thread Gilrs init failed: {}", e);
-            return;
-        }
-    };
-
+fn run_input_loop(
+    mut gilrs: gilrs::Gilrs,
+    mut v_dev: Device,
+    mode: mux_modes::ModeType,
+    p_id: GamepadId,
+    a_id: GamepadId,
+) {
     let mut mux_mode = mux_modes::create_mux_mode(mode);
 
     loop {

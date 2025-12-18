@@ -28,8 +28,7 @@ use gilrs::Gilrs;
 /// # Failure Cases
 /// - Returns `None` if the Gilrs context cannot be created, the gamepad is not found,
 ///   or no matching event device is found.
-pub fn resolve_event_path(target_id: gilrs::GamepadId) -> Option<PathBuf> {
-    let gilrs = Gilrs::new().ok()?;
+pub fn resolve_event_path(gilrs: &Gilrs, target_id: gilrs::GamepadId) -> Option<PathBuf> {
     let gamepad = gilrs.gamepad(target_id);
     let target_name = gamepad.os_name();
     let target_vendor = gamepad.vendor_id();
