@@ -114,10 +114,10 @@ pub fn create_virtual_gamepad(info: &VirtualGamepadInfo) -> Result<VirtualDevice
 
 pub fn gilrs_button_to_evdev_key(button: Button) -> Option<KeyCode> {
     match button {
-        Button::North => Some(KeyCode::BTN_NORTH),
+        Button::West => Some(KeyCode::BTN_NORTH), // Buggy mapping?
         Button::South => Some(KeyCode::BTN_SOUTH),
         Button::East => Some(KeyCode::BTN_EAST),
-        Button::West => Some(KeyCode::BTN_WEST),
+        Button::North => Some(KeyCode::BTN_WEST), // Buggy mapping?
         Button::LeftTrigger => Some(KeyCode::BTN_TL), // L1
         Button::RightTrigger => Some(KeyCode::BTN_TR), // R1
         Button::LeftTrigger2 => Some(KeyCode::BTN_TL2), // L2
