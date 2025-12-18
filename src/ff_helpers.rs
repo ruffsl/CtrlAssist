@@ -1,6 +1,6 @@
 use evdev::uinput::VirtualDevice;
 use evdev::{EventSummary, FFStatusCode, InputEvent, UInputCode};
-use log::{error, info};
+use log::{error, debug};
 
 use crate::PhysicalFFDev;
 
@@ -11,15 +11,15 @@ pub fn process_ff_event(
 ) {
     match event.destructure() {
         EventSummary::UInput(ev, UInputCode::UI_FF_UPLOAD, ..) => {
-            info!("FF Upload Event: {:?}", ev);
+            debug!("FF Upload Event: {:?}", ev);
             handle_ff_upload(ev, v_dev, phys_devs);
         }
         EventSummary::UInput(ev, UInputCode::UI_FF_ERASE, ..) => {
-            info!("FF Erase Event: {:?}", ev);
+            debug!("FF Erase Event: {:?}", ev);
             handle_ff_erase(ev, v_dev, phys_devs);
         }
         EventSummary::ForceFeedback(.., effect_id, status) => {
-            info!("FF Playback Event: id={:?}, status={}", effect_id, status);
+            debug!("FF Playback Event: id={:?}, status={}", effect_id, status);
             handle_ff_playback(effect_id.0, status, phys_devs);
         }
         _ => {}
@@ -45,7 +45,7 @@ pub fn handle_ff_upload(
     for phys_dev in phys_devs {
         match phys_dev.dev.upload_ff_effect(effect_data) {
             Ok(ff_effect) => {
-                info!(
+                debug!(
                     "Uploaded effect to physical device (virt_id: {}, phys_id: {})",
                     virt_id,
                     ff_effect.id()
