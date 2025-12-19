@@ -19,7 +19,7 @@
   - Avoid controller interference from conflicting inputs
 - Spoof gamepad vendor for in-game layout recognition
   - Mimic either Primary or Assist controller hardware
-- Rumble routing from virtual to physical devices
+- Rumble pass-through from virtual to physical devices
   - Forward force feedback to either or both controllers
 
 # Modes
