@@ -1,12 +1,11 @@
 use gilrs::Gamepad;
+use gilrs::Gilrs;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use udev::Enumerator;
-
-use gilrs::Gilrs;
 
 /// Resolves the `/dev/input/event*` path for a given Gilrs `GamepadId` by matching
 /// the device's name and, if available, its vendor and product IDs. This function attempts

@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use evdev::uinput::VirtualDevice;
 use evdev::{Device, EventType, FFEffect, InputEvent};
 use ff_helpers::process_ff_event;
-use gilrs::{GamepadId, Gilrs};
+use gilrs::{Gamepad, GamepadId, Gilrs};
 use log::{error, info};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -88,15 +88,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn list_gamepads() -> Result<(), Box<dyn Error>> {
     let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
-    let count = gilrs
-        .gamepads()
-        .map(|(id, gamepad)| {
-            let msg = format!("({}) {}", id, gamepad.name());
-            info!("{}", msg);
-            println!("{}", msg);
-        })
-        .count();
-    if count == 0 {
+    let mut found = false;
+    for (id, gamepad) in gilrs.gamepads() {
+        println!("({}) {}", id, gamepad.name());
+        found = true;
+    }
+    if !found {
         println!("  No controllers found.");
     }
     Ok(())
@@ -123,10 +120,65 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     let assist_gp = gilrs.gamepad(assist_id);
     let primary_name = primary_gp.name().to_string();
     let assist_name = assist_gp.name().to_string();
-    let primary_path = udev_helpers::resolve_event_path(&gilrs, primary_id)
+
+    use std::fs;
+    use std::path::PathBuf;
+    #[derive(Debug)]
+    struct GamepadDev {
+        device: evdev::Device,
+        path: PathBuf,
+    }
+
+    // Collect all event device paths
+    let mut available_paths: HashSet<PathBuf> = fs::read_dir("/dev/input")
+        .unwrap()
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.file_name()?.to_string_lossy().starts_with("event") {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let mut gamepad_devs: HashMap<GamepadId, GamepadDev> = HashMap::new();
+    for (id, gamepad) in gilrs.gamepads() {
+        let mut found = None;
+        for path in available_paths.iter() {
+            if let Ok(device) = evdev::Device::open(path) {
+                let name_match = device
+                    .name()
+                    .map(|n| n == gamepad.os_name())
+                    .unwrap_or(false);
+                let input_id = device.input_id();
+                let vendor_match = gamepad.vendor_id().is_none_or(|tv| tv == input_id.vendor());
+                let product_match = gamepad
+                    .product_id()
+                    .is_none_or(|tp| tp == input_id.product());
+                if name_match && vendor_match && product_match {
+                    found = Some((path.clone(), device));
+                    break;
+                }
+            }
+        }
+        if let Some((path, device)) = found {
+            available_paths.remove(&path);
+            gamepad_devs.insert(id, GamepadDev { device, path });
+        }
+    }
+
+    let primary_path = gamepad_devs
+        .get(&primary_id)
+        .map(|dev| &dev.path)
         .ok_or("Could not find filesystem path for primary device")?;
-    let assist_path = udev_helpers::resolve_event_path(&gilrs, assist_id)
+    let assist_path = gamepad_devs
+        .get(&assist_id)
+        .map(|dev| &dev.path)
         .ok_or("Could not find filesystem path for assist device")?;
+    let p_dev = &gamepad_devs[&primary_id].device;
+    let a_dev = &gamepad_devs[&assist_id].device;
 
     let primary_msg = format!(
         "Primary: ({}) {} @ {}",
@@ -244,11 +296,11 @@ fn wait_for_virtual_device(v_dev: &mut VirtualDevice) -> Result<Device, Box<dyn 
         }
         thread::sleep(RETRY_INTERVAL);
     }
-    Err("Timed out waiting for virtual device creation".into())
+    Err("Timed out waiting for virtual device".into())
 }
 
 fn run_input_loop(
-    mut gilrs: gilrs::Gilrs,
+    mut gilrs: Gilrs,
     mut v_dev: Device,
     mode: mux_modes::ModeType,
     p_id: GamepadId,
