@@ -36,11 +36,11 @@ enum Commands {
 #[derive(clap::Args, Debug)]
 struct MuxArgs {
     /// Primary controller ID (see 'list' command).
-    #[arg(short, long, default_value_t = 0)]
+    #[arg(long, default_value_t = 0)]
     primary: usize,
 
     /// Assist controller ID (see 'list' command).
-    #[arg(short, long, default_value_t = 1)]
+    #[arg(long, default_value_t = 1)]
     assist: usize,
 
     /// Hide primary and assist controllers.
