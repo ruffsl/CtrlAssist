@@ -231,8 +231,9 @@ fn run_input_loop(
 }
 
 pub struct PhysicalFFDev {
-    pub dev: Device,
+    pub resource: GamepadResource,
     pub effect_map: HashMap<i16, FFEffect>,
+    pub effect_data_map: HashMap<i16, evdev::FFEffectData>,
 }
 
 fn run_ff_loop(mut v_uinput: VirtualDevice, targets: Vec<GamepadResource>) {
@@ -241,8 +242,9 @@ fn run_ff_loop(mut v_uinput: VirtualDevice, targets: Vec<GamepadResource>) {
         .filter_map(|res| {
             if res.device.supported_ff().is_some() {
                 Some(PhysicalFFDev {
-                    dev: res.device,
+                    resource: res,
                     effect_map: HashMap::new(),
+                    effect_data_map: HashMap::new(),
                 })
             } else {
                 warn!("Device {} does not support FF", res.name);
