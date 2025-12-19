@@ -1,4 +1,5 @@
 use evdev::Device;
+use evdev::InputId;
 use evdev::uinput::VirtualDevice;
 use gilrs::{GamepadId, Gilrs};
 use std::collections::{HashMap, HashSet};
@@ -7,6 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 const RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const VIRTUAL_DEV_TIMEOUT: Duration = Duration::from_secs(2);
@@ -42,6 +44,30 @@ pub fn wait_for_virtual_device(
     Err("Timed out waiting for virtual device".into())
 }
 
+/// Computes the gilrs gamepad UUID for the Linux platform.
+/// This is adapted from gilrs-core's for evdev::InputId.
+pub fn create_uuid(iid: InputId) -> Uuid {
+    let bus = iid.bus_type().0 as u32;
+    let vendor = iid.vendor();
+    let product = iid.product();
+    let version = iid.version();
+    Uuid::from_fields(
+        bus.to_be(),
+        vendor.to_be(),
+        0,
+        &[
+            product as u8,
+            (product >> 8) as u8,
+            0,
+            0,
+            version as u8,
+            (version >> 8) as u8,
+            0,
+            0,
+        ],
+    )
+}
+
 /// Matches Gilrs gamepads to /dev/input/event* nodes.
 pub fn discover_gamepad_resources(gilrs: &Gilrs) -> HashMap<GamepadId, GamepadResource> {
     let mut resources = HashMap::new();
@@ -64,10 +90,9 @@ pub fn discover_gamepad_resources(gilrs: &Gilrs) -> HashMap<GamepadId, GamepadRe
             if let Ok(device) = Device::open(path) {
                 let input_id = device.input_id();
                 let name_match = device.name().is_some_and(|n| n == gamepad.os_name());
-                let vendor_match = gamepad.vendor_id().is_none_or(|v| v == input_id.vendor());
-                let product_match = gamepad.product_id().is_none_or(|p| p == input_id.product());
+                let uuid_match = Uuid::from_bytes(gamepad.uuid()) == create_uuid(input_id);
 
-                if name_match && vendor_match && product_match {
+                if name_match && uuid_match {
                     matched_path = Some((path.clone(), device));
                     break;
                 }
