@@ -6,8 +6,6 @@ use gilrs_helper::GamepadResource;
 use log::{error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -169,13 +167,9 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     info!("{}", virtual_msg);
     println!("{}", virtual_msg);
 
-    // Setup Shutdown Signal
-    let running = Arc::new(AtomicBool::new(true));
-    let r_signal = running.clone();
     let restore_vec: Vec<String> = restore_paths.into_iter().collect();
     ctrlc::set_handler(move || {
         println!("\nShutting down...");
-        r_signal.store(false, Ordering::SeqCst);
         for path in &restore_vec {
             let _ = udev_helpers::restore_device(path);
         }
@@ -200,7 +194,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     // Spawn Threads
     let mode_type = args.mode;
     thread::spawn(move || run_input_loop(gilrs, v_resource.device, mode_type, p_id, a_id));
-    thread::spawn(move || run_ff_loop(v_uinput, ff_targets, running));
+    thread::spawn(move || run_ff_loop(v_uinput, ff_targets));
 
     let mux_msg = "Mux Active. Press Ctrl+C to exit.";
     info!("{}", mux_msg);
@@ -240,11 +234,7 @@ pub struct PhysicalFFDev {
     pub effect_map: HashMap<i16, FFEffect>,
 }
 
-fn run_ff_loop(
-    mut v_uinput: VirtualDevice,
-    targets: Vec<GamepadResource>,
-    running: Arc<AtomicBool>,
-) {
+fn run_ff_loop(mut v_uinput: VirtualDevice, targets: Vec<GamepadResource>) {
     let mut phys_devs: Vec<PhysicalFFDev> = targets
         .into_iter()
         .filter_map(|res| {
@@ -262,7 +252,7 @@ fn run_ff_loop(
 
     info!("FF Thread started.");
 
-    while running.load(Ordering::Relaxed) {
+    loop {
         let events: Vec<_> = match v_uinput.fetch_events() {
             Ok(iter) => iter.collect(),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => vec![],
