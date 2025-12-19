@@ -7,6 +7,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use udev::{Device, Enumerator};
 
+const MODE_ROOT_ONLY: u32 = 0o600;
+const MODE_ROOT_GROUP: u32 = 0o660;
+
 /// Restrict access to all device nodes related to a physical gamepad.
 pub fn hide_gamepad_devices(
     resource: &GamepadResource,
@@ -26,10 +29,9 @@ pub fn hide_gamepad_devices(
 
     // 2. Find the physical parent (USB/Bluetooth root)
     let physical_root = find_physical_root(&device);
-    let root_syspath = physical_root.syspath();
 
     // 3. Find all child nodes (input/hidraw) belonging to that physical parent
-    let related_nodes = find_related_devnodes(root_syspath)?;
+    let related_nodes = find_related_devnodes(&physical_root)?;
 
     // 4. Restrict them
     for node in related_nodes {
@@ -39,13 +41,16 @@ pub fn hide_gamepad_devices(
     Ok(())
 }
 
-/// Helper: Applies permissions and updates the tracking set
+/// Helper: Applies permissions and updates the tracking set.
 fn hide_and_track(path: &Path, hidden_paths: &mut HashSet<PathBuf>) {
-    // We only insert into the set if the hide operation succeeds
-    if hide_device(path).is_ok() && hidden_paths.insert(path.to_path_buf()) {
-        log::info!("Hidden: {}", path.display());
-    } else {
-        log::warn!("Failed to hide or track: {}", path.display());
+    // Only track if the hide operation succeeds and it wasn't already tracked
+    match set_permissions(path, MODE_ROOT_ONLY) {
+        Ok(_) => {
+            if hidden_paths.insert(path.to_path_buf()) {
+                log::info!("Hidden: {}", path.display());
+            }
+        }
+        Err(e) => log::warn!("Failed to hide {}: {}", path.display(), e),
     }
 }
 
@@ -67,44 +72,40 @@ fn find_device_by_path(target_path: &Path) -> io::Result<Option<Device>> {
 /// Walks up the device tree to find the physical root (USB or Bluetooth),
 /// or returns the top-most parent if neither is found.
 fn find_physical_root(start_device: &Device) -> Device {
-    let mut current = start_device.clone();
+    let mut last_device = start_device.clone();
 
-    // Use an iterator to walk up the parent chain
+    // Walk up the ancestry chain
     let ancestors = std::iter::successors(Some(start_device.clone()), |d| d.parent());
 
     for ancestor in ancestors {
-        let subsystem = ancestor.subsystem().and_then(|s| s.to_str());
-
-        // If we hit a physical bus, this is our root
-        if matches!(subsystem, Some("usb" | "bluetooth")) {
+        if let Some(subsystem) = ancestor.subsystem().and_then(|s| s.to_str())
+            && matches!(subsystem, "usb" | "bluetooth")
+        {
             return ancestor;
         }
-
-        current = ancestor;
+        last_device = ancestor;
     }
 
     // If we exhausted the tree without finding USB/BT, return the highest node found
-    current
+    last_device
 }
 
-/// Finds all devnodes (input/hidraw) that are descendants of the given syspath.
-fn find_related_devnodes(parent_syspath: &Path) -> io::Result<Vec<PathBuf>> {
+/// Finds all devnodes (input/hidraw) that are descendants of the given parent device.
+fn find_related_devnodes(parent_device: &Device) -> io::Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     let mut enumerator = Enumerator::new()?;
 
-    // We can scan for multiple subsystems
+    // OPTIMIZATION: Instead of scanning everything and manually checking parents,
+    // let libudev filter devices that are children of our physical root.
+    enumerator.match_parent(parent_device)?;
+
     for device in enumerator.scan_devices()? {
         let subsystem = device.subsystem().and_then(|s| s.to_str());
-        // Simple filter for subsystems we care about
-        if !matches!(subsystem, Some("input" | "hidraw")) {
-            continue;
-        }
 
-        // Walk up from this device to see if it belongs to our parent_syspath
-        let is_descendant = std::iter::successors(Some(device.clone()), |d| d.parent())
-            .any(|d| d.syspath() == parent_syspath);
-
-        if is_descendant && let Some(devnode) = device.devnode() {
+        // Filter for subsystems we care about
+        if matches!(subsystem, Some("input" | "hidraw"))
+            && let Some(devnode) = device.devnode()
+        {
             paths.push(devnode.to_path_buf());
         }
     }
@@ -112,12 +113,12 @@ fn find_related_devnodes(parent_syspath: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Set permissions to root-only (read/write).
-fn hide_device(path: &Path) -> io::Result<()> {
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-}
-
 /// Restore permissions to root and input group (read/write).
 pub fn restore_device(path: &Path) -> io::Result<()> {
-    fs::set_permissions(path, fs::Permissions::from_mode(0o660))
+    set_permissions(path, MODE_ROOT_GROUP)
+}
+
+/// Internal helper to set specific unix mode permissions.
+fn set_permissions(path: &Path, mode: u32) -> io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
 }
