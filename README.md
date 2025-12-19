@@ -149,8 +149,6 @@ $ ctrlassist mux --rumble both
 
 - Hiding physical input devices requires root access
   - temporarily modifies group permissions for selected devices
-- Hiding is by merely matching vendor and product IDs
-  - Any controller with similar IDs may also be hidden
 - Hiding must be done before starting games or launchers
   - processes with open file handles may retain device access
 - Reconnecting a hidden controller reverts its visibility
