@@ -137,8 +137,8 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     let mut restore_paths = HashSet::new();
     if args.hide {
         info!("Hiding controllers (requires root)...");
-        udev_helpers::restrict_gamepad_devices(&gilrs.gamepad(p_id), &mut restore_paths)?;
-        udev_helpers::restrict_gamepad_devices(&gilrs.gamepad(a_id), &mut restore_paths)?;
+        udev_helpers::restrict_gamepad_devices(&resources[&p_id], &mut restore_paths)?;
+        udev_helpers::restrict_gamepad_devices(&resources[&a_id], &mut restore_paths)?;
         if restore_paths.is_empty() {
             return Err("Devices could not be hidden. Check permissions.".into());
         }
