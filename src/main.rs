@@ -6,6 +6,7 @@ use gilrs_helper::GamepadResource;
 use log::{error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
@@ -137,8 +138,8 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     let mut restore_paths = HashSet::new();
     if args.hide {
         info!("Hiding controllers (requires root)...");
-        udev_helpers::restrict_gamepad_devices(&resources[&p_id], &mut restore_paths)?;
-        udev_helpers::restrict_gamepad_devices(&resources[&a_id], &mut restore_paths)?;
+        udev_helpers::hide_gamepad_devices(&resources[&p_id], &mut restore_paths)?;
+        udev_helpers::hide_gamepad_devices(&resources[&a_id], &mut restore_paths)?;
         if restore_paths.is_empty() {
             return Err("Devices could not be hidden. Check permissions.".into());
         }
@@ -167,7 +168,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     info!("{}", virtual_msg);
     println!("{}", virtual_msg);
 
-    let restore_vec: Vec<String> = restore_paths.into_iter().collect();
+    let restore_vec: Vec<PathBuf> = restore_paths.into_iter().collect();
     ctrlc::set_handler(move || {
         println!("\nShutting down...");
         for path in &restore_vec {
