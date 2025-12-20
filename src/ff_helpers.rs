@@ -95,7 +95,7 @@ pub fn handle_ff_playback(effect_id: u16, status: i32, phys_devs: &mut Vec<Physi
     for phys_dev in phys_devs {
         let needs_recovery = if let Some(effect) = phys_dev.effect_map.get_mut(&virt_id) {
             playback_effect(effect, is_playing, virt_id)
-                .is_err_and(|e| matches!(e.raw_os_error(), Some(19)))
+                .is_err_and(|e| matches!(e.raw_os_error(), Some(libc::ENODEV)))
         } else {
             false
         };
