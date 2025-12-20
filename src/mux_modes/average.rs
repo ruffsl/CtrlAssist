@@ -1,4 +1,4 @@
-use super::{helpers, MuxMode};
+use super::{MuxMode, helpers};
 use crate::evdev_helpers;
 use evdev::InputEvent;
 use gilrs::{Button, Event, EventType, GamepadId, Gilrs};
@@ -99,7 +99,9 @@ impl MuxMode for AverageMode {
                     let primary_y = primary.axis_data(y_axis).map_or(0.0, |d| d.value());
 
                     match (assist_active, primary_active) {
-                        (true, true) => ((primary_x + assist_x) / 2.0, (primary_y + assist_y) / 2.0),
+                        (true, true) => {
+                            ((primary_x + assist_x) / 2.0, (primary_y + assist_y) / 2.0)
+                        }
                         (true, false) => (assist_x, assist_y),
                         (false, _) => (primary_x, primary_y),
                     }

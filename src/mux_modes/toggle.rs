@@ -1,4 +1,4 @@
-use super::{helpers, MuxMode};
+use super::{MuxMode, helpers};
 use evdev::InputEvent;
 use gilrs::{Event, EventType, GamepadId, Gilrs};
 

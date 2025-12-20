@@ -1,4 +1,4 @@
-use super::{helpers, MuxMode};
+use super::{MuxMode, helpers};
 use crate::evdev_helpers;
 use evdev::InputEvent;
 use gilrs::{Button, Event, EventType, GamepadId, Gilrs};
@@ -49,7 +49,7 @@ impl MuxMode for PriorityMode {
                     // D-pad: Assist priority
                     let assist_net = helpers::calculate_dpad_net_value(&assist, neg_btn, pos_btn);
                     let primary_net = helpers::calculate_dpad_net_value(&primary, neg_btn, pos_btn);
-                    
+
                     let final_value = if assist_net.abs() > helpers::DEADZONE {
                         assist_net
                     } else {
