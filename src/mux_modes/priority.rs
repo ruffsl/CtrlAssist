@@ -27,7 +27,7 @@ impl MuxMode for PriorityMode {
 
         match event.event {
             // --- Digital Buttons (XOR-like Logic) ---
-            // Primary wins conflicts. Forward input only if the other isn't pressing it.
+            // Assist wins conflicts. Forward input only if Assist isn't pressing it.
             EventType::ButtonPressed(btn, _) | EventType::ButtonReleased(btn, _) => {
                 let key = evdev_helpers::gilrs_button_to_evdev_key(btn)?;
                 let is_pressed = matches!(event.event, EventType::ButtonPressed(..));
@@ -39,7 +39,8 @@ impl MuxMode for PriorityMode {
                     primary.is_pressed(btn)
                 };
 
-                // If other is holding, block this event (unless Primary is overriding Assist)
+                // If Assist is still holding, block this event.
+                // Still allow release from Assist override Primary.
                 if other_holding && event.id == primary_id {
                     return None;
                 }
