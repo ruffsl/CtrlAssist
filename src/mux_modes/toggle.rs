@@ -1,6 +1,6 @@
 use super::MuxMode;
 use evdev::InputEvent;
-use gilrs::{Axis, Button, Event, GamepadId};
+use gilrs::{Axis, Button, Event, EventType, GamepadId, Gilrs};
 
 use crate::evdev_helpers;
 
@@ -15,13 +15,13 @@ impl MuxMode for ToggleMode {
         event: &Event,
         primary_id: GamepadId,
         assist_id: GamepadId,
-        _gilrs: &gilrs::Gilrs,
+        _gilrs: &Gilrs,
     ) -> Option<Vec<InputEvent>> {
         // Bootstrap active controller
         let active = self.active.get_or_insert(primary_id);
 
         // Toggle logic: if assist presses the toggle button, switch active
-        if let (id, gilrs::EventType::ButtonPressed(Button::Mode, _)) = (event.id, event.event)
+        if let (id, EventType::ButtonPressed(Button::Mode, _)) = (event.id, event.event)
             && id == assist_id
         {
             *active = if *active == primary_id {
@@ -40,14 +40,14 @@ impl MuxMode for ToggleMode {
         // Convert gilrs event to evdev events
         let mut events = Vec::new();
         match event.event {
-            gilrs::EventType::ButtonPressed(button, _)
-            | gilrs::EventType::ButtonReleased(button, _) => {
+            EventType::ButtonPressed(button, _)
+            | EventType::ButtonReleased(button, _) => {
                 if let Some(key) = evdev_helpers::gilrs_button_to_evdev_key(button) {
-                    let value = matches!(event.event, gilrs::EventType::ButtonPressed(..)) as i32;
+                    let value = matches!(event.event, EventType::ButtonPressed(..)) as i32;
                     events.push(InputEvent::new(evdev::EventType::KEY.0, key.0, value));
                 }
             }
-            gilrs::EventType::ButtonChanged(button, value, _) => {
+            EventType::ButtonChanged(button, value, _) => {
                 if let Some(abs_axis) = evdev_helpers::gilrs_button_to_evdev_axis(button) {
                     let scaled_value = evdev_helpers::scale_trigger(value);
                     events.push(InputEvent::new(
@@ -57,7 +57,7 @@ impl MuxMode for ToggleMode {
                     ));
                 }
             }
-            gilrs::EventType::AxisChanged(axis, value, _) => {
+            EventType::AxisChanged(axis, value, _) => {
                 if let Some(abs_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(axis) {
                     let scaled_value = match axis {
                         Axis::LeftStickY | Axis::RightStickY => {
