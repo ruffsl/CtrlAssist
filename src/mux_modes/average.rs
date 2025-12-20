@@ -135,9 +135,7 @@ impl MuxMode for AverageMode {
                 // Otherwise, take the active one, or primary if both are inactive.
                 // Allow either controller to neutralize stick with counter-input.
                 let (v_x, v_y) = match (assist_active, primary_active) {
-                    (true, true) => {
-                        ((p_x + a_x) / 2.0, (p_y + a_y) / 2.0)
-                    },
+                    (true, true) => ((p_x + a_x) / 2.0, (p_y + a_y) / 2.0),
                     (true, false) => (a_x, a_y),
                     (false, _) => (p_x, p_y),
                 };

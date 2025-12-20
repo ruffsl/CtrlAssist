@@ -31,7 +31,7 @@ impl MuxMode for ToggleMode {
             } else {
                 primary_id
             };
-            
+
             let active = gilrs.gamepad(*active_id);
             let state = active.state();
             let mut sync_events = Vec::new();
@@ -51,10 +51,9 @@ impl MuxMode for ToggleMode {
                             button_data.is_pressed() as i32,
                         ));
                     }
-                    
+
                     // For buttons that map to axes (like triggers)
                     if let Some(abs_axis) = evdev_helpers::gilrs_button_to_evdev_axis(btn) {
-
                         // 1. D-PAD LOGIC
                         if let Some([neg_btn, pos_btn]) = evdev_helpers::dpad_axis_pair(btn) {
                             // Helper to calculate "Net Axis Value" (-1.0 to 1.0) for a controller
@@ -99,18 +98,18 @@ impl MuxMode for ToggleMode {
 
             // Synchronize all axis states to their current values
             for (code, axis_data) in state.axes() {
-                if let Some(gilrs::ev::AxisOrBtn::Axis(axis)) = active.axis_or_btn_name(code) {
-                    if let Some(ev_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(axis) {
-                        // Handle Y-axis inversion standard
-                        let is_y = matches!(axis, Axis::LeftStickY | Axis::RightStickY);
-                        let scaled = evdev_helpers::scale_stick(axis_data.value(), is_y);
-                        
-                        sync_events.push(InputEvent::new(
-                            evdev::EventType::ABSOLUTE.0,
-                            ev_axis.0,
-                            scaled,
-                        ));
-                    }
+                if let Some(gilrs::ev::AxisOrBtn::Axis(axis)) = active.axis_or_btn_name(code)
+                    && let Some(ev_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(axis)
+                {
+                    // Handle Y-axis inversion standard
+                    let is_y = matches!(axis, Axis::LeftStickY | Axis::RightStickY);
+                    let scaled = evdev_helpers::scale_stick(axis_data.value(), is_y);
+
+                    sync_events.push(InputEvent::new(
+                        evdev::EventType::ABSOLUTE.0,
+                        ev_axis.0,
+                        scaled,
+                    ));
                 }
             }
             return Some(sync_events);
@@ -120,7 +119,7 @@ impl MuxMode for ToggleMode {
         if event.id != *active_id {
             return None;
         }
-        
+
         let active = gilrs.gamepad(*active_id);
 
         // Convert gilrs event to evdev events
@@ -181,7 +180,6 @@ impl MuxMode for ToggleMode {
             }
             EventType::AxisChanged(axis, raw_val, _) => {
                 if let Some(ev_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(axis) {
-
                     // Handle Y-axis inversion standard
                     let is_y = matches!(axis, Axis::LeftStickY | Axis::RightStickY);
                     let scaled = evdev_helpers::scale_stick(raw_val, is_y);
