@@ -9,6 +9,8 @@ pub struct ToggleMode {
     active_id: Option<GamepadId>,
 }
 
+const DEADZONE: f32 = 0.1;
+
 impl MuxMode for ToggleMode {
     fn handle_event(
         &mut self,
