@@ -6,7 +6,7 @@ use crate::evdev_helpers;
 
 #[derive(Default)]
 pub struct ToggleMode {
-    active: Option<GamepadId>,
+    active_id: Option<GamepadId>,
 }
 
 impl MuxMode for ToggleMode {
@@ -15,25 +15,28 @@ impl MuxMode for ToggleMode {
         event: &Event,
         primary_id: GamepadId,
         assist_id: GamepadId,
-        _gilrs: &Gilrs,
+        gilrs: &Gilrs,
     ) -> Option<Vec<InputEvent>> {
         // Bootstrap active controller
-        let active = self.active.get_or_insert(primary_id);
+        let active_id = self.active_id.get_or_insert(primary_id);
 
         // Toggle logic: if assist presses the toggle button, switch active
         if let (id, EventType::ButtonPressed(Button::Mode, _)) = (event.id, event.event)
             && id == assist_id
         {
-            *active = if *active == primary_id {
+            *active_id = if *active_id == primary_id {
                 assist_id
             } else {
                 primary_id
             };
-            return None;
+            let active = gilrs.gamepad(*active_id);
+            // TODO: Return events that reset all buttons/axes on the newly active controller
+            // not implemented yet
+            unimplemented!()
         }
 
         // Only forward events from the active controller
-        if event.id != *active {
+        if event.id != *active_id {
             return None;
         }
 
