@@ -10,51 +10,81 @@ use udev::{Device, Enumerator};
 const MODE_ROOT_ONLY: u32 = 0o600;
 const MODE_ROOT_GROUP: u32 = 0o660;
 
-/// Restrict access to all device nodes related to a physical gamepad.
-pub fn hide_gamepad_devices(
-    resource: &GamepadResource,
-    hidden_paths: &mut HashSet<PathBuf>,
-) -> Result<(), Box<dyn Error>> {
-    let event_path = resource.path.as_path();
-
-    // 1. Find the specific udev device for the given path
-    let device = match find_device_by_path(event_path)? {
-        Some(d) => d,
-        None => {
-            // Fallback: just hide the event path itself if udev can't find it
-            hide_and_track(event_path, hidden_paths);
-            return Ok(());
-        }
-    };
-
-    // 2. Find the physical parent (USB/Bluetooth root)
-    let physical_root = find_physical_root(&device);
-
-    // 3. Find all child nodes (input/hidraw) belonging to that physical parent
-    let related_nodes = find_related_devnodes(&physical_root)?;
-
-    // 4. Restrict them
-    for node in related_nodes {
-        hide_and_track(&node, hidden_paths);
-    }
-
-    Ok(())
+/// A RAII guard that hides devices and automatically restores them when dropped.
+pub struct ScopedDeviceHider {
+    hidden_paths: HashSet<PathBuf>,
 }
 
-/// Helper: Applies permissions and updates the tracking set.
-fn hide_and_track(path: &Path, hidden_paths: &mut HashSet<PathBuf>) {
-    // Only track if the hide operation succeeds and it wasn't already tracked
-    match set_permissions(path, MODE_ROOT_ONLY) {
-        Ok(_) => {
-            if hidden_paths.insert(path.to_path_buf()) {
+impl ScopedDeviceHider {
+    pub fn new() -> Self {
+        Self {
+            hidden_paths: HashSet::new(),
+        }
+    }
+
+    /// Restrict access to all device nodes related to a physical gamepad.
+    pub fn hide_gamepad_devices(
+        &mut self,
+        resource: &GamepadResource,
+    ) -> Result<(), Box<dyn Error>> {
+        let event_path = resource.path.as_path();
+
+        // 1. Find the specific udev device for the given path
+        let device = match find_device_by_path(event_path)? {
+            Some(d) => d,
+            None => {
+                // Fallback: just hide the event path itself if udev can't find it
+                self.hide_and_track(event_path);
+                return Ok(());
+            }
+        };
+
+        // 2. Find the physical parent (USB/Bluetooth root)
+        let physical_root = find_physical_root(&device);
+
+        // 3. Find all child nodes (input/hidraw) belonging to that physical parent
+        let related_nodes = find_related_devnodes(&physical_root)?;
+
+        // 4. Restrict them
+        for node in related_nodes {
+            self.hide_and_track(&node);
+        }
+
+        Ok(())
+    }
+
+    /// Helper: Applies permissions and tracks the path internally.
+    fn hide_and_track(&mut self, path: &Path) {
+        // Skip if we are already tracking this path to avoid redundant syscalls
+        if self.hidden_paths.contains(path) {
+            return;
+        }
+
+        match set_permissions(path, MODE_ROOT_ONLY) {
+            Ok(_) => {
+                self.hidden_paths.insert(path.to_path_buf());
                 log::info!("Hidden: {}", path.display());
             }
+            Err(e) => log::warn!("Failed to hide {}: {}", path.display(), e),
         }
-        Err(e) => log::warn!("Failed to hide {}: {}", path.display(), e),
     }
 }
 
-/// Scans udev to find the device corresponding to a file path.
+// Ensure devices are restored when the struct goes out of scope (e.g. app exit/panic).
+impl Drop for ScopedDeviceHider {
+    fn drop(&mut self) {
+        for path in &self.hidden_paths {
+            if let Err(e) = set_permissions(path, MODE_ROOT_GROUP) {
+                log::error!("Failed to restore {}: {}", path.display(), e);
+            } else {
+                log::info!("Restored: {}", path.display());
+            }
+        }
+    }
+}
+
+// --- Helper Functions (Stateless) ---
+
 fn find_device_by_path(target_path: &Path) -> io::Result<Option<Device>> {
     let mut enumerator = Enumerator::new()?;
     enumerator.match_subsystem("input")?;
@@ -95,8 +125,7 @@ fn find_related_devnodes(parent_device: &Device) -> io::Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     let mut enumerator = Enumerator::new()?;
 
-    // OPTIMIZATION: Instead of scanning everything and manually checking parents,
-    // let libudev filter devices that are children of our physical root.
+    // Let udev handle the parent matching
     enumerator.match_parent(parent_device)?;
 
     for device in enumerator.scan_devices()? {
@@ -109,16 +138,9 @@ fn find_related_devnodes(parent_device: &Device) -> io::Result<Vec<PathBuf>> {
             paths.push(devnode.to_path_buf());
         }
     }
-
     Ok(paths)
 }
 
-/// Restore permissions to root and input group (read/write).
-pub fn restore_device(path: &Path) -> io::Result<()> {
-    set_permissions(path, MODE_ROOT_GROUP)
-}
-
-/// Internal helper to set specific unix mode permissions.
 fn set_permissions(path: &Path, mode: u32) -> io::Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
 }

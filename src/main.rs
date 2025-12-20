@@ -4,9 +4,8 @@ use evdev::{Device, EventType, InputEvent};
 use gilrs::{GamepadId, Gilrs};
 use gilrs_helper::GamepadResource;
 use log::{error, info, warn};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::error::Error;
-use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
@@ -135,14 +134,11 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     println!("{}", assist_msg);
 
     // Handle hiding via udev
-    let mut restore_paths = HashSet::new();
+    let mut hider = udev_helpers::ScopedDeviceHider::new();
     if args.hide {
         info!("Hiding controllers (requires root)...");
-        udev_helpers::hide_gamepad_devices(&resources[&p_id], &mut restore_paths)?;
-        udev_helpers::hide_gamepad_devices(&resources[&a_id], &mut restore_paths)?;
-        if restore_paths.is_empty() {
-            return Err("Devices could not be hidden. Check permissions.".into());
-        }
+        hider.hide_gamepad_devices(&resources[&p_id])?;
+        hider.hide_gamepad_devices(&resources[&a_id])?;
     }
 
     // Setup Virtual Device
@@ -168,12 +164,8 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     info!("{}", virtual_msg);
     println!("{}", virtual_msg);
 
-    let restore_vec: Vec<PathBuf> = restore_paths.into_iter().collect();
     ctrlc::set_handler(move || {
         println!("\nShutting down...");
-        for path in &restore_vec {
-            let _ = udev_helpers::restore_device(path);
-        }
         std::process::exit(0);
     })?;
 
