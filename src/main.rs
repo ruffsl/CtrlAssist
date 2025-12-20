@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use evdev::uinput::VirtualDevice;
-use evdev::{Device, EventType, FFEffect, InputEvent};
+use evdev::{Device, EventType, InputEvent};
 use gilrs::{GamepadId, Gilrs};
 use gilrs_helper::GamepadResource;
 use log::{error, info, warn};
@@ -230,18 +230,12 @@ fn run_input_loop(
     }
 }
 
-pub struct PhysicalFFDev {
-    pub resource: GamepadResource,
-    pub effect_map: HashMap<i16, FFEffect>,
-    pub effect_data_map: HashMap<i16, evdev::FFEffectData>,
-}
-
 fn run_ff_loop(mut v_uinput: VirtualDevice, targets: Vec<GamepadResource>) {
-    let mut phys_devs: Vec<PhysicalFFDev> = targets
+    let mut phys_devs: Vec<ff_helpers::PhysicalFFDev> = targets
         .into_iter()
         .filter_map(|res| {
             if res.device.supported_ff().is_some() {
-                Some(PhysicalFFDev {
+                Some(ff_helpers::PhysicalFFDev {
                     resource: res,
                     effect_map: HashMap::new(),
                     effect_data_map: HashMap::new(),

@@ -1,8 +1,14 @@
+use crate::gilrs_helper::GamepadResource;
 use evdev::uinput::VirtualDevice;
 use evdev::{EventSummary, FFStatusCode, InputEvent, UInputCode};
 use log::{debug, error, warn};
+use std::collections::HashMap;
 
-use crate::PhysicalFFDev;
+pub(crate) struct PhysicalFFDev {
+    pub(crate) resource: GamepadResource,
+    pub(crate) effect_map: HashMap<i16, evdev::FFEffect>,
+    pub(crate) effect_data_map: HashMap<i16, evdev::FFEffectData>,
+}
 
 pub fn process_ff_event(
     event: InputEvent,
