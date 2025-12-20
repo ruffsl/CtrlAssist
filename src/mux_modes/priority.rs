@@ -71,21 +71,25 @@ impl MuxMode for PriorityMode {
                     // If Assist is active on this axis, it rules. Otherwise, Primary.
                     // This handles both "Override" and "Return to Primary" automatically.
                     let final_val = if a_net.abs() > DEADZONE { a_net } else { p_net };
-                    
+
                     // If the calculated `final_val` is effectively "Up", treat it as DPadUp press.
                     let (active_btn, mag) = if final_val > DEADZONE {
-                         (pos_btn, final_val)
+                        (pos_btn, final_val)
                     } else {
-                         (neg_btn, final_val.abs())
+                        (neg_btn, final_val.abs())
                     };
 
-                    // Note: DPadUp/Left usually map to -1. Check your `scale_stick` impl. 
+                    // Note: DPadUp/Left usually map to -1. Check your `scale_stick` impl.
                     // Assuming `scale_stick` handles the typical 0..1 -> axis conversion:
                     let invert = matches!(active_btn, Button::DPadUp | Button::DPadLeft);
                     let scaled = evdev_helpers::scale_stick(mag, invert);
-                    
-                    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, abs_axis.0, scaled));
-                } 
+
+                    events.push(InputEvent::new(
+                        evdev::EventType::ABSOLUTE.0,
+                        abs_axis.0,
+                        scaled,
+                    ));
+                }
                 // 2. TRIGGER LOGIC (Highest Value Wins)
                 else {
                     let p_val = primary.button_data(btn).map_or(0.0, |d| d.value());
@@ -117,7 +121,7 @@ impl MuxMode for PriorityMode {
 
                 // Determine the "Owner" of the stick
                 let owner = if assist_active { assist } else { primary };
-                
+
                 // Optimization: If Primary moved but Assist is active, ignore completely.
                 if event.id == primary_id && assist_active {
                     return None;
@@ -127,12 +131,16 @@ impl MuxMode for PriorityMode {
                 for ax in [x_axis, y_axis] {
                     if let Some(ev_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(ax) {
                         let raw_val = owner.axis_data(ax).map_or(0.0, |d| d.value());
-                        
+
                         // Handle Y-axis inversion standard
                         let is_y = matches!(ax, Axis::LeftStickY | Axis::RightStickY);
                         let scaled = evdev_helpers::scale_stick(raw_val, is_y);
 
-                        events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, ev_axis.0, scaled));
+                        events.push(InputEvent::new(
+                            evdev::EventType::ABSOLUTE.0,
+                            ev_axis.0,
+                            scaled,
+                        ));
                     }
                 }
             }
