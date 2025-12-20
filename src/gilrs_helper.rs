@@ -45,7 +45,7 @@ pub fn wait_for_virtual_device(
 }
 
 /// Computes the gilrs gamepad UUID for the Linux platform.
-/// This is adapted from gilrs-core's for evdev::InputId.
+/// This is adapted from gilrs-core for evdev::InputId.
 pub fn create_uuid(iid: InputId) -> Uuid {
     let bus = iid.bus_type().0 as u32;
     let vendor = iid.vendor();
