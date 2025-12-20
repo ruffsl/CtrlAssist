@@ -237,8 +237,7 @@ fn run_ff_loop(mut v_uinput: VirtualDevice, targets: Vec<GamepadResource>) {
             if res.device.supported_ff().is_some() {
                 Some(ff_helpers::PhysicalFFDev {
                     resource: res,
-                    effect_map: HashMap::new(),
-                    effect_data_map: HashMap::new(),
+                    effects: HashMap::new(),
                 })
             } else {
                 warn!("Device {} does not support FF", res.name);

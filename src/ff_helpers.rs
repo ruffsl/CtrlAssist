@@ -6,8 +6,7 @@ use std::collections::HashMap;
 
 pub(crate) struct PhysicalFFDev {
     pub(crate) resource: GamepadResource,
-    pub(crate) effect_map: HashMap<i16, evdev::FFEffect>,
-    pub(crate) effect_data_map: HashMap<i16, evdev::FFEffectData>,
+    pub(crate) effects: HashMap<i16, (evdev::FFEffect, evdev::FFEffectData)>,
 }
 
 pub fn process_ff_event(
@@ -56,8 +55,7 @@ pub fn handle_ff_upload(
                     virt_id,
                     ff_effect.id()
                 );
-                phys_dev.effect_map.insert(virt_id, ff_effect);
-                phys_dev.effect_data_map.insert(virt_id, effect_data);
+                phys_dev.effects.insert(virt_id, (ff_effect, effect_data));
             }
             Err(e) => error!("Failed to upload effect to physical device: {}", e),
         }
@@ -74,7 +72,7 @@ pub fn handle_ff_erase(
             let virt_id = ev.effect_id() as i16;
 
             for phys_dev in phys_devs {
-                if let Some(mut effect) = phys_dev.effect_map.remove(&virt_id)
+                if let Some((mut effect, _)) = phys_dev.effects.remove(&virt_id)
                     && let Err(e) = effect.stop()
                 {
                     error!(
@@ -93,7 +91,7 @@ pub fn handle_ff_playback(effect_id: u16, status: i32, phys_devs: &mut Vec<Physi
     let is_playing = status == FFStatusCode::FF_STATUS_PLAYING.0 as i32;
 
     for phys_dev in phys_devs {
-        let needs_recovery = if let Some(effect) = phys_dev.effect_map.get_mut(&virt_id) {
+        let needs_recovery = if let Some((effect, _)) = phys_dev.effects.get_mut(&virt_id) {
             playback_effect(effect, is_playing, virt_id)
                 .is_err_and(|e| matches!(e.raw_os_error(), Some(libc::ENODEV)))
         } else {
@@ -102,7 +100,7 @@ pub fn handle_ff_playback(effect_id: u16, status: i32, phys_devs: &mut Vec<Physi
 
         if needs_recovery {
             recover_physical_ff_dev(phys_dev);
-            if let Some(effect) = phys_dev.effect_map.get_mut(&virt_id)
+            if let Some((effect, _)) = phys_dev.effects.get_mut(&virt_id)
                 && let Err(e) = playback_effect(effect, is_playing, virt_id)
             {
                 error!(
@@ -137,11 +135,17 @@ fn recover_physical_ff_dev(phys_dev: &mut PhysicalFFDev) {
         Ok(new_dev) => {
             phys_dev.resource.device = new_dev;
             warn!("FF device reopened after disconnect: {}", path.display());
-            // Re-upload all remembered effects
-            for (&virt_id, effect_data) in &phys_dev.effect_data_map {
-                match phys_dev.resource.device.upload_ff_effect(*effect_data) {
+            // Re-upload all remembered effects (idiomatic borrow pattern)
+            let to_restore: Vec<(i16, evdev::FFEffectData)> = phys_dev
+                .effects
+                .iter()
+                .map(|(&virt_id, (_, effect_data))| (virt_id, *effect_data))
+                .collect();
+
+            for (virt_id, effect_data) in to_restore {
+                match phys_dev.resource.device.upload_ff_effect(effect_data) {
                     Ok(ff_effect) => {
-                        phys_dev.effect_map.insert(virt_id, ff_effect);
+                        phys_dev.effects.insert(virt_id, (ff_effect, effect_data));
                         debug!("Re-uploaded effect after recovery (virt_id: {})", virt_id);
                     }
                     Err(e) => {
