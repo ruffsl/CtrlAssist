@@ -110,10 +110,10 @@ impl MuxMode for PriorityMode {
                     _ => return None, // Ignore non-stick axes here
                 };
 
-                // Check Assist's activity on this specific stick
+                // Check Assist's activity on this specific stick (circular deadzone)
                 let a_x = assist.axis_data(x_axis).map_or(0.0, |d| d.value());
                 let a_y = assist.axis_data(y_axis).map_or(0.0, |d| d.value());
-                let assist_active = a_x.abs() > DEADZONE || a_y.abs() > DEADZONE;
+                let assist_active = (a_x * a_x + a_y * a_y).sqrt() > DEADZONE;
 
                 // Determine the "Owner" of the stick
                 let owner = if assist_active { assist } else { primary };
