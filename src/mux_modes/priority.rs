@@ -1,17 +1,10 @@
-use super::MuxMode;
-use evdev::InputEvent;
-use gilrs::{Axis, Button, Event, GamepadId};
-
+use super::{MuxMode, helpers};
 use crate::evdev_helpers;
+use evdev::InputEvent;
+use gilrs::{Button, Event, EventType, GamepadId, Gilrs};
 
 #[derive(Default)]
 pub struct PriorityMode;
-
-const DEFAULT_DEADZONE: f32 = 0.1;
-
-fn deadzone() -> f32 {
-    DEFAULT_DEADZONE
-}
 
 impl MuxMode for PriorityMode {
     fn handle_event(
@@ -19,146 +12,89 @@ impl MuxMode for PriorityMode {
         event: &Event,
         primary_id: GamepadId,
         assist_id: GamepadId,
-        gilrs: &gilrs::Gilrs,
+        gilrs: &Gilrs,
     ) -> Option<Vec<InputEvent>> {
-        // Ignore events from devices other than primary and assist
-        let other_id = match event.id {
-            id if id == primary_id => assist_id,
-            id if id == assist_id => primary_id,
-            _ => return None,
-        };
+        // Filter out irrelevant devices
+        if event.id != primary_id && event.id != assist_id {
+            return None;
+        }
 
-        // Always get up-to-date gamepad handles from active gilrs instance
-        let other_gamepad = gilrs.gamepad(other_id);
+        let primary = gilrs.gamepad(primary_id);
+        let assist = gilrs.gamepad(assist_id);
 
-        // --- Event Forwarding Logic ---
-        let mut events = Vec::with_capacity(2);
         match event.event {
-            // --- Digital Buttons ---
-            gilrs::EventType::ButtonPressed(button, _)
-            | gilrs::EventType::ButtonReleased(button, _) => {
-                if let Some(key) = evdev_helpers::gilrs_button_to_evdev_key(button) {
-                    let value = matches!(event.event, gilrs::EventType::ButtonPressed(..)) as i32;
-                    // Only relay if the other gamepad does not have the button pressed
-                    let other_pressed = other_gamepad
-                        .button_data(button)
-                        .is_some_and(|d| d.value() != 0.0);
-                    if other_pressed {
-                        return None;
-                    }
-                    events.push(InputEvent::new(evdev::EventType::KEY.0, key.0, value));
+            EventType::ButtonPressed(btn, _) | EventType::ButtonReleased(btn, _) => {
+                // Skip unknown buttons - they may be mapped to axes instead
+                if btn == Button::Unknown {
+                    return None;
                 }
+
+                let is_pressed = matches!(event.event, EventType::ButtonPressed(..));
+
+                // Check if assist is holding this button
+                let assist_holding = assist.is_pressed(btn);
+
+                // Block primary's event if assist is holding
+                if assist_holding && event.id == primary_id {
+                    return None;
+                }
+
+                helpers::create_button_key_event(btn, is_pressed).map(|e| vec![e])
             }
 
-            // --- Analog Triggers / Pressure Buttons ---
-            gilrs::EventType::ButtonChanged(button, value, _) => {
-                if let Some(abs_axis) = evdev_helpers::gilrs_button_to_evdev_axis(button) {
-                    let mut value = value;
-                    let mut button = button;
+            EventType::ButtonChanged(btn, _, _) => {
+                let abs_axis = evdev_helpers::gilrs_button_to_evdev_axis(btn)?;
 
-                    // 1. Identify the Axis Pair
-                    let axis_pair = crate::evdev_helpers::dpad_axis_pair(button);
+                let event = if let Some([neg_btn, pos_btn]) = evdev_helpers::dpad_axis_pair(btn) {
+                    // D-pad: Assist priority
+                    let assist_net = helpers::calculate_dpad_net_value(&assist, neg_btn, pos_btn);
+                    let primary_net = helpers::calculate_dpad_net_value(&primary, neg_btn, pos_btn);
 
-                    if let Some(pair) = axis_pair {
-                        // Closure to check if the OTHER controller is pressing a button
-                        let is_other_pressing = |b| {
-                            other_gamepad
-                                .button_data(b)
-                                .is_some_and(|d| d.value() > 0.0)
-                        };
-
-                        if other_id == assist_id && pair.iter().copied().any(is_other_pressing) {
-                            return None; // Primary is blocked because Assist is active on this axis
-                        } else if other_id == primary_id && value == 0.0 {
-                            // Assist released; if Primary is holding a button, adopt it
-                            if let Some(active_btn) =
-                                pair.iter().copied().find(|&b| is_other_pressing(b))
-                            {
-                                button = active_btn;
-                                value = 1.0;
-                            }
-                        }
-                    }
-
-                    // Only relay if greater than other trigger value
-                    let other_greater = match button {
-                        Button::DPadUp
-                        | Button::DPadDown
-                        | Button::DPadLeft
-                        | Button::DPadRight => false,
-                        _ => other_gamepad
-                            .button_data(button)
-                            .is_some_and(|d| d.value() >= value),
+                    let final_value = if assist_net.abs() > helpers::DEADZONE {
+                        assist_net
+                    } else {
+                        primary_net
                     };
-                    if other_greater {
-                        return None;
-                    }
-                    let scaled_value = match button {
-                        // D-pad-as-axis (uncommon, but matches original logic)
-                        Button::DPadUp | Button::DPadLeft => {
-                            evdev_helpers::scale_stick(value, true)
-                        }
-                        Button::DPadDown | Button::DPadRight => {
-                            evdev_helpers::scale_stick(value, false)
-                        }
-                        // Analog triggers (LT2/RT2)
-                        _ => evdev_helpers::scale_trigger(value),
-                    };
-                    events.push(InputEvent::new(
-                        evdev::EventType::ABSOLUTE.0,
-                        abs_axis.0,
-                        scaled_value,
-                    ));
-                }
+
+                    helpers::create_dpad_event(final_value, neg_btn, pos_btn, abs_axis)
+                } else {
+                    // Trigger: Highest value wins
+                    let primary_val = primary.button_data(btn).map_or(0.0, |d| d.value());
+                    let assist_val = assist.button_data(btn).map_or(0.0, |d| d.value());
+                    let max_val = primary_val.max(assist_val);
+
+                    helpers::create_trigger_event(max_val, abs_axis)
+                };
+
+                Some(vec![event])
             }
 
-            // --- Analog Sticks ---
-            gilrs::EventType::AxisChanged(axis, value, _) => {
-                if let Some(abs_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(axis) {
-                    // Only relay if not conflicting with assist joysticks
-                    let other_pushed = match axis {
-                        Axis::LeftStickX | Axis::LeftStickY => {
-                            other_gamepad
-                                .axis_data(Axis::LeftStickX)
-                                .is_some_and(|d| d.value().abs() >= deadzone())
-                                || other_gamepad
-                                    .axis_data(Axis::LeftStickY)
-                                    .is_some_and(|d| d.value().abs() >= deadzone())
-                        }
-                        Axis::RightStickX | Axis::RightStickY => {
-                            other_gamepad
-                                .axis_data(Axis::RightStickX)
-                                .is_some_and(|d| d.value().abs() >= deadzone())
-                                || other_gamepad
-                                    .axis_data(Axis::RightStickY)
-                                    .is_some_and(|d| d.value().abs() >= deadzone())
-                        }
-                        _ => false,
-                    };
-                    if other_pushed && other_id == assist_id {
-                        return None;
-                    }
-                    let scaled_value = match axis {
-                        // Invert Y axes
-                        Axis::LeftStickY | Axis::RightStickY => {
-                            evdev_helpers::scale_stick(value, true)
-                        }
-                        // X axes
-                        _ => evdev_helpers::scale_stick(value, false),
-                    };
-                    events.push(InputEvent::new(
-                        evdev::EventType::ABSOLUTE.0,
-                        abs_axis.0,
-                        scaled_value,
-                    ));
+            EventType::AxisChanged(axis, _, _) => {
+                let (x_axis, y_axis) = helpers::map_to_stick_pair(axis)?;
+
+                // Check if assist is active on this stick
+                let assist_active = helpers::is_stick_active(&assist, x_axis, y_axis);
+
+                // If primary moved but assist is active, ignore
+                if event.id == primary_id && assist_active {
+                    return None;
                 }
+
+                // Determine owner and emit events for both axes
+                let owner = if assist_active { assist } else { primary };
+
+                let events = [x_axis, y_axis]
+                    .into_iter()
+                    .filter_map(|ax| {
+                        let value = owner.axis_data(ax).map_or(0.0, |d| d.value());
+                        helpers::create_stick_event(ax, value)
+                    })
+                    .collect::<Vec<_>>();
+
+                (!events.is_empty()).then_some(events)
             }
-            _ => {}
-        };
-        if events.is_empty() {
-            None
-        } else {
-            Some(events)
+
+            _ => None,
         }
     }
 }

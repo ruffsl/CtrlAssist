@@ -1,12 +1,80 @@
-use super::MuxMode;
+use super::{MuxMode, helpers};
 use evdev::InputEvent;
-use gilrs::{Axis, Button, Event, GamepadId};
+use gilrs::{Event, EventType, GamepadId, Gilrs};
 
 use crate::evdev_helpers;
 
 #[derive(Default)]
 pub struct ToggleMode {
-    active: Option<GamepadId>,
+    active_id: Option<GamepadId>,
+}
+
+impl ToggleMode {
+    /// Synchronize all input states from the newly active controller
+    fn sync_controller_state(
+        active: gilrs::Gamepad,
+        active_id: GamepadId,
+        assist_id: GamepadId,
+    ) -> Vec<InputEvent> {
+        let state = active.state();
+        let mut events = Vec::new();
+
+        // Synchronize button states
+        for (code, button_data) in state.buttons() {
+            let Some(gilrs::ev::AxisOrBtn::Btn(btn)) = active.axis_or_btn_name(code) else {
+                continue;
+            };
+
+            // Skip Mode button on assist controller for exclusive binding
+            if active_id == assist_id && btn == gilrs::Button::Mode {
+                continue;
+            }
+
+            // Handle buttons mapped to keys
+            if let Some(event) = helpers::create_button_key_event(btn, button_data.is_pressed()) {
+                events.push(event);
+            }
+
+            // Handle buttons mapped to axes (triggers, D-pad)
+            if let Some(abs_axis) = evdev_helpers::gilrs_button_to_evdev_axis(btn) {
+                events.push(helpers::process_button_axis(btn, &active, abs_axis));
+            }
+        }
+
+        // Synchronize axis states
+        for (code, axis_data) in state.axes() {
+            let Some(gilrs::ev::AxisOrBtn::Axis(axis)) = active.axis_or_btn_name(code) else {
+                continue;
+            };
+
+            if let Some(event) = helpers::create_stick_event(axis, axis_data.value()) {
+                events.push(event);
+            }
+        }
+
+        events
+    }
+
+    /// Convert a gilrs event to evdev events
+    fn convert_event(event: &Event, active: gilrs::Gamepad) -> Option<Vec<InputEvent>> {
+        match event.event {
+            EventType::ButtonPressed(btn, _) | EventType::ButtonReleased(btn, _) => {
+                let is_pressed = matches!(event.event, EventType::ButtonPressed(..));
+                helpers::create_button_key_event(btn, is_pressed).map(|e| vec![e])
+            }
+
+            EventType::ButtonChanged(btn, _, _) => {
+                let abs_axis = evdev_helpers::gilrs_button_to_evdev_axis(btn)?;
+                Some(vec![helpers::process_button_axis(btn, &active, abs_axis)])
+            }
+
+            EventType::AxisChanged(axis, raw_val, _) => {
+                helpers::create_stick_event(axis, raw_val).map(|e| vec![e])
+            }
+
+            _ => None,
+        }
+    }
 }
 
 impl MuxMode for ToggleMode {
@@ -15,69 +83,31 @@ impl MuxMode for ToggleMode {
         event: &Event,
         primary_id: GamepadId,
         assist_id: GamepadId,
-        _gilrs: &gilrs::Gilrs,
+        gilrs: &Gilrs,
     ) -> Option<Vec<InputEvent>> {
-        // Bootstrap active controller
-        let active = self.active.get_or_insert(primary_id);
+        let active_id = self.active_id.get_or_insert(primary_id);
 
-        // Toggle logic: if assist presses the toggle button, switch active
-        if let (id, gilrs::EventType::ButtonPressed(Button::Mode, _)) = (event.id, event.event)
-            && id == assist_id
-        {
-            *active = if *active == primary_id {
+        // Handle toggle logic
+        if matches!(
+            (event.id, event.event),
+            (id, EventType::ButtonPressed(gilrs::Button::Mode, _)) if id == assist_id
+        ) {
+            *active_id = if *active_id == primary_id {
                 assist_id
             } else {
                 primary_id
             };
-            return None;
+
+            let active = gilrs.gamepad(*active_id);
+            return Some(Self::sync_controller_state(active, *active_id, assist_id));
         }
 
         // Only forward events from the active controller
-        if event.id != *active {
+        if event.id != *active_id {
             return None;
         }
 
-        // Convert gilrs event to evdev events
-        let mut events = Vec::new();
-        match event.event {
-            gilrs::EventType::ButtonPressed(button, _)
-            | gilrs::EventType::ButtonReleased(button, _) => {
-                if let Some(key) = evdev_helpers::gilrs_button_to_evdev_key(button) {
-                    let value = matches!(event.event, gilrs::EventType::ButtonPressed(..)) as i32;
-                    events.push(InputEvent::new(evdev::EventType::KEY.0, key.0, value));
-                }
-            }
-            gilrs::EventType::ButtonChanged(button, value, _) => {
-                if let Some(abs_axis) = evdev_helpers::gilrs_button_to_evdev_axis(button) {
-                    let scaled_value = evdev_helpers::scale_trigger(value);
-                    events.push(InputEvent::new(
-                        evdev::EventType::ABSOLUTE.0,
-                        abs_axis.0,
-                        scaled_value,
-                    ));
-                }
-            }
-            gilrs::EventType::AxisChanged(axis, value, _) => {
-                if let Some(abs_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(axis) {
-                    let scaled_value = match axis {
-                        Axis::LeftStickY | Axis::RightStickY => {
-                            evdev_helpers::scale_stick(value, true)
-                        }
-                        _ => evdev_helpers::scale_stick(value, false),
-                    };
-                    events.push(InputEvent::new(
-                        evdev::EventType::ABSOLUTE.0,
-                        abs_axis.0,
-                        scaled_value,
-                    ));
-                }
-            }
-            _ => {}
-        }
-        if events.is_empty() {
-            None
-        } else {
-            Some(events)
-        }
+        let active = gilrs.gamepad(*active_id);
+        Self::convert_event(event, active)
     }
 }

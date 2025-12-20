@@ -1,4 +1,5 @@
 pub mod average;
+pub mod helpers;
 pub mod priority;
 pub mod toggle;
 

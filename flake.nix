@@ -31,6 +31,7 @@
             # gcc
             jstest-gtk
             linuxConsoleTools
+            lldb
             pkg-config
             rust
             udev

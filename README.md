@@ -25,18 +25,21 @@
 # Modes
 
 - **Priority** (default): Assist controller overrides when active
-  - Axes: Prioritize when Assist exceeds deadzone
-    - Buttons: OR'ed between controllers
+  - Axes: Prioritize Assist when active (exceeds deadzone)
+    - Buttons: Prioritize Assist when button released
+    - Triggers: Prioritize largest value from either
   - Ideal for partial and asynchronous assistance
     - E.g. Assist for movement while Primary for actions
 - **Average**: Blend weighted inputs from both controllers
-  - Axes: Averaged when both exceed deadzone
-    - Buttons: OR'ed between controllers
+  - Axes: Averaged when both are active (exceed deadzone)
+    - Buttons: logically OR'ed between pressed controllers
+    - Triggers: Averaged when both are active (exceed deadzone)
   - Ideal for cooperative input and subtle corrections
     - E.g. For counter steer/brake assist in racing games
-- **Toggle**: Switch active controller on demand
+- **Toggle**: Switch Active controller on demand
   - All inputs forwarded from currently active controller
-    - Toggle active controller via the Mode button on Assist
+    - Toggle Active controller via the Mode button on Assist
+    - Immediately synchronizes input to current Active state
   - Ideal when fine-grain conflict-free control is needed
     - E.g. Game menu navigation or precise interventions
 
@@ -153,6 +156,8 @@ $ ctrlassist mux --rumble both
   - processes with open file handles may retain device access
 - Reconnecting a hidden controller reverts its visibility
   - custom udev rules should be used for persistent permissions
+- Toggle mode requires pressing all buttons and axes after startup
+  - gilrs lazily initializes gamepad state used for synchronization
 
 # Background
 
