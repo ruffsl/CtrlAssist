@@ -52,28 +52,52 @@ impl MuxMode for PriorityMode {
                 ));
             }
 
-            // --- Analog Triggers & Pressure (Max Value Wins) ---
-            // If Assist > Primary, Assist wins. If Assist drops, Primary takes over.
-            EventType::ButtonChanged(btn, val, _) => {
+            // --- Analog Triggers & D-Pads ---
+            EventType::ButtonChanged(btn, _, _) => {
                 let abs_axis = evdev_helpers::gilrs_button_to_evdev_axis(btn)?;
-                
-                // Get current values from both controllers
-                let p_val = primary.button_data(btn).map_or(0.0, |d| d.value());
-                let a_val = assist.button_data(btn).map_or(0.0, |d| d.value());
 
-                // The output is simply the higher of the two. 
-                // This automatically handles the "Assist release -> snap to Primary" requirement.
-                let max_val = p_val.max(a_val);
+                // 1. D-PAD LOGIC (Strict Primary Priority on Axis Pairs)
+                if let Some([neg_btn, pos_btn]) = evdev_helpers::dpad_axis_pair(btn) {
+                    // Helper to calculate "Net Axis Value" (-1.0 to 1.0) for a controller
+                    let get_net_axis = |pad: &gilrs::Gamepad| -> f32 {
+                        let neg = pad.button_data(neg_btn).map_or(0.0, |d| d.value());
+                        let pos = pad.button_data(pos_btn).map_or(0.0, |d| d.value());
+                        pos - neg
+                    };
 
-                // Identify scaling mode (Triggers vs DPad-as-Axis)
-                let is_y_axis = matches!(btn, Button::DPadUp | Button::DPadLeft);
-                let scaled = if matches!(btn, Button::DPadUp | Button::DPadDown | Button::DPadLeft | Button::DPadRight) {
-                     evdev_helpers::scale_stick(max_val, is_y_axis)
-                } else {
-                     evdev_helpers::scale_trigger(max_val)
-                };
+                    let a_net = get_net_axis(&assist);
+                    let p_net = get_net_axis(&primary);
 
-                events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, abs_axis.0, scaled));
+                    // If Assist is active on this axis, it rules. Otherwise, Primary.
+                    // This handles both "Override" and "Return to Primary" automatically.
+                    let final_val = if a_net.abs() > DEADZONE { a_net } else { p_net };
+                    
+                    // If the calculated `final_val` is effectively "Up", treat it as DPadUp press.
+                    let (active_btn, mag) = if final_val > DEADZONE {
+                         (pos_btn, final_val)
+                    } else {
+                         (neg_btn, final_val.abs())
+                    };
+
+                    // Note: DPadUp/Left usually map to -1. Check your `scale_stick` impl. 
+                    // Assuming `scale_stick` handles the typical 0..1 -> axis conversion:
+                    let invert = matches!(active_btn, Button::DPadUp | Button::DPadLeft);
+                    let scaled = evdev_helpers::scale_stick(mag, invert);
+                    
+                    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, abs_axis.0, scaled));
+                } 
+                // 2. TRIGGER LOGIC (Highest Value Wins)
+                else {
+                    let p_val = primary.button_data(btn).map_or(0.0, |d| d.value());
+                    let a_val = assist.button_data(btn).map_or(0.0, |d| d.value());
+                    let max_val = p_val.max(a_val);
+
+                    events.push(InputEvent::new(
+                        evdev::EventType::ABSOLUTE.0,
+                        abs_axis.0,
+                        evdev_helpers::scale_trigger(max_val),
+                    ));
+                }
             }
 
             // --- Joysticks (Snap Logic) ---
