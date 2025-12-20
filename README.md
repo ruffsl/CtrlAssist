@@ -53,6 +53,8 @@
 
 # Install
 
+Add the `--force` flag to upgrade to latest version:
+
 ```sh
 cargo install ctrlassist
 ```
