@@ -29,10 +29,56 @@ impl MuxMode for ToggleMode {
             } else {
                 primary_id
             };
+            
             let active = gilrs.gamepad(*active_id);
-            // TODO: Return events that reset all buttons/axes on the newly active controller
-            // not implemented yet
-            unimplemented!()
+            let state = active.state();
+            let mut sync_events = Vec::new();
+
+            // Synchronize all button states to their current values
+            for (code, button_data) in state.buttons() {
+                if let Some(gilrs::ev::AxisOrBtn::Btn(btn)) = active.axis_or_btn_name(code) {
+                    // if active id is assist and button is Mode, skip to avoid retriggering toggle
+                    if *active_id == assist_id && btn == Button::Mode {
+                        continue;
+                    }
+                    // For buttons that map to keys
+                    if let Some(key) = evdev_helpers::gilrs_button_to_evdev_key(btn) {
+                        sync_events.push(InputEvent::new(
+                            evdev::EventType::KEY.0,
+                            key.0,
+                            button_data.is_pressed() as i32,
+                        ));
+                    }
+                    
+                    // For buttons that map to axes (like triggers)
+                    if let Some(abs_axis) = evdev_helpers::gilrs_button_to_evdev_axis(btn) {
+                        let scaled = evdev_helpers::scale_trigger(button_data.value());
+                        sync_events.push(InputEvent::new(
+                            evdev::EventType::ABSOLUTE.0,
+                            abs_axis.0,
+                            scaled,
+                        ));
+                    }
+                }
+            }
+
+            // Synchronize all axis states to their current values
+            for (code, axis_data) in state.axes() {
+                if let Some(gilrs::ev::AxisOrBtn::Axis(axis)) = active.axis_or_btn_name(code) {
+                    if let Some(ev_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(axis) {
+                        // Handle Y-axis inversion standard
+                        let is_y = matches!(axis, Axis::LeftStickY | Axis::RightStickY);
+                        let scaled = evdev_helpers::scale_stick(axis_data.value(), is_y);
+                        
+                        sync_events.push(InputEvent::new(
+                            evdev::EventType::ABSOLUTE.0,
+                            ev_axis.0,
+                            scaled,
+                        ));
+                    }
+                }
+            }
+            return Some(sync_events);
         }
 
         // Only forward events from the active controller
