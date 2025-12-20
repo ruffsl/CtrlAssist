@@ -1,17 +1,12 @@
 use super::MuxMode;
-use evdev::InputEvent;
-use gilrs::{Axis, Button, Event, GamepadId};
-
 use crate::evdev_helpers;
+use evdev::InputEvent;
+use gilrs::{Axis, Button, Event, EventType, GamepadId, Gilrs};
 
 #[derive(Default)]
 pub struct AverageMode;
 
-const DEFAULT_DEADZONE: f32 = 0.1;
-
-fn deadzone() -> f32 {
-    DEFAULT_DEADZONE
-}
+const DEADZONE: f32 = 0.1;
 
 impl MuxMode for AverageMode {
     fn handle_event(
@@ -19,143 +14,139 @@ impl MuxMode for AverageMode {
         event: &Event,
         primary_id: GamepadId,
         assist_id: GamepadId,
-        gilrs: &gilrs::Gilrs,
+        gilrs: &Gilrs,
     ) -> Option<Vec<InputEvent>> {
-        // Ignore events from devices other than primary and assist
-        let other_id = match event.id {
-            id if id == primary_id => assist_id,
-            id if id == assist_id => primary_id,
-            _ => return None,
-        };
+        // Filter out irrelevant devices
+        if event.id != primary_id && event.id != assist_id {
+            return None;
+        }
 
-        // Always get up-to-date gamepad handles from active gilrs instance
-        let other_gamepad = gilrs.gamepad(other_id);
-
-        // Convert gilrs event to evdev events
+        let primary = gilrs.gamepad(primary_id);
+        let assist = gilrs.gamepad(assist_id);
         let mut events = Vec::new();
+
         match event.event {
-            // --- Digital Buttons ---
-            gilrs::EventType::ButtonPressed(button, _)
-            | gilrs::EventType::ButtonReleased(button, _) => {
-                if let Some(key) = evdev_helpers::gilrs_button_to_evdev_key(button) {
-                    let value = matches!(event.event, gilrs::EventType::ButtonPressed(..)) as i32;
-                    // Only relay if the other gamepad does not have the button pressed
-                    let other_pressed = other_gamepad
-                        .button_data(button)
-                        .is_some_and(|d| d.value() != 0.0);
-                    if other_pressed {
-                        return None;
-                    }
-                    events.push(InputEvent::new(evdev::EventType::KEY.0, key.0, value));
+            // --- Digital Buttons (XOR-like Logic) ---
+            // Assist wins conflicts. Forward input only if Assist isn't pressing it.
+            EventType::ButtonPressed(btn, _) | EventType::ButtonReleased(btn, _) => {
+                let key = evdev_helpers::gilrs_button_to_evdev_key(btn)?;
+                let is_pressed = matches!(event.event, EventType::ButtonPressed(..));
+
+                // Check if the *other* controller is holding this button
+                let other_holding = if event.id == primary_id {
+                    assist.is_pressed(btn)
+                } else {
+                    primary.is_pressed(btn)
+                };
+
+                // If Assist is still holding, block this event.
+                // Still allow release from Assist override Primary.
+                if other_holding && event.id == primary_id {
+                    return None;
                 }
+
+                events.push(InputEvent::new(
+                    evdev::EventType::KEY.0,
+                    key.0,
+                    is_pressed as i32,
+                ));
             }
 
-            // --- Analog Triggers / Pressure Buttons ---
-            gilrs::EventType::ButtonChanged(button, value, _) => {
-                if let Some(abs_axis) = evdev_helpers::gilrs_button_to_evdev_axis(button) {
-                    let mut value = value;
-                    let mut button = button;
+            // --- Analog Triggers & D-Pads ---
+            EventType::ButtonChanged(btn, _, _) => {
+                let abs_axis = evdev_helpers::gilrs_button_to_evdev_axis(btn)?;
 
-                    // 1. Identify the Axis Pair
-                    let axis_pair = crate::evdev_helpers::dpad_axis_pair(button);
-
-                    if let Some(pair) = axis_pair {
-                        // Closure to check if the OTHER controller is pressing a button
-                        let is_other_pressing = |b| {
-                            other_gamepad
-                                .button_data(b)
-                                .is_some_and(|d| d.value() > 0.0)
-                        };
-
-                        if other_id == assist_id && pair.iter().copied().any(is_other_pressing) {
-                            return None; // Primary is blocked because Assist is active on this axis
-                        } else if other_id == primary_id && value == 0.0 {
-                            // Assist released; if Primary is holding a button, adopt it
-                            if let Some(active_btn) =
-                                pair.iter().copied().find(|&b| is_other_pressing(b))
-                            {
-                                button = active_btn;
-                                value = 1.0;
-                            }
-                        }
-                    }
-
-                    // Only average if not a DPad direction and the other value is above deadzone
-                    if !matches!(
-                        button,
-                        Button::DPadUp | Button::DPadDown | Button::DPadLeft | Button::DPadRight
-                    ) && let Some(other_value) = other_gamepad
-                        .button_data(button)
-                        .map(|d| d.value())
-                        .filter(|&v| v >= deadzone())
-                    {
-                        value = (value + other_value) / 2.0;
-                    }
-                    let scaled_value = match button {
-                        // D-pad-as-axis (uncommon, but matches original logic)
-                        Button::DPadUp | Button::DPadLeft => {
-                            evdev_helpers::scale_stick(value, true)
-                        }
-                        Button::DPadDown | Button::DPadRight => {
-                            evdev_helpers::scale_stick(value, false)
-                        }
-                        // Analog triggers (LT2/RT2)
-                        _ => evdev_helpers::scale_trigger(value),
+                // 1. D-PAD LOGIC (Strict Primary Priority on Axis Pairs)
+                if let Some([neg_btn, pos_btn]) = evdev_helpers::dpad_axis_pair(btn) {
+                    // Helper to calculate "Net Axis Value" (-1.0 to 1.0) for a controller
+                    let get_net_axis = |pad: &gilrs::Gamepad| -> f32 {
+                        let neg = pad.button_data(neg_btn).map_or(0.0, |d| d.value());
+                        let pos = pad.button_data(pos_btn).map_or(0.0, |d| d.value());
+                        pos - neg
                     };
+
+                    let a_net = get_net_axis(&assist);
+                    let p_net = get_net_axis(&primary);
+
+                    // If Assist is active on this axis, it rules. Otherwise, Primary.
+                    // This handles both "Override" and "Return to Primary" automatically.
+                    let final_val = if a_net.abs() > DEADZONE { a_net } else { p_net };
+
+                    // If the calculated `final_val` is effectively "Up", treat it as DPadUp press.
+                    let (active_btn, mag) = if final_val > DEADZONE {
+                        (pos_btn, final_val)
+                    } else {
+                        (neg_btn, final_val.abs())
+                    };
+
+                    // Note: DPadUp/Left usually map to -1. Check your `scale_stick` impl.
+                    // Assuming `scale_stick` handles the typical 0..1 -> axis conversion:
+                    let invert = matches!(active_btn, Button::DPadUp | Button::DPadLeft);
+                    let scaled = evdev_helpers::scale_stick(mag, invert);
+
                     events.push(InputEvent::new(
                         evdev::EventType::ABSOLUTE.0,
                         abs_axis.0,
-                        scaled_value,
+                        scaled,
+                    ));
+                }
+                // 2. TRIGGER LOGIC (Highest Value Wins)
+                else {
+                    let p_val = primary.button_data(btn).map_or(0.0, |d| d.value());
+                    let a_val = assist.button_data(btn).map_or(0.0, |d| d.value());
+                    let max_val = p_val.max(a_val);
+
+                    events.push(InputEvent::new(
+                        evdev::EventType::ABSOLUTE.0,
+                        abs_axis.0,
+                        evdev_helpers::scale_trigger(max_val),
                     ));
                 }
             }
 
-            // --- Analog Sticks ---
-            gilrs::EventType::AxisChanged(axis, value, _) => {
-                if let Some(abs_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(axis) {
-                    let mut value = value;
-                    // Only relay if not conflicting with assist joysticks
-                    let other_pushed = match axis {
-                        Axis::LeftStickX | Axis::LeftStickY => {
-                            other_gamepad
-                                .axis_data(Axis::LeftStickX)
-                                .is_some_and(|d| d.value().abs() >= deadzone())
-                                || other_gamepad
-                                    .axis_data(Axis::LeftStickY)
-                                    .is_some_and(|d| d.value().abs() >= deadzone())
-                        }
-                        Axis::RightStickX | Axis::RightStickY => {
-                            other_gamepad
-                                .axis_data(Axis::RightStickX)
-                                .is_some_and(|d| d.value().abs() >= deadzone())
-                                || other_gamepad
-                                    .axis_data(Axis::RightStickY)
-                                    .is_some_and(|d| d.value().abs() >= deadzone())
-                        }
-                        _ => false,
-                    };
-                    if other_pushed
-                        && let Some(other_value) = other_gamepad.axis_data(axis).map(|d| d.value())
-                    {
-                        value = (value + other_value) / 2.0;
+            // --- Joysticks (Snap Logic) ---
+            // If Assist is active (out of deadzone), it owns the stick. Otherwise, Primary owns it.
+            EventType::AxisChanged(axis, _, _) => {
+                // Map axis to specific stick (Left or Right)
+                let (x_axis, y_axis) = match axis {
+                    Axis::LeftStickX | Axis::LeftStickY => (Axis::LeftStickX, Axis::LeftStickY),
+                    Axis::RightStickX | Axis::RightStickY => (Axis::RightStickX, Axis::RightStickY),
+                    _ => return None, // Ignore non-stick axes here
+                };
+
+                // Check Assist's activity on this specific stick (circular deadzone)
+                let a_x = assist.axis_data(x_axis).map_or(0.0, |d| d.value());
+                let a_y = assist.axis_data(y_axis).map_or(0.0, |d| d.value());
+                let assist_active = (a_x * a_x + a_y * a_y).sqrt() > DEADZONE;
+
+                // Determine the "Owner" of the stick
+                let owner = if assist_active { assist } else { primary };
+
+                // Optimization: If Primary moved but Assist is active, ignore completely.
+                if event.id == primary_id && assist_active {
+                    return None;
+                }
+
+                // Push updates for BOTH axes of the stick to ensure sync (Snap effect)
+                for ax in [x_axis, y_axis] {
+                    if let Some(ev_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(ax) {
+                        let raw_val = owner.axis_data(ax).map_or(0.0, |d| d.value());
+
+                        // Handle Y-axis inversion standard
+                        let is_y = matches!(ax, Axis::LeftStickY | Axis::RightStickY);
+                        let scaled = evdev_helpers::scale_stick(raw_val, is_y);
+
+                        events.push(InputEvent::new(
+                            evdev::EventType::ABSOLUTE.0,
+                            ev_axis.0,
+                            scaled,
+                        ));
                     }
-                    let scaled_value = match axis {
-                        // Invert Y axes
-                        Axis::LeftStickY | Axis::RightStickY => {
-                            evdev_helpers::scale_stick(value, true)
-                        }
-                        // X axes
-                        _ => evdev_helpers::scale_stick(value, false),
-                    };
-                    events.push(InputEvent::new(
-                        evdev::EventType::ABSOLUTE.0,
-                        abs_axis.0,
-                        scaled_value,
-                    ));
                 }
             }
             _ => {}
         }
+
         if events.is_empty() {
             None
         } else {
