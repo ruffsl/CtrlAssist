@@ -26,7 +26,7 @@ impl MuxMode for AverageMode {
         let mut events = Vec::new();
 
         match event.event {
-            // --- Digital Buttons (XOR-like Logic) ---
+            // --- Digital Buttons (OR-like Logic) ---
             // Assist wins conflicts. Forward input only if Assist isn't pressing it.
             EventType::ButtonPressed(btn, _) | EventType::ButtonReleased(btn, _) => {
                 let key = evdev_helpers::gilrs_button_to_evdev_key(btn)?;
@@ -39,9 +39,8 @@ impl MuxMode for AverageMode {
                     primary.is_pressed(btn)
                 };
 
-                // If Assist is still holding, block this event.
-                // Still allow release from Assist override Primary.
-                if other_holding && event.id == primary_id {
+                // If either is still holding, block this event.
+                if other_holding {
                     return None;
                 }
 
@@ -56,7 +55,7 @@ impl MuxMode for AverageMode {
             EventType::ButtonChanged(btn, _, _) => {
                 let abs_axis = evdev_helpers::gilrs_button_to_evdev_axis(btn)?;
 
-                // 1. D-PAD LOGIC (Strict Primary Priority on Axis Pairs)
+                // 1. D-PAD LOGIC (Average along active Axis Pairs)
                 if let Some([neg_btn, pos_btn]) = evdev_helpers::dpad_axis_pair(btn) {
                     // Helper to calculate "Net Axis Value" (-1.0 to 1.0) for a controller
                     let get_net_axis = |pad: &gilrs::Gamepad| -> f32 {
@@ -68,9 +67,14 @@ impl MuxMode for AverageMode {
                     let a_net = get_net_axis(&assist);
                     let p_net = get_net_axis(&primary);
 
-                    // If Assist is active on this axis, it rules. Otherwise, Primary.
-                    // This handles both "Override" and "Return to Primary" automatically.
-                    let final_val = if a_net.abs() > DEADZONE { a_net } else { p_net };
+                    // If both are active on this axis, "average" by adding net values.
+                    // Otherwise, take the active one, or primary if both are inactive.
+                    // Allow either controller to neutralize DPad with counter-input.
+                    let final_val = match (a_net.abs() > DEADZONE, p_net.abs() > DEADZONE) {
+                        (true, true) => p_net + a_net,
+                        (true, false) => a_net,
+                        (false, _) => p_net,
+                    };
 
                     // If the calculated `final_val` is effectively "Up", treat it as DPadUp press.
                     let (active_btn, mag) = if final_val > DEADZONE {
@@ -90,22 +94,26 @@ impl MuxMode for AverageMode {
                         scaled,
                     ));
                 }
-                // 2. TRIGGER LOGIC (Highest Value Wins)
+                // 2. TRIGGER LOGIC (Average active Values)
                 else {
                     let p_val = primary.button_data(btn).map_or(0.0, |d| d.value());
                     let a_val = assist.button_data(btn).map_or(0.0, |d| d.value());
-                    let max_val = p_val.max(a_val);
+                    let v_val = match (a_val > DEADZONE, p_val > DEADZONE) {
+                        (true, true) => (p_val + a_val) / 2.0,
+                        (true, false) => a_val,
+                        (false, _) => p_val,
+                    };
 
                     events.push(InputEvent::new(
                         evdev::EventType::ABSOLUTE.0,
                         abs_axis.0,
-                        evdev_helpers::scale_trigger(max_val),
+                        evdev_helpers::scale_trigger(v_val),
                     ));
                 }
             }
 
             // --- Joysticks (Snap Logic) ---
-            // If Assist is active (out of deadzone), it owns the stick. Otherwise, Primary owns it.
+            // If either is active (out of deadzone), it averages the stick. Otherwise, Active owns it.
             EventType::AxisChanged(axis, _, _) => {
                 // Map axis to specific stick (Left or Right)
                 let (x_axis, y_axis) = match axis {
@@ -118,23 +126,28 @@ impl MuxMode for AverageMode {
                 let a_x = assist.axis_data(x_axis).map_or(0.0, |d| d.value());
                 let a_y = assist.axis_data(y_axis).map_or(0.0, |d| d.value());
                 let assist_active = (a_x * a_x + a_y * a_y).sqrt() > DEADZONE;
+                // Check Primary's activity on this specific stick (circular deadzone)
+                let p_x = primary.axis_data(x_axis).map_or(0.0, |d| d.value());
+                let p_y = primary.axis_data(y_axis).map_or(0.0, |d| d.value());
+                let primary_active = (p_x * p_x + p_y * p_y).sqrt() > DEADZONE;
 
-                // Determine the "Owner" of the stick
-                let owner = if assist_active { assist } else { primary };
-
-                // Optimization: If Primary moved but Assist is active, ignore completely.
-                if event.id == primary_id && assist_active {
-                    return None;
-                }
+                // If both are active on stick, average stick values.
+                // Otherwise, take the active one, or primary if both are inactive.
+                // Allow either controller to neutralize stick with counter-input.
+                let (v_x, v_y) = match (assist_active, primary_active) {
+                    (true, true) => {
+                        ((p_x + a_x) / 2.0, (p_y + a_y) / 2.0)
+                    },
+                    (true, false) => (a_x, a_y),
+                    (false, _) => (p_x, p_y),
+                };
 
                 // Push updates for BOTH axes of the stick to ensure sync (Snap effect)
-                for ax in [x_axis, y_axis] {
+                for (ax, av) in [(x_axis, v_x), (y_axis, v_y)] {
                     if let Some(ev_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(ax) {
-                        let raw_val = owner.axis_data(ax).map_or(0.0, |d| d.value());
-
                         // Handle Y-axis inversion standard
                         let is_y = matches!(ax, Axis::LeftStickY | Axis::RightStickY);
-                        let scaled = evdev_helpers::scale_stick(raw_val, is_y);
+                        let scaled = evdev_helpers::scale_stick(av, is_y);
 
                         events.push(InputEvent::new(
                             evdev::EventType::ABSOLUTE.0,
