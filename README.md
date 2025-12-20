@@ -153,6 +153,8 @@ $ ctrlassist mux --rumble both
   - processes with open file handles may retain device access
 - Reconnecting a hidden controller reverts its visibility
   - custom udev rules should be used for persistent permissions
+- Toggle mode requires pressing all buttons and axes after startup
+  - gilrs lazily initializes gamepad state used for synchronization
 
 # Background
 
