@@ -2,6 +2,7 @@ use evdev::Device;
 use evdev::InputId;
 use evdev::uinput::VirtualDevice;
 use gilrs::{GamepadId, Gilrs};
+use log::error;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
@@ -108,6 +109,12 @@ pub fn discover_gamepad_resources(gilrs: &Gilrs) -> HashMap<GamepadId, GamepadRe
                     path,
                     device,
                 },
+            );
+        } else {
+            error!(
+                "Failed to match Gilrs gamepad {:?} ('{}') to a Linux event device.",
+                id,
+                gamepad.name()
             );
         }
     }
