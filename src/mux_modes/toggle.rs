@@ -85,6 +85,8 @@ impl MuxMode for ToggleMode {
         if event.id != *active_id {
             return None;
         }
+        
+        let active = gilrs.gamepad(*active_id);
 
         // Convert gilrs event to evdev events
         let mut events = Vec::new();
@@ -99,15 +101,48 @@ impl MuxMode for ToggleMode {
                     is_pressed as i32,
                 ));
             }
-            EventType::ButtonChanged(btn, raw_val, _) => {
+            // --- Analog Triggers & D-Pads ---
+            EventType::ButtonChanged(btn, _, _) => {
                 let abs_axis = evdev_helpers::gilrs_button_to_evdev_axis(btn)?;
-                let scaled = evdev_helpers::scale_trigger(raw_val);
 
-                events.push(InputEvent::new(
-                    evdev::EventType::ABSOLUTE.0,
-                    abs_axis.0,
-                    scaled,
-                ));
+                // 1. D-PAD LOGIC
+                if let Some([neg_btn, pos_btn]) = evdev_helpers::dpad_axis_pair(btn) {
+                    // Helper to calculate "Net Axis Value" (-1.0 to 1.0) for a controller
+                    let get_net_axis = |pad: &gilrs::Gamepad| -> f32 {
+                        let neg = pad.button_data(neg_btn).map_or(0.0, |d| d.value());
+                        let pos = pad.button_data(pos_btn).map_or(0.0, |d| d.value());
+                        pos - neg
+                    };
+                    let final_val = get_net_axis(&active);
+
+                    // If the calculated `final_val` is effectively "Up", treat it as DPadUp press.
+                    let (active_btn, mag) = if final_val > DEADZONE {
+                        (pos_btn, final_val)
+                    } else {
+                        (neg_btn, final_val.abs())
+                    };
+
+                    // Note: DPadUp/Left usually map to -1. Check your `scale_stick` impl.
+                    // Assuming `scale_stick` handles the typical 0..1 -> axis conversion:
+                    let invert = matches!(active_btn, Button::DPadUp | Button::DPadLeft);
+                    let scaled = evdev_helpers::scale_stick(mag, invert);
+
+                    events.push(InputEvent::new(
+                        evdev::EventType::ABSOLUTE.0,
+                        abs_axis.0,
+                        scaled,
+                    ));
+                }
+                // 2. TRIGGER LOGIC
+                else {
+                    let a_val = active.button_data(btn).map_or(0.0, |d| d.value());
+
+                    events.push(InputEvent::new(
+                        evdev::EventType::ABSOLUTE.0,
+                        abs_axis.0,
+                        evdev_helpers::scale_trigger(a_val),
+                    ));
+                }
             }
             EventType::AxisChanged(axis, raw_val, _) => {
                 if let Some(ev_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(axis) {
