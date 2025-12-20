@@ -19,7 +19,7 @@
   - Avoid controller interference from conflicting inputs
 - Spoof gamepad vendor for in-game layout recognition
   - Mimic either Primary or Assist controller hardware
-- Rumble routing from virtual to physical devices
+- Rumble pass-through from virtual to physical devices
   - Forward force feedback to either or both controllers
 
 # Modes
@@ -149,8 +149,6 @@ $ ctrlassist mux --rumble both
 
 - Hiding physical input devices requires root access
   - temporarily modifies group permissions for selected devices
-- Hiding is by merely matching vendor and product IDs
-  - Any controller with similar IDs may also be hidden
 - Hiding must be done before starting games or launchers
   - processes with open file handles may retain device access
 - Reconnecting a hidden controller reverts its visibility
@@ -160,3 +158,4 @@ $ ctrlassist mux --rumble both
 
 - [Controller Assist on Xbox and Windows](https://support.xbox.com/en-US/help/account-profile/accessibility/copilot)
 - [Second Controller Assistance on PlayStation](https://www.playstation.com/en-us/support/hardware/second-controller-assistance/)
+- [InputPlumber: Open source input router and remapper daemon for Linux](https://github.com/ShadowBlip/InputPlumber)
