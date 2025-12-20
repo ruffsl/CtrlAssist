@@ -30,6 +30,7 @@ impl MuxMode for PriorityMode {
 
         // Always get up-to-date gamepad handles from active gilrs instance
         let other_gamepad = gilrs.gamepad(other_id);
+        let this_gamepad = gilrs.gamepad(event.id);
 
         // --- Event Forwarding Logic ---
         let mut events = Vec::with_capacity(2);
@@ -151,6 +152,43 @@ impl MuxMode for PriorityMode {
                         abs_axis.0,
                         scaled_value,
                     ));
+                }
+
+                // --- Restore both axes when assist returns both to deadzone ---
+                // Only trigger on assist controller events
+                if event.id == assist_id {
+                    // Check for both sticks
+                    for &(x_axis, y_axis) in &[
+                        (Axis::LeftStickX, Axis::LeftStickY),
+                        (Axis::RightStickX, Axis::RightStickY),
+                    ] {
+                        let x_neutral = this_gamepad
+                            .axis_data(x_axis)
+                            .map_or(true, |d| d.value().abs() < deadzone());
+                        let y_neutral = this_gamepad
+                            .axis_data(y_axis)
+                            .map_or(true, |d| d.value().abs() < deadzone());
+                        if x_neutral && y_neutral {
+                            // Both axes are neutral, restore from primary
+                            let primary_gamepad = gilrs.gamepad(primary_id);
+                            for &axis in &[x_axis, y_axis] {
+                                if let Some(abs_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(axis) {
+                                    let value = primary_gamepad
+                                        .axis_data(axis)
+                                        .map_or(0.0, |d| d.value());
+                                    let scaled_value = match axis {
+                                        Axis::LeftStickY | Axis::RightStickY => evdev_helpers::scale_stick(value, true),
+                                        _ => evdev_helpers::scale_stick(value, false),
+                                    };
+                                    events.push(InputEvent::new(
+                                        evdev::EventType::ABSOLUTE.0,
+                                        abs_axis.0,
+                                        scaled_value,
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
