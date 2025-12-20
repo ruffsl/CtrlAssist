@@ -40,40 +40,43 @@ impl MuxMode for ToggleMode {
         // Convert gilrs event to evdev events
         let mut events = Vec::new();
         match event.event {
-            EventType::ButtonPressed(button, _)
-            | EventType::ButtonReleased(button, _) => {
-                if let Some(key) = evdev_helpers::gilrs_button_to_evdev_key(button) {
-                    let value = matches!(event.event, EventType::ButtonPressed(..)) as i32;
-                    events.push(InputEvent::new(evdev::EventType::KEY.0, key.0, value));
-                }
+            EventType::ButtonPressed(btn, _) | EventType::ButtonReleased(btn, _) => {
+                let key = evdev_helpers::gilrs_button_to_evdev_key(btn)?;
+                let is_pressed = matches!(event.event, EventType::ButtonPressed(..));
+
+                events.push(InputEvent::new(
+                    evdev::EventType::KEY.0,
+                    key.0,
+                    is_pressed as i32,
+                ));
             }
-            EventType::ButtonChanged(button, value, _) => {
-                if let Some(abs_axis) = evdev_helpers::gilrs_button_to_evdev_axis(button) {
-                    let scaled_value = evdev_helpers::scale_trigger(value);
+            EventType::ButtonChanged(btn, raw_val, _) => {
+                let abs_axis = evdev_helpers::gilrs_button_to_evdev_axis(btn)?;
+                let scaled = evdev_helpers::scale_trigger(raw_val);
+
+                events.push(InputEvent::new(
+                    evdev::EventType::ABSOLUTE.0,
+                    abs_axis.0,
+                    scaled,
+                ));
+            }
+            EventType::AxisChanged(axis, raw_val, _) => {
+                if let Some(ev_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(axis) {
+
+                    // Handle Y-axis inversion standard
+                    let is_y = matches!(axis, Axis::LeftStickY | Axis::RightStickY);
+                    let scaled = evdev_helpers::scale_stick(raw_val, is_y);
+
                     events.push(InputEvent::new(
                         evdev::EventType::ABSOLUTE.0,
-                        abs_axis.0,
-                        scaled_value,
-                    ));
-                }
-            }
-            EventType::AxisChanged(axis, value, _) => {
-                if let Some(abs_axis) = evdev_helpers::gilrs_axis_to_evdev_axis(axis) {
-                    let scaled_value = match axis {
-                        Axis::LeftStickY | Axis::RightStickY => {
-                            evdev_helpers::scale_stick(value, true)
-                        }
-                        _ => evdev_helpers::scale_stick(value, false),
-                    };
-                    events.push(InputEvent::new(
-                        evdev::EventType::ABSOLUTE.0,
-                        abs_axis.0,
-                        scaled_value,
+                        ev_axis.0,
+                        scaled,
                     ));
                 }
             }
             _ => {}
         }
+
         if events.is_empty() {
             None
         } else {
