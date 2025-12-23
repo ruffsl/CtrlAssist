@@ -71,9 +71,9 @@ pub enum HideType {
 }
 #[derive(ValueEnum, Clone, Debug, Default)]
 pub enum SpoofTarget {
-    #[default]
     Primary,
     Assist,
+    #[default]
     None,
 }
 #[derive(ValueEnum, Clone, Debug, Default)]
