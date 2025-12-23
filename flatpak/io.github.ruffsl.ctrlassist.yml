@@ -19,14 +19,18 @@ modules:
       - cargo --offline fetch --manifest-path Cargo.toml --verbose
       - cargo build --offline --release --all-features
       - install -Dm0755 target/release/ctrlassist ${FLATPAK_DEST}/bin/ctrlassist
+      - install -Dm0644 io.github.ruffsl.ctrlassist.metainfo.xml ${FLATPAK_DEST}/share/metainfo/io.github.ruffsl.ctrlassist.metainfo.xml
     sources:
-      - type: git
-        url: https://github.com/ruffsl/CtrlAssist.git
-        tag: "v0.2.0"
-        commit: "01ad0fc3f4b3514693d218134df1b506851a0431"
+      # - type: git
+      #   url: https://github.com/ruffsl/CtrlAssist.git
+      #   tag: "v0.2.0"
+      #   commit: "01ad0fc3f4b3514693d218134df1b506851a0431"
       - cargo-sources.json
-    #   - type: dir
-    #     path: ../
+      - type: file
+        path: io.github.ruffsl.ctrlassist.metainfo.xml
+      - type: dir
+        path: ../
     builddeps:
-      - pkg-config
+      - appstream
       - libudev-devel
+      - pkg-config
