@@ -22,7 +22,7 @@
 - Rumble pass-through from virtual to physical devices
   - Forward force feedback to either or both controllers
 
-# Modes
+## Modes
 
 - **Priority** (default): Assist controller overrides when active
   - Axes: Prioritize Assist when active (exceeds deadzone)
@@ -43,20 +43,51 @@
   - Ideal when fine-grain conflict-free control is needed
     - E.g. Game menu navigation or precise interventions
 
-# Prerequisites
-- Linux system using udev (libudev-dev)
-  - with user permissions to manage virtual devices
-  - already pre-configured on most distributions
-- Rust toolchain with included `cargo`
+# Install
+
+The following installation methods are available:
+
+- [Cargo](#cargo) (Rust package manager)
+  - Ideal for customization and unsandboxed use
+  - Suitable for development and contributing
+  - E.g. fork custom features and upstream fixes
+- [Flatpak](#flatpak) (Linux application sandbox)
+  - Ideal for easy install on SteamOS, Bazzite, etc.
+  - Suitable for immutable Linux distributions
+  - E.g. where installing build tools is a hassle
+
+## Cargo
+
+- Build dependencies
+  - [libudev-dev](https://pkgs.org/search/?q=libudev-dev)
+  - [pkg-config](https://pkgs.org/search/?q=pkg-config)
+- Rust toolchain
   - https://rust-lang.org/tools/install/
   - configure `PATH` per Notes linked above
-
-# Install
 
 Add the `--force` flag to upgrade to latest version:
 
 ```sh
 cargo install ctrlassist
+```
+
+## Flatpak
+
+- Runtime dependencies
+  - [Flatpak](https://flatpak.org/setup/) (likely already installed)
+
+Download latest bundle from [releases page](https://github.com/ruffsl/ctrlassist/releases) and install:
+
+```sh
+export VERSION=v0.2.0
+wget https://github.com/ruffsl/ctrlassist/releases/download/$VERSION/ctrlassist.flatpak
+flatpak install --user ctrlassist.flatpak
+```
+
+Run and test via Flatpak using the application ID:
+
+```sh
+flatpak run io.github.ruffsl.ctrlassist --help
 ```
 
 # Usage
@@ -101,7 +132,7 @@ Assist:  (1) PS4 Controller
 Mux Active. Press Ctrl+C to exit.
 ```
 
-### Optional: Specify Device Mapping
+### Primary Assist Mapping
 
 Manually specify Primary and Assist controllers via IDs:
 
@@ -112,7 +143,7 @@ Assist:  (0) Microsoft Xbox One
 ...
 ```
 
-### Optional: Specify Mux Mode
+### Mux Mode Selection
 
 Manually specify mode for merging controllers:
 
@@ -121,16 +152,7 @@ $ ctrlassist mux --mode priority
 ...
 ```
 
-### Optional: Hide Physical Devices
-
-Avoiding in game conflicts by hiding physical controllers:
-
-```sh
-$ sudo ctrlassist mux --hide
-...
-```
-
-### Optional: Spoof Virtual Device
+### Spoof Virtual Device
 
 Mimic controller hardware for in-game layout recognition:
 
@@ -141,7 +163,7 @@ Assist:  (1) PS4 Controller
 Virtual: (2) Microsoft X-Box One pad (Firmware 2015)
 ```
 
-### Optional: Proxy Rumble Effects
+### Rumble Pass-Through
 
 Target force feedback to either or both physical controllers:
 
@@ -149,6 +171,19 @@ Target force feedback to either or both physical controllers:
 $ ctrlassist mux --rumble both
 ...
 ```
+
+### Hide Physical Devices
+
+Avoiding in game conflicts by hiding physical controllers:
+
+```sh
+$ sudo ctrlassist mux --hide
+...
+```
+
+> [!IMPORTANT]  
+> Running ctrlassist as root is not possible in Flatpak due to sandboxing.
+> Continue reading the [Workarounds](#workarounds) section for alternatives.
 
 # Limitations
 
@@ -160,6 +195,40 @@ $ ctrlassist mux --rumble both
   - custom udev rules should be used for persistent permissions
 - Toggle mode requires pressing all buttons and axes after startup
   - gilrs lazily initializes gamepad state used for synchronization
+
+# Workarounds
+
+## Hiding Physical Devices using Flatpak
+
+Because Flatpak sandboxing prevents use of elevated privileges, using CtrlAssist to auto hide physical controllers system-wide is not as viable. However, for game launchers that support controller blacklisting, the same goal of avoiding input conflicts is still achievable.
+
+### Steam Input
+
+Steam Input can be configured to ignore controllers by matching vendor and product IDs. First, identify the IDs of the physical controllers to be hidden using [`lsusb`](https://pkgs.org/search/?q=usbutils): 
+
+```sh
+$ lsusb
+Bus 001 Device 002: ID 045e:02dd Microsoft Corp. Xbox One Controller (Firmware 2015)
+Bus 001 Device 010: ID 054c:05c4 Sony Corp. DualShock 4 [CUH-ZCT1x]
+...
+```
+
+Reformat IDs using `/` and `,` to edit and save `~/.local/share/Steam/config/config.vdf` like so (ignore `+`):
+
+```diff
+"InstallConfigStore"
+{
++	"controller_blacklist"	"045e/02dd,054c/05c4"
+	"Software"
+```
+
+Run CtrlAssist without the `--hide` flag nor spoofing either primary or assist controllers, as CtrlAssist spoofs the former by default:
+
+```sh
+flatpak run io.github.ruffsl.ctrlassist mux --spoof none
+```
+
+Finally, restart Steam for the changes to take effect. Note that all similar controllers matching the blacklisted vendor/product IDs will then be ignored by Steam Input. This could be an issue for something like a 2v1 scenario where the third player not using CtrlAssist shares the same controller make and model.
 
 # Background
 

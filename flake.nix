@@ -27,12 +27,16 @@
       {
         devShell = pkgs.mkShell {
           packages = with pkgs; [
+            appstream
             # clang
+            flatpak-builder
             # gcc
             jstest-gtk
             linuxConsoleTools
             lldb
             pkg-config
+            python313Packages.aiohttp
+            python313Packages.tomlkit
             rust
             udev
           ];

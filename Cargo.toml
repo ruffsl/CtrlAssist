@@ -22,6 +22,7 @@ exclude = [
     ".vscode/",
     "docs/",
     "flake.*",
+    "flatpak/",
     "rust-toolchain.toml",
 ]
 
