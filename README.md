@@ -222,6 +222,12 @@ Reformat IDs using `/` and `,` to edit and save `~/.local/share/Steam/config/con
 	"Software"
 ```
 
+Run CtrlAssist without the `--hide` flag nor spoofing either primary or assist controllers, as CtrlAssist spoofs the former by default:
+
+```sh
+flatpak run io.github.ruffsl.ctrlassist mux --spoof none
+```
+
 Finally, restart Steam for the changes to take effect. Note that all similar controllers matching the blacklisted vendor/product IDs will then be ignored by Steam Input. This could be an issue for something like a 2v1 scenario where the third player not using CtrlAssist shares the same controller make and model.
 
 # Background
