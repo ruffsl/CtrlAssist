@@ -1,4 +1,5 @@
 # Ignore Flatpak artifacts
 .flatpak-builder
+*.flatpak
 builddir
 repo
