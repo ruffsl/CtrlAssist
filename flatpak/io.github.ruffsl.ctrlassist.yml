@@ -30,6 +30,3 @@ modules:
         path: io.github.ruffsl.ctrlassist.metainfo.xml
       - type: dir
         path: ../
-    builddeps:
-      - libudev-devel
-      - pkg-config
