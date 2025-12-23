@@ -16,8 +16,8 @@ modules:
         CARGO_HOME: /run/build/ctrlassist/cargo
         CARGO_NET_OFFLINE: 'true'
     build-commands:
-      - cargo --offline fetch --manifest-path Cargo.toml --verbose
-      - cargo build --offline --release --all-features
+      - cargo --offline fetch --verbose
+      - cargo --offline build --release --all-features
       - install -Dm0755 target/release/ctrlassist ${FLATPAK_DEST}/bin/ctrlassist
       - install -Dm0644 io.github.ruffsl.ctrlassist.metainfo.xml ${FLATPAK_DEST}/share/metainfo/io.github.ruffsl.ctrlassist.metainfo.xml
     sources:
