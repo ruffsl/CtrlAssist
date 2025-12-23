@@ -192,7 +192,7 @@ $ ctrlassist mux --hide steam
 > Restart Steam for blacklist to take effect; CtrlAssist reverts config on exit.
 
 > [!WARNING]
-> Combing this hiding strategy with spoofing may also hide the virtual device.
+> Combining this hiding strategy with spoofing may also hide the virtual device.
 
 #### System Level (Root Required)
 
