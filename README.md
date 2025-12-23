@@ -47,11 +47,11 @@
 
 The following installation methods are available:
 
-- Cargo (Rust package manager)
+- [Cargo](#cargo) (Rust package manager)
   - Ideal for customization and un-sandboxed use
   - Suitable for development and contributing
   - E.g. fork custom features and upstream fixes
-- Flatpak (Linux application sandbox)
+- [Flatpak](#flatpak) (Linux application sandbox)
   - Ideal for easy install on SteamOS, Bazzite, etc.
   - Suitable for immutable Linux distributions
   - E.g. where installing build tools is a hassle
@@ -183,7 +183,7 @@ $ sudo ctrlassist mux --hide
 
 > [!IMPORTANT]  
 > Running ctrlassist as root is not possible in Flatpak due to sandboxing.
-> Continue reading the workarounds section for alternative approaches.
+> Continue reading the [Workarounds](#workarounds) section for alternatives.
 
 # Limitations
 
