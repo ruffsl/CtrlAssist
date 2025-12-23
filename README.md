@@ -87,7 +87,7 @@ flatpak install --user ctrlassist.flatpak
 Run and test via Flatpak using the application ID:
 
 ```sh
-io.github.ruffsl.ctrlassist --help
+flatpak run io.github.ruffsl.ctrlassist --help
 ```
 
 # Usage
