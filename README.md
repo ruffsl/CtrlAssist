@@ -48,7 +48,7 @@
 The following installation methods are available:
 
 - [Cargo](#cargo) (Rust package manager)
-  - Ideal for customization and un-sandboxed use
+  - Ideal for customization and unsandboxed use
   - Suitable for development and contributing
   - E.g. fork custom features and upstream fixes
 - [Flatpak](#flatpak) (Linux application sandbox)
