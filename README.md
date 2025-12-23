@@ -152,15 +152,6 @@ $ ctrlassist mux --mode priority
 ...
 ```
 
-### Hide Physical Devices
-
-Avoiding in game conflicts by hiding physical controllers:
-
-```sh
-$ sudo ctrlassist mux --hide
-...
-```
-
 ### Spoof Virtual Device
 
 Mimic controller hardware for in-game layout recognition:
@@ -181,6 +172,19 @@ $ ctrlassist mux --rumble both
 ...
 ```
 
+### Hide Physical Devices
+
+Avoiding in game conflicts by hiding physical controllers:
+
+```sh
+$ sudo ctrlassist mux --hide
+...
+```
+
+> [!IMPORTANT]  
+> Running ctrlassist as root is not possible in Flatpak due to sandboxing.
+> Continue reading the workarounds section for alternative approaches.
+
 # Limitations
 
 - Hiding physical input devices requires root access
@@ -191,6 +195,34 @@ $ ctrlassist mux --rumble both
   - custom udev rules should be used for persistent permissions
 - Toggle mode requires pressing all buttons and axes after startup
   - gilrs lazily initializes gamepad state used for synchronization
+
+# Workarounds
+
+## Hiding Physical Devices using Flatpak
+
+Because Flatpak sandboxing prevents use of elevated privileges, hiding physical controllers system-wide is not as viable. However, for game launchers that support controller blacklisting, the same goal of avoiding input conflicts is still achievable.
+
+### Steam Input
+
+Steam Input can be configured to ignore controllers by matching vendor and product IDs. First, identify the IDs of the physical controllers to be hidden using [`lsusb`](https://pkgs.org/search/?q=usbutils): 
+
+```sh
+$ lsusb
+Bus 001 Device 002: ID 045e:02dd Microsoft Corp. Xbox One Controller (Firmware 2015)
+Bus 001 Device 010: ID 054c:05c4 Sony Corp. DualShock 4 [CUH-ZCT1x]
+...
+```
+
+Reformat IDs using `/` and `,` to edit and save `~/.local/share/Steam/config/config.vdf` like so (ignore `+`):
+
+```diff
+"InstallConfigStore"
+{
++	"controller_blacklist"	"045e/02dd,054c/05c4"
+	"Software"
+```
+
+Finally, restart Steam for the changes to take effect. Note that all similar controllers matching the blacklisted vendor/product IDs will then be ignored by Steam Input. This could be an issue for something like a 2v1 scenario where the third player not using CtrlAssist shares the same controller make and model.
 
 # Background
 
