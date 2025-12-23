@@ -200,7 +200,7 @@ $ sudo ctrlassist mux --hide
 
 ## Hiding Physical Devices using Flatpak
 
-Because Flatpak sandboxing prevents use of elevated privileges, hiding physical controllers system-wide is not as viable. However, for game launchers that support controller blacklisting, the same goal of avoiding input conflicts is still achievable.
+Because Flatpak sandboxing prevents use of elevated privileges, using CtrlAssist to auto hide physical controllers system-wide is not as viable. However, for game launchers that support controller blacklisting, the same goal of avoiding input conflicts is still achievable.
 
 ### Steam Input
 
