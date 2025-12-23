@@ -22,7 +22,7 @@
 - Rumble pass-through from virtual to physical devices
   - Forward force feedback to either or both controllers
 
-# Modes
+## Modes
 
 - **Priority** (default): Assist controller overrides when active
   - Axes: Prioritize Assist when active (exceeds deadzone)
@@ -43,20 +43,45 @@
   - Ideal when fine-grain conflict-free control is needed
     - E.g. Game menu navigation or precise interventions
 
-# Prerequisites
-- Linux system using udev (libudev-dev)
-  - with user permissions to manage virtual devices
-  - already pre-configured on most distributions
-- Rust toolchain with included `cargo`
+# Install
+
+The following installation methods are available:
+
+- Cargo (Rust package manager)
+  - Ideal for customization and un-sandboxed use
+  - Suitable for development and contributing
+  - E.g. fork custom features and upstream fixes
+- Flatpak (Linux application sandbox)
+  - Ideal for easy install on SteamOS, Bazzite, etc.
+  - Suitable for immutable Linux distributions
+  - E.g. where installing build tools is a hassle
+
+## Cargo
+
+- Build dependencies
+  - [libudev-dev](https://pkgs.org/search/?q=libudev-dev)
+  - [pkg-config](https://pkgs.org/search/?q=pkg-config)
+- Rust toolchain
   - https://rust-lang.org/tools/install/
   - configure `PATH` per Notes linked above
-
-# Install
 
 Add the `--force` flag to upgrade to latest version:
 
 ```sh
 cargo install ctrlassist
+```
+
+## Flatpak
+
+- Runtime dependencies
+  - [Flatpak](https://flatpak.org/setup/) (likely already installed)
+
+Download latest bundle from [releases page](https://github.com/ruffsl/ctrlassist/releases) and install:
+
+```sh
+export VERSION=v0.2.0
+wget https://github.com/ruffsl/ctrlassist/releases/download/$VERSION/ctrlassist.flatpak
+flatpak install ctrlassist.flatpak
 ```
 
 # Usage
