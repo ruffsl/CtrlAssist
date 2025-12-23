@@ -47,8 +47,8 @@ struct MuxArgs {
     assist: usize,
 
     /// Hide primary and assist controllers.
-    #[arg(long, default_value_t = false)]
-    hide: bool,
+    #[arg(long, value_enum, default_value_t = HideType::default())]
+    hide: HideType,
 
     /// Spoof target for virtual device.
     #[arg(long, value_enum, default_value_t = SpoofTarget::default())]
@@ -61,6 +61,13 @@ struct MuxArgs {
     /// Rumble target for virtual device.
     #[arg(long, value_enum, default_value_t = RumbleTarget::default())]
     rumble: RumbleTarget,
+}
+#[derive(ValueEnum, Clone, Debug, Default)]
+pub enum HideType {
+    #[default]
+    None,
+    Steam,
+    System,
 }
 #[derive(ValueEnum, Clone, Debug, Default)]
 pub enum SpoofTarget {
@@ -137,12 +144,20 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     info!("{}", assist_msg);
     println!("{}", assist_msg);
 
-    // Handle hiding via udev
-    let mut hider = udev_helpers::ScopedDeviceHider::new();
-    if args.hide {
-        info!("Hiding controllers (requires root)...");
-        hider.hide_gamepad_devices(&resources[&p_id])?;
-        hider.hide_gamepad_devices(&resources[&a_id])?;
+    // Handle hiding
+    let mut hider = udev_helpers::ScopedDeviceHider::new(args.hide.clone());
+    match args.hide {
+        HideType::None => {}
+        HideType::System => {
+            info!("Hiding controllers via system permissions (requires root)...");
+            hider.hide_gamepad_devices(&resources[&p_id])?;
+            hider.hide_gamepad_devices(&resources[&a_id])?;
+        }
+        HideType::Steam => {
+            info!("Hiding controllers via Steam blacklist...");
+            hider.hide_gamepad_devices(&resources[&p_id])?;
+            hider.hide_gamepad_devices(&resources[&a_id])?;
+        }
     }
 
     // Setup Virtual Device
