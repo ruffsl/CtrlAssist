@@ -126,7 +126,7 @@ Assist:  (1) PS4 Controller
 Mux Active. Press Ctrl+C to exit.
 ```
 
-### Optional: Specify Device Mapping
+### Primary Assist Mapping
 
 Manually specify Primary and Assist controllers via IDs:
 
@@ -137,7 +137,7 @@ Assist:  (0) Microsoft Xbox One
 ...
 ```
 
-### Optional: Specify Mux Mode
+### Mux Mode Selection
 
 Manually specify mode for merging controllers:
 
@@ -146,7 +146,7 @@ $ ctrlassist mux --mode priority
 ...
 ```
 
-### Optional: Hide Physical Devices
+### Hide Physical Devices
 
 Avoiding in game conflicts by hiding physical controllers:
 
@@ -155,7 +155,7 @@ $ sudo ctrlassist mux --hide
 ...
 ```
 
-### Optional: Spoof Virtual Device
+### Spoof Virtual Device
 
 Mimic controller hardware for in-game layout recognition:
 
@@ -166,7 +166,7 @@ Assist:  (1) PS4 Controller
 Virtual: (2) Microsoft X-Box One pad (Firmware 2015)
 ```
 
-### Optional: Proxy Rumble Effects
+### Rumble Pass-Through
 
 Target force feedback to either or both physical controllers:
 
