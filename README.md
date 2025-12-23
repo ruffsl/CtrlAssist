@@ -84,6 +84,12 @@ wget https://github.com/ruffsl/ctrlassist/releases/download/$VERSION/ctrlassist.
 flatpak install ctrlassist.flatpak
 ```
 
+Run and test via Flatpak using the application ID:
+
+```sh
+io.github.ruffsl.ctrlassist --help
+```
+
 # Usage
 
 Use the `--help` flag for information on each CLI subcommand:
