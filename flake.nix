@@ -27,6 +27,7 @@
       {
         devShell = pkgs.mkShell {
           packages = with pkgs; [
+            appstream
             # clang
             flatpak-builder
             # gcc
