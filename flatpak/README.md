@@ -46,9 +46,9 @@ Bundle Flatpak for distribution:
 
 ```shell
 flatpak build-bundle repo \
-    --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+    --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
     ctrlassist.flatpak \
-    io.github.ruffsl.ctrlassist \
+    io.github.ruffsl.ctrlassist
 ```
 
 # References
