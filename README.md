@@ -164,7 +164,7 @@ Virtual: (2) Microsoft X-Box One pad (Firmware 2015)
 ```
 
 > [!WARNING]
-> Combing spoofing with some hiding strategies may also hide the virtual device.
+> Combining spoofing with some hiding strategies may also hide the virtual device.
 
 ### Rumble Pass-Through
 
