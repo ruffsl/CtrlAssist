@@ -81,7 +81,7 @@ Download latest bundle from [releases page](https://github.com/ruffsl/ctrlassist
 ```sh
 export VERSION=v0.2.0
 wget https://github.com/ruffsl/ctrlassist/releases/download/$VERSION/ctrlassist.flatpak
-flatpak install ctrlassist.flatpak
+flatpak install --user ctrlassist.flatpak
 ```
 
 Run and test via Flatpak using the application ID:
