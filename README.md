@@ -274,11 +274,10 @@ Settings are loaded on startup and automatically saved when changed. Controller 
 
 ## Hiding Strategies
 
-| Strategy | Root Required | Flatpak Compatible | Granularity | Persists After Exit | Restart Required |
-|-|-|-|-|-|-|
-| **None** (default) | No | Yes | N/A | N/A | N/A |
-| **Steam** | No | Yes | Vendor/Product ID | No (auto-restores) | Steam only |
-| **System** | Yes | No | Per-device | No (auto-restores) | Game/Launcher |
+| Strategy   | Access/Compatibility         | Granularity         | Restart Required   |
+|------------|-----------------------------|---------------------|--------------------|
+| **Steam**  | No root, Flatpak compatible | Vendor/Product ID   | Steam only         |
+| **System** | Root required, no Flatpak   | Per-device          | Game/Launcher      |
 
 For example, use **Steam** when running CtrlAssist via Flatpak. For 2v1 scenarios, where the third player not using CtrlAssist shares the same controller make and model, use **System** to avoid hiding the third player's gamepad.
 
