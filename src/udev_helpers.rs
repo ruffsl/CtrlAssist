@@ -25,24 +25,20 @@ struct SystemHideState {
 
 /// Tracks Steam config modifications
 struct SteamHideState {
-    config_path: PathBuf,
+    config_path: Option<PathBuf>,
     original_blacklist: Option<String>,
     added_ids: Vec<String>,
 }
 
 impl ScopedDeviceHider {
     pub fn new(hide_type: HideType) -> Self {
-        let steam_config_path = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".local/share/Steam/config/config.vdf");
-
         Self {
             hide_type,
             system_state: SystemHideState {
                 hidden_paths: HashSet::new(),
             },
             steam_state: SteamHideState {
-                config_path: steam_config_path,
+                config_path: None,
                 original_blacklist: None,
                 added_ids: Vec::new(),
             },
@@ -87,6 +83,19 @@ impl ScopedDeviceHider {
 
     /// Steam hiding: add controller to Steam's blacklist
     fn hide_steam(&mut self, resource: &GamepadResource) -> Result<(), Box<dyn Error>> {
+        // Lazy initialization: resolve config path on first use
+        let config_path = match &self.steam_state.config_path {
+            Some(path) => path,
+            None => {
+                let home = dirs::home_dir().ok_or(
+                    "Could not determine home directory; Steam config path is required for Steam hiding"
+                )?;
+                let path = home.join(".local/share/Steam/config/config.vdf");
+                self.steam_state.config_path = Some(path);
+                self.steam_state.config_path.as_ref().unwrap()
+            }
+        };
+
         // Extract vendor/product IDs directly from evdev Device
         let input_id = resource.device.input_id();
         let vendor_id = input_id.vendor();
@@ -103,18 +112,17 @@ impl ScopedDeviceHider {
         // Read and modify Steam config
         if self.steam_state.original_blacklist.is_none() {
             // First time - backup original config
-            let config_content =
-                fs::read_to_string(&self.steam_state.config_path).map_err(|e| {
-                    let kind = e.kind();
-                    let detail = match kind {
-                        io::ErrorKind::NotFound => "config file not found",
-                        io::ErrorKind::PermissionDenied => {
-                            "insufficient permissions to read config file"
-                        }
-                        _ => "I/O error while reading config file",
-                    };
-                    format!("Failed to read Steam config ({}): {}", detail, e)
-                })?;
+            let config_content = fs::read_to_string(config_path).map_err(|e| {
+                let kind = e.kind();
+                let detail = match kind {
+                    io::ErrorKind::NotFound => "config file not found",
+                    io::ErrorKind::PermissionDenied => {
+                        "insufficient permissions to read config file"
+                    }
+                    _ => "I/O error while reading config file",
+                };
+                format!("Failed to read Steam config ({}): {}", detail, e)
+            })?;
 
             let original_blacklist = parse_controller_blacklist(&config_content);
             self.steam_state.original_blacklist = Some(original_blacklist.unwrap_or_default());
@@ -134,7 +142,7 @@ impl ScopedDeviceHider {
         let new_blacklist = all_ids.join(",");
 
         // Update config file
-        update_steam_config(&self.steam_state.config_path, &new_blacklist)?;
+        update_steam_config(config_path, &new_blacklist)?;
 
         Ok(())
     }
@@ -174,8 +182,11 @@ impl Drop for ScopedDeviceHider {
             }
             HideType::Steam => {
                 // Restore original Steam config
-                if let Some(original) = &self.steam_state.original_blacklist {
-                    if let Err(e) = update_steam_config(&self.steam_state.config_path, original) {
+                if let (Some(config_path), Some(original)) = (
+                    &self.steam_state.config_path,
+                    &self.steam_state.original_blacklist,
+                ) {
+                    if let Err(e) = update_steam_config(config_path, original) {
                         log::error!("Failed to restore Steam config: {}", e);
                     } else {
                         log::info!("Restored Steam blacklist to original state");
