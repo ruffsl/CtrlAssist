@@ -43,13 +43,13 @@ uuid = "1.19.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 # New dependencies for tray
-futures = "0.3"
+futures = "0.3.31"
 futures-util = "0.3.31"
 ksni = "0.3.3"
 notify-rust = "4.11.7"
-parking_lot = "0.12"
-serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
+parking_lot = "0.12.5"
+serde = "1.0.228"
+toml = "0.9.10"
 
 [package.metadata.deb]
 depends = "libudev1"
