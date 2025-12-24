@@ -373,6 +373,7 @@ dependencies = [
  "notify-rust",
  "parking_lot",
  "serde",
+ "tokio",
  "toml",
  "udev",
  "uuid",

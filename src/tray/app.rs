@@ -33,14 +33,18 @@ impl CtrlAssistTray {
     }
 
     fn send_notification(summary: &str, body: &str) {
-        if let Err(e) = Notification::new()
-            .summary(summary)
-            .body(body)
-            .appname("CtrlAssist")
-            .show()
-        {
-            error!("Failed to send notification: {}", e);
-        }
+        let summary = summary.to_string();
+        let body = body.to_string();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = Notification::new()
+                .summary(&summary)
+                .body(&body)
+                .appname("CtrlAssist")
+                .show()
+            {
+                error!("Failed to send notification: {}", e);
+            }
+        });
     }
 
     fn start_mux(&mut self) {

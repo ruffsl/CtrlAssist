@@ -40,6 +40,7 @@ libc = "0.2.178"
 log = "0.4.28"
 udev = "0.9.3"
 uuid = "1.19.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 # New dependencies for tray
 futures = "0.3"

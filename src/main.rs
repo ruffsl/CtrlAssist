@@ -95,13 +95,14 @@ pub enum RumbleTarget {
     None,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
     let cli = Cli::parse();
     match cli.command {
         Commands::List => list_gamepads(),
         Commands::Mux(args) => run_mux(args),
-        Commands::Tray => futures::executor::block_on(tray::run_tray()),
+        Commands::Tray => tray::run_tray().await,
     }
 }
 
