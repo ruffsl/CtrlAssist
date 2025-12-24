@@ -10,7 +10,7 @@ use std::error::Error;
 
 pub async fn run_tray() -> Result<(), Box<dyn Error>> {
     let tray = CtrlAssistTray::new()?;
-    let handle = tray
+    let _handle = tray
         .spawn()
         .map_err(|e| format!("Failed to spawn tray: {}", e))
         .await?;
