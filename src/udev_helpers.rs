@@ -243,6 +243,7 @@ fn update_steam_config(config_path: &Path, new_blacklist: &str) -> Result<(), Bo
     let new_content = lines.join("\n");
     let mut file = fs::File::create(config_path)?;
     file.write_all(new_content.as_bytes())?;
+    file.sync_all()?;
 
     Ok(())
 }
