@@ -2,7 +2,7 @@ use crate::gilrs_helper;
 use crate::mux_modes::ModeType;
 use crate::udev_helpers::ScopedDeviceHider;
 use crate::{HideType, RumbleTarget, SpoofTarget, evdev_helpers, run_ff_loop, run_input_loop};
-use gilrs::{GamepadId, Gilrs};
+use gilrs::Gilrs;
 use ksni::{Category, MenuItem, Status, ToolTip, Tray, menu};
 use log::{error, info};
 use notify_rust::Notification;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use super::config::TrayConfig;
+use super::config::{MuxSettings, TrayConfig};
 use super::state::{MuxStatus, TrayState};
 
 pub struct CtrlAssistTray {
@@ -76,11 +76,15 @@ impl CtrlAssistTray {
         );
         Self::send_notification("CtrlAssist - Starting", &notification_body);
 
-        // Clone settings for thread
-        let mode = state.mode.clone();
-        let hide = state.hide.clone();
-        let spoof = state.spoof.clone();
-        let rumble = state.rumble.clone();
+        // Group settings for thread
+        let mux_settings = MuxSettings {
+            primary_id,
+            assist_id,
+            mode: state.mode.clone(),
+            hide: state.hide.clone(),
+            spoof: state.spoof.clone(),
+            rumble: state.rumble.clone(),
+        };
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = Arc::clone(&shutdown);
@@ -91,16 +95,7 @@ impl CtrlAssistTray {
 
         // Spawn mux thread
         let handle = thread::spawn(move || {
-            if let Err(e) = run_mux_thread(
-                primary_id,
-                assist_id,
-                mode,
-                hide,
-                spoof,
-                rumble,
-                shutdown_clone,
-                vdev_path_tx,
-            ) {
+            if let Err(e) = run_mux_thread(mux_settings, shutdown_clone, vdev_path_tx) {
                 error!("Mux thread error: {}", e);
                 Self::send_notification("CtrlAssist - Error", &format!("Mux failed: {}", e));
             }
@@ -469,12 +464,7 @@ fn create_rumble_item(
 
 // Mux thread function
 fn run_mux_thread(
-    primary_id: GamepadId,
-    assist_id: GamepadId,
-    mode: ModeType,
-    hide: HideType,
-    spoof: SpoofTarget,
-    rumble: RumbleTarget,
+    settings: MuxSettings,
     shutdown: Arc<AtomicBool>,
     vdev_path_tx: std::sync::mpsc::Sender<std::path::PathBuf>,
 ) -> Result<(), Box<dyn Error>> {
@@ -482,18 +472,22 @@ fn run_mux_thread(
     let mut resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
     // Setup hiding
-    let mut hider = ScopedDeviceHider::new(hide);
-    if let Some(primary_res) = resources.get(&primary_id) {
+    let mut hider = ScopedDeviceHider::new(settings.hide.clone());
+    if let Some(primary_res) = resources.get(&settings.primary_id) {
         hider.hide_gamepad_devices(primary_res)?;
     }
-    if let Some(assist_res) = resources.get(&assist_id) {
+    if let Some(assist_res) = resources.get(&settings.assist_id) {
         hider.hide_gamepad_devices(assist_res)?;
     }
 
     // Setup virtual device
-    let virtual_info = match spoof {
-        SpoofTarget::Primary => evdev_helpers::VirtualGamepadInfo::from(&gilrs.gamepad(primary_id)),
-        SpoofTarget::Assist => evdev_helpers::VirtualGamepadInfo::from(&gilrs.gamepad(assist_id)),
+    let virtual_info = match settings.spoof {
+        SpoofTarget::Primary => {
+            evdev_helpers::VirtualGamepadInfo::from(&gilrs.gamepad(settings.primary_id))
+        }
+        SpoofTarget::Assist => {
+            evdev_helpers::VirtualGamepadInfo::from(&gilrs.gamepad(settings.assist_id))
+        }
         SpoofTarget::None => evdev_helpers::VirtualGamepadInfo {
             name: "CtrlAssist Virtual Gamepad".into(),
             vendor_id: None,
@@ -510,10 +504,10 @@ fn run_mux_thread(
 
     // Setup FF targets
     let mut ff_targets = Vec::new();
-    let rumble_ids = match rumble {
-        RumbleTarget::Primary => vec![primary_id],
-        RumbleTarget::Assist => vec![assist_id],
-        RumbleTarget::Both => vec![primary_id, assist_id],
+    let rumble_ids = match settings.rumble {
+        RumbleTarget::Primary => vec![settings.primary_id],
+        RumbleTarget::Assist => vec![settings.assist_id],
+        RumbleTarget::Both => vec![settings.primary_id, settings.assist_id],
         RumbleTarget::None => vec![],
     };
 
@@ -528,7 +522,14 @@ fn run_mux_thread(
     let shutdown_ff = Arc::clone(&shutdown);
 
     let input_handle = thread::spawn(move || {
-        run_input_loop(gilrs, v_dev, mode, primary_id, assist_id, shutdown_input);
+        run_input_loop(
+            gilrs,
+            v_dev,
+            settings.mode,
+            settings.primary_id,
+            settings.assist_id,
+            shutdown_input,
+        );
     });
 
     let ff_handle = thread::spawn(move || {

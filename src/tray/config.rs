@@ -22,6 +22,17 @@ pub struct TrayConfig {
     pub rumble: RumbleTarget,
 }
 
+/// Settings for spawning a mux thread
+#[derive(Debug, Clone)]
+pub struct MuxSettings {
+    pub primary_id: gilrs::GamepadId,
+    pub assist_id: gilrs::GamepadId,
+    pub mode: ModeType,
+    pub hide: HideType,
+    pub spoof: SpoofTarget,
+    pub rumble: RumbleTarget,
+}
+
 impl TrayConfig {
     /// Get the config file path ($XDG_CONFIG_HOME/ctrlassist/config.toml)
     pub fn config_path() -> Result<PathBuf, Box<dyn Error>> {
