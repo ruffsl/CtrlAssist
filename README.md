@@ -270,8 +270,6 @@ Settings are loaded on startup and automatically saved when changed. Controller 
 - Toggle mode requires pressing all buttons and axes after startup
   - gilrs lazily initializes gamepad state used for synchronization
 
-# Comparison
-
 ## Hiding Strategies
 
 | Strategy   | Access/Compatibility         | Granularity         | Restart Required   |
