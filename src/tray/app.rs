@@ -125,7 +125,6 @@ impl CtrlAssistTray {
         }
 
         info!("Stopping mux");
-        Self::send_notification("CtrlAssist", "Stopping mux...");
 
         // Signal shutdown
         if let Some(shutdown) = &state.shutdown_signal {
