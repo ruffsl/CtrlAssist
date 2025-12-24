@@ -17,7 +17,7 @@
   - Logically merging or preempting events is flexible
 - 🙈 Hide physical controllers for improved game compatibility
   - Multiple hiding strategies for avoiding interference
-- 🎭 Spoof gamepad vendor for in-game layout recognition
+- 🕹️ Spoof gamepad vendor for in-game layout recognition
   - Mimic either Primary or Assist controller hardware
 - 🫨 Rumble pass-through from virtual to physical devices
   - Forward force feedback to either or both controllers
@@ -179,7 +179,7 @@ $ ctrlassist mux --mode priority
 ...
 ```
 
-### 🎭 Spoof Virtual Device
+### 🕹️ Spoof Virtual Device
 
 Mimic controller hardware for in-game layout recognition:
 
