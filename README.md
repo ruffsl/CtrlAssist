@@ -203,6 +203,9 @@ $ sudo ctrlassist mux --hide system
 ...
 ```
 
+> [!NOTE]
+> Restart game/launcher to force rediscovery; CtrlAssist reverts change on exit.
+
 > [!IMPORTANT]
 > Not possible via Flatpak sandbox for security. Use `--hide steam` instead.
 
