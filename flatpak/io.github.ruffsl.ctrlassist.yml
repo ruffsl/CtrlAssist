@@ -8,6 +8,7 @@ command: ctrlassist
 finish-args:
   - --device=all
   - --filesystem=~/.local/share/Steam/config:rw
+  - --socket=session-bus
 modules:
   - name: ctrlassist
     buildsystem: simple

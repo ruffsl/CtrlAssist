@@ -245,7 +245,7 @@ $ sudo ctrlassist mux --hide system
 
 # ⚙️ Configuration
 
-The system tray saves settings to `~/.config/ctrlassist/config.toml`:
+The system tray saves settings to `$XDG_CONFIG_HOME/ctrlassist/config.toml`:
 
 ```toml
 # Last selected controllers (by name for best-effort matching)
