@@ -144,6 +144,7 @@ impl CtrlAssistTray {
 }
 
 impl Tray for CtrlAssistTray {
+    const MENU_ON_ACTIVATE: bool = true;
     fn id(&self) -> String {
         "ctrlassist".into()
     }
