@@ -4,6 +4,7 @@ use evdev::{Device, EventType, InputEvent};
 use gilrs::{GamepadId, Gilrs};
 use gilrs_helper::GamepadResource;
 use log::{error, info, warn};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::{
@@ -12,14 +13,13 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
-use serde::{Serialize, Deserialize};
 
 mod evdev_helpers;
 mod ff_helpers;
 mod gilrs_helper;
 mod mux_modes;
-mod udev_helpers;
 mod tray;
+mod udev_helpers;
 
 const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
 

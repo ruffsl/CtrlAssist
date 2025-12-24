@@ -1,12 +1,12 @@
 use crate::mux_modes::ModeType;
 use crate::{HideType, RumbleTarget, SpoofTarget};
-use log::{error, info, warn};
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TrayConfig {
     /// Last selected primary controller (by name for best-effort matching)
     pub primary_name: Option<String>,
@@ -22,26 +22,13 @@ pub struct TrayConfig {
     pub rumble: RumbleTarget,
 }
 
-impl Default for TrayConfig {
-    fn default() -> Self {
-        Self {
-            primary_name: None,
-            assist_name: None,
-            mode: ModeType::default(),
-            hide: HideType::default(),
-            spoof: SpoofTarget::default(),
-            rumble: RumbleTarget::default(),
-        }
-    }
-}
-
 impl TrayConfig {
     /// Get the config file path ($XDG_CONFIG_HOME/ctrlassist/config.toml)
     pub fn config_path() -> Result<PathBuf, Box<dyn Error>> {
         let config_dir = dirs::config_dir()
             .ok_or("Could not determine config directory")?
             .join("ctrlassist");
-        
+
         fs::create_dir_all(&config_dir)?;
         Ok(config_dir.join("config.toml"))
     }
@@ -71,7 +58,7 @@ impl TrayConfig {
                 warn!("Failed to get config path: {}", e);
             }
         }
-        
+
         info!("Using default configuration");
         Self::default()
     }

@@ -1,7 +1,6 @@
 use crate::mux_modes::ModeType;
 use crate::{HideType, RumbleTarget, SpoofTarget};
 use gilrs::{GamepadId, Gilrs};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
 

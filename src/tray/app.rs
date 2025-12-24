@@ -1,13 +1,12 @@
 use crate::gilrs_helper;
 use crate::mux_modes::ModeType;
 use crate::udev_helpers::ScopedDeviceHider;
-use crate::{evdev_helpers, ff_helpers, run_ff_loop, run_input_loop, HideType, RumbleTarget, SpoofTarget};
+use crate::{HideType, RumbleTarget, SpoofTarget, evdev_helpers, run_ff_loop, run_input_loop};
 use gilrs::{GamepadId, Gilrs};
-use ksni::{Category, Icon, MenuItem, Status, ToolTip, Tray, menu};
+use ksni::{Category, MenuItem, Status, ToolTip, Tray, menu};
 use log::{error, info};
 use notify_rust::Notification;
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,7 +45,7 @@ impl CtrlAssistTray {
 
     fn start_mux(&mut self) {
         let mut state = self.state.lock();
-        
+
         if !state.is_valid_for_start() {
             Self::send_notification(
                 "CtrlAssist - Cannot Start",
@@ -57,8 +56,11 @@ impl CtrlAssistTray {
 
         let primary_id = state.selected_primary.unwrap();
         let assist_id = state.selected_assist.unwrap();
-        
-        info!("Starting mux: primary={:?}, assist={:?}", primary_id, assist_id);
+
+        info!(
+            "Starting mux: primary={:?}, assist={:?}",
+            primary_id, assist_id
+        );
 
         // Create notification with settings
         let notification_body = format!(
@@ -337,11 +339,13 @@ fn create_mode_item(
     state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
     is_running: bool,
 ) -> MenuItem<CtrlAssistTray> {
-    let is_selected = matches!((&state.mode, &mode), 
-        (ModeType::Priority, ModeType::Priority) |
-        (ModeType::Average, ModeType::Average) |
-        (ModeType::Toggle, ModeType::Toggle));
-    
+    let is_selected = matches!(
+        (&state.mode, &mode),
+        (ModeType::Priority, ModeType::Priority)
+            | (ModeType::Average, ModeType::Average)
+            | (ModeType::Toggle, ModeType::Toggle)
+    );
+
     menu::CheckmarkItem {
         label: format!("{:?}", mode),
         checked: is_selected,
@@ -360,11 +364,13 @@ fn create_hide_item(
     state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
     is_running: bool,
 ) -> MenuItem<CtrlAssistTray> {
-    let is_selected = matches!((&state.hide, &hide),
-        (HideType::None, HideType::None) |
-        (HideType::Steam, HideType::Steam) |
-        (HideType::System, HideType::System));
-    
+    let is_selected = matches!(
+        (&state.hide, &hide),
+        (HideType::None, HideType::None)
+            | (HideType::Steam, HideType::Steam)
+            | (HideType::System, HideType::System)
+    );
+
     menu::CheckmarkItem {
         label: format!("{:?}", hide),
         checked: is_selected,
@@ -383,11 +389,13 @@ fn create_spoof_item(
     state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
     is_running: bool,
 ) -> MenuItem<CtrlAssistTray> {
-    let is_selected = matches!((&state.spoof, &spoof),
-        (SpoofTarget::None, SpoofTarget::None) |
-        (SpoofTarget::Primary, SpoofTarget::Primary) |
-        (SpoofTarget::Assist, SpoofTarget::Assist));
-    
+    let is_selected = matches!(
+        (&state.spoof, &spoof),
+        (SpoofTarget::None, SpoofTarget::None)
+            | (SpoofTarget::Primary, SpoofTarget::Primary)
+            | (SpoofTarget::Assist, SpoofTarget::Assist)
+    );
+
     menu::CheckmarkItem {
         label: format!("{:?}", spoof),
         checked: is_selected,
@@ -406,12 +414,14 @@ fn create_rumble_item(
     state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
     is_running: bool,
 ) -> MenuItem<CtrlAssistTray> {
-    let is_selected = matches!((&state.rumble, &rumble),
-        (RumbleTarget::Both, RumbleTarget::Both) |
-        (RumbleTarget::Primary, RumbleTarget::Primary) |
-        (RumbleTarget::Assist, RumbleTarget::Assist) |
-        (RumbleTarget::None, RumbleTarget::None));
-    
+    let is_selected = matches!(
+        (&state.rumble, &rumble),
+        (RumbleTarget::Both, RumbleTarget::Both)
+            | (RumbleTarget::Primary, RumbleTarget::Primary)
+            | (RumbleTarget::Assist, RumbleTarget::Assist)
+            | (RumbleTarget::None, RumbleTarget::None)
+    );
+
     menu::CheckmarkItem {
         label: format!("{:?}", rumble),
         checked: is_selected,
@@ -437,7 +447,7 @@ fn run_mux_thread(
     shutdown: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn Error>> {
     let gilrs = gilrs_arc.lock();
-    let mut resources = gilrs_helper::discover_gamepad_resources(&*gilrs);
+    let mut resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
     // Setup hiding
     let mut hider = ScopedDeviceHider::new(hide);
@@ -481,15 +491,15 @@ fn run_mux_thread(
     // Spawn threads
     let shutdown_input = Arc::clone(&shutdown);
     let shutdown_ff = Arc::clone(&shutdown);
-    
+
     drop(gilrs); // Release lock before spawning threads
-    
+
     let gilrs_arc_input = Arc::clone(&gilrs_arc);
     let input_handle = thread::spawn(move || {
         let gilrs = Gilrs::new().expect("Failed to init Gilrs");
         run_input_loop(gilrs, v_dev, mode, primary_id, assist_id, shutdown_input);
     });
-    
+
     let ff_handle = thread::spawn(move || {
         run_ff_loop(&mut v_uinput, ff_targets, shutdown_ff);
     });

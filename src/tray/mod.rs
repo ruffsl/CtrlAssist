@@ -4,15 +4,16 @@ mod config;
 mod state;
 
 pub use app::CtrlAssistTray;
-pub use config::TrayConfig;
-pub use state::{ControllerInfo, MuxStatus, TrayState};
 
 use ksni::TrayMethods;
 use std::error::Error;
 
 pub async fn run_tray() -> Result<(), Box<dyn Error>> {
     let tray = CtrlAssistTray::new()?;
-    let handle = tray.spawn().map_err(|e| format!("Failed to spawn tray: {}", e)).await?;
+    let handle = tray
+        .spawn()
+        .map_err(|e| format!("Failed to spawn tray: {}", e))
+        .await?;
 
     println!("CtrlAssist system tray started");
     println!("Configure and control the mux from your system tray");
@@ -20,6 +21,6 @@ pub async fn run_tray() -> Result<(), Box<dyn Error>> {
 
     // Run forever
     std::thread::park();
-    
+
     Ok(())
 }

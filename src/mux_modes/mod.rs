@@ -5,7 +5,7 @@ pub mod toggle;
 
 use evdev::InputEvent;
 use gilrs::{Event, GamepadId};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 // Enum for all muxing modes
 #[derive(clap::ValueEnum, Clone, Debug, Default, Serialize, Deserialize)]
