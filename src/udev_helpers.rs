@@ -216,7 +216,20 @@ fn parse_controller_blacklist(content: &str) -> Option<String> {
     None
 }
 
-/// Update Steam's config.vdf with new controller blacklist
+/// Updates the `controller_blacklist` value in Steam's config.vdf file.
+///
+/// # Parameters
+/// - `config_path`: Path to the Steam config.vdf file to modify.
+/// - `new_blacklist`: The new value for the controller_blacklist key (comma-separated controller IDs).
+///
+/// # Returns
+/// - `Ok(())` if the update succeeds.
+/// - `Err` if the file cannot be read, written, or the InstallConfigStore section is not found.
+///
+/// # Assumptions
+/// - The function expects the config.vdf to contain an InstallConfigStore section.
+/// - If a controller_blacklist key exists, it will be replaced; otherwise, it will be inserted after the opening brace of InstallConfigStore.
+/// - The function does not fully parse VDF, but operates line-by-line and assumes a typical indentation and structure.
 fn update_steam_config(config_path: &Path, new_blacklist: &str) -> Result<(), Box<dyn Error>> {
     let content = fs::read_to_string(config_path)?;
     let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
