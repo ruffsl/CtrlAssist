@@ -21,6 +21,11 @@
   - Mimic either Primary or Assist controller hardware
 - Rumble pass-through from virtual to physical devices
   - Forward force feedback to either or both controllers
+- **System tray interface** for graphical control
+  - Configure controllers and mux options from desktop
+  - Start/stop muxing with live status feedback
+  - Desktop notifications for status changes
+  - Persistent settings across restarts
 
 ## Modes
 
@@ -103,12 +108,34 @@ Usage: ctrlassist <COMMAND>
 Commands:
   list  List all detected controllers and respective IDs
   mux   Multiplex connected controllers into virtual gamepad
+  tray  Launch system tray app for graphical control
   help  Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
   -V, --version  Print version
 ```
+
+## tray
+
+Launch the system tray app for graphical control:
+
+```sh
+$ ctrlassist tray
+CtrlAssist system tray started
+Configure and control the mux from your system tray
+Press Ctrl+C to exit
+```
+
+The system tray provides:
+- **Controller selection** menus for Primary and Assist
+- **Configuration options** for mux mode, hiding, spoofing, and rumble
+- **Start/Stop buttons** with visual feedback
+- **Live status indicator** in the tray icon
+- **Desktop notifications** for status changes
+- **Persistent settings** saved to `~/.config/ctrlassist/config.toml`
+
+Options are greyed out while the mux is running but show current active selections.
 
 ## list
 
@@ -208,6 +235,24 @@ $ sudo ctrlassist mux --hide system
 
 > [!IMPORTANT]
 > Not possible via Flatpak sandbox for security. Use `--hide steam` instead.
+
+# Configuration
+
+The system tray saves settings to `~/.config/ctrlassist/config.toml`:
+
+```toml
+# Last selected controllers (by name for best-effort matching)
+primary_name = "Microsoft Xbox One"
+assist_name = "PS4 Controller"
+
+# Mux configuration
+mode = "Priority"
+hide = "Steam"
+spoof = "None"
+rumble = "Both"
+```
+
+Settings are loaded on startup and automatically saved when changed. Controller names are matched by name (best-effort) if IDs change between sessions.
 
 # Limitations
 

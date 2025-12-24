@@ -18,6 +18,7 @@ mod ff_helpers;
 mod gilrs_helper;
 mod mux_modes;
 mod udev_helpers;
+mod tray;
 
 const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
 
@@ -28,6 +29,7 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// List all detected controllers and respective IDs.
@@ -35,7 +37,11 @@ enum Commands {
 
     /// Multiplex connected controllers into virtual gamepad.
     Mux(MuxArgs),
+
+    /// Launch system tray app for graphical control.
+    Tray,
 }
+
 #[derive(clap::Args, Debug)]
 struct MuxArgs {
     /// Primary controller ID (see 'list' command).
@@ -62,6 +68,7 @@ struct MuxArgs {
     #[arg(long, value_enum, default_value_t = RumbleTarget::default())]
     rumble: RumbleTarget,
 }
+
 #[derive(ValueEnum, Clone, Debug, Default)]
 pub enum HideType {
     #[default]
@@ -69,6 +76,7 @@ pub enum HideType {
     Steam,
     System,
 }
+
 #[derive(ValueEnum, Clone, Debug, Default)]
 pub enum SpoofTarget {
     Primary,
@@ -76,6 +84,7 @@ pub enum SpoofTarget {
     #[default]
     None,
 }
+
 #[derive(ValueEnum, Clone, Debug, Default)]
 pub enum RumbleTarget {
     Primary,
@@ -91,6 +100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     match cli.command {
         Commands::List => list_gamepads(),
         Commands::Mux(args) => run_mux(args),
+        Commands::Tray => tray::run_tray(),
     }
 }
 
@@ -183,10 +193,6 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     info!("{}", virtual_msg);
     println!("{}", virtual_msg);
 
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_ctrlc = shutdown.clone();
     let mut c_resource = gilrs_helper::wait_for_virtual_device(&mut v_uinput)?;
