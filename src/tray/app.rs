@@ -17,7 +17,6 @@ use super::state::{MuxStatus, TrayState};
 
 pub struct CtrlAssistTray {
     state: Arc<Mutex<TrayState>>,
-    gilrs: Arc<Mutex<Gilrs>>,
 }
 
 impl CtrlAssistTray {
@@ -28,7 +27,6 @@ impl CtrlAssistTray {
 
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
-            gilrs: Arc::new(Mutex::new(gilrs)),
         })
     }
 
@@ -83,7 +81,6 @@ impl CtrlAssistTray {
         let hide = state.hide.clone();
         let spoof = state.spoof.clone();
         let rumble = state.rumble.clone();
-        let gilrs_arc = Arc::clone(&self.gilrs);
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = Arc::clone(&shutdown);
@@ -92,7 +89,6 @@ impl CtrlAssistTray {
         // Spawn mux thread
         let handle = thread::spawn(move || {
             if let Err(e) = run_mux_thread(
-                gilrs_arc,
                 primary_id,
                 assist_id,
                 mode,
@@ -450,7 +446,6 @@ fn create_rumble_item(
 
 // Mux thread function
 fn run_mux_thread(
-    gilrs_arc: Arc<Mutex<Gilrs>>,
     primary_id: GamepadId,
     assist_id: GamepadId,
     mode: ModeType,
@@ -459,7 +454,7 @@ fn run_mux_thread(
     rumble: RumbleTarget,
     shutdown: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn Error>> {
-    let gilrs = gilrs_arc.lock();
+    let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
     let mut resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
     // Setup hiding
@@ -505,11 +500,7 @@ fn run_mux_thread(
     let shutdown_input = Arc::clone(&shutdown);
     let shutdown_ff = Arc::clone(&shutdown);
 
-    drop(gilrs); // Release lock before spawning threads
-
-    let gilrs_arc_input = Arc::clone(&gilrs_arc);
     let input_handle = thread::spawn(move || {
-        let gilrs = Gilrs::new().expect("Failed to init Gilrs");
         run_input_loop(gilrs, v_dev, mode, primary_id, assist_id, shutdown_input);
     });
 
