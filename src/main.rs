@@ -12,6 +12,7 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
+use serde::{Serialize, Deserialize};
 
 mod evdev_helpers;
 mod ff_helpers;
@@ -69,7 +70,7 @@ struct MuxArgs {
     rumble: RumbleTarget,
 }
 
-#[derive(ValueEnum, Clone, Debug, Default)]
+#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize)]
 pub enum HideType {
     #[default]
     None,
@@ -77,7 +78,7 @@ pub enum HideType {
     System,
 }
 
-#[derive(ValueEnum, Clone, Debug, Default)]
+#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize)]
 pub enum SpoofTarget {
     Primary,
     Assist,
@@ -85,7 +86,7 @@ pub enum SpoofTarget {
     None,
 }
 
-#[derive(ValueEnum, Clone, Debug, Default)]
+#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize)]
 pub enum RumbleTarget {
     Primary,
     Assist,
@@ -100,7 +101,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     match cli.command {
         Commands::List => list_gamepads(),
         Commands::Mux(args) => run_mux(args),
-        Commands::Tray => tray::run_tray(),
+        Commands::Tray => futures::executor::block_on(tray::run_tray()),
     }
 }
 

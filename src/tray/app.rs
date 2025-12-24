@@ -436,7 +436,7 @@ fn run_mux_thread(
     rumble: RumbleTarget,
     shutdown: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut gilrs = gilrs_arc.lock();
+    let gilrs = gilrs_arc.lock();
     let mut resources = gilrs_helper::discover_gamepad_resources(&*gilrs);
 
     // Setup hiding
@@ -486,8 +486,8 @@ fn run_mux_thread(
     
     let gilrs_arc_input = Arc::clone(&gilrs_arc);
     let input_handle = thread::spawn(move || {
-        let mut gilrs = gilrs_arc_input.lock();
-        run_input_loop(*gilrs, v_dev, mode, primary_id, assist_id, shutdown_input);
+        let gilrs = Gilrs::new().expect("Failed to init Gilrs");
+        run_input_loop(gilrs, v_dev, mode, primary_id, assist_id, shutdown_input);
     });
     
     let ff_handle = thread::spawn(move || {
