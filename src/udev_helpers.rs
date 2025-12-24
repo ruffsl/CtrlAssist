@@ -104,7 +104,15 @@ impl ScopedDeviceHider {
         if self.steam_state.original_blacklist.is_none() {
             // First time - backup original config
             let config_content = fs::read_to_string(&self.steam_state.config_path)
-                .map_err(|e| format!("Failed to read Steam config: {}", e))?;
+                .map_err(|e| {
+                    let kind = e.kind();
+                    let detail = match kind {
+                        io::ErrorKind::NotFound => "config file not found",
+                        io::ErrorKind::PermissionDenied => "insufficient permissions to read config file",
+                        _ => "I/O error while reading config file",
+                    };
+                    format!("Failed to read Steam config ({}): {}", detail, e)
+                })?;
 
             let original_blacklist = parse_controller_blacklist(&config_content);
             self.steam_state.original_blacklist = Some(original_blacklist.unwrap_or_default());
