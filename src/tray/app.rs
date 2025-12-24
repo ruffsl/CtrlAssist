@@ -203,6 +203,7 @@ impl Tray for CtrlAssistTray {
             // Controller Selection
             menu::SubMenu {
                 label: format!("Primary: {}", state.get_primary_name()),
+                icon_name: "input-gaming".into(),
                 enabled: !is_running,
                 submenu: state
                     .controllers
@@ -228,6 +229,7 @@ impl Tray for CtrlAssistTray {
             .into(),
             menu::SubMenu {
                 label: format!("Assist: {}", state.get_assist_name()),
+                icon_name: "input-gaming".into(),
                 enabled: !is_running,
                 submenu: state
                     .controllers
@@ -255,6 +257,7 @@ impl Tray for CtrlAssistTray {
             // Mux Mode
             menu::SubMenu {
                 label: format!("Mode: {:?}", state.mode),
+                icon_name: "media-playlist-shuffle".into(),
                 enabled: !is_running,
                 submenu: vec![
                     create_mode_item(ModeType::Priority, &state, is_running),
@@ -267,6 +270,7 @@ impl Tray for CtrlAssistTray {
             // Hide Strategy
             menu::SubMenu {
                 label: format!("Hide: {:?}", state.hide),
+                icon_name: "view-visible".into(),
                 enabled: !is_running,
                 submenu: vec![
                     create_hide_item(HideType::None, &state, is_running),
@@ -279,6 +283,7 @@ impl Tray for CtrlAssistTray {
             // Spoof Target
             menu::SubMenu {
                 label: format!("Spoof: {:?}", state.spoof),
+                icon_name: "edit-copy".into(),
                 enabled: !is_running,
                 submenu: vec![
                     create_spoof_item(SpoofTarget::None, &state, is_running),
@@ -291,6 +296,7 @@ impl Tray for CtrlAssistTray {
             // Rumble Target
             menu::SubMenu {
                 label: format!("Rumble: {:?}", state.rumble),
+                icon_name: "notification-active".into(),
                 enabled: !is_running,
                 submenu: vec![
                     create_rumble_item(RumbleTarget::Both, &state, is_running),
@@ -305,6 +311,7 @@ impl Tray for CtrlAssistTray {
             // Start/Stop
             menu::StandardItem {
                 label: "Start Mux".into(),
+                icon_name: "media-playback-start".into(),
                 enabled: !is_running && state.is_valid_for_start(),
                 activate: Box::new(|this: &mut Self| {
                     this.start_mux();
@@ -314,6 +321,7 @@ impl Tray for CtrlAssistTray {
             .into(),
             menu::StandardItem {
                 label: "Stop Mux".into(),
+                icon_name: "media-playback-stop".into(),
                 enabled: is_running,
                 activate: Box::new(|this: &mut Self| {
                     this.stop_mux();
