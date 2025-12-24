@@ -186,7 +186,17 @@ impl Drop for ScopedDeviceHider {
 
 // --- Steam Config Helpers ---
 
-/// Parse the controller_blacklist value from Steam's VDF config
+/// Parses the value of the `controller_blacklist` key from Steam's VDF config file.
+///
+/// Expects lines in the format:
+///     "controller_blacklist"\t"<value>"
+/// where <value> is a comma-separated list of controller IDs (e.g., "28de/1142,045e/028e").
+///
+/// Returns:
+/// - Some(String): the blacklist value if the key is found and parsed successfully.
+/// - None: if the key is not found in the provided content.
+///
+/// This function does not fully parse VDF, but searches for the key in a line-oriented manner.
 fn parse_controller_blacklist(content: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
