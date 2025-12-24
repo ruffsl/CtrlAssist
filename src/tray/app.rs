@@ -86,6 +86,9 @@ impl CtrlAssistTray {
         let shutdown_clone = Arc::clone(&shutdown);
         state.shutdown_signal = Some(shutdown);
 
+        // Setup channel to receive virtual device path from mux thread
+        let (vdev_path_tx, vdev_path_rx) = std::sync::mpsc::channel();
+
         // Spawn mux thread
         let handle = thread::spawn(move || {
             if let Err(e) = run_mux_thread(
@@ -96,11 +99,19 @@ impl CtrlAssistTray {
                 spoof,
                 rumble,
                 shutdown_clone,
+                vdev_path_tx,
             ) {
                 error!("Mux thread error: {}", e);
                 Self::send_notification("CtrlAssist - Error", &format!("Mux failed: {}", e));
             }
         });
+
+        // Wait for mux thread to send virtual device path
+        if let Ok(path) = vdev_path_rx.recv() {
+            state.virtual_device_path = Some(path);
+        } else {
+            state.virtual_device_path = None;
+        }
 
         state.mux_handle = Some(handle);
         state.status = MuxStatus::Running;
@@ -125,6 +136,18 @@ impl CtrlAssistTray {
         if let Some(shutdown) = &state.shutdown_signal {
             shutdown.store(true, Ordering::SeqCst);
         }
+
+        // Unblock FF thread: send a no-op force feedback event and SYN_REPORT
+        if let Some(path) = &state.virtual_device_path
+            && let Ok(mut v_dev) = evdev::Device::open(path)
+        {
+            use evdev::{EventType, InputEvent};
+            let _ = v_dev.send_events(&[
+                InputEvent::new(EventType::FORCEFEEDBACK.0, 0, 0),
+                InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
+            ]);
+        }
+        state.virtual_device_path = None;
 
         // Wait for thread to finish
         if let Some(handle) = state.mux_handle.take() {
@@ -453,6 +476,7 @@ fn run_mux_thread(
     spoof: SpoofTarget,
     rumble: RumbleTarget,
     shutdown: Arc<AtomicBool>,
+    vdev_path_tx: std::sync::mpsc::Sender<std::path::PathBuf>,
 ) -> Result<(), Box<dyn Error>> {
     let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
     let mut resources = gilrs_helper::discover_gamepad_resources(&gilrs);
@@ -480,6 +504,9 @@ fn run_mux_thread(
     let mut v_uinput = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
     let v_resource = gilrs_helper::wait_for_virtual_device(&mut v_uinput)?;
     let v_dev = v_resource.device;
+
+    // Send virtual device path to tray state
+    let _ = vdev_path_tx.send(v_resource.path.clone());
 
     // Setup FF targets
     let mut ff_targets = Vec::new();

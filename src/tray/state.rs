@@ -39,6 +39,8 @@ pub struct TrayState {
     pub mux_handle: Option<thread::JoinHandle<()>>,
     /// Shutdown signal for mux thread
     pub shutdown_signal: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Path to virtual device for FF thread unblocking
+    pub virtual_device_path: Option<std::path::PathBuf>,
 }
 
 impl TrayState {
@@ -77,6 +79,7 @@ impl TrayState {
             status: MuxStatus::Stopped,
             mux_handle: None,
             shutdown_signal: None,
+            virtual_device_path: None,
         }
     }
 

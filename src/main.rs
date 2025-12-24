@@ -185,6 +185,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
 
     let mut v_uinput = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
     let v_resource = gilrs_helper::wait_for_virtual_device(&mut v_uinput)?;
+    let vdev_path = v_resource.path.clone();
 
     let virtual_msg = format!(
         "Virtual: ({}) {} @ {}",
@@ -197,15 +198,16 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_ctrlc = shutdown.clone();
-    let mut c_resource = gilrs_helper::wait_for_virtual_device(&mut v_uinput)?;
     ctrlc::set_handler(move || {
         println!("\nShutting down...");
         shutdown_ctrlc.store(true, Ordering::SeqCst);
         // Unblock FF thread: send a no-op force feedback event and SYN_REPORT
-        let _ = c_resource.device.send_events(&[
-            InputEvent::new(EventType::FORCEFEEDBACK.0, 0, 0),
-            InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
-        ]);
+        if let Ok(mut vdev) = Device::open(&vdev_path) {
+            let _ = vdev.send_events(&[
+                InputEvent::new(EventType::FORCEFEEDBACK.0, 0, 0),
+                InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
+            ]);
+        }
     })?;
 
     // Prepare FF targets by moving Device ownership
