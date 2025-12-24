@@ -16,7 +16,7 @@
 - Customizable multiplexing modes for buttons and axes
   - Logically merging or preempting events is flexible
 - Hide physical controllers for improved game compatibility
-  - Avoid controller interference from conflicting inputs
+  - Multiple hiding strategies for avoiding interference
 - Spoof gamepad vendor for in-game layout recognition
   - Mimic either Primary or Assist controller hardware
 - Rumble pass-through from virtual to physical devices
@@ -163,6 +163,9 @@ Assist:  (1) PS4 Controller
 Virtual: (2) Microsoft X-Box One pad (Firmware 2015)
 ```
 
+> [!WARNING]
+> Combining spoofing with some hiding strategies may also hide the virtual device.
+
 ### Rumble Pass-Through
 
 Target force feedback to either or both physical controllers:
@@ -174,61 +177,65 @@ $ ctrlassist mux --rumble both
 
 ### Hide Physical Devices
 
-Avoiding in game conflicts by hiding physical controllers:
+There are multiple hiding strategies to avoid input conflicts:
+
+#### Steam Input (Flatpak Compatible)
+
+Automatically configure Steam's controller blacklist:
 
 ```sh
-$ sudo ctrlassist mux --hide
+$ ctrlassist mux --hide steam
 ...
 ```
 
-> [!IMPORTANT]  
-> Running ctrlassist as root is not possible in Flatpak due to sandboxing.
-> Continue reading the [Workarounds](#workarounds) section for alternatives.
+> [!NOTE]
+> Restart Steam for blacklist to take effect; CtrlAssist reverts config on exit.
+
+> [!WARNING]
+> Combining this hiding strategy with spoofing may also hide the virtual device.
+
+#### System Level (Root Required)
+
+Restrict device tree permissions system-wide:
+
+```sh
+$ sudo ctrlassist mux --hide system
+...
+```
+
+> [!NOTE]
+> Restart game/launcher to force rediscovery; CtrlAssist reverts change on exit.
+
+> [!IMPORTANT]
+> Not possible via Flatpak sandbox for security. Use `--hide steam` instead.
 
 # Limitations
 
-- Hiding physical input devices requires root access
+- System hiding requires root access
   - temporarily modifies group permissions for selected devices
 - Hiding must be done before starting games or launchers
   - processes with open file handles may retain device access
-- Reconnecting a hidden controller reverts its visibility
-  - custom udev rules should be used for persistent permissions
+- Reconnecting a hidden controller may revert its visibility
+  - Steam hiding persists across reconnects while CtrlAssist is running
+  - System hiding: custom udev rules needed for persistent permissions
+- Steam hiding affects all controllers of the same make and model
+  - blacklists by vendor/product ID, not individual devices
+- Steam hiding requires Steam restart
+  - Steam only checks controller_blacklist config on startup
 - Toggle mode requires pressing all buttons and axes after startup
   - gilrs lazily initializes gamepad state used for synchronization
 
-# Workarounds
+# Comparison
 
-## Hiding Physical Devices using Flatpak
+## Hiding Strategies
 
-Because Flatpak sandboxing prevents use of elevated privileges, using CtrlAssist to auto hide physical controllers system-wide is not as viable. However, for game launchers that support controller blacklisting, the same goal of avoiding input conflicts is still achievable.
+| Strategy | Root Required | Flatpak Compatible | Granularity | Persists After Exit | Restart Required |
+|-|-|-|-|-|-|
+| **None** (default) | No | Yes | N/A | N/A | N/A |
+| **Steam** | No | Yes | Vendor/Product ID | No (auto-restores) | Steam only |
+| **System** | Yes | No | Per-device | No (auto-restores) | Game/Launcher |
 
-### Steam Input
-
-Steam Input can be configured to ignore controllers by matching vendor and product IDs. First, identify the IDs of the physical controllers to be hidden using [`lsusb`](https://pkgs.org/search/?q=usbutils): 
-
-```sh
-$ lsusb
-Bus 001 Device 002: ID 045e:02dd Microsoft Corp. Xbox One Controller (Firmware 2015)
-Bus 001 Device 010: ID 054c:05c4 Sony Corp. DualShock 4 [CUH-ZCT1x]
-...
-```
-
-Reformat IDs using `/` and `,` to edit and save `~/.local/share/Steam/config/config.vdf` like so (ignore `+`):
-
-```diff
-"InstallConfigStore"
-{
-+	"controller_blacklist"	"045e/02dd,054c/05c4"
-	"Software"
-```
-
-Run CtrlAssist without the `--hide` flag nor spoofing either primary or assist controllers, as CtrlAssist spoofs the former by default:
-
-```sh
-flatpak run io.github.ruffsl.ctrlassist mux --spoof none
-```
-
-Finally, restart Steam for the changes to take effect. Note that all similar controllers matching the blacklisted vendor/product IDs will then be ignored by Steam Input. This could be an issue for something like a 2v1 scenario where the third player not using CtrlAssist shares the same controller make and model.
+For example, use **Steam** when running CtrlAssist via Flatpak. For 2v1 scenarios, where the third player not using CtrlAssist shares the same controller make and model, use **System** to avoid hiding the third player's gamepad.
 
 # Background
 
