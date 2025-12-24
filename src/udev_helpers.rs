@@ -1,5 +1,5 @@
-use crate::gilrs_helper::GamepadResource;
 use crate::HideType;
+use crate::gilrs_helper::GamepadResource;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs;
@@ -115,10 +115,10 @@ impl ScopedDeviceHider {
 
         // Build new blacklist
         let mut all_ids = Vec::new();
-        if let Some(original) = &self.steam_state.original_blacklist {
-            if !original.is_empty() {
-                all_ids.push(original.clone());
-            }
+        if let Some(original) = &self.steam_state.original_blacklist
+            && !original.is_empty()
+        {
+            all_ids.push(original.clone());
         }
         all_ids.extend(self.steam_state.added_ids.clone());
         let new_blacklist = all_ids.join(",");
@@ -213,7 +213,10 @@ fn update_steam_config(config_path: &Path, new_blacklist: &str) -> Result<(), Bo
         }
         if line.trim().starts_with("\"controller_blacklist\"") {
             // Replace existing line
-            let indent = line.chars().take_while(|c| c.is_whitespace()).collect::<String>();
+            let indent = line
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .collect::<String>();
             lines[idx] = format!("{}\"controller_blacklist\"\t\"{}\"", indent, new_blacklist);
             found = true;
             break;
@@ -226,7 +229,10 @@ fn update_steam_config(config_path: &Path, new_blacklist: &str) -> Result<(), Bo
             // Find the opening brace
             if let Some(brace_idx) = lines[idx..].iter().position(|l| l.contains('{')) {
                 let insert_idx = idx + brace_idx + 1;
-                lines.insert(insert_idx, format!("\t\"controller_blacklist\"\t\"{}\"", new_blacklist));
+                lines.insert(
+                    insert_idx,
+                    format!("\t\"controller_blacklist\"\t\"{}\"", new_blacklist),
+                );
             }
         } else {
             return Err("Could not find InstallConfigStore in Steam config".into());
