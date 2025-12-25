@@ -57,7 +57,10 @@ impl CtrlAssistTray {
         let primary_id = state.selected_primary.unwrap();
         let assist_id = state.selected_assist.unwrap();
 
-        info!("Starting mux: primary={:?}, assist={:?}", primary_id, assist_id);
+        info!(
+            "Starting mux: primary={:?}, assist={:?}",
+            primary_id, assist_id
+        );
 
         // Create notification with settings
         let notification_body = format!(
@@ -122,14 +125,14 @@ impl CtrlAssistTray {
         }
 
         // Unblock FF thread
-        if let Some(path) = &state.virtual_device_path {
-            if let Ok(mut v_dev) = evdev::Device::open(path) {
-                use evdev::{EventType, InputEvent};
-                let _ = v_dev.send_events(&[
-                    InputEvent::new(EventType::FORCEFEEDBACK.0, 0, 0),
-                    InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
-                ]);
-            }
+        if let Some(path) = &state.virtual_device_path
+            && let Ok(mut v_dev) = evdev::Device::open(path)
+        {
+            use evdev::{EventType, InputEvent};
+            let _ = v_dev.send_events(&[
+                InputEvent::new(EventType::FORCEFEEDBACK.0, 0, 0),
+                InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
+            ]);
         }
         state.virtual_device_path = None;
 
@@ -158,7 +161,7 @@ impl CtrlAssistTray {
                 })
                 .collect();
             state.controllers = controllers;
-            
+
             // Try to keep selected controllers if still present
             if let Some(primary_id) = state.selected_primary {
                 if !state.controllers.iter().any(|c| c.id == primary_id) {
@@ -167,7 +170,7 @@ impl CtrlAssistTray {
             } else {
                 state.selected_primary = state.controllers.first().map(|c| c.id);
             }
-            
+
             if let Some(assist_id) = state.selected_assist {
                 if !state.controllers.iter().any(|c| c.id == assist_id) {
                     state.selected_assist = state.controllers.get(1).map(|c| c.id);
@@ -181,7 +184,7 @@ impl CtrlAssistTray {
 
 impl Tray for CtrlAssistTray {
     const MENU_ON_ACTIVATE: bool = true;
-    
+
     fn id(&self) -> String {
         "ctrlassist".into()
     }

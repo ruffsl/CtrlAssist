@@ -1,13 +1,11 @@
 use crate::evdev_helpers::{self, VirtualGamepadInfo};
-use crate::ff_helpers::PhysicalFFDev;
-use crate::gilrs_helper::{self, GamepadResource};
+use crate::gilrs_helper::{self};
 use crate::mux_modes::ModeType;
 use crate::udev_helpers::ScopedDeviceHider;
 use crate::{HideType, RumbleTarget, SpoofTarget};
 use evdev::Device;
 use gilrs::{GamepadId, Gilrs};
 use log::info;
-use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,9 +34,9 @@ impl MuxHandle {
     /// Request shutdown and wait for threads to complete
     pub fn shutdown(self) {
         use std::sync::atomic::Ordering;
-        
+
         self.shutdown.store(true, Ordering::SeqCst);
-        
+
         // Unblock FF thread by sending no-op event
         if let Ok(mut vdev) = Device::open(&self.virtual_device_path) {
             use evdev::{EventType, InputEvent};
@@ -47,7 +45,7 @@ impl MuxHandle {
                 InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
             ]);
         }
-        
+
         let _ = self.input_handle.join();
         let _ = self.ff_handle.join();
     }
@@ -61,10 +59,7 @@ impl MuxHandle {
 /// 3. Prepares FF targets
 /// 4. Spawns input and FF threads
 /// 5. Returns a handle for managing the session
-pub fn start_mux(
-    gilrs: Gilrs,
-    config: MuxConfig,
-) -> Result<MuxHandle, Box<dyn Error>> {
+pub fn start_mux(gilrs: Gilrs, config: MuxConfig) -> Result<MuxHandle, Box<dyn Error>> {
     let mut resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
     // Setup hiding

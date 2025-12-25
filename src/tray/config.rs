@@ -32,7 +32,7 @@ impl TrayConfig {
         let config_dir = dirs::config_dir()
             .ok_or("Could not determine config directory")?
             .join("ctrlassist");
-        
+
         fs::create_dir_all(&config_dir)?;
         Ok(config_dir.join("config.toml"))
     }
@@ -62,7 +62,7 @@ impl TrayConfig {
                 warn!("Failed to get config path: {}", e);
             }
         }
-        
+
         info!("Using default configuration");
         Self::default()
     }

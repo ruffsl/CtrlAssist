@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use evdev::Device;
 use gilrs::Gilrs;
-use log::{error, info};
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 mod evdev_helpers;
 mod ff_helpers;
@@ -140,7 +140,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     );
     info!("{}", primary_msg);
     println!("{}", primary_msg);
-    
+
     let assist_msg = format!(
         "Assist:  ({}) {} @ {}",
         a_id,
@@ -168,7 +168,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     ctrlc::set_handler(move || {
         println!("\nShutting down...");
         shutdown.store(true, Ordering::SeqCst);
-        
+
         // Unblock FF thread
         if let Ok(mut vdev) = Device::open(&vdev_path) {
             use evdev::{EventType, InputEvent};

@@ -1,8 +1,8 @@
 use crate::ff_helpers;
 use crate::gilrs_helper::GamepadResource;
 use crate::mux_modes;
-use evdev::{Device, EventType, InputEvent};
 use evdev::uinput::VirtualDevice;
+use evdev::{Device, EventType, InputEvent};
 use gilrs::{GamepadId, Gilrs};
 use log::{error, info, warn};
 use std::collections::HashMap;
