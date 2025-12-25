@@ -13,23 +13,16 @@ pub struct TrayConfig {
     /// Last selected assist controller (by name)
     pub assist_name: Option<String>,
     /// Last used mux mode
+    #[serde(default)]
     pub mode: ModeType,
     /// Last used hide strategy
+    #[serde(default)]
     pub hide: HideType,
     /// Last used spoof target
+    #[serde(default)]
     pub spoof: SpoofTarget,
     /// Last used rumble target
-    pub rumble: RumbleTarget,
-}
-
-/// Settings for spawning a mux thread
-#[derive(Debug, Clone)]
-pub struct MuxSettings {
-    pub primary_id: gilrs::GamepadId,
-    pub assist_id: gilrs::GamepadId,
-    pub mode: ModeType,
-    pub hide: HideType,
-    pub spoof: SpoofTarget,
+    #[serde(default)]
     pub rumble: RumbleTarget,
 }
 
@@ -39,7 +32,7 @@ impl TrayConfig {
         let config_dir = dirs::config_dir()
             .ok_or("Could not determine config directory")?
             .join("ctrlassist");
-
+        
         fs::create_dir_all(&config_dir)?;
         Ok(config_dir.join("config.toml"))
     }
@@ -69,7 +62,7 @@ impl TrayConfig {
                 warn!("Failed to get config path: {}", e);
             }
         }
-
+        
         info!("Using default configuration");
         Self::default()
     }

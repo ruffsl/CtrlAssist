@@ -1,7 +1,6 @@
-use crate::gilrs_helper;
+use crate::mux_manager::{self, MuxConfig, MuxHandle};
 use crate::mux_modes::ModeType;
-use crate::udev_helpers::ScopedDeviceHider;
-use crate::{HideType, RumbleTarget, SpoofTarget, evdev_helpers, run_ff_loop, run_input_loop};
+use crate::{HideType, RumbleTarget, SpoofTarget};
 use gilrs::Gilrs;
 use ksni::{Category, MenuItem, Status, ToolTip, Tray, menu};
 use log::{error, info};
@@ -9,10 +8,9 @@ use notify_rust::Notification;
 use parking_lot::Mutex;
 use std::error::Error;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use super::config::{MuxSettings, TrayConfig};
+use super::config::TrayConfig;
 use super::state::{MuxStatus, TrayState};
 
 pub struct CtrlAssistTray {
@@ -59,10 +57,7 @@ impl CtrlAssistTray {
         let primary_id = state.selected_primary.unwrap();
         let assist_id = state.selected_assist.unwrap();
 
-        info!(
-            "Starting mux: primary={:?}, assist={:?}",
-            primary_id, assist_id
-        );
+        info!("Starting mux: primary={:?}, assist={:?}", primary_id, assist_id);
 
         // Create notification with settings
         let notification_body = format!(
@@ -76,8 +71,8 @@ impl CtrlAssistTray {
         );
         Self::send_notification("CtrlAssist - Starting", &notification_body);
 
-        // Group settings for thread
-        let mux_settings = MuxSettings {
+        // Prepare config for mux
+        let config = MuxConfig {
             primary_id,
             assist_id,
             mode: state.mode.clone(),
@@ -86,27 +81,21 @@ impl CtrlAssistTray {
             rumble: state.rumble.clone(),
         };
 
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_clone = Arc::clone(&shutdown);
-        state.shutdown_signal = Some(shutdown);
-
-        // Setup channel to receive virtual device path from mux thread
-        let (vdev_path_tx, vdev_path_rx) = std::sync::mpsc::channel();
-
-        // Spawn mux thread
+        // Start mux in a thread (to avoid blocking UI)
+        let state_arc = Arc::clone(&self.state);
         let handle = thread::spawn(move || {
-            if let Err(e) = run_mux_thread(mux_settings, shutdown_clone, vdev_path_tx) {
-                error!("Mux thread error: {}", e);
-                Self::send_notification("CtrlAssist - Error", &format!("Mux failed: {}", e));
+            match start_mux_with_state(config, state_arc) {
+                Ok(mux_handle) => {
+                    // Wait for shutdown signal
+                    let _ = mux_handle.input_handle.join();
+                    let _ = mux_handle.ff_handle.join();
+                }
+                Err(e) => {
+                    error!("Mux thread error: {}", e);
+                    Self::send_notification("CtrlAssist - Error", &format!("Mux failed: {}", e));
+                }
             }
         });
-
-        // Wait for mux thread to send virtual device path
-        if let Ok(path) = vdev_path_rx.recv() {
-            state.virtual_device_path = Some(path);
-        } else {
-            state.virtual_device_path = None;
-        }
 
         state.mux_handle = Some(handle);
         state.status = MuxStatus::Running;
@@ -128,24 +117,27 @@ impl CtrlAssistTray {
 
         // Signal shutdown
         if let Some(shutdown) = &state.shutdown_signal {
+            use std::sync::atomic::Ordering;
             shutdown.store(true, Ordering::SeqCst);
         }
 
-        // Unblock FF thread: send a no-op force feedback event and SYN_REPORT
-        if let Some(path) = &state.virtual_device_path
-            && let Ok(mut v_dev) = evdev::Device::open(path)
-        {
-            use evdev::{EventType, InputEvent};
-            let _ = v_dev.send_events(&[
-                InputEvent::new(EventType::FORCEFEEDBACK.0, 0, 0),
-                InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
-            ]);
+        // Unblock FF thread
+        if let Some(path) = &state.virtual_device_path {
+            if let Ok(mut v_dev) = evdev::Device::open(path) {
+                use evdev::{EventType, InputEvent};
+                let _ = v_dev.send_events(&[
+                    InputEvent::new(EventType::FORCEFEEDBACK.0, 0, 0),
+                    InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
+                ]);
+            }
         }
         state.virtual_device_path = None;
 
         // Wait for thread to finish
         if let Some(handle) = state.mux_handle.take() {
+            drop(state); // Release lock before joining
             let _ = handle.join();
+            state = self.state.lock();
         }
 
         state.status = MuxStatus::Stopped;
@@ -166,6 +158,7 @@ impl CtrlAssistTray {
                 })
                 .collect();
             state.controllers = controllers;
+            
             // Try to keep selected controllers if still present
             if let Some(primary_id) = state.selected_primary {
                 if !state.controllers.iter().any(|c| c.id == primary_id) {
@@ -174,6 +167,7 @@ impl CtrlAssistTray {
             } else {
                 state.selected_primary = state.controllers.first().map(|c| c.id);
             }
+            
             if let Some(assist_id) = state.selected_assist {
                 if !state.controllers.iter().any(|c| c.id == assist_id) {
                     state.selected_assist = state.controllers.get(1).map(|c| c.id);
@@ -187,6 +181,7 @@ impl CtrlAssistTray {
 
 impl Tray for CtrlAssistTray {
     const MENU_ON_ACTIVATE: bool = true;
+    
     fn id(&self) -> String {
         "ctrlassist".into()
     }
@@ -502,82 +497,20 @@ fn create_rumble_item(
     .into()
 }
 
-// Mux thread function
-fn run_mux_thread(
-    settings: MuxSettings,
-    shutdown: Arc<AtomicBool>,
-    vdev_path_tx: std::sync::mpsc::Sender<std::path::PathBuf>,
-) -> Result<(), Box<dyn Error>> {
-    let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
-    let mut resources = gilrs_helper::discover_gamepad_resources(&gilrs);
+// Helper function to start mux and update state
+fn start_mux_with_state(
+    config: MuxConfig,
+    state_arc: Arc<Mutex<TrayState>>,
+) -> Result<MuxHandle, Box<dyn Error>> {
+    let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {}", e))?;
+    let mux_handle = mux_manager::start_mux(gilrs, config)?;
 
-    // Setup hiding
-    let mut hider = ScopedDeviceHider::new(settings.hide.clone());
-    if let Some(primary_res) = resources.get(&settings.primary_id) {
-        hider.hide_gamepad_devices(primary_res)?;
-    }
-    if let Some(assist_res) = resources.get(&settings.assist_id) {
-        hider.hide_gamepad_devices(assist_res)?;
+    // Update state with handles
+    {
+        let mut state = state_arc.lock();
+        state.virtual_device_path = Some(mux_handle.virtual_device_path.clone());
+        state.shutdown_signal = Some(Arc::clone(&mux_handle.shutdown));
     }
 
-    // Setup virtual device
-    let virtual_info = match settings.spoof {
-        SpoofTarget::Primary => {
-            evdev_helpers::VirtualGamepadInfo::from(&gilrs.gamepad(settings.primary_id))
-        }
-        SpoofTarget::Assist => {
-            evdev_helpers::VirtualGamepadInfo::from(&gilrs.gamepad(settings.assist_id))
-        }
-        SpoofTarget::None => evdev_helpers::VirtualGamepadInfo {
-            name: "CtrlAssist Virtual Gamepad".into(),
-            vendor_id: None,
-            product_id: None,
-        },
-    };
-
-    let mut v_uinput = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
-    let v_resource = gilrs_helper::wait_for_virtual_device(&mut v_uinput)?;
-    let v_dev = v_resource.device;
-
-    // Send virtual device path to tray state
-    let _ = vdev_path_tx.send(v_resource.path.clone());
-
-    // Setup FF targets
-    let mut ff_targets = Vec::new();
-    let rumble_ids = match settings.rumble {
-        RumbleTarget::Primary => vec![settings.primary_id],
-        RumbleTarget::Assist => vec![settings.assist_id],
-        RumbleTarget::Both => vec![settings.primary_id, settings.assist_id],
-        RumbleTarget::None => vec![],
-    };
-
-    for id in rumble_ids {
-        if let Some(res) = resources.remove(&id) {
-            ff_targets.push(res);
-        }
-    }
-
-    // Spawn threads
-    let shutdown_input = Arc::clone(&shutdown);
-    let shutdown_ff = Arc::clone(&shutdown);
-
-    let input_handle = thread::spawn(move || {
-        run_input_loop(
-            gilrs,
-            v_dev,
-            settings.mode,
-            settings.primary_id,
-            settings.assist_id,
-            shutdown_input,
-        );
-    });
-
-    let ff_handle = thread::spawn(move || {
-        run_ff_loop(&mut v_uinput, ff_targets, shutdown_ff);
-    });
-
-    input_handle.join().ok();
-    ff_handle.join().ok();
-
-    Ok(())
+    Ok(mux_handle)
 }

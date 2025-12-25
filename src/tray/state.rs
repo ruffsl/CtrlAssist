@@ -1,7 +1,9 @@
 use crate::mux_modes::ModeType;
 use crate::{HideType, RumbleTarget, SpoofTarget};
 use gilrs::{GamepadId, Gilrs};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::thread;
 
 use super::config::TrayConfig;
@@ -38,9 +40,9 @@ pub struct TrayState {
     /// Mux thread handle (if running)
     pub mux_handle: Option<thread::JoinHandle<()>>,
     /// Shutdown signal for mux thread
-    pub shutdown_signal: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pub shutdown_signal: Option<Arc<AtomicBool>>,
     /// Path to virtual device for FF thread unblocking
-    pub virtual_device_path: Option<std::path::PathBuf>,
+    pub virtual_device_path: Option<PathBuf>,
 }
 
 impl TrayState {
