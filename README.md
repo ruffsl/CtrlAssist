@@ -97,6 +97,8 @@ Run and test via Flatpak using the application ID:
 flatpak run io.github.ruffsl.ctrlassist --help
 ```
 
+Or launch as system tray via installed desktop icon.
+
 # 📖 Usage
 
 Use the `--help` flag for information on each CLI subcommand:
