@@ -5,9 +5,10 @@ pub mod toggle;
 
 use evdev::InputEvent;
 use gilrs::{Event, GamepadId};
+use serde::{Deserialize, Serialize};
 
 // Enum for all muxing modes
-#[derive(clap::ValueEnum, Clone, Debug, Default)]
+#[derive(clap::ValueEnum, Clone, Debug, Default, Serialize, Deserialize)]
 pub enum ModeType {
     Average,
     #[default]

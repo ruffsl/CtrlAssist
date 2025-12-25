@@ -40,6 +40,16 @@ libc = "0.2.178"
 log = "0.4.28"
 udev = "0.9.3"
 uuid = "1.19.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# New dependencies for tray
+futures = "0.3.31"
+futures-util = "0.3.31"
+ksni = "0.3.3"
+notify-rust = "4.11.7"
+parking_lot = "0.12.5"
+serde = "1.0.228"
+toml = "0.9.10"
 
 [package.metadata.deb]
 depends = "libudev1"

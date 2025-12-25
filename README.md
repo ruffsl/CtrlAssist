@@ -9,54 +9,61 @@
 ![Crates.io Total Downloads](https://img.shields.io/crates/d/ctrlassist)
 [![Crates.io License](https://img.shields.io/crates/l/ctrlassist)](https://choosealicense.com/licenses/apache-2.0)
 
-# Features
+# ✨ Features
 
-- Combine physical controllers into one virtual gamepad
+- 🎮 Combine physical controllers into one virtual gamepad
   - Controllers are assigned as either Primary or Assist
-- Customizable multiplexing modes for buttons and axes
+- 🎛️ Customizable multiplexing modes for buttons and axes
   - Logically merging or preempting events is flexible
-- Hide physical controllers for improved game compatibility
+- 🙈 Hide physical controllers for improved game compatibility
   - Multiple hiding strategies for avoiding interference
-- Spoof gamepad vendor for in-game layout recognition
+- 🕹️ Spoof gamepad vendor for in-game layout recognition
   - Mimic either Primary or Assist controller hardware
-- Rumble pass-through from virtual to physical devices
+- 🫨 Rumble pass-through from virtual to physical devices
   - Forward force feedback to either or both controllers
+- 🖱️ System tray interface for graphical desktop environments
+  - Configure controllers and mux options via the taskbar
+  - Start/stop muxing with live status feedback
+  - Desktop notifications for status changes
+  - Persistent user settings across restarts
 
-## Modes
+![System Tray Screenshot](docs/screenshots/system_tray.png)
 
-- **Priority** (default): Assist controller overrides when active
+## 🎛️ Modes
+
+- 👑 **Priority** (default): Assist controller overrides when active
   - Axes: Prioritize Assist when active (exceeds deadzone)
     - Buttons: Prioritize Assist when button released
     - Triggers: Prioritize largest value from either
   - Ideal for partial and asynchronous assistance
     - E.g. Assist for movement while Primary for actions
-- **Average**: Blend weighted inputs from both controllers
+- ⚖️ **Average**: Blend weighted inputs from both controllers
   - Axes: Averaged when both are active (exceed deadzone)
     - Buttons: logically OR'ed between pressed controllers
     - Triggers: Averaged when both are active (exceed deadzone)
   - Ideal for cooperative input and subtle corrections
     - E.g. For counter steer/brake assist in racing games
-- **Toggle**: Switch Active controller on demand
+- 🔄 **Toggle**: Switch Active controller on demand
   - All inputs forwarded from currently active controller
     - Toggle Active controller via the Mode button on Assist
     - Immediately synchronizes input to current Active state
   - Ideal when fine-grain conflict-free control is needed
     - E.g. Game menu navigation or precise interventions
 
-# Install
+# ⬇️ Install
 
 The following installation methods are available:
 
-- [Cargo](#cargo) (Rust package manager)
+- 🦀 [Cargo](#cargo) (Rust package manager)
   - Ideal for customization and unsandboxed use
   - Suitable for development and contributing
   - E.g. fork custom features and upstream fixes
-- [Flatpak](#flatpak) (Linux application sandbox)
+- 📦 [Flatpak](#flatpak) (Linux application sandbox)
   - Ideal for easy install on SteamOS, Bazzite, etc.
   - Suitable for immutable Linux distributions
   - E.g. where installing build tools is a hassle
 
-## Cargo
+## 🦀 Cargo
 
 - Build dependencies
   - [libudev-dev](https://pkgs.org/search/?q=libudev-dev)
@@ -71,7 +78,7 @@ Add the `--force` flag to upgrade to latest version:
 cargo install ctrlassist
 ```
 
-## Flatpak
+## 📦 Flatpak
 
 - Runtime dependencies
   - [Flatpak](https://flatpak.org/setup/) (likely already installed)
@@ -90,7 +97,9 @@ Run and test via Flatpak using the application ID:
 flatpak run io.github.ruffsl.ctrlassist --help
 ```
 
-# Usage
+Or launch as system tray via installed desktop icon.
+
+# 📖 Usage
 
 Use the `--help` flag for information on each CLI subcommand:
 
@@ -103,6 +112,7 @@ Usage: ctrlassist <COMMAND>
 Commands:
   list  List all detected controllers and respective IDs
   mux   Multiplex connected controllers into virtual gamepad
+  tray  Launch system tray app for graphical control
   help  Print this message or the help of the given subcommand(s)
 
 Options:
@@ -110,7 +120,28 @@ Options:
   -V, --version  Print version
 ```
 
-## list
+## 🖱️ tray
+
+Launch the system tray app for graphical control:
+
+```sh
+$ ctrlassist tray
+CtrlAssist system tray started
+Configure and control the mux from your system tray
+Press Ctrl+C to exit
+```
+
+The system tray provides:
+- **Controller selection** menus for Primary and Assist
+- **Configuration options** for mux mode, hiding, spoofing, and rumble
+- **Start/Stop buttons** with visual feedback
+- **Live status indicator** in the tray icon
+- **Desktop notifications** for status changes
+- **Persistent settings** saved to `~/.config/ctrlassist/config.toml`
+
+Options are greyed out while the mux is running but show current active selections.
+
+## 🧾 list
 
 List all detected controllers and respective IDs:
 
@@ -120,7 +151,7 @@ $ ctrlassist list
 (1) PS4 Controller
 ```
 
-## mux
+## 🔀 mux
 
 Multiplex first two detected controllers by default:
 
@@ -132,7 +163,7 @@ Assist:  (1) PS4 Controller
 Mux Active. Press Ctrl+C to exit.
 ```
 
-### Primary Assist Mapping
+### 🎮 Primary Assist Mapping
 
 Manually specify Primary and Assist controllers via IDs:
 
@@ -143,7 +174,7 @@ Assist:  (0) Microsoft Xbox One
 ...
 ```
 
-### Mux Mode Selection
+### 🎛️ Mux Mode Selection
 
 Manually specify mode for merging controllers:
 
@@ -152,7 +183,7 @@ $ ctrlassist mux --mode priority
 ...
 ```
 
-### Spoof Virtual Device
+### 🕹️ Spoof Virtual Device
 
 Mimic controller hardware for in-game layout recognition:
 
@@ -166,7 +197,7 @@ Virtual: (2) Microsoft X-Box One pad (Firmware 2015)
 > [!WARNING]
 > Combining spoofing with some hiding strategies may also hide the virtual device.
 
-### Rumble Pass-Through
+### 🫨 Rumble Pass-Through
 
 Target force feedback to either or both physical controllers:
 
@@ -175,11 +206,18 @@ $ ctrlassist mux --rumble both
 ...
 ```
 
-### Hide Physical Devices
+### 🙈 Hide Physical Devices
 
 There are multiple hiding strategies to avoid input conflicts:
 
-#### Steam Input (Flatpak Compatible)
+| Strategy   | Access/Compatibility         | Granularity         | Restart Required   |
+|------------|-----------------------------|---------------------|--------------------|
+| **Steam**  | No root, Flatpak compatible | Vendor/Product ID   | Steam only         |
+| **System** | Root required, no Flatpak   | Per-device          | Game/Launcher      |
+
+For example, use **Steam** when running CtrlAssist via Flatpak. For 2v1 scenarios, where the third player not using CtrlAssist shares the same controller make and model, use **System** to avoid hiding the third player's gamepad.
+
+#### Steam Input
 
 Automatically configure Steam's controller blacklist:
 
@@ -194,7 +232,7 @@ $ ctrlassist mux --hide steam
 > [!WARNING]
 > Combining this hiding strategy with spoofing may also hide the virtual device.
 
-#### System Level (Root Required)
+#### System Level
 
 Restrict device tree permissions system-wide:
 
@@ -209,7 +247,25 @@ $ sudo ctrlassist mux --hide system
 > [!IMPORTANT]
 > Not possible via Flatpak sandbox for security. Use `--hide steam` instead.
 
-# Limitations
+# ⚙️ Configuration
+
+The system tray saves settings to `$XDG_CONFIG_HOME/ctrlassist/config.toml`:
+
+```toml
+# Last selected controllers (by name for best-effort matching)
+primary_name = "Microsoft Xbox One"
+assist_name = "PS4 Controller"
+
+# Mux configuration
+mode = "Priority"
+hide = "Steam"
+spoof = "None"
+rumble = "Both"
+```
+
+Settings are loaded on startup and saved when starting the mux. Controllers are matched by name (best-effort) if IDs change between sessions.
+
+# 🕳️ Limitations
 
 - System hiding requires root access
   - temporarily modifies group permissions for selected devices
@@ -225,19 +281,7 @@ $ sudo ctrlassist mux --hide system
 - Toggle mode requires pressing all buttons and axes after startup
   - gilrs lazily initializes gamepad state used for synchronization
 
-# Comparison
-
-## Hiding Strategies
-
-| Strategy | Root Required | Flatpak Compatible | Granularity | Persists After Exit | Restart Required |
-|-|-|-|-|-|-|
-| **None** (default) | No | Yes | N/A | N/A | N/A |
-| **Steam** | No | Yes | Vendor/Product ID | No (auto-restores) | Steam only |
-| **System** | Yes | No | Per-device | No (auto-restores) | Game/Launcher |
-
-For example, use **Steam** when running CtrlAssist via Flatpak. For 2v1 scenarios, where the third player not using CtrlAssist shares the same controller make and model, use **System** to avoid hiding the third player's gamepad.
-
-# Background
+# 📚 Background
 
 - [Controller Assist on Xbox and Windows](https://support.xbox.com/en-US/help/account-profile/accessibility/copilot)
 - [Second Controller Assistance on PlayStation](https://www.playstation.com/en-us/support/hardware/second-controller-assistance/)

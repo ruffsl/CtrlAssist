@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=CtrlAssist
+Comment=Controller Assist for gaming on Linux
+Exec=ctrlassist tray
+Icon=input-gaming
+Terminal=false
+Type=Application
+Categories=Utility;Accessibility;
+StartupNotify=true
