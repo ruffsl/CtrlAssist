@@ -15,6 +15,8 @@ use super::state::{MuxStatus, TrayState};
 
 pub struct CtrlAssistTray {
     state: Arc<Mutex<TrayState>>,
+    // Store shutdown sender for signaling
+    shutdown_tx: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl CtrlAssistTray {
@@ -25,6 +27,7 @@ impl CtrlAssistTray {
 
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
+            shutdown_tx: None,
         })
     }
 
@@ -84,14 +87,18 @@ impl CtrlAssistTray {
             rumble: state.rumble.clone(),
         };
 
-        // Start mux in a thread (to avoid blocking UI)
+        // Use a channel for shutdown signaling
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
+        self.shutdown_tx = Some(shutdown_tx);
+
         let state_arc = Arc::clone(&self.state);
         let handle = thread::spawn(move || {
             match start_mux_with_state(config, state_arc) {
                 Ok(mux_handle) => {
-                    // Wait for shutdown signal
-                    let _ = mux_handle.input_handle.join();
-                    let _ = mux_handle.ff_handle.join();
+                    // Wait for shutdown signal (blocks efficiently)
+                    let _ = shutdown_rx.recv();
+                    // Properly shutdown mux (unblocks FF thread)
+                    mux_handle.shutdown();
                 }
                 Err(e) => {
                     error!("Mux thread error: {}", e);
@@ -118,21 +125,9 @@ impl CtrlAssistTray {
 
         info!("Stopping mux");
 
-        // Signal shutdown
-        if let Some(shutdown) = &state.shutdown_signal {
-            use std::sync::atomic::Ordering;
-            shutdown.store(true, Ordering::SeqCst);
-        }
-
-        // Unblock FF thread
-        if let Some(path) = &state.virtual_device_path
-            && let Ok(mut v_dev) = evdev::Device::open(path)
-        {
-            use evdev::{EventType, InputEvent};
-            let _ = v_dev.send_events(&[
-                InputEvent::new(EventType::FORCEFEEDBACK.0, 0, 0),
-                InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
-            ]);
+        // Signal shutdown via channel
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
         }
         state.virtual_device_path = None;
 

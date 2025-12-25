@@ -1,11 +1,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use evdev::Device;
 use gilrs::Gilrs;
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 mod evdev_helpers;
 mod ff_helpers;
@@ -160,31 +157,28 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
         rumble: args.rumble,
     };
 
-    let mux_handle = mux_manager::start_mux(gilrs, config)?;
-    let vdev_path = mux_handle.virtual_device_path.clone();
-    let shutdown = Arc::clone(&mux_handle.shutdown);
+    use std::sync::mpsc;
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
 
-    // Setup Ctrl+C handler
+    // Spawn mux in a thread, so we can join it in main
+    let mux_thread = std::thread::spawn(move || {
+        let mux_handle = mux_manager::start_mux(gilrs, config).expect("Failed to start mux");
+        // Wait for shutdown signal (blocks efficiently)
+        let _ = shutdown_rx.recv();
+        mux_handle.shutdown();
+    });
+
+    // Setup Ctrl+C handler to send shutdown signal
     ctrlc::set_handler(move || {
         println!("\nShutting down...");
-        shutdown.store(true, Ordering::SeqCst);
-
-        // Unblock FF thread
-        if let Ok(mut vdev) = Device::open(&vdev_path) {
-            use evdev::{EventType, InputEvent};
-            let _ = vdev.send_events(&[
-                InputEvent::new(EventType::FORCEFEEDBACK.0, 0, 0),
-                InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0),
-            ]);
-        }
+        // Ignore error if already sent
+        let _ = shutdown_tx.send(());
     })?;
 
     info!("Mux Active. Press Ctrl+C to exit.");
     println!("Mux Active. Press Ctrl+C to exit.");
 
-    // Wait for threads to complete
-    let _ = mux_handle.input_handle.join();
-    let _ = mux_handle.ff_handle.join();
-
+    // Wait for mux thread to finish
+    let _ = mux_thread.join();
     Ok(())
 }
