@@ -27,6 +27,8 @@
   - Desktop notifications for status changes
   - Persistent user settings across restarts
 
+![System Tray Screenshot](docs/screenshots/system_tray.png)
+
 ## 🎛️ Modes
 
 - 👑 **Priority** (default): Assist controller overrides when active
