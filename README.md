@@ -259,7 +259,7 @@ spoof = "None"
 rumble = "Both"
 ```
 
-Settings are loaded on startup and saved when starting the mux. Controller are matched by name (best-effort) if IDs change between sessions.
+Settings are loaded on startup and saved when starting the mux. Controllers are matched by name (best-effort) if IDs change between sessions.
 
 # 🕳️ Limitations
 
