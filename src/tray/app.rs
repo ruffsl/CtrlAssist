@@ -154,6 +154,35 @@ impl CtrlAssistTray {
         info!("Mux stopped");
         Self::send_notification("CtrlAssist", "Mux stopped");
     }
+
+    fn refresh_controllers(&self) {
+        let mut state = self.state.lock();
+        if let Ok(gilrs) = Gilrs::new() {
+            let controllers: Vec<_> = gilrs
+                .gamepads()
+                .map(|(id, gamepad)| super::state::ControllerInfo {
+                    id,
+                    name: gamepad.name().to_string(),
+                })
+                .collect();
+            state.controllers = controllers;
+            // Try to keep selected controllers if still present
+            if let Some(primary_id) = state.selected_primary {
+                if !state.controllers.iter().any(|c| c.id == primary_id) {
+                    state.selected_primary = state.controllers.first().map(|c| c.id);
+                }
+            } else {
+                state.selected_primary = state.controllers.first().map(|c| c.id);
+            }
+            if let Some(assist_id) = state.selected_assist {
+                if !state.controllers.iter().any(|c| c.id == assist_id) {
+                    state.selected_assist = state.controllers.get(1).map(|c| c.id);
+                }
+            } else {
+                state.selected_assist = state.controllers.get(1).map(|c| c.id);
+            }
+        }
+    }
 }
 
 impl Tray for CtrlAssistTray {
@@ -210,10 +239,22 @@ impl Tray for CtrlAssistTray {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
+        self.refresh_controllers();
         let state = self.state.lock();
         let is_running = state.status == MuxStatus::Running;
 
         vec![
+            // Refresh controllers
+            menu::StandardItem {
+                label: "Refresh Controllers".into(),
+                icon_name: "view-refresh".into(),
+                enabled: !is_running,
+                activate: Box::new(|this: &mut Self| {
+                    this.refresh_controllers();
+                }),
+                ..Default::default()
+            }
+            .into(),
             // Controller Selection
             menu::SubMenu {
                 label: format!("Primary: {}", state.get_primary_name()),
