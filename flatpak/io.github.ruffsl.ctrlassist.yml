@@ -24,6 +24,7 @@ modules:
       - install -Dm0755 target/release/ctrlassist ${FLATPAK_DEST}/bin/ctrlassist
       - install -Dm0644 io.github.ruffsl.ctrlassist.metainfo.xml ${FLATPAK_DEST}/share/metainfo/io.github.ruffsl.ctrlassist.metainfo.xml
       - install -Dm0644 io.github.ruffsl.ctrlassist.desktop ${FLATPAK_DEST}/share/applications/io.github.ruffsl.ctrlassist.desktop
+      - install -Dm0644 io.github.ruffsl.ctrlassist.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/io.github.ruffsl.ctrlassist.svg
     sources:
       # - type: git
       #   url: https://github.com/ruffsl/CtrlAssist.git
@@ -34,5 +35,7 @@ modules:
         path: io.github.ruffsl.ctrlassist.metainfo.xml
       - type: file
         path: io.github.ruffsl.ctrlassist.desktop
+      - type: file
+        path: io.github.ruffsl.ctrlassist.svg
       - type: dir
         path: ../

@@ -29,7 +29,7 @@
     <releases>
         <release version="0.2.0" date="2025-12-20" />
     </releases>
-    <!-- <icon type="stock">input-gaming</icon> -->
+    <icon type="stock">io.github.ruffsl.ctrlassist</icon>
     <categories>
         <category>Utility</category>
         <category>Accessibility</category>

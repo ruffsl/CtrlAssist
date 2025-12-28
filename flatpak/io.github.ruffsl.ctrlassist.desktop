@@ -2,7 +2,7 @@
 Name=CtrlAssist
 Comment=Controller Assist for gaming on Linux
 Exec=ctrlassist tray
-Icon=input-gaming
+Icon=io.github.ruffsl.ctrlassist
 Terminal=false
 Type=Application
 Categories=Utility;Accessibility;

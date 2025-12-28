@@ -32,6 +32,7 @@
             flatpak-builder
             # gcc
             jstest-gtk
+            librsvg
             linuxConsoleTools
             lldb
             pkg-config
