@@ -250,7 +250,14 @@ impl Tray for CtrlAssistTray {
             .into(),
             // Controller Selection
             menu::SubMenu {
-                label: format!("Primary: {}", state.get_primary_name()),
+                label: format!(
+                    "Primary: ({}) {}",
+                    state
+                        .selected_primary
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "#".to_string()),
+                    truncate_name(&state.get_primary_name())
+                ),
                 icon_name: "input-gaming".into(),
                 enabled: !is_running,
                 submenu: state
@@ -260,7 +267,7 @@ impl Tray for CtrlAssistTray {
                         let controller_id = controller.id;
                         let is_selected = state.selected_primary == Some(controller_id);
                         menu::CheckmarkItem {
-                            label: controller.name.clone(),
+                            label: format!("({}) {}", controller_id, controller.name),
                             checked: is_selected,
                             enabled: !is_running,
                             activate: Box::new(move |this: &mut Self| {
@@ -276,7 +283,14 @@ impl Tray for CtrlAssistTray {
             }
             .into(),
             menu::SubMenu {
-                label: format!("Assist: {}", state.get_assist_name()),
+                label: format!(
+                    "Assist: ({}) {}",
+                    state
+                        .selected_assist
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "#".to_string()),
+                    truncate_name(&state.get_assist_name())
+                ),
                 icon_name: "input-gaming".into(),
                 enabled: !is_running,
                 submenu: state
@@ -286,7 +300,7 @@ impl Tray for CtrlAssistTray {
                         let controller_id = controller.id;
                         let is_selected = state.selected_assist == Some(controller_id);
                         menu::CheckmarkItem {
-                            label: controller.name.clone(),
+                            label: format!("({}) {}", controller_id, controller.name),
                             checked: is_selected,
                             enabled: !is_running,
                             activate: Box::new(move |this: &mut Self| {
@@ -511,4 +525,16 @@ fn start_mux_with_state(
     }
 
     Ok(mux_handle)
+}
+
+// Helper to truncate controller name for SubMenu label
+fn truncate_name(name: &str) -> String {
+    const MAX_LEN: usize = 17;
+    const ELLIPSIS: &str = "...";
+    if name.len() > MAX_LEN {
+        let cutoff = MAX_LEN - ELLIPSIS.len();
+        format!("{}{}", &name[..cutoff], ELLIPSIS)
+    } else {
+        name.to_string()
+    }
 }

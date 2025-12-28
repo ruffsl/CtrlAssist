@@ -40,6 +40,17 @@ Run and test Flatpak build with debug logging:
 RUST_BACKTRACE=1 RUST_LOG=debug flatpak run io.github.ruffsl.ctrlassist mux
 ```
 
+# Lint
+
+Lint Flatpak metadata::
+
+```shell
+flatpak run --command=flatpak-builder-lint \
+    org.flatpak.Builder \
+    appstream \
+    io.github.ruffsl.ctrlassist.metainfo.xml
+```
+
 # Bundle
 
 Bundle Flatpak for distribution:

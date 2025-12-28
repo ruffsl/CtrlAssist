@@ -22,17 +22,14 @@ modules:
       - cargo --offline fetch --verbose
       - cargo --offline build --release --all-features
       - install -Dm0755 target/release/ctrlassist ${FLATPAK_DEST}/bin/ctrlassist
-      - install -Dm0644 io.github.ruffsl.ctrlassist.metainfo.xml ${FLATPAK_DEST}/share/metainfo/io.github.ruffsl.ctrlassist.metainfo.xml
-      - install -Dm0644 io.github.ruffsl.ctrlassist.desktop ${FLATPAK_DEST}/share/applications/io.github.ruffsl.ctrlassist.desktop
+      - install -Dm0644 flatpak/io.github.ruffsl.ctrlassist.metainfo.xml ${FLATPAK_DEST}/share/metainfo/io.github.ruffsl.ctrlassist.metainfo.xml
+      - install -Dm0644 flatpak/io.github.ruffsl.ctrlassist.desktop ${FLATPAK_DEST}/share/applications/io.github.ruffsl.ctrlassist.desktop
+      - install -Dm0644 docs/artwork/icon_48.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/io.github.ruffsl.ctrlassist.svg
     sources:
       # - type: git
       #   url: https://github.com/ruffsl/CtrlAssist.git
       #   tag: "v0.2.0"
       #   commit: "01ad0fc3f4b3514693d218134df1b506851a0431"
       - cargo-sources.json
-      - type: file
-        path: io.github.ruffsl.ctrlassist.metainfo.xml
-      - type: file
-        path: io.github.ruffsl.ctrlassist.desktop
       - type: dir
         path: ../
