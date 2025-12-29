@@ -23,7 +23,7 @@ jobs:
       - name: Setup
         run: |
           flatpak --version
-          flatpak remote-add \
+          flatpak remote-add --user \
             --if-not-exists flathub \
             https://flathub.org/repo/flathub.flatpakrepo
 
