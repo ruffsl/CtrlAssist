@@ -320,9 +320,9 @@ impl Tray for CtrlAssistTray {
             menu::SubMenu {
                 label: format!("Mode: {:?}", state.mode),
                 icon_name: "media-playlist-shuffle".into(),
-                enabled: true, // Changed from !is_running
+                enabled: true, // Dynamically configurable while running
                 submenu: vec![
-                    create_mode_item(ModeType::Priority, &state, false), // Always enabled
+                    create_mode_item(ModeType::Priority, &state, false),
                     create_mode_item(ModeType::Average, &state, false),
                     create_mode_item(ModeType::Toggle, &state, false),
                 ],
@@ -359,9 +359,9 @@ impl Tray for CtrlAssistTray {
             menu::SubMenu {
                 label: format!("Rumble: {:?}", state.rumble),
                 icon_name: "notification-active".into(),
-                enabled: true, // Changed from !is_running
+                enabled: true, // Dynamically configurable while running
                 submenu: vec![
-                    create_rumble_item(RumbleTarget::Both, &state, false), // Always enabled
+                    create_rumble_item(RumbleTarget::Both, &state, false),
                     create_rumble_item(RumbleTarget::Primary, &state, false),
                     create_rumble_item(RumbleTarget::Assist, &state, false),
                     create_rumble_item(RumbleTarget::None, &state, false),
