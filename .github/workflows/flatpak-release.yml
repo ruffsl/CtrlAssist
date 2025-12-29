@@ -32,13 +32,13 @@ jobs:
           flatpak-builder \
             --force-clean \
             --install-deps-from=flathub \
-            --repo=repo builddir \
-            io.github.ruffsl.ctrlassist.yml
+            --repo=flatpak/repo builddir \
+            flatpak/io.github.ruffsl.ctrlassist.yml
 
       - name: Bundle
         run: |
           flatpak build-bundle \
-            repo ctrlassist.flatpak \
+            flatpak/repo ctrlassist.flatpak \
             io.github.ruffsl.ctrlassist stable
 
       - name: Upload
