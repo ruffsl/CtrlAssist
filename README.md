@@ -23,8 +23,7 @@
   - Forward force feedback to either or both controllers
 - 🖱️ System tray interface for graphical desktop environments
   - Configure controllers and mux options via the taskbar
-  - Start/stop muxing with live status feedback
-  - Desktop notifications for status changes
+  - Start/stop muxing with live status notifications
   - Persistent user settings across restarts
 
 ![System Tray Screenshot](docs/screenshots/system_tray.png)
@@ -137,7 +136,7 @@ The system tray provides:
 - **Start/Stop buttons** with visual feedback
 - **Live status indicator** in the tray icon
 - **Desktop notifications** for status changes
-- **Persistent settings** saved to `~/.config/ctrlassist/config.toml`
+- **Persistent settings** saved to disk on use
 
 Options are greyed out while the mux is running but show current active selections.
 
