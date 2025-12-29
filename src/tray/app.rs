@@ -361,10 +361,10 @@ impl Tray for CtrlAssistTray {
                 icon_name: "notification-active".into(),
                 enabled: true, // Dynamically configurable while running
                 submenu: vec![
-                    create_rumble_item(RumbleTarget::Both, &state, false),
-                    create_rumble_item(RumbleTarget::Primary, &state, false),
-                    create_rumble_item(RumbleTarget::Assist, &state, false),
-                    create_rumble_item(RumbleTarget::None, &state, false),
+                    create_rumble_item(RumbleTarget::Both, &state, true),
+                    create_rumble_item(RumbleTarget::Primary, &state, true),
+                    create_rumble_item(RumbleTarget::Assist, &state, true),
+                    create_rumble_item(RumbleTarget::None, &state, true),
                 ],
                 ..Default::default()
             }
