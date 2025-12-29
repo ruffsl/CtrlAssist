@@ -17,13 +17,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            appstream \
             flatpak \
-            flatpak-builder
+            flatpak-builder \
+            librsvg2-bin
 
       - name: Setup
         run: |
           flatpak --version
-          flatpak remote-add \
+          flatpak remote-add --user \
             --if-not-exists flathub \
             https://flathub.org/repo/flathub.flatpakrepo
 
