@@ -322,9 +322,9 @@ impl Tray for CtrlAssistTray {
                 icon_name: "media-playlist-shuffle".into(),
                 enabled: true, // Dynamically configurable while running
                 submenu: vec![
-                    create_mode_item(ModeType::Priority, &state),
-                    create_mode_item(ModeType::Average, &state),
-                    create_mode_item(ModeType::Toggle, &state),
+                    create_mode_item(ModeType::Priority, &state, true),
+                    create_mode_item(ModeType::Average, &state, true),
+                    create_mode_item(ModeType::Toggle, &state, true),
                 ],
                 ..Default::default()
             }
@@ -411,6 +411,7 @@ impl Tray for CtrlAssistTray {
 fn create_mode_item(
     mode: ModeType,
     state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
+    enabled: bool,
 ) -> MenuItem<CtrlAssistTray> {
     let is_selected = matches!(
         (&state.mode, &mode),
@@ -422,7 +423,7 @@ fn create_mode_item(
     menu::CheckmarkItem {
         label: format!("{:?}", mode),
         checked: is_selected,
-        enabled: true, // Always enabled
+        enabled: enabled,
         activate: Box::new(move |this: &mut CtrlAssistTray| {
             let mut state = this.state.lock();
             let old_mode = state.mode.clone();
@@ -502,7 +503,7 @@ fn create_spoof_item(
 fn create_rumble_item(
     rumble: RumbleTarget,
     state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
-    _is_running: bool, // Ignored now
+    enabled: bool,
 ) -> MenuItem<CtrlAssistTray> {
     let is_selected = matches!(
         (&state.rumble, &rumble),
@@ -515,7 +516,7 @@ fn create_rumble_item(
     menu::CheckmarkItem {
         label: format!("{:?}", rumble),
         checked: is_selected,
-        enabled: true, // Always enabled
+        enabled: enabled,
         activate: Box::new(move |this: &mut CtrlAssistTray| {
             let mut state = this.state.lock();
             let old_rumble = state.rumble.clone();
