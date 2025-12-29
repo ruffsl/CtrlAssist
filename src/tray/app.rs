@@ -429,20 +429,22 @@ fn create_mode_item(
             let old_mode = state.mode.clone();
             state.mode = mode.clone();
 
-            // If running, update live
-            if state.status == MuxStatus::Running
-                && let Some(runtime_settings) = &state.runtime_settings
-            {
-                runtime_settings.update_mode(mode.clone());
-                CtrlAssistTray::send_notification(
-                    "CtrlAssist - Mode Changed",
-                    &format!("Mux mode changed from {:?} to {:?}", old_mode, mode),
-                );
-            }
+            if old_mode != mode {
+                // If running, update live
+                if state.status == MuxStatus::Running
+                    && let Some(runtime_settings) = &state.runtime_settings
+                {
+                    runtime_settings.update_mode(mode.clone());
+                    CtrlAssistTray::send_notification(
+                        "CtrlAssist - Mode Changed",
+                        &format!("Mux mode changed from {:?} to {:?}", old_mode, mode),
+                    );
+                }
 
-            // Save config
-            if let Err(e) = state.to_config().save() {
-                error!("Failed to save config: {}", e);
+                // Save config
+                if let Err(e) = state.to_config().save() {
+                    error!("Failed to save config: {}", e);
+                }
             }
         }),
         ..Default::default()
@@ -522,23 +524,25 @@ fn create_rumble_item(
             let old_rumble = state.rumble.clone();
             state.rumble = rumble.clone();
 
-            // If running, update live
-            if state.status == MuxStatus::Running
-                && let Some(runtime_settings) = &state.runtime_settings
-            {
-                runtime_settings.update_rumble(rumble.clone());
-                CtrlAssistTray::send_notification(
-                    "CtrlAssist - Rumble Changed",
-                    &format!(
-                        "Rumble target changed from {:?} to {:?}",
-                        old_rumble, rumble
-                    ),
-                );
-            }
+            if old_rumble != rumble {
+                // If running, update live
+                if state.status == MuxStatus::Running
+                    && let Some(runtime_settings) = &state.runtime_settings
+                {
+                    runtime_settings.update_rumble(rumble.clone());
+                    CtrlAssistTray::send_notification(
+                        "CtrlAssist - Rumble Changed",
+                        &format!(
+                            "Rumble target changed from {:?} to {:?}",
+                            old_rumble, rumble
+                        ),
+                    );
+                }
 
-            // Save config
-            if let Err(e) = state.to_config().save() {
-                error!("Failed to save config: {}", e);
+                // Save config
+                if let Err(e) = state.to_config().save() {
+                    error!("Failed to save config: {}", e);
+                }
             }
         }),
         ..Default::default()
