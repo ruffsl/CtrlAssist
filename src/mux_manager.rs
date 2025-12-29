@@ -3,6 +3,7 @@ use crate::gilrs_helper::{self};
 use crate::mux_modes::ModeType;
 use crate::udev_helpers::ScopedDeviceHider;
 use crate::{HideType, RumbleTarget, SpoofTarget};
+use crate::mux_runtime::RuntimeSettings;
 use evdev::Device;
 use gilrs::{GamepadId, Gilrs};
 use log::info;
@@ -28,9 +29,29 @@ pub struct MuxHandle {
     pub ff_handle: thread::JoinHandle<()>,
     pub shutdown: Arc<AtomicBool>,
     pub virtual_device_path: PathBuf,
+    pub runtime_settings: Arc<RuntimeSettings>, // Add this
 }
 
 impl MuxHandle {
+    /// Update mux mode at runtime
+    pub fn set_mode(&self, new_mode: ModeType) -> ModeType {
+        self.runtime_settings.update_mode(new_mode)
+    }
+
+    /// Update rumble target at runtime
+    pub fn set_rumble(&self, new_rumble: RumbleTarget) -> RumbleTarget {
+        self.runtime_settings.update_rumble(new_rumble)
+    }
+
+    /// Get current mux mode
+    pub fn get_mode(&self) -> ModeType {
+        self.runtime_settings.get_mode()
+    }
+
+    /// Get current rumble target
+    pub fn get_rumble(&self) -> RumbleTarget {
+        self.runtime_settings.get_rumble()
+    }
     /// Request shutdown and wait for threads to complete
     pub fn shutdown(self) {
         use std::sync::atomic::Ordering;
@@ -59,10 +80,12 @@ impl MuxHandle {
 /// 3. Prepares FF targets
 /// 4. Spawns input and FF threads
 /// 5. Returns a handle for managing the session
+// src/mux_manager.rs - Update start_mux
+
 pub fn start_mux(gilrs: Gilrs, config: MuxConfig) -> Result<MuxHandle, Box<dyn Error>> {
     let mut resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
-    // Setup hiding
+    // Setup hiding (unchanged)
     let mut _hider = ScopedDeviceHider::new(config.hide.clone());
     if let Some(primary_res) = resources.get(&config.primary_id) {
         _hider.hide_gamepad_devices(primary_res)?;
@@ -71,7 +94,7 @@ pub fn start_mux(gilrs: Gilrs, config: MuxConfig) -> Result<MuxHandle, Box<dyn E
         _hider.hide_gamepad_devices(assist_res)?;
     }
 
-    // Setup virtual device
+    // Setup virtual device (unchanged)
     let virtual_info = match config.spoof {
         SpoofTarget::Primary => VirtualGamepadInfo::from(&gilrs.gamepad(config.primary_id)),
         SpoofTarget::Assist => VirtualGamepadInfo::from(&gilrs.gamepad(config.assist_id)),
@@ -92,31 +115,23 @@ pub fn start_mux(gilrs: Gilrs, config: MuxConfig) -> Result<MuxHandle, Box<dyn E
         v_resource.path.display()
     );
 
-    // Prepare FF targets
-    let mut ff_targets = Vec::new();
-    let rumble_ids = match config.rumble {
-        RumbleTarget::Primary => vec![config.primary_id],
-        RumbleTarget::Assist => vec![config.assist_id],
-        RumbleTarget::Both => vec![config.primary_id, config.assist_id],
-        RumbleTarget::None => vec![],
-    };
-
-    for id in rumble_ids {
-        if let Some(res) = resources.remove(&id) {
-            ff_targets.push(res);
-        }
-    }
+    // Create runtime settings
+    let runtime_settings = Arc::new(RuntimeSettings::new(config.mode, config.rumble));
 
     // Setup shutdown signal
     let shutdown = Arc::new(AtomicBool::new(false));
 
+    // Clone resources for FF thread (don't remove from map)
+    let all_resources = resources.clone();
+
     // Spawn input thread
     let shutdown_input = Arc::clone(&shutdown);
+    let runtime_settings_input = Arc::clone(&runtime_settings);
     let input_handle = thread::spawn(move || {
         crate::mux_runtime::run_input_loop(
             gilrs,
             v_resource.device,
-            config.mode,
+            runtime_settings_input,
             config.primary_id,
             config.assist_id,
             shutdown_input,
@@ -125,8 +140,16 @@ pub fn start_mux(gilrs: Gilrs, config: MuxConfig) -> Result<MuxHandle, Box<dyn E
 
     // Spawn FF thread
     let shutdown_ff = Arc::clone(&shutdown);
+    let runtime_settings_ff = Arc::clone(&runtime_settings);
     let ff_handle = thread::spawn(move || {
-        crate::mux_runtime::run_ff_loop(&mut v_uinput, ff_targets, shutdown_ff);
+        crate::mux_runtime::run_ff_loop(
+            &mut v_uinput,
+            all_resources,
+            runtime_settings_ff,
+            config.primary_id,
+            config.assist_id,
+            shutdown_ff,
+        );
     });
 
     Ok(MuxHandle {
@@ -134,5 +157,6 @@ pub fn start_mux(gilrs: Gilrs, config: MuxConfig) -> Result<MuxHandle, Box<dyn E
         ff_handle,
         shutdown,
         virtual_device_path,
+        runtime_settings,
     })
 }
