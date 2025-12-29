@@ -17,10 +17,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            appstream-compose \
+            appstream-util \
+            build-essential \
             flatpak \
             flatpak-builder \
-            librsvg2-bin
+            libarchive-tools \
+            librsvg2-bin \
+            python3-gi
 
       - name: Setup
         run: |
