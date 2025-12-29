@@ -1,5 +1,4 @@
 app-id: io.github.ruffsl.ctrlassist
-icon: input-gaming
 runtime: org.freedesktop.Platform
 runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
@@ -9,7 +8,8 @@ command: ctrlassist
 finish-args:
   - --device=all
   - --filesystem=~/.local/share/Steam/config:rw
-  - --socket=session-bus
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.kde.StatusNotifierWatcher
 modules:
   - name: ctrlassist
     buildsystem: simple
@@ -29,7 +29,7 @@ modules:
       # - type: git
       #   url: https://github.com/ruffsl/CtrlAssist.git
       #   tag: "v0.3.0"
-      #   commit: "5770fea24e24ce0f8f6464301c826bc8cae27fd1"
+      #   commit: "73e85e70e8e8d9263ac4019fa6042cb46f9d6091"
       - cargo-sources.json
       - type: dir
         path: ../
