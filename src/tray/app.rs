@@ -432,9 +432,9 @@ fn create_mode_item(
 
             // If running, update live
             if state.status == MuxStatus::Running {
-                if let Some(handle) = &state.mux_handle_ref {
-                    handle.set_mode(mode.clone());
-                    Self::send_notification(
+                if let Some(runtime_settings) = &state.runtime_settings {
+                    runtime_settings.update_mode(mode.clone());
+                    CtrlAssistTray::send_notification(
                         "CtrlAssist - Mode Changed",
                         &format!("Mux mode changed from {:?} to {:?}", old_mode, mode),
                     );
@@ -525,9 +525,9 @@ fn create_rumble_item(
 
             // If running, update live
             if state.status == MuxStatus::Running {
-                if let Some(handle) = &state.mux_handle_ref {
-                    handle.set_rumble(rumble.clone());
-                    Self::send_notification(
+                if let Some(runtime_settings) = &state.runtime_settings {
+                    runtime_settings.update_rumble(rumble.clone());
+                    CtrlAssistTray::send_notification(
                         "CtrlAssist - Rumble Changed",
                         &format!("Rumble target changed from {:?} to {:?}", old_rumble, rumble),
                     );
@@ -550,14 +550,14 @@ fn start_mux_with_state(
     state_arc: Arc<Mutex<TrayState>>,
 ) -> Result<MuxHandle, Box<dyn Error>> {
     let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {}", e))?;
-    let mux_handle = mux_manager::start_mux(gilrs, config)?;
+    let (mux_handle, runtime_settings) = mux_manager::start_mux(gilrs, config)?;
 
     // Store handle reference in state
     {
         let mut state = state_arc.lock();
         state.virtual_device_path = Some(mux_handle.virtual_device_path.clone());
         state.shutdown_signal = Some(Arc::clone(&mux_handle.shutdown));
-        state.mux_handle_ref = Some(Arc::new(mux_handle)); // Add this
+        state.runtime_settings = Some(runtime_settings);
     }
 
     Ok(mux_handle)

@@ -7,7 +7,6 @@ use std::sync::atomic::AtomicBool;
 use std::thread;
 
 use super::config::TrayConfig;
-use crate::mux_manager::MuxHandle;
 
 #[derive(Debug, Clone)]
 pub struct ControllerInfo {
@@ -40,12 +39,12 @@ pub struct TrayState {
     pub status: MuxStatus,
     /// Mux thread handle (if running)
     pub mux_handle: Option<thread::JoinHandle<()>>,
-    /// Reference to running mux handle for live updates
-    pub mux_handle_ref: Option<Arc<MuxHandle>>,
     /// Shutdown signal for mux thread
     pub shutdown_signal: Option<Arc<AtomicBool>>,
     /// Path to virtual device for FF thread unblocking
     pub virtual_device_path: Option<PathBuf>,
+    /// Shared runtime settings for live updates
+    pub runtime_settings: Option<Arc<crate::mux_runtime::RuntimeSettings>>,
 }
 
 impl TrayState {
@@ -83,7 +82,7 @@ impl TrayState {
             rumble: config.rumble,
             status: MuxStatus::Stopped,
             mux_handle: None,
-            mux_handle_ref: None,
+            runtime_settings: None,
             shutdown_signal: None,
             virtual_device_path: None,
         }

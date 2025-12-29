@@ -21,6 +21,16 @@ pub struct GamepadResource {
     pub device: Device,
 }
 
+impl Clone for GamepadResource {
+    fn clone(&self) -> Self {
+        GamepadResource {
+            name: self.name.clone(),
+            path: self.path.clone(),
+            device: Device::open(&self.path).expect("Failed to clone device handle"),
+        }
+    }
+}
+
 pub fn wait_for_virtual_device(
     v_dev: &mut VirtualDevice,
 ) -> Result<GamepadResource, Box<dyn Error>> {

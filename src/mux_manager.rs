@@ -29,29 +29,9 @@ pub struct MuxHandle {
     pub ff_handle: thread::JoinHandle<()>,
     pub shutdown: Arc<AtomicBool>,
     pub virtual_device_path: PathBuf,
-    pub runtime_settings: Arc<RuntimeSettings>, // Add this
 }
 
 impl MuxHandle {
-    /// Update mux mode at runtime
-    pub fn set_mode(&self, new_mode: ModeType) -> ModeType {
-        self.runtime_settings.update_mode(new_mode)
-    }
-
-    /// Update rumble target at runtime
-    pub fn set_rumble(&self, new_rumble: RumbleTarget) -> RumbleTarget {
-        self.runtime_settings.update_rumble(new_rumble)
-    }
-
-    /// Get current mux mode
-    pub fn get_mode(&self) -> ModeType {
-        self.runtime_settings.get_mode()
-    }
-
-    /// Get current rumble target
-    pub fn get_rumble(&self) -> RumbleTarget {
-        self.runtime_settings.get_rumble()
-    }
     /// Request shutdown and wait for threads to complete
     pub fn shutdown(self) {
         use std::sync::atomic::Ordering;
@@ -82,8 +62,8 @@ impl MuxHandle {
 /// 5. Returns a handle for managing the session
 // src/mux_manager.rs - Update start_mux
 
-pub fn start_mux(gilrs: Gilrs, config: MuxConfig) -> Result<MuxHandle, Box<dyn Error>> {
-    let mut resources = gilrs_helper::discover_gamepad_resources(&gilrs);
+pub fn start_mux(gilrs: Gilrs, config: MuxConfig) -> Result<(MuxHandle, Arc<RuntimeSettings>), Box<dyn Error>> {
+    let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
     // Setup hiding (unchanged)
     let mut _hider = ScopedDeviceHider::new(config.hide.clone());
@@ -152,11 +132,13 @@ pub fn start_mux(gilrs: Gilrs, config: MuxConfig) -> Result<MuxHandle, Box<dyn E
         );
     });
 
-    Ok(MuxHandle {
-        input_handle,
-        ff_handle,
-        shutdown,
-        virtual_device_path,
+    Ok((
+        MuxHandle {
+            input_handle,
+            ff_handle,
+            shutdown,
+            virtual_device_path,
+        },
         runtime_settings,
-    })
+    ))
 }

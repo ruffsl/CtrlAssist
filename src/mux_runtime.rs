@@ -20,7 +20,7 @@ impl RuntimeSettings {
 
     pub fn update_mode(&self, new_mode: ModeType) -> ModeType {
         let mut mode = self.mode.write();
-        let old_mode = *mode;
+        let old_mode = mode.clone();
         *mode = new_mode;
         old_mode
     }
@@ -33,7 +33,7 @@ impl RuntimeSettings {
     }
 
     pub fn get_mode(&self) -> ModeType {
-        *self.mode.read()
+        self.mode.read().clone()
     }
 
     pub fn get_rumble(&self) -> RumbleTarget {
@@ -73,7 +73,7 @@ pub fn run_input_loop(
         let current_mode = runtime_settings.get_mode();
         if current_mode != last_mode {
             info!("Switching mux mode from {:?} to {:?}", last_mode, current_mode);
-            mux_mode = mux_modes::create_mux_mode(current_mode);
+            mux_mode = mux_modes::create_mux_mode(current_mode.clone());
             last_mode = current_mode;
         }
 
@@ -121,7 +121,7 @@ pub fn run_ff_loop(
         let current_rumble = runtime_settings.get_rumble();
         if current_rumble != last_rumble {
             info!("Switching rumble target from {:?} to {:?}", last_rumble, current_rumble);
-            phys_devs = build_ff_targets(&all_resources, current_rumble, p_id, a_id);
+            phys_devs = build_ff_targets(&all_resources, current_rumble.clone(), p_id, a_id);
             last_rumble = current_rumble;
         }
 

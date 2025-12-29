@@ -76,7 +76,7 @@ pub enum SpoofTarget {
     None,
 }
 
-#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub enum RumbleTarget {
     Primary,
     Assist,
@@ -165,7 +165,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
         let mux_handle = mux_manager::start_mux(gilrs, config).expect("Failed to start mux");
         // Wait for shutdown signal (blocks efficiently)
         let _ = shutdown_rx.recv();
-        mux_handle.shutdown();
+        mux_handle.0.shutdown();
     });
 
     // Setup Ctrl+C handler to send shutdown signal
