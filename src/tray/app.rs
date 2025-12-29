@@ -423,7 +423,7 @@ fn create_mode_item(
     menu::CheckmarkItem {
         label: format!("{:?}", mode),
         checked: is_selected,
-        enabled: enabled,
+        enabled,
         activate: Box::new(move |this: &mut CtrlAssistTray| {
             let mut state = this.state.lock();
             let old_mode = state.mode.clone();
@@ -516,7 +516,7 @@ fn create_rumble_item(
     menu::CheckmarkItem {
         label: format!("{:?}", rumble),
         checked: is_selected,
-        enabled: enabled,
+        enabled,
         activate: Box::new(move |this: &mut CtrlAssistTray| {
             let mut state = this.state.lock();
             let old_rumble = state.rumble.clone();
