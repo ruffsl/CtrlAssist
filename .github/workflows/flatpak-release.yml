@@ -17,7 +17,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            appstream \
+            appstream-compose \
             flatpak \
             flatpak-builder \
             librsvg2-bin
