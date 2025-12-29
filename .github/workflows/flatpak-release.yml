@@ -31,9 +31,10 @@ jobs:
 
       - name: Build
         run: |
-          flatpak-builder \
+          flatpak-builder --user \
             --force-clean \
             --install-deps-from=flathub \
+            --default-branch=stable \
             --repo=flatpak/repo builddir \
             flatpak/io.github.ruffsl.ctrlassist.yml
 
