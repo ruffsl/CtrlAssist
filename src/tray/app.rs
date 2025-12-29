@@ -322,9 +322,9 @@ impl Tray for CtrlAssistTray {
                 icon_name: "media-playlist-shuffle".into(),
                 enabled: true, // Dynamically configurable while running
                 submenu: vec![
-                    create_mode_item(ModeType::Priority, &state, false),
-                    create_mode_item(ModeType::Average, &state, false),
-                    create_mode_item(ModeType::Toggle, &state, false),
+                    create_mode_item(ModeType::Priority, &state),
+                    create_mode_item(ModeType::Average, &state),
+                    create_mode_item(ModeType::Toggle, &state),
                 ],
                 ..Default::default()
             }
@@ -408,11 +408,9 @@ impl Tray for CtrlAssistTray {
 }
 
 // Helper functions for menu items
-// Update helper functions to apply changes immediately when running
 fn create_mode_item(
     mode: ModeType,
     state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
-    _is_running: bool, // Ignored now
 ) -> MenuItem<CtrlAssistTray> {
     let is_selected = matches!(
         (&state.mode, &mode),
