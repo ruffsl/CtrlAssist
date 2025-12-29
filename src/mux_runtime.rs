@@ -214,12 +214,17 @@ pub fn run_ff_loop(
                                     phys_dev.effects.insert(virt_id, (ff_effect, effect_data));
                                     // For the first device, also upload again for effect_map
                                     if i == 0 {
-                                        match phys_dev.resource.device.upload_ff_effect(effect_data) {
+                                        match phys_dev.resource.device.upload_ff_effect(effect_data)
+                                        {
                                             Ok(ff_effect_map) => {
-                                                effect_map.insert(virt_id, (ff_effect_map, effect_data));
+                                                effect_map
+                                                    .insert(virt_id, (ff_effect_map, effect_data));
                                             }
                                             Err(e) => {
-                                                error!("Failed to upload effect for effect_map: {}", e);
+                                                error!(
+                                                    "Failed to upload effect for effect_map: {}",
+                                                    e
+                                                );
                                             }
                                         }
                                     }
