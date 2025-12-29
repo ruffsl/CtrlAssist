@@ -1,5 +1,3 @@
-// src/mux_runtime.rs - Add at the top
-
 use crate::RumbleTarget;
 use crate::mux_modes::ModeType;
 use parking_lot::RwLock;
@@ -55,8 +53,6 @@ use std::time::Duration;
 
 const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
 
-// src/mux_runtime.rs - Replace run_input_loop
-
 pub fn run_input_loop(
     mut gilrs: Gilrs,
     mut v_dev: Device,
@@ -98,8 +94,6 @@ pub fn run_input_loop(
         }
     }
 }
-
-// src/mux_runtime.rs - Replace run_ff_loop signature and add rumble management
 
 pub fn run_ff_loop(
     v_uinput: &mut VirtualDevice,

@@ -66,7 +66,7 @@ pub fn start_mux(
 ) -> Result<(MuxHandle, Arc<RuntimeSettings>), Box<dyn Error>> {
     let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
-    // Setup hiding (unchanged)
+    // Setup hiding
     let mut _hider = ScopedDeviceHider::new(config.hide.clone());
     if let Some(primary_res) = resources.get(&config.primary_id) {
         _hider.hide_gamepad_devices(primary_res)?;
@@ -75,7 +75,7 @@ pub fn start_mux(
         _hider.hide_gamepad_devices(assist_res)?;
     }
 
-    // Setup virtual device (unchanged)
+    // Setup virtual device
     let virtual_info = match config.spoof {
         SpoofTarget::Primary => VirtualGamepadInfo::from(&gilrs.gamepad(config.primary_id)),
         SpoofTarget::Assist => VirtualGamepadInfo::from(&gilrs.gamepad(config.assist_id)),
