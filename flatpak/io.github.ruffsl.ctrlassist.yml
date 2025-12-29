@@ -8,7 +8,6 @@ command: ctrlassist
 finish-args:
   - --device=all
   - --filesystem=~/.local/share/Steam/config:rw
-  - --own-name=org.kde.StatusNotifierItem-2-1
   - --talk-name=org.freedesktop.Notifications
   - --talk-name=org.kde.StatusNotifierWatcher
 modules:
