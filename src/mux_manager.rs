@@ -1,9 +1,9 @@
 use crate::evdev_helpers::{self, VirtualGamepadInfo};
 use crate::gilrs_helper::{self};
 use crate::mux_modes::ModeType;
+use crate::mux_runtime::RuntimeSettings;
 use crate::udev_helpers::ScopedDeviceHider;
 use crate::{HideType, RumbleTarget, SpoofTarget};
-use crate::mux_runtime::RuntimeSettings;
 use evdev::Device;
 use gilrs::{GamepadId, Gilrs};
 use log::info;
@@ -60,9 +60,10 @@ impl MuxHandle {
 /// 3. Prepares FF targets
 /// 4. Spawns input and FF threads
 /// 5. Returns a handle for managing the session
-// src/mux_manager.rs - Update start_mux
-
-pub fn start_mux(gilrs: Gilrs, config: MuxConfig) -> Result<(MuxHandle, Arc<RuntimeSettings>), Box<dyn Error>> {
+pub fn start_mux(
+    gilrs: Gilrs,
+    config: MuxConfig,
+) -> Result<(MuxHandle, Arc<RuntimeSettings>), Box<dyn Error>> {
     let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
     // Setup hiding (unchanged)

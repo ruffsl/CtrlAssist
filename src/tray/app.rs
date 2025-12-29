@@ -431,14 +431,14 @@ fn create_mode_item(
             state.mode = mode.clone();
 
             // If running, update live
-            if state.status == MuxStatus::Running {
-                if let Some(runtime_settings) = &state.runtime_settings {
-                    runtime_settings.update_mode(mode.clone());
-                    CtrlAssistTray::send_notification(
-                        "CtrlAssist - Mode Changed",
-                        &format!("Mux mode changed from {:?} to {:?}", old_mode, mode),
-                    );
-                }
+            if state.status == MuxStatus::Running
+                && let Some(runtime_settings) = &state.runtime_settings
+            {
+                runtime_settings.update_mode(mode.clone());
+                CtrlAssistTray::send_notification(
+                    "CtrlAssist - Mode Changed",
+                    &format!("Mux mode changed from {:?} to {:?}", old_mode, mode),
+                );
             }
 
             // Save config
@@ -524,14 +524,17 @@ fn create_rumble_item(
             state.rumble = rumble.clone();
 
             // If running, update live
-            if state.status == MuxStatus::Running {
-                if let Some(runtime_settings) = &state.runtime_settings {
-                    runtime_settings.update_rumble(rumble.clone());
-                    CtrlAssistTray::send_notification(
-                        "CtrlAssist - Rumble Changed",
-                        &format!("Rumble target changed from {:?} to {:?}", old_rumble, rumble),
-                    );
-                }
+            if state.status == MuxStatus::Running
+                && let Some(runtime_settings) = &state.runtime_settings
+            {
+                runtime_settings.update_rumble(rumble.clone());
+                CtrlAssistTray::send_notification(
+                    "CtrlAssist - Rumble Changed",
+                    &format!(
+                        "Rumble target changed from {:?} to {:?}",
+                        old_rumble, rumble
+                    ),
+                );
             }
 
             // Save config

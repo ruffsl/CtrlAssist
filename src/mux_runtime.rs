@@ -1,8 +1,8 @@
 // src/mux_runtime.rs - Add at the top
 
-use parking_lot::RwLock;
-use crate::mux_modes::ModeType;
 use crate::RumbleTarget;
+use crate::mux_modes::ModeType;
+use parking_lot::RwLock;
 
 /// Runtime-updatable mux settings
 pub struct RuntimeSettings {
@@ -72,7 +72,10 @@ pub fn run_input_loop(
         // Check for mode changes
         let current_mode = runtime_settings.get_mode();
         if current_mode != last_mode {
-            info!("Switching mux mode from {:?} to {:?}", last_mode, current_mode);
+            info!(
+                "Switching mux mode from {:?} to {:?}",
+                last_mode, current_mode
+            );
             mux_mode = mux_modes::create_mux_mode(current_mode.clone());
             last_mode = current_mode;
         }
@@ -106,12 +109,7 @@ pub fn run_ff_loop(
     a_id: GamepadId,
     shutdown: Arc<AtomicBool>,
 ) {
-    let mut phys_devs = build_ff_targets(
-        &all_resources,
-        runtime_settings.get_rumble(),
-        p_id,
-        a_id,
-    );
+    let mut phys_devs = build_ff_targets(&all_resources, runtime_settings.get_rumble(), p_id, a_id);
     let mut last_rumble = runtime_settings.get_rumble();
 
     info!("FF Thread started.");
@@ -120,7 +118,10 @@ pub fn run_ff_loop(
         // Check for rumble target changes
         let current_rumble = runtime_settings.get_rumble();
         if current_rumble != last_rumble {
-            info!("Switching rumble target from {:?} to {:?}", last_rumble, current_rumble);
+            info!(
+                "Switching rumble target from {:?} to {:?}",
+                last_rumble, current_rumble
+            );
             phys_devs = build_ff_targets(&all_resources, current_rumble.clone(), p_id, a_id);
             last_rumble = current_rumble;
         }
