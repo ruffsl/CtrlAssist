@@ -23,8 +23,8 @@
   - Forward force feedback to either or both controllers
 - 🖱️ System tray interface for graphical desktop environments
   - Configure controllers and mux options via the taskbar
-  - Start/stop muxing with live status notifications
-  - Persistent user settings across restarts
+  - Start/stop/alter muxing with live status notifications
+  - Persistent user settings across session restarts
 
 ![System Tray Screenshot](docs/screenshots/system_tray.png)
 
