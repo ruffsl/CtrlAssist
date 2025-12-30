@@ -10,6 +10,7 @@ mod gilrs_helper;
 mod mux_manager;
 mod mux_modes;
 mod mux_runtime;
+mod tui;
 mod tray;
 mod udev_helpers;
 
@@ -31,6 +32,9 @@ enum Commands {
 
     /// Launch system tray app for graphical control.
     Tray,
+
+    /// Launch terminal UI for interactive control.
+    Tui,
 }
 
 #[derive(clap::Args, Debug)]
@@ -93,6 +97,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Commands::List => list_gamepads(),
         Commands::Mux(args) => run_mux(args),
         Commands::Tray => tray::run_tray().await,
+        Commands::Tui => tui::run_tui().await,
     }
 }
 
