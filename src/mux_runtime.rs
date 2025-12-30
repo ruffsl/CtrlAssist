@@ -291,9 +291,10 @@ fn build_ff_targets(
                     Some(PhysicalFFDev::new(res.clone()))
                 } else {
                     warn!(
-                        "Device {} ({}) does not support force feedback",
+                        "Device {} ({}) does not support force feedback (rumble setting: {:?})",
                         res.name,
-                        res.path.display()
+                        res.path.display(),
+                        rumble
                     );
                     None
                 }
