@@ -1,5 +1,4 @@
 use crate::RumbleTarget;
-use crate::ff_helpers;
 use crate::ff_helpers::PhysicalFFDev;
 use crate::gilrs_helper::GamepadResource;
 use crate::mux_modes;
@@ -7,7 +6,7 @@ use crate::mux_modes::ModeType;
 use evdev::uinput::VirtualDevice;
 use evdev::{Device, EventType, InputEvent};
 use gilrs::{GamepadId, Gilrs};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -267,8 +266,7 @@ pub fn run_ff_loop(
                 }
 
                 _ => {
-                    // Other FF events - pass through to existing handler
-                    ff_helpers::process_ff_event(event, v_uinput, &mut phys_devs);
+                    debug!("Unhandled FF event: {:?}", event);
                 }
             }
         }

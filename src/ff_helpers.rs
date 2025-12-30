@@ -1,8 +1,6 @@
 use crate::gilrs_helper::GamepadResource;
-use evdev::uinput::VirtualDevice;
 use evdev::{Device, FFEffectData};
-use evdev::{EventSummary, InputEvent};
-use log::{debug, error, warn};
+use log::{error, warn};
 use std::collections::HashMap;
 
 pub struct PhysicalFFDev {
@@ -101,23 +99,6 @@ impl PhysicalFFDev {
         }
 
         Ok(())
-    }
-}
-
-pub fn process_ff_event(
-    event: InputEvent,
-    _v_dev: &mut VirtualDevice,
-    _phys_devs: &mut Vec<PhysicalFFDev>,
-) {
-    // This function now only handles events we don't process in the main loop
-    // Could be removed or kept for future extension
-    match event.destructure() {
-        EventSummary::UInput(..) | EventSummary::ForceFeedback(..) => {
-            // Already handled in main loop
-        }
-        _ => {
-            debug!("Unhandled FF event: {:?}", event);
-        }
     }
 }
 
