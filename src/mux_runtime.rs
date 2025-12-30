@@ -51,6 +51,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use crate::ff_helpers::PhysicalFFDev;
 
 const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
 
@@ -96,6 +97,8 @@ pub fn run_input_loop(
     }
 }
 
+// src/mux_runtime.rs - Replace run_ff_loop
+
 pub fn run_ff_loop(
     v_uinput: &mut VirtualDevice,
     all_resources: HashMap<GamepadId, GamepadResource>,
@@ -104,13 +107,11 @@ pub fn run_ff_loop(
     a_id: GamepadId,
     shutdown: Arc<AtomicBool>,
 ) {
-    use crate::ff_helpers::process_ff_event;
-    use std::collections::HashMap;
+    use crate::ff_helpers::{EffectManager, PhysicalFFDev};
 
-    // Persistent effect memory: virt_id -> (FFEffect, FFEffectData)
-    let mut effect_map: HashMap<i16, (evdev::FFEffect, evdev::FFEffectData)> = HashMap::new();
-    // Track which effects are currently playing
-    let mut playing_effects: HashMap<i16, bool> = HashMap::new();
+    // Centralized effect state
+    let mut effect_manager = EffectManager::new();
+    
     // Current physical devices
     let mut phys_devs = build_ff_targets(&all_resources, runtime_settings.get_rumble(), p_id, a_id);
     let mut last_rumble = runtime_settings.get_rumble();
@@ -125,73 +126,35 @@ pub fn run_ff_loop(
                 "Switching rumble target from {:?} to {:?}",
                 last_rumble, current_rumble
             );
-            let mut new_phys_devs =
-                build_ff_targets(&all_resources, current_rumble.clone(), p_id, a_id);
-            // For each new device, re-upload all remembered effects
-            for new_dev in &mut new_phys_devs {
-                if !phys_devs
-                    .iter()
-                    .any(|d| d.resource.path == new_dev.resource.path)
-                {
-                    for (&virt_id, &(_, effect_data)) in &effect_map {
-                        match new_dev.resource.device.upload_ff_effect(effect_data) {
-                            Ok(_ff_effect) => {
-                                debug!(
-                                    "Re-uploaded effect to new device (virt_id: {}, phys: {})",
-                                    virt_id,
-                                    new_dev.resource.path.display()
-                                );
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Failed to re-upload effect to new device (virt_id: {}, phys: {}): {}",
-                                    virt_id,
-                                    new_dev.resource.path.display(),
-                                    e
-                                );
-                            }
-                        }
-                    }
+
+            // Build new device set
+            let mut new_phys_devs = build_ff_targets(&all_resources, current_rumble.clone(), p_id, a_id);
+
+            // Synchronize all effects to new devices
+            for dev in &mut new_phys_devs {
+                let errors = dev.sync_effects(&effect_manager);
+                for (virt_id, error) in errors {
+                    error!(
+                        "Failed to sync effect {} to {}: {}",
+                        virt_id,
+                        dev.resource.path.display(),
+                        error
+                    );
                 }
             }
+
+            // Stop all effects on old devices (cleanup)
+            for dev in &mut phys_devs {
+                for virt_id in effect_manager.get_playing() {
+                    let _ = dev.control_effect(virt_id, false);
+                }
+            }
+
             phys_devs = new_phys_devs;
-            // After rebuilding phys_devs, update their effect maps to match effect_map
-            for phys_dev in &mut phys_devs {
-                phys_dev.effects.clear();
-                for (&virt_id, &(_, effect_data)) in &effect_map {
-                    match phys_dev.resource.device.upload_ff_effect(effect_data) {
-                        Ok(ff_effect) => {
-                            phys_dev.effects.insert(virt_id, (ff_effect, effect_data));
-                            debug!(
-                                "Re-uploaded effect after rumble target switch (virt_id: {}, phys: {})",
-                                virt_id,
-                                phys_dev.resource.path.display()
-                            );
-                        }
-                        Err(e) => {
-                            error!(
-                                "Failed to re-upload effect after rumble target switch (virt_id: {}, phys: {}): {}",
-                                virt_id,
-                                phys_dev.resource.path.display(),
-                                e
-                            );
-                        }
-                    }
-                }
-            }
-            // Immediately replay any effects that were playing before the switch
-            for (&virt_id, &is_playing) in &playing_effects {
-                if is_playing {
-                    for phys_dev in &mut phys_devs {
-                        if let Some((effect, _)) = phys_dev.effects.get_mut(&virt_id) {
-                            let _ = effect.play(1);
-                        }
-                    }
-                }
-            }
             last_rumble = current_rumble;
         }
 
+        // Process events
         let events: Vec<_> = match v_uinput.fetch_events() {
             Ok(iter) => iter.collect(),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => vec![],
@@ -207,57 +170,82 @@ pub fn run_ff_loop(
                     if let Ok(upload_ev) = v_uinput.process_ff_upload(ev) {
                         let virt_id = upload_ev.effect_id();
                         let effect_data = upload_ev.effect();
-                        // Upload to all phys_devs and store the returned FFEffect for each
-                        for (i, phys_dev) in phys_devs.iter_mut().enumerate() {
-                            match phys_dev.resource.device.upload_ff_effect(effect_data) {
-                                Ok(ff_effect) => {
-                                    phys_dev.effects.insert(virt_id, (ff_effect, effect_data));
-                                    // For the first device, also upload again for effect_map
-                                    if i == 0 {
-                                        match phys_dev.resource.device.upload_ff_effect(effect_data)
-                                        {
-                                            Ok(ff_effect_map) => {
-                                                effect_map
-                                                    .insert(virt_id, (ff_effect_map, effect_data));
-                                            }
-                                            Err(e) => {
-                                                error!(
-                                                    "Failed to upload effect for effect_map: {}",
-                                                    e
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Failed to upload effect to physical device: {}", e);
-                                }
+
+                        // Record in manager
+                        effect_manager.upload(virt_id, effect_data);
+
+                        // Upload to all current devices
+                        for dev in &mut phys_devs {
+                            if let Err(e) = dev.upload_effect(virt_id, effect_data) {
+                                error!(
+                                    "Failed to upload effect {} to {}: {}",
+                                    virt_id,
+                                    dev.resource.path.display(),
+                                    e
+                                );
                             }
                         }
-                        // Mark as not playing until a playback event is received
-                        playing_effects.insert(virt_id, false);
                     }
                 }
+
                 evdev::EventSummary::UInput(ev, evdev::UInputCode::UI_FF_ERASE, ..) => {
                     if let Ok(erase_ev) = v_uinput.process_ff_erase(ev) {
                         let virt_id = erase_ev.effect_id() as i16;
-                        effect_map.remove(&virt_id);
-                        playing_effects.remove(&virt_id);
-                        for phys_dev in &mut phys_devs {
-                            if let Some((mut effect, _)) = phys_dev.effects.remove(&virt_id) {
-                                let _ = effect.stop();
+
+                        // Stop and remove from all devices
+                        for dev in &mut phys_devs {
+                            if let Err(e) = dev.erase_effect(virt_id) {
+                                error!(
+                                    "Failed to erase effect {} from {}: {}",
+                                    virt_id,
+                                    dev.resource.path.display(),
+                                    e
+                                );
+                            }
+                        }
+
+                        // Remove from manager
+                        effect_manager.erase(virt_id);
+                    }
+                }
+
+                evdev::EventSummary::ForceFeedback(_, effect_id, status) => {
+                    let virt_id = effect_id.0 as i16;
+                    let is_playing = status == evdev::FFStatusCode::FF_STATUS_PLAYING.0 as i32;
+
+                    // Update manager state
+                    effect_manager.set_playing(virt_id, is_playing);
+
+                    // Apply to all devices
+                    for dev in &mut phys_devs {
+                        if let Err(e) = dev.control_effect(virt_id, is_playing) {
+                            // Check if device disconnected
+                            if e.raw_os_error() == Some(libc::ENODEV) {
+                                warn!(
+                                    "Device {} disconnected, will attempt recovery",
+                                    dev.resource.path.display()
+                                );
+                                // Attempt to reopen device
+                                if let Ok(new_device) = Device::open(&dev.resource.path) {
+                                    dev.resource.device = new_device;
+                                    // Re-sync all effects
+                                    let _ = dev.sync_effects(&effect_manager);
+                                }
+                            } else {
+                                error!(
+                                    "Failed to control effect {} on {}: {}",
+                                    virt_id,
+                                    dev.resource.path.display(),
+                                    e
+                                );
                             }
                         }
                     }
                 }
-                evdev::EventSummary::ForceFeedback(_, effect_id, status) => {
-                    let virt_id = effect_id.0 as i16;
-                    let is_playing = status == evdev::FFStatusCode::FF_STATUS_PLAYING.0 as i32;
-                    playing_effects.insert(virt_id, is_playing);
-                    process_ff_event(event, v_uinput, &mut phys_devs);
-                }
+
                 _ => {
-                    process_ff_event(event, v_uinput, &mut phys_devs);
+                    // Other FF events - pass through to existing handler
+                    ff_helpers::process_ff_event(event, v_uinput, &mut phys_devs);
                 }
             }
         }
@@ -265,12 +253,14 @@ pub fn run_ff_loop(
 }
 
 // Helper function to build FF targets based on rumble setting
+// src/mux_runtime.rs - Update build_ff_targets
+
 fn build_ff_targets(
     all_resources: &HashMap<GamepadId, GamepadResource>,
     rumble: RumbleTarget,
     p_id: GamepadId,
     a_id: GamepadId,
-) -> Vec<ff_helpers::PhysicalFFDev> {
+) -> Vec<PhysicalFFDev> {
     let rumble_ids = match rumble {
         RumbleTarget::Primary => vec![p_id],
         RumbleTarget::Assist => vec![a_id],
@@ -281,19 +271,15 @@ fn build_ff_targets(
     rumble_ids
         .into_iter()
         .filter_map(|id| {
-            all_resources.get(&id).and_then(|res: &GamepadResource| {
+            all_resources.get(&id).and_then(|res| {
                 if res.device.supported_ff().is_some() {
-                    // Clone the resource to create a new PhysicalFFDev
-                    Some(ff_helpers::PhysicalFFDev {
-                        resource: GamepadResource {
-                            name: res.name.clone(),
-                            path: res.path.clone(),
-                            device: Device::open(&res.path).ok()?,
-                        },
-                        effects: HashMap::new(),
-                    })
+                    Some(PhysicalFFDev::new(res.clone()))
                 } else {
-                    warn!("Device {} does not support FF", res.name);
+                    warn!(
+                        "Device {} ({}) does not support force feedback",
+                        res.name,
+                        res.path.display()
+                    );
                     None
                 }
             })
