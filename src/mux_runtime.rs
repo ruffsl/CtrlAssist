@@ -1,6 +1,20 @@
 use crate::RumbleTarget;
+use crate::ff_helpers;
+use crate::ff_helpers::PhysicalFFDev;
+use crate::gilrs_helper::GamepadResource;
+use crate::mux_modes;
 use crate::mux_modes::ModeType;
+use evdev::uinput::VirtualDevice;
+use evdev::{Device, EventType, InputEvent};
+use gilrs::{GamepadId, Gilrs};
+use log::{error, info, warn};
 use parking_lot::RwLock;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Runtime-updatable mux settings
 pub struct RuntimeSettings {
@@ -38,21 +52,6 @@ impl RuntimeSettings {
         self.rumble.read().clone()
     }
 }
-
-use crate::ff_helpers;
-use crate::ff_helpers::PhysicalFFDev;
-use crate::gilrs_helper::GamepadResource;
-use crate::mux_modes;
-use evdev::uinput::VirtualDevice;
-use evdev::{Device, EventType, InputEvent};
-use gilrs::{GamepadId, Gilrs};
-use log::{error, info, warn};
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-
-const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
 
 pub fn run_input_loop(
     mut gilrs: Gilrs,
