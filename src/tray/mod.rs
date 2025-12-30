@@ -1,6 +1,6 @@
 use futures_util::TryFutureExt;
 mod app;
-mod config;
+pub mod config;
 mod state;
 
 pub use app::CtrlAssistTray;
