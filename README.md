@@ -49,6 +49,8 @@
   - Ideal when fine-grain conflict-free control is needed
     - E.g. Game menu navigation or precise interventions
 
+[Screencast_20251230_070245.webm](https://github.com/user-attachments/assets/40f72091-cfeb-461b-a4fb-5b4198604e9d)
+
 # ⬇️ Install
 
 The following installation methods are available:
