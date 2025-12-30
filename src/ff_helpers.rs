@@ -1,9 +1,9 @@
 use crate::gilrs_helper::GamepadResource;
 use evdev::uinput::VirtualDevice;
+use evdev::{Device, FFEffectData};
 use evdev::{EventSummary, InputEvent};
 use log::{debug, error, warn};
 use std::collections::HashMap;
-use evdev::{FFEffectData, Device};
 
 pub struct PhysicalFFDev {
     pub resource: GamepadResource,
@@ -20,7 +20,11 @@ impl PhysicalFFDev {
     }
 
     /// Upload an effect to this device and store the handle
-    pub fn upload_effect(&mut self, virt_id: i16, effect_data: FFEffectData) -> std::io::Result<()> {
+    pub fn upload_effect(
+        &mut self,
+        virt_id: i16,
+        effect_data: FFEffectData,
+    ) -> std::io::Result<()> {
         let ff_effect = self.resource.device.upload_ff_effect(effect_data)?;
         self.effects.insert(virt_id, ff_effect);
         Ok(())
@@ -53,10 +57,10 @@ impl PhysicalFFDev {
 
         // Upload missing effects
         for (virt_id, effect_data) in manager.get_effects() {
-            if !self.effects.contains_key(&virt_id) {
-                if let Err(e) = self.upload_effect(virt_id, effect_data) {
-                    errors.push((virt_id, e));
-                }
+            if !self.effects.contains_key(&virt_id)
+                && let Err(e) = self.upload_effect(virt_id, effect_data)
+            {
+                errors.push((virt_id, e));
             }
         }
 
