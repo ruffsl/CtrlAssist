@@ -29,18 +29,14 @@ impl RuntimeSettings {
         }
     }
 
-    pub fn update_mode(&self, new_mode: ModeType) -> ModeType {
+    pub fn update_mode(&self, new_mode: ModeType) {
         let mut mode = self.mode.write();
-        let old_mode = mode.clone();
         *mode = new_mode;
-        old_mode
     }
 
-    pub fn update_rumble(&self, new_rumble: RumbleTarget) -> RumbleTarget {
+    pub fn update_rumble(&self, new_rumble: RumbleTarget) {
         let mut rumble = self.rumble.write();
-        let old_rumble = rumble.clone();
         *rumble = new_rumble;
-        old_rumble
     }
 
     pub fn get_mode(&self) -> ModeType {
