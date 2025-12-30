@@ -1,6 +1,5 @@
 use crate::RumbleTarget;
 use crate::mux_modes::ModeType;
-use log::debug;
 use parking_lot::RwLock;
 
 /// Runtime-updatable mux settings
@@ -107,7 +106,7 @@ pub fn run_ff_loop(
     a_id: GamepadId,
     shutdown: Arc<AtomicBool>,
 ) {
-    use crate::ff_helpers::{EffectManager, PhysicalFFDev};
+    use crate::ff_helpers::{EffectManager};
 
     // Centralized effect state
     let mut effect_manager = EffectManager::new();
@@ -209,39 +208,63 @@ pub fn run_ff_loop(
                     }
                 }
 
-                evdev::EventSummary::ForceFeedback(_, effect_id, status) => {
-                    let virt_id = effect_id.0 as i16;
-                    let is_playing = status == evdev::FFStatusCode::FF_STATUS_PLAYING.0 as i32;
+evdev::EventSummary::ForceFeedback(_, effect_id, status) => {
+    let virt_id = effect_id.0 as i16;
+    let is_playing = status == evdev::FFStatusCode::FF_STATUS_PLAYING.0 as i32;
 
-                    // Update manager state
-                    effect_manager.set_playing(virt_id, is_playing);
+    // Update manager state
+    effect_manager.set_playing(virt_id, is_playing);
 
-                    // Apply to all devices
-                    for dev in &mut phys_devs {
-                        if let Err(e) = dev.control_effect(virt_id, is_playing) {
-                            // Check if device disconnected
-                            if e.raw_os_error() == Some(libc::ENODEV) {
-                                warn!(
-                                    "Device {} disconnected, will attempt recovery",
-                                    dev.resource.path.display()
-                                );
-                                // Attempt to reopen device
-                                if let Ok(new_device) = Device::open(&dev.resource.path) {
-                                    dev.resource.device = new_device;
-                                    // Re-sync all effects
-                                    let _ = dev.sync_effects(&effect_manager);
-                                }
-                            } else {
-                                error!(
-                                    "Failed to control effect {} on {}: {}",
-                                    virt_id,
-                                    dev.resource.path.display(),
-                                    e
-                                );
-                            }
+    // Apply to all devices
+    for dev in &mut phys_devs {
+        match dev.control_effect(virt_id, is_playing) {
+            Ok(()) => {
+                // Success
+            }
+            Err(e) if e.raw_os_error() == Some(libc::ENODEV) => {
+                // Device disconnected, attempt recovery
+                warn!(
+                    "Device {} disconnected, attempting recovery",
+                    dev.resource.path.display()
+                );
+                
+                match dev.recover(&effect_manager) {
+                    Ok(()) => {
+                        info!(
+                            "Successfully recovered device {}",
+                            dev.resource.path.display()
+                        );
+                        // Retry the control operation after recovery
+                        if let Err(retry_err) = dev.control_effect(virt_id, is_playing) {
+                            error!(
+                                "Failed to control effect {} after recovery on {}: {}",
+                                virt_id,
+                                dev.resource.path.display(),
+                                retry_err
+                            );
                         }
                     }
+                    Err(recover_err) => {
+                        error!(
+                            "Failed to recover device {}: {}",
+                            dev.resource.path.display(),
+                            recover_err
+                        );
+                    }
                 }
+            }
+            Err(e) => {
+                // Other error
+                error!(
+                    "Failed to control effect {} on {}: {}",
+                    virt_id,
+                    dev.resource.path.display(),
+                    e
+                );
+            }
+        }
+    }
+}
 
                 _ => {
                     // Other FF events - pass through to existing handler
