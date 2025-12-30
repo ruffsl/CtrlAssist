@@ -413,12 +413,7 @@ fn create_mode_item(
     state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
     enabled: bool,
 ) -> MenuItem<CtrlAssistTray> {
-    let is_selected = matches!(
-        (&state.mode, &mode),
-        (ModeType::Priority, ModeType::Priority)
-            | (ModeType::Average, ModeType::Average)
-            | (ModeType::Toggle, ModeType::Toggle)
-    );
+    let is_selected = state.mode == mode;
 
     menu::CheckmarkItem {
         label: format!("{:?}", mode),
