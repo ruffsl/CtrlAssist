@@ -95,8 +95,6 @@ pub fn run_input_loop(
     }
 }
 
-// src/mux_runtime.rs - Replace run_ff_loop
-
 pub fn run_ff_loop(
     v_uinput: &mut VirtualDevice,
     all_resources: HashMap<GamepadId, GamepadResource>,
@@ -278,8 +276,6 @@ pub fn run_ff_loop(
 }
 
 // Helper function to build FF targets based on rumble setting
-// src/mux_runtime.rs - Update build_ff_targets
-
 fn build_ff_targets(
     all_resources: &HashMap<GamepadId, GamepadResource>,
     rumble: RumbleTarget,
