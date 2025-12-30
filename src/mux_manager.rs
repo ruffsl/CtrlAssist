@@ -1,6 +1,7 @@
 use crate::evdev_helpers::{self, VirtualGamepadInfo};
 use crate::gilrs_helper::{self};
 use crate::mux_modes::ModeType;
+use crate::mux_runtime::RuntimeSettings;
 use crate::udev_helpers::ScopedDeviceHider;
 use crate::{HideType, RumbleTarget, SpoofTarget};
 use evdev::Device;
@@ -59,8 +60,11 @@ impl MuxHandle {
 /// 3. Prepares FF targets
 /// 4. Spawns input and FF threads
 /// 5. Returns a handle for managing the session
-pub fn start_mux(gilrs: Gilrs, config: MuxConfig) -> Result<MuxHandle, Box<dyn Error>> {
-    let mut resources = gilrs_helper::discover_gamepad_resources(&gilrs);
+pub fn start_mux(
+    gilrs: Gilrs,
+    config: MuxConfig,
+) -> Result<(MuxHandle, Arc<RuntimeSettings>), Box<dyn Error>> {
+    let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
     // Setup hiding
     let mut _hider = ScopedDeviceHider::new(config.hide.clone());
@@ -92,31 +96,23 @@ pub fn start_mux(gilrs: Gilrs, config: MuxConfig) -> Result<MuxHandle, Box<dyn E
         v_resource.path.display()
     );
 
-    // Prepare FF targets
-    let mut ff_targets = Vec::new();
-    let rumble_ids = match config.rumble {
-        RumbleTarget::Primary => vec![config.primary_id],
-        RumbleTarget::Assist => vec![config.assist_id],
-        RumbleTarget::Both => vec![config.primary_id, config.assist_id],
-        RumbleTarget::None => vec![],
-    };
-
-    for id in rumble_ids {
-        if let Some(res) = resources.remove(&id) {
-            ff_targets.push(res);
-        }
-    }
+    // Create runtime settings
+    let runtime_settings = Arc::new(RuntimeSettings::new(config.mode, config.rumble));
 
     // Setup shutdown signal
     let shutdown = Arc::new(AtomicBool::new(false));
 
+    // Clone resources for FF thread (don't remove from map)
+    let all_resources = resources.clone();
+
     // Spawn input thread
     let shutdown_input = Arc::clone(&shutdown);
+    let runtime_settings_input = Arc::clone(&runtime_settings);
     let input_handle = thread::spawn(move || {
         crate::mux_runtime::run_input_loop(
             gilrs,
             v_resource.device,
-            config.mode,
+            runtime_settings_input,
             config.primary_id,
             config.assist_id,
             shutdown_input,
@@ -125,14 +121,25 @@ pub fn start_mux(gilrs: Gilrs, config: MuxConfig) -> Result<MuxHandle, Box<dyn E
 
     // Spawn FF thread
     let shutdown_ff = Arc::clone(&shutdown);
+    let runtime_settings_ff = Arc::clone(&runtime_settings);
     let ff_handle = thread::spawn(move || {
-        crate::mux_runtime::run_ff_loop(&mut v_uinput, ff_targets, shutdown_ff);
+        crate::mux_runtime::run_ff_loop(
+            &mut v_uinput,
+            all_resources,
+            runtime_settings_ff,
+            config.primary_id,
+            config.assist_id,
+            shutdown_ff,
+        );
     });
 
-    Ok(MuxHandle {
-        input_handle,
-        ff_handle,
-        shutdown,
-        virtual_device_path,
-    })
+    Ok((
+        MuxHandle {
+            input_handle,
+            ff_handle,
+            shutdown,
+            virtual_device_path,
+        },
+        runtime_settings,
+    ))
 }

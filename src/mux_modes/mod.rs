@@ -8,7 +8,7 @@ use gilrs::{Event, GamepadId};
 use serde::{Deserialize, Serialize};
 
 // Enum for all muxing modes
-#[derive(clap::ValueEnum, Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(clap::ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub enum ModeType {
     Average,
     #[default]

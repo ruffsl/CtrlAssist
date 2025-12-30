@@ -320,11 +320,11 @@ impl Tray for CtrlAssistTray {
             menu::SubMenu {
                 label: format!("Mode: {:?}", state.mode),
                 icon_name: "media-playlist-shuffle".into(),
-                enabled: !is_running,
+                enabled: true, // Dynamically configurable while running
                 submenu: vec![
-                    create_mode_item(ModeType::Priority, &state, is_running),
-                    create_mode_item(ModeType::Average, &state, is_running),
-                    create_mode_item(ModeType::Toggle, &state, is_running),
+                    create_mode_item(ModeType::Priority, &state, true),
+                    create_mode_item(ModeType::Average, &state, true),
+                    create_mode_item(ModeType::Toggle, &state, true),
                 ],
                 ..Default::default()
             }
@@ -359,12 +359,12 @@ impl Tray for CtrlAssistTray {
             menu::SubMenu {
                 label: format!("Rumble: {:?}", state.rumble),
                 icon_name: "notification-active".into(),
-                enabled: !is_running,
+                enabled: true, // Dynamically configurable while running
                 submenu: vec![
-                    create_rumble_item(RumbleTarget::Both, &state, is_running),
-                    create_rumble_item(RumbleTarget::Primary, &state, is_running),
-                    create_rumble_item(RumbleTarget::Assist, &state, is_running),
-                    create_rumble_item(RumbleTarget::None, &state, is_running),
+                    create_rumble_item(RumbleTarget::Both, &state, true),
+                    create_rumble_item(RumbleTarget::Primary, &state, true),
+                    create_rumble_item(RumbleTarget::Assist, &state, true),
+                    create_rumble_item(RumbleTarget::None, &state, true),
                 ],
                 ..Default::default()
             }
@@ -411,22 +411,36 @@ impl Tray for CtrlAssistTray {
 fn create_mode_item(
     mode: ModeType,
     state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
-    is_running: bool,
+    enabled: bool,
 ) -> MenuItem<CtrlAssistTray> {
-    let is_selected = matches!(
-        (&state.mode, &mode),
-        (ModeType::Priority, ModeType::Priority)
-            | (ModeType::Average, ModeType::Average)
-            | (ModeType::Toggle, ModeType::Toggle)
-    );
+    let is_selected = state.mode == mode;
 
     menu::CheckmarkItem {
         label: format!("{:?}", mode),
         checked: is_selected,
-        enabled: !is_running,
+        enabled,
         activate: Box::new(move |this: &mut CtrlAssistTray| {
             let mut state = this.state.lock();
+            let old_mode = state.mode.clone();
             state.mode = mode.clone();
+
+            if old_mode != mode {
+                // If running, update live
+                if state.status == MuxStatus::Running
+                    && let Some(runtime_settings) = &state.runtime_settings
+                {
+                    runtime_settings.update_mode(mode.clone());
+                    CtrlAssistTray::send_notification(
+                        "CtrlAssist - Mode Changed",
+                        &format!("Mux mode changed from {:?} to {:?}", old_mode, mode),
+                    );
+                }
+
+                // Save config
+                if let Err(e) = state.to_config().save() {
+                    error!("Failed to save config: {}", e);
+                }
+            }
         }),
         ..Default::default()
     }
@@ -486,7 +500,7 @@ fn create_spoof_item(
 fn create_rumble_item(
     rumble: RumbleTarget,
     state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
-    is_running: bool,
+    enabled: bool,
 ) -> MenuItem<CtrlAssistTray> {
     let is_selected = matches!(
         (&state.rumble, &rumble),
@@ -499,10 +513,32 @@ fn create_rumble_item(
     menu::CheckmarkItem {
         label: format!("{:?}", rumble),
         checked: is_selected,
-        enabled: !is_running,
+        enabled,
         activate: Box::new(move |this: &mut CtrlAssistTray| {
             let mut state = this.state.lock();
+            let old_rumble = state.rumble.clone();
             state.rumble = rumble.clone();
+
+            if old_rumble != rumble {
+                // If running, update live
+                if state.status == MuxStatus::Running
+                    && let Some(runtime_settings) = &state.runtime_settings
+                {
+                    runtime_settings.update_rumble(rumble.clone());
+                    CtrlAssistTray::send_notification(
+                        "CtrlAssist - Rumble Changed",
+                        &format!(
+                            "Rumble target changed from {:?} to {:?}",
+                            old_rumble, rumble
+                        ),
+                    );
+                }
+
+                // Save config
+                if let Err(e) = state.to_config().save() {
+                    error!("Failed to save config: {}", e);
+                }
+            }
         }),
         ..Default::default()
     }
@@ -515,13 +551,14 @@ fn start_mux_with_state(
     state_arc: Arc<Mutex<TrayState>>,
 ) -> Result<MuxHandle, Box<dyn Error>> {
     let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {}", e))?;
-    let mux_handle = mux_manager::start_mux(gilrs, config)?;
+    let (mux_handle, runtime_settings) = mux_manager::start_mux(gilrs, config)?;
 
-    // Update state with handles
+    // Store handle reference in state
     {
         let mut state = state_arc.lock();
         state.virtual_device_path = Some(mux_handle.virtual_device_path.clone());
         state.shutdown_signal = Some(Arc::clone(&mux_handle.shutdown));
+        state.runtime_settings = Some(runtime_settings);
     }
 
     Ok(mux_handle)

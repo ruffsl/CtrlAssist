@@ -43,6 +43,8 @@ pub struct TrayState {
     pub shutdown_signal: Option<Arc<AtomicBool>>,
     /// Path to virtual device for FF thread unblocking
     pub virtual_device_path: Option<PathBuf>,
+    /// Shared runtime settings for live updates
+    pub runtime_settings: Option<Arc<crate::mux_runtime::RuntimeSettings>>,
 }
 
 impl TrayState {
@@ -80,6 +82,7 @@ impl TrayState {
             rumble: config.rumble,
             status: MuxStatus::Stopped,
             mux_handle: None,
+            runtime_settings: None,
             shutdown_signal: None,
             virtual_device_path: None,
         }
