@@ -12,7 +12,7 @@
 # ✨ Features
 
 - 🎮 Combine physical controllers into one virtual gamepad
-  - Controllers are assigned as either Primary or Assist
+  - Assign controllers as either Primary or Assist
 - 🎛️ Customizable multiplexing modes for buttons and axes
   - Logically merging or preempting events is flexible
 - 🙈 Hide physical controllers for improved game compatibility
@@ -64,22 +64,22 @@ The following installation methods are available:
 
 ## 🦀 Cargo
 
-- Build dependencies
+- Build dependencies:
   - [libudev-dev](https://pkgs.org/search/?q=libudev-dev)
   - [pkg-config](https://pkgs.org/search/?q=pkg-config)
-- Rust toolchain
+- Rust toolchain:
   - https://rust-lang.org/tools/install/
   - configure `PATH` per Notes linked above
 
-Add the `--force` flag to upgrade to latest version:
+Install or upgrade to the latest version:
 
 ```sh
-cargo install ctrlassist
+cargo install ctrlassist --force
 ```
 
 ## 📦 Flatpak
 
-- Runtime dependencies
+- Runtime dependency:
   - [Flatpak](https://flatpak.org/setup/) (likely already installed)
 
 Download latest bundle from [releases page](https://github.com/ruffsl/ctrlassist/releases) and install:
@@ -96,7 +96,7 @@ Run and test via Flatpak using the application ID:
 flatpak run io.github.ruffsl.ctrlassist --help
 ```
 
-Or launch as system tray via installed desktop icon.
+Or launch the system tray via the installed desktop icon.
 
 # 📖 Usage
 
@@ -138,7 +138,7 @@ The system tray provides:
 - **Desktop notifications** for status changes
 - **Persistent settings** saved to disk on use
 
-Options are greyed out while the mux is running but show current active selections.
+Device invariant options can be altered while the mux is running; all other options are disabled (greyed out) until the mux is stopped.
 
 ## 🧾 list
 
@@ -179,7 +179,6 @@ Manually specify mode for merging controllers:
 
 ```sh
 $ ctrlassist mux --mode priority
-...
 ```
 
 ### 🕹️ Spoof Virtual Device
@@ -198,7 +197,7 @@ Virtual: (2) Microsoft X-Box One pad (Firmware 2015)
 
 ### 🫨 Rumble Pass-Through
 
-Target force feedback to either or both physical controllers:
+Target force feedback to either, none, or both physical controllers:
 
 ```sh
 $ ctrlassist mux --rumble both
@@ -207,22 +206,21 @@ $ ctrlassist mux --rumble both
 
 ### 🙈 Hide Physical Devices
 
-There are multiple hiding strategies to avoid input conflicts:
+Multiple hiding strategies are available to avoid input conflicts:
 
 | Strategy   | Access/Compatibility         | Granularity         | Restart Required   |
 |------------|-----------------------------|---------------------|--------------------|
 | **Steam**  | No root, Flatpak compatible | Vendor/Product ID   | Steam only         |
 | **System** | Root required, no Flatpak   | Per-device          | Game/Launcher      |
 
-For example, use **Steam** when running CtrlAssist via Flatpak. For 2v1 scenarios, where the third player not using CtrlAssist shares the same controller make and model, use **System** to avoid hiding the third player's gamepad.
+Use **Steam** hiding when running CtrlAssist via Flatpak. For 2v1 scenarios, where a third player not using CtrlAssist shares the same controller make and model, use **System** to avoid hiding the third player's gamepad.
 
 #### Steam Input
 
 Automatically configure Steam's controller blacklist:
 
 ```sh
-$ ctrlassist mux --hide steam
-...
+ctrlassist mux --hide steam
 ```
 
 > [!NOTE]
@@ -236,8 +234,7 @@ $ ctrlassist mux --hide steam
 Restrict device tree permissions system-wide:
 
 ```sh
-$ sudo ctrlassist mux --hide system
-...
+sudo ctrlassist mux --hide system
 ```
 
 > [!NOTE]
@@ -266,15 +263,15 @@ Settings are loaded on startup and saved when using the mux. Controllers are mat
 
 # ⚠️ Limitations
 
-- System hiding requires root access
-  - temporarily modifies group permissions for selected devices
+- System hiding requires root access (not available in Flatpak)
+  - Temporarily modifies group permissions for selected devices
 - Hiding must be done before starting games or launchers
-  - processes with open file handles may retain device access
+  - Processes with open file handles may retain device access
 - Reconnecting a hidden controller may revert its visibility
   - Steam hiding persists across reconnects while CtrlAssist is running
   - System hiding: custom udev rules needed for persistent permissions
 - Steam hiding affects all controllers of the same make and model
-  - blacklists by vendor/product ID, not individual devices
+  - Blacklists by vendor/product ID, not individual devices
 - Steam hiding requires Steam restart
   - Steam only checks controller_blacklist config on startup
 - Toggle mode requires pressing all buttons and axes after startup
