@@ -343,7 +343,7 @@ Additionally, each instance can use different hiding strategies, spoofing option
 ### **How else can CtrlAssist be used?**
 
 Examples include:
-- Dual welding one for each hand, like split Nintendo Switch Joy-Cons
+- Dual wielding one for each hand, like split Nintendo Switch Joy-Cons
 - Combining a standard gamepad with an accessible Xbox Adaptive Controller
 
 # 📚 Background
