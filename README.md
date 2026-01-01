@@ -322,7 +322,7 @@ CtrlAssist works with most Linux games that support standard gamepad input. Some
 
 Even in games that natively support multiple controllers, simultaneous input from multiple devices is often not handled. Most games prioritize one controller at a time, only switching after a period of inactivity. CtrlAssist overcomes this limitation by merging inputs into a single virtual device and providing advanced multiplexing modes for input events, going beyond simple first-come, first-served behavior.
 
-### **Which controllers are supported**
+### **Which controllers are supported?**
 
 CtrlAssist supports most standard gamepads, such as those with a conventional Xbox or PlayStation layout, including those with strong and weak force feedback (rumble) capabilities. Under the hood, the [`gilrs`](https://crates.io/crates/gilrs) crate is used for gamepad input detection and event handling, requiring that controllers [have at least 1 button and 2 axes](https://docs.rs/crate/gilrs-core/0.6.6/source/src/platform/linux/gamepad.rs#625).
 
