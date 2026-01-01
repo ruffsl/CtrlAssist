@@ -279,6 +279,73 @@ Settings are loaded on startup and saved when using the mux. Controllers are mat
 - Toggle mode requires pressing all buttons and axes after startup
   - gilrs lazily initializes gamepad state used for synchronization
 
+# ❓ FAQ
+
+Frequently Asked Questions about the project.
+
+### **Who is CtrlAssist for?**
+
+CtrlAssist is designed for anyone who wants to combine multiple controllers into one, enabling collaborative play, real-time assistance, or better gamepad ergonomics. Ideal for accessibility and partial asynchronous input, i.e. offloading camera angle management, movements requiring speed and precision, or on standby backup during difficult combat encounters. CtrlAssist is especially useful for:
+- Players with disabilities or motor skill challenges
+- Beginners still developing muscle memory for controller gameplay
+- Experienced gamers helping newcomers through challenging games
+- Families with young children or older relatives who want to play together
+- Racing or flight sim enthusiasts using a wheel or HOTAS (Hands On Throttle-And-Stick)
+- Anyone interested in collaborative co-op for single or multiplayer games
+
+### **Why not pass around a single controller?**
+
+While playing "hot potato" with a gamepad may be sufficient for some scenarios, like turn-based games, divvy up level progression, menu navigation, the approach falls short for many reasons:
+
+- Broken immersion
+  - Context switching in real life pulls players out of the story
+- Added friction
+  - Awkward handoffs and delays interfere with real-time gameplay
+- Reduced agency
+  - Waiting for returned control can kill spontaneity and focus
+- Deprived learning
+  - No haptic feedback hinders recognizing cues like attack telegraphs
+- Marginal assistance
+  - Inhibited intervention may only compound unnecessary frustration
+
+Accessibility features such as control assist address these issues by enabling simultaneous input from multiple controllers, resulting in more fluid and engaging gameplay.
+
+### **Why was CtrlAssist developed?**
+
+CtrlAssist was first created out of personal necessity. After migrating household gaming to Linux, including the family living room, the lack of controller assist features found on older consoles like Xbox and PlayStation became clear. CtrlAssist was developed as an open source solution to make group gaming sessions on PC more inclusive and accessible for players of all ages and abilities.
+
+Following its initial release and personal household success, as well as the broader trend of Linux adoption, CtrlAssist evolved from a simple CLI tool into a desktop-friendly utility. This category of accessibility feature has significantly enhanced family gaming time, transforming passive spectators into active participants. From helping grandparents experience new immersive and interactive single player stories, to leveling age gaps across nieces and nephews in multiplayer PvPs, to recusing a friend from critical damage and finally overcoming a challenging boss, assistive players may expect as much enjoyment as primary players.
+
+### **What games are compatible?**
+
+CtrlAssist works with most Linux games that support standard gamepad input. Some games or launchers may require restarting after changing controller visibility or virtual device settings. Note that many games have no explicit setting for controller selection, thus the motivation for various hiding strategies to avoid input conflicts between physical and virtual devices. For best compatibility, use the appropriate hiding strategy as described above.
+
+Even in games that natively support multiple controllers, simultaneous input from multiple devices is often not handled. Most games prioritize one controller at a time, only switching after a period of inactivity. CtrlAssist overcomes this limitation by merging inputs into a single virtual device and providing advanced multiplexing modes for input events, going beyond simple first-come, first-served behavior.
+
+### **Which controllers are supported**
+
+CtrlAssist supports most standard gamepads, such as those with the conventional Xbox or PlayStation layouts, including those with strong and weak force feedback (rumble) capabilities. Under the hood, the [`gilrs`](https://crates.io/crates/gilrs) crate is used for gamepad input detection and event handling, requiring controllers [have at least 1 button and 2 axes](https://docs.rs/crate/gilrs-core/0.6.6/source/src/platform/linux/gamepad.rs#625).
+
+However, specialized controller features such as tactile triggers, gyroscopic and accelerometer motion tracking, or more exotic force feedback waveforms not yet supported. If you have device driver expertise and would like to contribute support for additional controller features, please consider opening a pull request!
+
+### **Are mice or keyboards supported?**
+
+Not directly, as CtrlAssist is focused on gamepad input multiplexing. However, it is possible to combine CtrlAssist with more advanced utilities such as [InputPlumber](https://github.com/ShadowBlip/InputPlumber) to route keyboard and mouse events to virtual gamepads and into CtrlAssist, or vice versa taking virtual gamepads from CtrlAssist to keyboard and mouse events.
+
+Note that mouse and keyboard inputs are typically handled differently from gamepad inputs, as they are core interfaces for operating systems and display managers. Merging events from multiple mice and keyboards is often managed by the OS already, negating the need for simpler multiplexing software.
+
+### **Is running multiple instances possible?**
+
+Yes! For scenarios where mutule primary players would like assistance, such as true split-screen multiplayer, multiple instances of CtrlAssist can be run simultaneously. Each instance will create its own virtual gamepad device, with tray commands also creation multiple system tray icons and menus.
+
+Additionally, each instance can use different hiding strategies, spoofing options, and rumble targets to suit the needs of each player. Just be mindful that hiding strategies do not conflict between instances, causing one virtual device to be hidden by another instance.
+
+### **How else can CtrlAssist be used?**
+
+Examples include:
+- Dual welding one for each hand, like split Nintendo Switch Joy-Cons
+- Combining a standard gamepad with an accessible Xbox Adaptive Controller
+
 # 📚 Background
 
 - [Controller Assist on Xbox and Windows](https://support.xbox.com/en-US/help/account-profile/accessibility/copilot)
