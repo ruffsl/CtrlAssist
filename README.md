@@ -295,7 +295,7 @@ CtrlAssist is designed for anyone who wants to combine multiple controllers into
 
 ### **Why not pass around a single controller?**
 
-While playing "hot potato" with a gamepad may be sufficient for some scenarios, like turn-based games, divvy up level progression, menu navigation, the approach falls short for many reasons:
+While playing "hot potato" with a gamepad may be sufficient for some scenarios, like turn-based games, divvying up level progression, menu navigation, the approach falls short for many reasons:
 
 - Broken immersion
   - Context switching in real life pulls players out of the story
@@ -308,13 +308,13 @@ While playing "hot potato" with a gamepad may be sufficient for some scenarios, 
 - Marginal assistance
   - Inhibited intervention may only compound unnecessary frustration
 
-Accessibility features such as control assist address these issues by enabling simultaneous input from multiple controllers, resulting in more fluid and engaging gameplay.
+Accessibility features such as control assist address these issues by enabling simultaneous/partial input from multiple controllers, resulting in more fluid and engaging gameplay.
 
 ### **Why was CtrlAssist developed?**
 
 CtrlAssist was first created out of personal necessity. After migrating household gaming to Linux, including the family living room, the lack of controller assist features found on older consoles like Xbox and PlayStation became clear. CtrlAssist was developed as an open source solution to make group gaming sessions on PC more inclusive and accessible for players of all ages and abilities.
 
-Following its initial release and personal household success, as well as the broader trend of Linux adoption, CtrlAssist evolved from a simple CLI tool into a desktop-friendly utility. This category of accessibility feature has significantly enhanced family gaming time, transforming passive spectators into active participants. From helping grandparents experience new immersive and interactive single player stories, to leveling age gaps across nieces and nephews in multiplayer PvPs, to recusing a friend from critical damage and finally overcoming a challenging boss, assistive players may expect as much enjoyment as primary players.
+Following its initial release and personal household success, as well as the broader trend of Linux adoption, CtrlAssist evolved from a simple CLI tool into a desktop-friendly utility. This category of accessibility features has significantly enhanced family gaming time, transforming passive spectators into active participants. From helping grandparents experience new immersive and interactive single player stories, to leveling age gaps across nieces and nephews in multiplayer PvPs, to rescuing friends from critical damage and finally overcoming a challenging boss, assistive players may expect as much enjoyment as primary players.
 
 ### **What games are compatible?**
 
@@ -324,9 +324,9 @@ Even in games that natively support multiple controllers, simultaneous input fro
 
 ### **Which controllers are supported**
 
-CtrlAssist supports most standard gamepads, such as those with the conventional Xbox or PlayStation layouts, including those with strong and weak force feedback (rumble) capabilities. Under the hood, the [`gilrs`](https://crates.io/crates/gilrs) crate is used for gamepad input detection and event handling, requiring controllers [have at least 1 button and 2 axes](https://docs.rs/crate/gilrs-core/0.6.6/source/src/platform/linux/gamepad.rs#625).
+CtrlAssist supports most standard gamepads, such as those with a conventional Xbox or PlayStation layout, including those with strong and weak force feedback (rumble) capabilities. Under the hood, the [`gilrs`](https://crates.io/crates/gilrs) crate is used for gamepad input detection and event handling, requiring that controllers [have at least 1 button and 2 axes](https://docs.rs/crate/gilrs-core/0.6.6/source/src/platform/linux/gamepad.rs#625).
 
-However, specialized controller features such as tactile triggers, gyroscopic and accelerometer motion tracking, or more exotic force feedback waveforms not yet supported. If you have device driver expertise and would like to contribute support for additional controller features, please consider opening a pull request!
+However, specialized controller features such as tactile triggers, gyroscopic and accelerometer motion tracking, or more exotic force feedback waveforms are not yet supported. If you have device driver expertise and would like to contribute support for additional controller features, please consider opening a pull request!
 
 ### **Are mice or keyboards supported?**
 
@@ -336,9 +336,9 @@ Note that mouse and keyboard inputs are typically handled differently from gamep
 
 ### **Is running multiple instances possible?**
 
-Yes! For scenarios where mutule primary players would like assistance, such as true split-screen multiplayer, multiple instances of CtrlAssist can be run simultaneously. Each instance will create its own virtual gamepad device, with tray commands also creation multiple system tray icons and menus.
+Yes! For scenarios where multiple primary players would like assistance, such as true split-screen multiplayer, multiple instances of CtrlAssist can be run simultaneously. Each instance will create its own virtual gamepad device, with the tray command also creating multiple separate system tray icons and menus.
 
-Additionally, each instance can use different hiding strategies, spoofing options, and rumble targets to suit the needs of each player. Just be mindful that hiding strategies do not conflict between instances, causing one virtual device to be hidden by another instance.
+Additionally, each instance can use different hiding strategies, spoofing options, and rumble targets to suit the needs of each player. Just be mindful that selected hiding strategies do not conflict between instances, causing one virtual device to be hidden by another instance.
 
 ### **How else can CtrlAssist be used?**
 
