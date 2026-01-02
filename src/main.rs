@@ -9,6 +9,7 @@ mod ff_helpers;
 mod gilrs_helper;
 mod mux_manager;
 mod mux_modes;
+mod dux_modes;
 mod mux_runtime;
 mod tray;
 mod udev_helpers;
@@ -23,6 +24,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Demultiplexer connected controller into virtual gamepads.
+    Dux(DuxArgs),
+
     /// List all detected controllers and respective IDs.
     List,
 
@@ -31,6 +35,33 @@ enum Commands {
 
     /// Launch system tray app for graphical control.
     Tray,
+}
+
+#[derive(clap::Args, Debug)]
+struct DuxArgs {
+    /// Primary controller ID (see 'list' command).
+    #[arg(long, default_value_t = 0)]
+    primary: usize,
+
+    /// Virtual controller IDs.
+    #[arg(long, default_value_t = 1)]
+    virtuals: usize,
+
+    /// Hide primary controller.
+    #[arg(long, value_enum, default_value_t = HideType::default())]
+    hide: HideType,
+
+    /// Spoof target for virtual device.
+    #[arg(long, value_enum, default_value_t = SpoofTarget::default())]
+    spoof: SpoofTarget,
+
+    /// Mode type for demultiplexing controller.
+    #[arg(long, value_enum, default_value_t = dux_modes::ModeType::default())]
+    mode: dux_modes::ModeType,
+
+    /// Rumble target for virtual device.
+    #[arg(long, value_enum, default_value_t = RumbleTarget::default())]
+    rumble: RumbleTarget,
 }
 
 #[derive(clap::Args, Debug)]
@@ -51,7 +82,7 @@ struct MuxArgs {
     #[arg(long, value_enum, default_value_t = SpoofTarget::default())]
     spoof: SpoofTarget,
 
-    /// Mode type for combining controllers.
+    /// Mode type for multiplexing controllers.
     #[arg(long, value_enum, default_value_t = mux_modes::ModeType::default())]
     mode: mux_modes::ModeType,
 
