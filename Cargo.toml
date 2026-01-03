@@ -51,6 +51,7 @@ notify-rust = "4.11.7"
 parking_lot = "0.12.5"
 serde = "1.0.228"
 toml = "0.9.10"
+uhid-virt = "0.0.8"
 
 [package.metadata.deb]
 depends = "libudev1"
