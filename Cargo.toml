@@ -51,7 +51,10 @@ notify-rust = "4.11.7"
 parking_lot = "0.12.5"
 serde = "1.0.228"
 toml = "0.9.10"
+
+# New dependencies for uhid virtual device
 uhid-virt = "0.0.8"
+hidapi = "2.6.4"
 
 [package.metadata.deb]
 depends = "libudev1"
