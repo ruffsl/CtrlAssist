@@ -1,6 +1,6 @@
+use crate::demux_modes::{self, DemuxModeType};
 use crate::ff_helpers::PhysicalFFDev;
 use crate::gilrs_helper::GamepadResource;
-use crate::demux_modes::{self, DemuxModeType};
 use evdev::{Device, EventType, InputEvent};
 use gilrs::{GamepadId, Gilrs};
 use log::{debug, error, info};
@@ -12,7 +12,9 @@ use std::time::Duration;
 const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Rumble target for demux
-#[derive(clap::ValueEnum, Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq)]
+#[derive(
+    clap::ValueEnum, Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq,
+)]
 pub enum DemuxRumbleTarget {
     #[default]
     Active,
@@ -79,14 +81,14 @@ pub fn run_input_loop(
             if shutdown.load(Ordering::SeqCst) {
                 break;
             }
-            
+
             if let Some(routing) = demux_mode.handle_event(&event, p_id, virtual_count, &gilrs) {
                 for (virt_idx, mut out_events) in routing {
                     if virt_idx >= v_devs.len() {
                         error!("Invalid virtual device index: {}", virt_idx);
                         continue;
                     }
-                    
+
                     if !out_events.is_empty() {
                         out_events.push(InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0));
                         if let Err(e) = v_devs[virt_idx].send_events(&out_events) {
@@ -134,10 +136,10 @@ pub fn run_ff_loop(
 
                         effect_manager.upload(virt_id, effect_data);
 
-                        if rumble_enabled {
-                            if let Err(e) = phys_dev.upload_effect(virt_id, effect_data) {
-                                error!("Failed to upload effect {}: {}", virt_id, e);
-                            }
+                        if rumble_enabled
+                            && let Err(e) = phys_dev.upload_effect(virt_id, effect_data)
+                        {
+                            error!("Failed to upload effect {}: {}", virt_id, e);
                         }
                     }
                 }
@@ -146,10 +148,8 @@ pub fn run_ff_loop(
                     if let Ok(erase_ev) = v_uinput.process_ff_erase(ev) {
                         let virt_id = erase_ev.effect_id() as i16;
 
-                        if rumble_enabled {
-                            if let Err(e) = phys_dev.erase_effect(virt_id) {
-                                error!("Failed to erase effect {}: {}", virt_id, e);
-                            }
+                        if rumble_enabled && let Err(e) = phys_dev.erase_effect(virt_id) {
+                            error!("Failed to erase effect {}: {}", virt_id, e);
                         }
 
                         effect_manager.erase(virt_id);
@@ -162,10 +162,8 @@ pub fn run_ff_loop(
 
                     effect_manager.set_playing(virt_id, is_playing);
 
-                    if rumble_enabled {
-                        if let Err(e) = phys_dev.control_effect(virt_id, is_playing) {
-                            error!("Failed to control effect {}: {}", virt_id, e);
-                        }
+                    if rumble_enabled && let Err(e) = phys_dev.control_effect(virt_id, is_playing) {
+                        error!("Failed to control effect {}: {}", virt_id, e);
                     }
                 }
 

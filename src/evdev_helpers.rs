@@ -179,20 +179,52 @@ pub fn dpad_axis_pair(button: Button) -> Option<[Button; 2]> {
 
 /// Generate events to neutralize a virtual gamepad (axes centered, buttons released)
 pub fn generate_neutral_gamepad_events() -> Vec<evdev::InputEvent> {
-    use evdev::{InputEvent, AbsoluteAxisCode, KeyCode};
+    use evdev::{AbsoluteAxisCode, InputEvent, KeyCode};
     let mut events = Vec::new();
     let center_value = AXIS_HALF as i32;
     // Center all stick axes
-    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0, center_value));
-    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_Y.0, center_value));
-    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_RX.0, center_value));
-    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_RY.0, center_value));
+    events.push(InputEvent::new(
+        evdev::EventType::ABSOLUTE.0,
+        AbsoluteAxisCode::ABS_X.0,
+        center_value,
+    ));
+    events.push(InputEvent::new(
+        evdev::EventType::ABSOLUTE.0,
+        AbsoluteAxisCode::ABS_Y.0,
+        center_value,
+    ));
+    events.push(InputEvent::new(
+        evdev::EventType::ABSOLUTE.0,
+        AbsoluteAxisCode::ABS_RX.0,
+        center_value,
+    ));
+    events.push(InputEvent::new(
+        evdev::EventType::ABSOLUTE.0,
+        AbsoluteAxisCode::ABS_RY.0,
+        center_value,
+    ));
     // Reset triggers to 0
-    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_Z.0, 0));
-    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_RZ.0, 0));
+    events.push(InputEvent::new(
+        evdev::EventType::ABSOLUTE.0,
+        AbsoluteAxisCode::ABS_Z.0,
+        0,
+    ));
+    events.push(InputEvent::new(
+        evdev::EventType::ABSOLUTE.0,
+        AbsoluteAxisCode::ABS_RZ.0,
+        0,
+    ));
     // Center D-pad axes
-    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_HAT0X.0, center_value));
-    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_HAT0Y.0, center_value));
+    events.push(InputEvent::new(
+        evdev::EventType::ABSOLUTE.0,
+        AbsoluteAxisCode::ABS_HAT0X.0,
+        center_value,
+    ));
+    events.push(InputEvent::new(
+        evdev::EventType::ABSOLUTE.0,
+        AbsoluteAxisCode::ABS_HAT0Y.0,
+        center_value,
+    ));
     // Release all buttons
     let buttons = [
         KeyCode::BTN_NORTH,

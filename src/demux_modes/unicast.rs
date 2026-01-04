@@ -1,6 +1,6 @@
 use super::{DemuxMode, helpers};
 use evdev::InputEvent;
-use gilrs::{Event, EventType, GamepadId, Gilrs, Button};
+use gilrs::{Button, Event, EventType, GamepadId, Gilrs};
 
 /// Build-time flag to control latching behavior on active device switch.
 /// When `false` (default), non-active devices are neutralized (axes centered, buttons released).
@@ -18,9 +18,7 @@ impl UnicastMode {
     // ...neutral event generation now in evdev_helpers.rs...
 
     /// Synchronize controller state to newly active virtual device
-    fn sync_controller_state(
-        primary: gilrs::Gamepad,
-    ) -> Vec<InputEvent> {
+    fn sync_controller_state(primary: gilrs::Gamepad) -> Vec<InputEvent> {
         let state = primary.state();
         let mut events = Vec::new();
 
@@ -94,27 +92,26 @@ impl DemuxMode for UnicastMode {
         if matches!(event.event, EventType::ButtonPressed(Button::Mode, _)) {
             let old_active = self.active_index;
             self.active_index = (self.active_index + 1) % virtual_count;
-            
+
             let primary = gilrs.gamepad(primary_id);
             let sync_events = Self::sync_controller_state(primary);
-            
+
             let mut result = Vec::new();
-            
+
             // If latching is disabled, neutralize the previously active device
             if !DEMUX_UNICAST_LATCHING && old_active != self.active_index {
                 let neutral_events = crate::evdev_helpers::generate_neutral_gamepad_events();
                 result.push((old_active, neutral_events));
             }
-            
+
             // Sync the newly active device
             result.push((self.active_index, sync_events));
-            
+
             return Some(result);
         }
 
         // Forward event to active device
         let primary = gilrs.gamepad(primary_id);
-        Self::convert_event(event, primary)
-            .map(|events| vec![(self.active_index, events)])
+        Self::convert_event(event, primary).map(|events| vec![(self.active_index, events)])
     }
 }

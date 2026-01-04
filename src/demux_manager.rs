@@ -1,9 +1,9 @@
-use crate::evdev_helpers::{self, VirtualGamepadInfo};
-use crate::gilrs_helper;
 use crate::demux_modes::DemuxModeType;
 use crate::demux_runtime::DemuxRuntimeSettings;
+use crate::evdev_helpers::{self, VirtualGamepadInfo};
+use crate::gilrs_helper;
 use crate::udev_helpers::ScopedDeviceHider;
-use crate::{HideType, DemuxRumbleTarget, SpoofTarget, TagType};
+use crate::{DemuxRumbleTarget, HideType, SpoofTarget, TagType};
 use evdev::Device;
 use gilrs::{GamepadId, Gilrs};
 use log::info;
@@ -27,7 +27,7 @@ pub struct DemuxConfig {
 /// Virtual device info with its path
 pub struct VirtualDeviceInfo {
     pub path: PathBuf,
-    pub tag: String,
+    // pub tag: String,
 }
 
 /// Handle to a running demux session
@@ -113,7 +113,7 @@ pub fn start_demux(
 
         virtual_devices.push(VirtualDeviceInfo {
             path: v_resource.path.clone(),
-            tag: tag.clone(),
+            // tag: tag.clone(),
         });
 
         v_uinputs.push((v_uinput, v_resource));
@@ -126,17 +126,18 @@ pub fn start_demux(
     let shutdown = Arc::new(AtomicBool::new(false));
 
     // Collect device paths for unblocking
-    let virtual_device_paths: Vec<PathBuf> = virtual_devices.iter()
-        .map(|v| v.path.clone())
-        .collect();
+    let virtual_device_paths: Vec<PathBuf> =
+        virtual_devices.iter().map(|v| v.path.clone()).collect();
 
     // Clone for FF threads
-    let primary_resource = resources.get(&config.primary_id)
+    let primary_resource = resources
+        .get(&config.primary_id)
         .ok_or("Primary controller not found")?
         .clone();
 
     // Open new Device instances from paths for input thread
-    let v_devices: Vec<_> = virtual_devices.iter()
+    let v_devices: Vec<_> = virtual_devices
+        .iter()
         .map(|v| Device::open(&v.path).expect("Failed to open virtual device"))
         .collect();
 
@@ -160,7 +161,7 @@ pub fn start_demux(
         let shutdown_ff = Arc::clone(&shutdown);
         let runtime_settings_ff = Arc::clone(&runtime_settings);
         let primary_ff = primary_resource.clone();
-        
+
         let handle = thread::spawn(move || {
             crate::demux_runtime::run_ff_loop(
                 &mut v_uinput,
@@ -169,7 +170,7 @@ pub fn start_demux(
                 shutdown_ff,
             );
         });
-        
+
         ff_handles.push(handle);
     }
 

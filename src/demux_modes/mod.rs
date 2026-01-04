@@ -1,6 +1,6 @@
-pub mod unicast;
-pub mod multicast;
 pub mod helpers;
+pub mod multicast;
+pub mod unicast;
 
 use evdev::InputEvent;
 use gilrs::{Event, GamepadId};

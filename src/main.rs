@@ -4,15 +4,15 @@ use log::info;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 
+mod demux_manager;
+mod demux_modes;
+mod demux_runtime;
 mod evdev_helpers;
 mod ff_helpers;
 mod gilrs_helper;
 mod mux_manager;
 mod mux_modes;
 mod mux_runtime;
-mod demux_manager;
-mod demux_modes;
-mod demux_runtime;
 mod tray;
 mod udev_helpers;
 
@@ -293,7 +293,8 @@ fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
 
     let demux_thread = std::thread::spawn(move || {
-        let demux_handle = demux_manager::start_demux(gilrs, config).expect("Failed to start demux");
+        let demux_handle =
+            demux_manager::start_demux(gilrs, config).expect("Failed to start demux");
         let _ = shutdown_rx.recv();
         demux_handle.0.shutdown();
     });
