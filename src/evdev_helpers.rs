@@ -45,7 +45,7 @@ impl<'a> From<&'a gilrs::Gamepad<'a>> for VirtualGamepadInfo {
 // --- evdev Device Creation ---
 
 /// Helper to create the virtual gamepad device
-pub fn create_virtual_gamepad(info: &VirtualGamepadInfo) -> Result<VirtualDevice, Box<dyn Error>> {
+pub fn create_virtual_gamepad(info: &VirtualGamepadInfo, tag: Option<&str>) -> Result<VirtualDevice, Box<dyn Error>> {
     let max = AXIS_MAX as i32;
     let mid = AXIS_HALF as i32;
     let abs_stick_setup = AbsInfo::new(mid, 0, max, 0, 0, 0);
@@ -83,7 +83,12 @@ pub fn create_virtual_gamepad(info: &VirtualGamepadInfo) -> Result<VirtualDevice
     ];
 
     let mut builder = VirtualDevice::builder()?;
-    builder = builder.name(&info.name);
+    let name = if let Some(tag_str) = tag {
+        format!("{} {}", info.name, tag_str)
+    } else {
+        info.name.clone()
+    };
+    builder = builder.name(&name);
     if let (Some(vendor), Some(product)) = (info.vendor_id, info.product_id) {
         builder = builder.input_id(evdev::InputId::new(
             evdev::BusType::BUS_USB,

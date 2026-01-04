@@ -33,6 +33,8 @@ pub struct TrayState {
     pub hide: HideType,
     /// Current spoof target
     pub spoof: SpoofTarget,
+    /// Current tag option
+    pub tag: bool,
     /// Current rumble target
     pub rumble: RumbleTarget,
     /// Mux running status
@@ -79,6 +81,7 @@ impl TrayState {
             mode: config.mode,
             hide: config.hide,
             spoof: config.spoof,
+            tag: config.tag,
             rumble: config.rumble,
             status: MuxStatus::Stopped,
             mux_handle: None,
@@ -101,6 +104,7 @@ impl TrayState {
             mode: self.mode.clone(),
             hide: self.hide.clone(),
             spoof: self.spoof.clone(),
+            tag: self.tag,
             rumble: self.rumble.clone(),
         }
     }

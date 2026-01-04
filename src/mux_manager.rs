@@ -20,6 +20,7 @@ pub struct MuxConfig {
     pub mode: ModeType,
     pub hide: HideType,
     pub spoof: SpoofTarget,
+    pub tag: bool,
     pub rumble: RumbleTarget,
 }
 
@@ -86,7 +87,13 @@ pub fn start_mux(
         },
     };
 
-    let mut v_uinput = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
+    let tag = if config.tag {
+        Some("[#]")
+    } else {
+        None
+    };
+
+    let mut v_uinput = evdev_helpers::create_virtual_gamepad(&virtual_info, tag)?;
     let v_resource = gilrs_helper::wait_for_virtual_device(&mut v_uinput)?;
     let virtual_device_path = v_resource.path.clone();
 

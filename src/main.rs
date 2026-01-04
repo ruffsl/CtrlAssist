@@ -51,6 +51,10 @@ struct MuxArgs {
     #[arg(long, value_enum, default_value_t = SpoofTarget::default())]
     spoof: SpoofTarget,
 
+    /// Tag virtual devices.
+    #[arg(long, default_value_t = true)]
+    tag: bool,
+
     /// Mode type for combining controllers.
     #[arg(long, value_enum, default_value_t = mux_modes::ModeType::default())]
     mode: mux_modes::ModeType,
@@ -154,6 +158,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
         mode: args.mode,
         hide: args.hide,
         spoof: args.spoof,
+        tag: args.tag,
         rumble: args.rumble,
     };
 

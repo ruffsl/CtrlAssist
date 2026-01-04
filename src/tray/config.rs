@@ -21,6 +21,9 @@ pub struct TrayConfig {
     /// Last used spoof target
     #[serde(default)]
     pub spoof: SpoofTarget,
+    /// Last used tag option
+    #[serde(default)]
+    pub tag: bool,
     /// Last used rumble target
     #[serde(default)]
     pub rumble: RumbleTarget,

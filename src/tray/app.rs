@@ -67,12 +67,13 @@ impl CtrlAssistTray {
 
         // Create notification with settings
         let notification_body = format!(
-            "Primary: {}\nAssist: {}\nMode: {:?}\nHide: {:?}\nSpoof: {:?}\nRumble: {:?}",
+            "Primary: {}\nAssist: {}\nMode: {:?}\nHide: {:?}\nSpoof: {:?}\nTag: {:?}\nRumble: {:?}",
             state.get_primary_name(),
             state.get_assist_name(),
             state.mode,
             state.hide,
             state.spoof,
+            state.tag,
             state.rumble
         );
         Self::send_notification("CtrlAssist - Starting", &notification_body);
@@ -84,6 +85,7 @@ impl CtrlAssistTray {
             mode: state.mode.clone(),
             hide: state.hide.clone(),
             spoof: state.spoof.clone(),
+            tag: state.tag.clone(),
             rumble: state.rumble.clone(),
         };
 
@@ -351,6 +353,27 @@ impl Tray for CtrlAssistTray {
                     create_spoof_item(SpoofTarget::None, &state, is_running),
                     create_spoof_item(SpoofTarget::Primary, &state, is_running),
                     create_spoof_item(SpoofTarget::Assist, &state, is_running),
+                ],
+                ..Default::default()
+            }
+            .into(),
+            // Tag Option
+            menu::SubMenu {
+                label: format!("Tag: {:?}", state.tag),
+                icon_name: "tag".into(),
+                enabled: !is_running,
+                submenu: vec![
+                    menu::CheckmarkItem {
+                        label: format!("Tag virtual devices"),
+                        checked: state.tag,
+                        enabled: !is_running,
+                        activate: Box::new(move |this: &mut Self| {
+                            let mut state = this.state.lock();
+                            state.tag = !state.tag;
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
                 ],
                 ..Default::default()
             }
