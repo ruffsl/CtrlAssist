@@ -87,22 +87,24 @@ pub fn start_demux(
     };
 
     let use_tags = config.tag == TagType::All;
-    let virtual_count = config.virtual_tags.len();
+    let _virtual_count = config.virtual_tags.len();
 
     // Create virtual devices
     let mut v_uinputs = Vec::new();
     let mut virtual_devices = Vec::new();
 
     for tag in &config.virtual_tags {
+        let tag_string;
         let tag_str = if use_tags {
-            Some(format!("[{}]", tag).as_str())
+            tag_string = format!("[{}]", tag);
+            Some(tag_string.as_str())
         } else {
             None
         };
-        
+
         let mut v_uinput = evdev_helpers::create_virtual_gamepad(&virtual_info, tag_str)?;
         let v_resource = gilrs_helper::wait_for_virtual_device(&mut v_uinput)?;
-        
+
         info!(
             "Virtual: {} @ {}",
             v_resource.name,
@@ -113,7 +115,7 @@ pub fn start_demux(
             path: v_resource.path.clone(),
             tag: tag.clone(),
         });
-        
+
         v_uinputs.push((v_uinput, v_resource));
     }
 
@@ -133,12 +135,14 @@ pub fn start_demux(
         .ok_or("Primary controller not found")?
         .clone();
 
+    // Open new Device instances from paths for input thread
+    let v_devices: Vec<_> = virtual_devices.iter()
+        .map(|v| Device::open(&v.path).expect("Failed to open virtual device"))
+        .collect();
+
     // Spawn input thread
     let shutdown_input = Arc::clone(&shutdown);
     let runtime_settings_input = Arc::clone(&runtime_settings);
-    let v_devices: Vec<_> = v_uinputs.iter()
-        .map(|(_, res)| res.device.try_clone().expect("Failed to clone device"))
-        .collect();
 
     let input_handle = thread::spawn(move || {
         crate::demux_runtime::run_input_loop(
