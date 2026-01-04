@@ -30,6 +30,8 @@
 
 ## 🎛️ Modes
 
+### 🔀 mux
+
 - 👑 **Priority** (default): Assist controller overrides when active
   - Axes: Prioritize Assist when active (exceeds deadzone)
     - Buttons: Prioritize Assist when button released
@@ -42,7 +44,7 @@
     - Triggers: Averaged when both are active (exceed deadzone)
   - Ideal for cooperative input and subtle corrections
     - E.g. For counter steer/brake assist in racing games
-- 🔄 **Toggle**: Switch Active controller on demand
+- 🔃 **Toggle**: Switch Active controller on demand
   - All inputs forwarded from currently active controller
     - Toggle Active controller via the Mode button on Assist
     - Immediately synchronizes input to current Active state
@@ -50,6 +52,21 @@
     - E.g. Game menu navigation or precise interventions
 
 [Screencast_20251230_070245.webm](https://github.com/user-attachments/assets/40f72091-cfeb-461b-a4fb-5b4198604e9d)
+
+### 🔁 demux
+
+- 🔂 **Unicast** (default): route Primary to Active gamepad
+  - All inputs forwarded to currently active virtual gamepad
+    - Cycle Active gamepad via the Mode button on Primary
+    - Force feedback synchronized with Active gamepad
+  - Ideal for switching between multiple virtual gamepads
+    - E.g. Assist multiple primary players one at a time
+- 📢 **Multicast**: route Primary to all virtual gamepads
+  - All inputs forwarded to all virtual gamepads simultaneously
+    - Including Mode button events from Primary controller
+    - Force feedback synchronized with all virtual gamepads
+  - Ideal replicating Primary input across multiple devices
+    - E.g. For more advanced input multiplexing pipelines
 
 # ⬇️ Install
 
@@ -164,6 +181,8 @@ Assist:  (1) PS4 Controller
 Mux Active. Press Ctrl+C to exit.
 ```
 
+<details><summary>More options</summary>
+
 ### 🎮 Primary Assist Mapping
 
 Manually specify Primary and Assist controllers via IDs:
@@ -191,7 +210,7 @@ Mimic controller hardware for in-game layout recognition:
 $ ctrlassist mux --spoof primary
 Primary: (0) Microsoft Xbox One
 Assist:  (1) PS4 Controller
-Virtual: (2) Microsoft X-Box One pad (Firmware 2015)
+Virtual: (2) Microsoft X-Box One pad (Firmware 2015) [#]
 ```
 
 > [!WARNING]
@@ -245,20 +264,100 @@ sudo ctrlassist mux --hide system
 > [!IMPORTANT]
 > Not possible via Flatpak sandbox for security. Use `--hide steam` instead.
 
+</details>
+
+## 🔁 demux
+
+Demultiplex via unicast between two virtual gamepads by default:
+
+```sh
+$ ctrlassist mux
+Primary: (0) Microsoft Xbox One
+Virtual: (1) CtrlAssist Virtual Gamepad [0]
+Virtual: (2) CtrlAssist Virtual Gamepad [1]
+...
+Demux Active. Press Ctrl+C to exit.
+```
+
+<details><summary>More options</summary>
+
+### 🎮 Primary Virtual Mapping
+
+Manually specify Primary and Virtual controllers via IDs:
+
+```sh
+$ ctrlassist mux --primary 1 --virtual foo,bar,baz
+Primary: (1) PS4 Controller
+Virtual: (2) CtrlAssist Virtual Gamepad [foo]
+Virtual: (3) CtrlAssist Virtual Gamepad [bar]
+Virtual: (4) CtrlAssist Virtual Gamepad [baz]
+...
+```
+
+### 🎛️ Demux Mode Selection
+
+Manually specify mode to proxy controller:
+
+```sh
+$ ctrlassist mux --mode multicast
+```
+
+### 🕹️ Spoof Virtual Device
+
+Mimic controller hardware for in-game layout recognition:
+
+```sh
+$ ctrlassist mux --spoof primary
+Primary: (0) Microsoft Xbox One
+Virtual: (1) Microsoft X-Box One pad (Firmware 2015) [0]
+Virtual: (2) Microsoft X-Box One pad (Firmware 2015) [1]
+```
+
+> [!WARNING]
+> Combining spoofing with some hiding strategies may also hide the virtual device.
+
+> [!NOTE]
+> Hiding virtual devices used by other mux instances of CtrlAssist may be desirable.
+
+### 🫨 Rumble Pass-Through
+
+Forward force feedback from either `none`, or `active` virtual gamepad:
+
+```sh
+$ ctrlassist mux --rumble active
+...
+```
+
+### 🙈 Hide Physical Devices
+
+Same as mux command; see other for details.
+
+</details>
+
 # ⚙️ Configuration
 
 The system tray saves settings to `$XDG_CONFIG_HOME/ctrlassist/config.toml`:
 
 ```toml
-# Last selected controllers (by name for best-effort matching)
+# Mux configuration
+[mux]
 primary_name = "Microsoft Xbox One"
 assist_name = "PS4 Controller"
-
-# Mux configuration
 mode = "Priority"
 hide = "Steam"
 spoof = "None"
+tag = "All"
 rumble = "Both"
+
+# Demux configuration
+[demux]
+primary_name = "Microsoft Xbox One"
+virtual_tags = [ "0", "1" ]
+mode = "Unicast"
+hide = "Steam"
+spoof = "Primary"
+tag = "All"
+rumble = "Active"
 ```
 
 Settings are loaded on startup and saved when using the mux. Controllers are matched by name (best-effort) if IDs change between sessions.
