@@ -195,11 +195,23 @@ pub fn generate_neutral_gamepad_events() -> Vec<evdev::InputEvent> {
     events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_HAT0Y.0, center_value));
     // Release all buttons
     let buttons = [
-        KeyCode::BTN_NORTH, KeyCode::BTN_SOUTH, KeyCode::BTN_EAST, KeyCode::BTN_WEST,
-        KeyCode::BTN_TL, KeyCode::BTN_TR, KeyCode::BTN_TL2, KeyCode::BTN_TR2,
-        KeyCode::BTN_THUMBL, KeyCode::BTN_THUMBR, KeyCode::BTN_SELECT, KeyCode::BTN_START,
-        KeyCode::BTN_MODE, KeyCode::BTN_DPAD_UP, KeyCode::BTN_DPAD_DOWN,
-        KeyCode::BTN_DPAD_LEFT, KeyCode::BTN_DPAD_RIGHT,
+        KeyCode::BTN_NORTH,
+        KeyCode::BTN_SOUTH,
+        KeyCode::BTN_EAST,
+        KeyCode::BTN_WEST,
+        KeyCode::BTN_TL,  // L1
+        KeyCode::BTN_TR,  // R1
+        KeyCode::BTN_TL2, // L2 (as button)
+        KeyCode::BTN_TR2, // R2 (as button)
+        KeyCode::BTN_THUMBL,
+        KeyCode::BTN_THUMBR,
+        KeyCode::BTN_SELECT,
+        KeyCode::BTN_START,
+        KeyCode::BTN_MODE,
+        KeyCode::BTN_DPAD_UP,
+        KeyCode::BTN_DPAD_DOWN,
+        KeyCode::BTN_DPAD_LEFT,
+        KeyCode::BTN_DPAD_RIGHT,
     ];
     for button in buttons {
         events.push(InputEvent::new(evdev::EventType::KEY.0, button.0, 0));
