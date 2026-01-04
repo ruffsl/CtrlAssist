@@ -61,6 +61,7 @@ impl TrayState {
 
         // Try to match saved controller names to current controllers (best-effort)
         let selected_primary = config
+            .mux
             .primary_name
             .as_ref()
             .and_then(|name| controllers.iter().find(|c| &c.name == name))
@@ -68,6 +69,7 @@ impl TrayState {
             .or_else(|| controllers.first().map(|c| c.id));
 
         let selected_assist = config
+            .mux
             .assist_name
             .as_ref()
             .and_then(|name| controllers.iter().find(|c| &c.name == name))
@@ -78,11 +80,11 @@ impl TrayState {
             controllers,
             selected_primary,
             selected_assist,
-            mode: config.mode,
-            hide: config.hide,
-            spoof: config.spoof,
-            tag: config.tag,
-            rumble: config.rumble,
+            mode: config.mux.mode,
+            hide: config.mux.hide,
+            spoof: config.mux.spoof,
+            tag: config.mux.tag,
+            rumble: config.mux.rumble,
             status: MuxStatus::Stopped,
             mux_handle: None,
             runtime_settings: None,
@@ -93,19 +95,23 @@ impl TrayState {
 
     pub fn to_config(&self) -> TrayConfig {
         TrayConfig {
-            primary_name: self
-                .selected_primary
-                .and_then(|id| self.controllers.iter().find(|c| c.id == id))
-                .map(|c| c.name.clone()),
-            assist_name: self
-                .selected_assist
-                .and_then(|id| self.controllers.iter().find(|c| c.id == id))
-                .map(|c| c.name.clone()),
-            mode: self.mode.clone(),
-            hide: self.hide.clone(),
-            spoof: self.spoof.clone(),
-            tag: self.tag.clone(),
-            rumble: self.rumble.clone(),
+            mux: super::config::MuxConfig {
+                primary_name: self
+                    .selected_primary
+                    .and_then(|id| self.controllers.iter().find(|c| c.id == id))
+                    .map(|c| c.name.clone()),
+                assist_name: self
+                    .selected_assist
+                    .and_then(|id| self.controllers.iter().find(|c| c.id == id))
+                    .map(|c| c.name.clone()),
+                mode: self.mode.clone(),
+                hide: self.hide.clone(),
+                spoof: self.spoof.clone(),
+                tag: self.tag.clone(),
+                rumble: self.rumble.clone(),
+            },
+            // Preserve any existing demux config (tray doesn't manage it yet)
+            ..Default::default()
         }
     }
 

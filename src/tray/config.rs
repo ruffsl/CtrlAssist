@@ -1,5 +1,6 @@
 use crate::mux_modes::ModeType;
-use crate::{HideType, RumbleTarget, SpoofTarget, TagType};
+use crate::demux_modes::DemuxModeType;
+use crate::{HideType, RumbleTarget, DemuxRumbleTarget, SpoofTarget, TagType};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -8,6 +9,14 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TrayConfig {
+    #[serde(default)]
+    pub mux: MuxConfig,
+    #[serde(default)]
+    pub demux: DemuxConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MuxConfig {
     /// Last selected primary controller (by name for best-effort matching)
     pub primary_name: Option<String>,
     /// Last selected assist controller (by name)
@@ -27,6 +36,52 @@ pub struct TrayConfig {
     /// Last used rumble target
     #[serde(default)]
     pub rumble: RumbleTarget,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DemuxConfig {
+    /// Last selected primary controller (by name)
+    pub primary_name: Option<String>,
+    /// Last used virtual tags
+    #[serde(default = "default_virtual_tags")]
+    pub virtual_tags: Vec<String>,
+    /// Last used demux mode
+    #[serde(default)]
+    pub mode: DemuxModeType,
+    /// Last used hide strategy
+    #[serde(default)]
+    pub hide: HideType,
+    /// Last used spoof target
+    #[serde(default = "default_demux_spoof")]
+    pub spoof: SpoofTarget,
+    /// Last used tag option
+    #[serde(default)]
+    pub tag: TagType,
+    /// Last used rumble target
+    #[serde(default)]
+    pub rumble: DemuxRumbleTarget,
+}
+
+fn default_virtual_tags() -> Vec<String> {
+    vec!["0".to_string(), "1".to_string()]
+}
+
+fn default_demux_spoof() -> SpoofTarget {
+    SpoofTarget::Primary
+}
+
+impl Default for DemuxConfig {
+    fn default() -> Self {
+        Self {
+            primary_name: None,
+            virtual_tags: default_virtual_tags(),
+            mode: DemuxModeType::default(),
+            hide: HideType::default(),
+            spoof: default_demux_spoof(),
+            tag: TagType::default(),
+            rumble: DemuxRumbleTarget::default(),
+        }
+    }
 }
 
 impl TrayConfig {
