@@ -1,5 +1,5 @@
 use crate::mux_modes::ModeType;
-use crate::{HideType, RumbleTarget, SpoofTarget};
+use crate::{HideType, RumbleTarget, SpoofTarget, TagType};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -23,7 +23,7 @@ pub struct TrayConfig {
     pub spoof: SpoofTarget,
     /// Last used tag option
     #[serde(default)]
-    pub tag: bool,
+    pub tag: TagType,
     /// Last used rumble target
     #[serde(default)]
     pub rumble: RumbleTarget,

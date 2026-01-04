@@ -1,5 +1,5 @@
 use crate::mux_modes::ModeType;
-use crate::{HideType, RumbleTarget, SpoofTarget};
+use crate::{HideType, RumbleTarget, SpoofTarget, TagType};
 use gilrs::{GamepadId, Gilrs};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,7 +34,7 @@ pub struct TrayState {
     /// Current spoof target
     pub spoof: SpoofTarget,
     /// Current tag option
-    pub tag: bool,
+    pub tag: TagType,
     /// Current rumble target
     pub rumble: RumbleTarget,
     /// Mux running status
@@ -104,7 +104,7 @@ impl TrayState {
             mode: self.mode.clone(),
             hide: self.hide.clone(),
             spoof: self.spoof.clone(),
-            tag: self.tag,
+            tag: self.tag.clone(),
             rumble: self.rumble.clone(),
         }
     }

@@ -52,8 +52,8 @@ struct MuxArgs {
     spoof: SpoofTarget,
 
     /// Tag virtual devices.
-    #[arg(long, default_value_t = true)]
-    tag: bool,
+    #[arg(long, value_enum, default_value_t = TagType::default())]
+    tag: TagType,
 
     /// Mode type for combining controllers.
     #[arg(long, value_enum, default_value_t = mux_modes::ModeType::default())]
@@ -78,6 +78,13 @@ pub enum SpoofTarget {
     Assist,
     #[default]
     None,
+}
+
+#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize)]
+pub enum TagType {
+    None,
+    #[default]
+    All,
 }
 
 #[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]

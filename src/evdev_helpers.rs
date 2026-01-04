@@ -45,7 +45,10 @@ impl<'a> From<&'a gilrs::Gamepad<'a>> for VirtualGamepadInfo {
 // --- evdev Device Creation ---
 
 /// Helper to create the virtual gamepad device
-pub fn create_virtual_gamepad(info: &VirtualGamepadInfo, tag: Option<&str>) -> Result<VirtualDevice, Box<dyn Error>> {
+pub fn create_virtual_gamepad(
+    info: &VirtualGamepadInfo,
+    tag: Option<&str>,
+) -> Result<VirtualDevice, Box<dyn Error>> {
     let max = AXIS_MAX as i32;
     let mid = AXIS_HALF as i32;
     let abs_stick_setup = AbsInfo::new(mid, 0, max, 0, 0, 0);

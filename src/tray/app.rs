@@ -1,6 +1,6 @@
 use crate::mux_manager::{self, MuxConfig, MuxHandle};
 use crate::mux_modes::ModeType;
-use crate::{HideType, RumbleTarget, SpoofTarget};
+use crate::{HideType, RumbleTarget, SpoofTarget, TagType};
 use gilrs::Gilrs;
 use ksni::{Category, MenuItem, Status, ToolTip, Tray, menu};
 use log::{error, info};
@@ -363,17 +363,8 @@ impl Tray for CtrlAssistTray {
                 icon_name: "tag".into(),
                 enabled: !is_running,
                 submenu: vec![
-                    menu::CheckmarkItem {
-                        label: format!("Tag virtual devices"),
-                        checked: state.tag,
-                        enabled: !is_running,
-                        activate: Box::new(move |this: &mut Self| {
-                            let mut state = this.state.lock();
-                            state.tag = !state.tag;
-                        }),
-                        ..Default::default()
-                    }
-                    .into(),
+                    create_tag_item(TagType::None, &state, is_running),
+                    create_tag_item(TagType::All, &state, is_running),
                 ],
                 ..Default::default()
             }
@@ -514,6 +505,29 @@ fn create_spoof_item(
         activate: Box::new(move |this: &mut CtrlAssistTray| {
             let mut state = this.state.lock();
             state.spoof = spoof.clone();
+        }),
+        ..Default::default()
+    }
+    .into()
+}
+
+fn create_tag_item(
+    tag: TagType,
+    state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
+    is_running: bool,
+) -> MenuItem<CtrlAssistTray> {
+    let is_selected = matches!(
+        (&state.tag, &tag),
+        (TagType::None, TagType::None) | (TagType::All, TagType::All)
+    );
+
+    menu::CheckmarkItem {
+        label: format!("{:?}", tag),
+        checked: is_selected,
+        enabled: !is_running,
+        activate: Box::new(move |this: &mut CtrlAssistTray| {
+            let mut state = this.state.lock();
+            state.tag = tag.clone();
         }),
         ..Default::default()
     }
