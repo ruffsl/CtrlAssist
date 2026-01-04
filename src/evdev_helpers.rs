@@ -176,3 +176,33 @@ pub fn dpad_axis_pair(button: Button) -> Option<[Button; 2]> {
         _ => None,
     }
 }
+
+/// Generate events to neutralize a virtual gamepad (axes centered, buttons released)
+pub fn generate_neutral_gamepad_events() -> Vec<evdev::InputEvent> {
+    use evdev::{InputEvent, AbsoluteAxisCode, KeyCode};
+    let mut events = Vec::new();
+    let center_value = AXIS_HALF as i32;
+    // Center all stick axes
+    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0, center_value));
+    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_Y.0, center_value));
+    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_RX.0, center_value));
+    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_RY.0, center_value));
+    // Reset triggers to 0
+    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_Z.0, 0));
+    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_RZ.0, 0));
+    // Center D-pad axes
+    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_HAT0X.0, center_value));
+    events.push(InputEvent::new(evdev::EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_HAT0Y.0, center_value));
+    // Release all buttons
+    let buttons = [
+        KeyCode::BTN_NORTH, KeyCode::BTN_SOUTH, KeyCode::BTN_EAST, KeyCode::BTN_WEST,
+        KeyCode::BTN_TL, KeyCode::BTN_TR, KeyCode::BTN_TL2, KeyCode::BTN_TR2,
+        KeyCode::BTN_THUMBL, KeyCode::BTN_THUMBR, KeyCode::BTN_SELECT, KeyCode::BTN_START,
+        KeyCode::BTN_MODE, KeyCode::BTN_DPAD_UP, KeyCode::BTN_DPAD_DOWN,
+        KeyCode::BTN_DPAD_LEFT, KeyCode::BTN_DPAD_RIGHT,
+    ];
+    for button in buttons {
+        events.push(InputEvent::new(evdev::EventType::KEY.0, button.0, 0));
+    }
+    events
+}

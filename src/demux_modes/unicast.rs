@@ -2,6 +2,11 @@ use super::{DemuxMode, helpers};
 use evdev::InputEvent;
 use gilrs::{Event, EventType, GamepadId, Gilrs, Button};
 
+/// Build-time flag to control latching behavior on active device switch.
+/// When `false` (default), non-active devices are neutralized (axes centered, buttons released).
+/// When `true`, non-active devices retain their last state (latching behavior).
+const DEMUX_UNICAST_LATCHING: bool = false;
+
 /// Unicast mode: Route primary to currently active virtual gamepad
 /// Cycle active with Mode button
 #[derive(Default)]
@@ -10,6 +15,8 @@ pub struct UnicastMode {
 }
 
 impl UnicastMode {
+    // ...neutral event generation now in evdev_helpers.rs...
+
     /// Synchronize controller state to newly active virtual device
     fn sync_controller_state(
         primary: gilrs::Gamepad,
@@ -85,12 +92,24 @@ impl DemuxMode for UnicastMode {
 
         // Handle mode button to cycle active device
         if matches!(event.event, EventType::ButtonPressed(Button::Mode, _)) {
+            let old_active = self.active_index;
             self.active_index = (self.active_index + 1) % virtual_count;
             
             let primary = gilrs.gamepad(primary_id);
             let sync_events = Self::sync_controller_state(primary);
             
-            return Some(vec![(self.active_index, sync_events)]);
+            let mut result = Vec::new();
+            
+            // If latching is disabled, neutralize the previously active device
+            if !DEMUX_UNICAST_LATCHING && old_active != self.active_index {
+                let neutral_events = crate::evdev_helpers::generate_neutral_gamepad_events();
+                result.push((old_active, neutral_events));
+            }
+            
+            // Sync the newly active device
+            result.push((self.active_index, sync_events));
+            
+            return Some(result);
         }
 
         // Forward event to active device
