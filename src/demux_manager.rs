@@ -68,6 +68,11 @@ pub fn start_demux(
 ) -> Result<(DemuxHandle, Arc<DemuxRuntimeSettings>), Box<dyn Error>> {
     let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
+    // Validate input: sinks must be greater than 0
+    if config.sinks == 0 {
+        return Err("DemuxConfig.sinks must be greater than 0".into());
+    }
+
     // Setup hiding
     let mut _hider = ScopedDeviceHider::new(config.hide.clone());
     if let Some(primary_res) = resources.get(&config.primary_id) {
