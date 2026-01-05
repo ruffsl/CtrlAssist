@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 /// Enum for all demuxing modes
 #[derive(clap::ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub enum DemuxModeType {
+    Multicast,
     #[default]
     Unicast,
-    Multicast,
 }
 
 /// The trait all demuxing modes must implement
@@ -29,7 +29,7 @@ pub trait DemuxMode {
 /// Factory function to create the correct demux mode
 pub fn create_demux_mode(mode: DemuxModeType) -> Box<dyn DemuxMode> {
     match mode {
-        DemuxModeType::Unicast => Box::new(unicast::UnicastMode::default()),
         DemuxModeType::Multicast => Box::new(multicast::MulticastMode),
+        DemuxModeType::Unicast => Box::new(unicast::UnicastMode::default()),
     }
 }
