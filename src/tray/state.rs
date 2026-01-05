@@ -1,5 +1,5 @@
 use crate::demux_modes::DemuxModeType;
-use crate::mux_modes::ModeType;
+use crate::mux_modes::MuxModeType;
 use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
 use gilrs::{GamepadId, Gilrs};
 use serde::{Deserialize, Serialize};
@@ -61,7 +61,7 @@ pub struct MuxState {
     /// Currently selected assist controller ID
     pub selected_assist: Option<GamepadId>,
     /// Current mux mode
-    pub mode: ModeType,
+    pub mode: MuxModeType,
     /// Current hide strategy
     pub hide: HideType,
     /// Current spoof target

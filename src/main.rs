@@ -61,8 +61,8 @@ struct MuxArgs {
     spoof: SpoofTarget,
 
     /// Mode type for combining controllers.
-    #[arg(long, value_enum, default_value_t = mux_modes::ModeType::default())]
-    mode: mux_modes::ModeType,
+    #[arg(long, value_enum, default_value_t = mux_modes::MuxModeType::default())]
+    mode: mux_modes::MuxModeType,
 
     /// Rumble target for virtual device.
     #[arg(long, value_enum, default_value_t = RumbleTarget::default())]

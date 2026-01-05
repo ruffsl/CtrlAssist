@@ -1,5 +1,5 @@
 use crate::demux_modes::DemuxModeType;
-use crate::mux_modes::ModeType;
+use crate::mux_modes::MuxModeType;
 use crate::tray::state::OperationMode;
 use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
 use log::{info, warn};
@@ -26,7 +26,7 @@ pub struct MuxConfig {
     pub assist_name: Option<String>,
     /// Last used mux mode
     #[serde(default)]
-    pub mode: ModeType,
+    pub mode: MuxModeType,
     /// Last used hide strategy
     #[serde(default)]
     pub hide: HideType,

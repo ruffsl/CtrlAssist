@@ -1,6 +1,6 @@
 use crate::evdev_helpers::{self, VirtualGamepadInfo};
 use crate::gilrs_helper::{self};
-use crate::mux_modes::ModeType;
+use crate::mux_modes::MuxModeType;
 use crate::mux_runtime::RuntimeSettings;
 use crate::udev_helpers::ScopedDeviceHider;
 use crate::{HideType, RumbleTarget, SpoofTarget};
@@ -17,7 +17,7 @@ use std::thread;
 pub struct MuxConfig {
     pub primary_id: GamepadId,
     pub assist_id: GamepadId,
-    pub mode: ModeType,
+    pub mode: MuxModeType,
     pub hide: HideType,
     pub spoof: SpoofTarget,
     pub rumble: RumbleTarget,

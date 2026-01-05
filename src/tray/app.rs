@@ -1,7 +1,7 @@
 use crate::demux_manager::{self, DemuxConfig, DemuxHandle};
 use crate::demux_modes::DemuxModeType;
 use crate::mux_manager::{self, MuxConfig, MuxHandle};
-use crate::mux_modes::ModeType;
+use crate::mux_modes::MuxModeType;
 use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
 use gilrs::Gilrs;
 use ksni::{Category, MenuItem, Status, ToolTip, Tray, menu};
@@ -535,9 +535,9 @@ fn create_mux_menu(
             icon_name: "media-playlist-shuffle".into(),
             enabled: true, // Dynamically configurable while running
             submenu: vec![
-                create_mux_mode_item(ModeType::Priority, state, true),
-                create_mux_mode_item(ModeType::Average, state, true),
-                create_mux_mode_item(ModeType::Toggle, state, true),
+                create_mux_mode_item(MuxModeType::Priority, state, true),
+                create_mux_mode_item(MuxModeType::Average, state, true),
+                create_mux_mode_item(MuxModeType::Toggle, state, true),
             ],
             ..Default::default()
         }
@@ -746,7 +746,7 @@ fn create_demux_menu(
 
 // Helper functions for mux menu items
 fn create_mux_mode_item(
-    mode: ModeType,
+    mode: MuxModeType,
     state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
     enabled: bool,
 ) -> MenuItem<CtrlAssistTray> {
