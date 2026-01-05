@@ -448,7 +448,7 @@ fn create_mux_menu(
     is_running: bool,
 ) -> Vec<MenuItem<CtrlAssistTray>> {
     vec![
-        // Refresh controllers (colocal to primary selection)
+        // Refresh controllers
         menu::StandardItem {
             label: "Refresh Controllers".into(),
             icon_name: "view-refresh".into(),
@@ -591,7 +591,7 @@ fn create_demux_menu(
     is_running: bool,
 ) -> Vec<MenuItem<CtrlAssistTray>> {
     vec![
-        // Refresh controllers (colocal to primary selection)
+        // Refresh controllers
         menu::StandardItem {
             label: "Refresh Controllers".into(),
             icon_name: "view-refresh".into(),
