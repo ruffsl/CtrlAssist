@@ -61,7 +61,7 @@ pub fn run_input_loop(
     p_id: GamepadId,
     shutdown: Arc<AtomicBool>,
 ) {
-    let virtual_count = v_devs.len();
+    let sinks = v_devs.len();
     let mut demux_mode = demux_modes::create_demux_mode(runtime_settings.get_mode());
     let mut last_mode = runtime_settings.get_mode();
 
@@ -82,7 +82,7 @@ pub fn run_input_loop(
                 break;
             }
 
-            if let Some(routing) = demux_mode.handle_event(&event, p_id, virtual_count, &gilrs) {
+            if let Some(routing) = demux_mode.handle_event(&event, p_id, sinks, &gilrs) {
                 for (virt_idx, mut out_events) in routing {
                     if virt_idx >= v_devs.len() {
                         error!("Invalid virtual device index: {}", virt_idx);

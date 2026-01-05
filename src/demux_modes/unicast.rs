@@ -83,7 +83,7 @@ impl DemuxMode for UnicastMode {
         &mut self,
         event: &Event,
         primary_id: GamepadId,
-        virtual_count: usize,
+        sinks: usize,
         gilrs: &Gilrs,
     ) -> Option<Vec<(usize, Vec<InputEvent>)>> {
         // Only handle primary controller
@@ -94,7 +94,7 @@ impl DemuxMode for UnicastMode {
         // Handle mode button to cycle active device
         if matches!(event.event, EventType::ButtonPressed(Button::Mode, _)) {
             let old_active = self.active_index;
-            self.active_index = (self.active_index + 1) % virtual_count;
+            self.active_index = (self.active_index + 1) % sinks;
 
             let primary = gilrs.gamepad(primary_id);
             let sync_events = Self::sync_controller_state(primary);

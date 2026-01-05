@@ -33,7 +33,7 @@ impl DemuxMode for MulticastMode {
         &mut self,
         event: &Event,
         primary_id: GamepadId,
-        virtual_count: usize,
+        sinks: usize,
         _gilrs: &Gilrs,
     ) -> Option<Vec<(usize, Vec<InputEvent>)>> {
         // Only handle primary controller
@@ -45,7 +45,7 @@ impl DemuxMode for MulticastMode {
 
         // Broadcast to all virtual devices
         Self::convert_event(event, primary).map(|events| {
-            (0..virtual_count)
+            (0..sinks)
                 .map(|idx| (idx, events.clone()))
                 .collect()
         })

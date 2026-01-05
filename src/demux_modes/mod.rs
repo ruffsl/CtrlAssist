@@ -15,13 +15,12 @@ pub enum DemuxModeType {
 }
 
 /// The trait all demuxing modes must implement
-/// Takes events from one primary controller and routes to multiple virtual devices
 pub trait DemuxMode {
     fn handle_event(
         &mut self,
         event: &Event,
         primary_id: GamepadId,
-        virtual_count: usize,
+        sinks: usize,
         gilrs: &gilrs::Gilrs,
     ) -> Option<Vec<(usize, Vec<InputEvent>)>>; // Returns (virtual_index, events) pairs
 }
