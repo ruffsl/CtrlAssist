@@ -60,12 +60,12 @@
     - Cycle Active gamepad via the Mode button on Primary
     - Force feedback synchronized with Active gamepad
   - Ideal for switching between multiple virtual gamepads
-    - E.g. Assist multiple primary players one at a time
+    - E.g. Assist multiple players across multiple mux instances
 - 📢 **Multicast**: route Primary to all virtual gamepads
   - All inputs forwarded to all virtual gamepads simultaneously
     - Including Mode button events from Primary controller
     - Force feedback synchronized with all virtual gamepads
-  - Ideal replicating Primary input across multiple devices
+  - Ideal for replicating Primary input across multiple devices
     - E.g. For more advanced input multiplexing pipelines
 
 # ⬇️ Install
