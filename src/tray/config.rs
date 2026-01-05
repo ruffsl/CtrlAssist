@@ -1,6 +1,6 @@
 use crate::demux_modes::DemuxModeType;
 use crate::mux_modes::ModeType;
-use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget, TagType};
+use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -30,9 +30,6 @@ pub struct MuxConfig {
     /// Last used spoof target
     #[serde(default)]
     pub spoof: SpoofTarget,
-    /// Last used tag option
-    #[serde(default)]
-    pub tag: TagType,
     /// Last used rumble target
     #[serde(default)]
     pub rumble: RumbleTarget,
@@ -54,9 +51,6 @@ pub struct DemuxConfig {
     /// Last used spoof target
     #[serde(default = "default_demux_spoof")]
     pub spoof: SpoofTarget,
-    /// Last used tag option
-    #[serde(default)]
-    pub tag: TagType,
     /// Last used rumble target
     #[serde(default)]
     pub rumble: DemuxRumbleTarget,
@@ -78,7 +72,6 @@ impl Default for DemuxConfig {
             mode: DemuxModeType::default(),
             hide: HideType::default(),
             spoof: default_demux_spoof(),
-            tag: TagType::default(),
             rumble: DemuxRumbleTarget::default(),
         }
     }

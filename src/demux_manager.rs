@@ -3,7 +3,7 @@ use crate::demux_runtime::DemuxRuntimeSettings;
 use crate::evdev_helpers::{self, VirtualGamepadInfo};
 use crate::gilrs_helper;
 use crate::udev_helpers::ScopedDeviceHider;
-use crate::{DemuxRumbleTarget, HideType, SpoofTarget, TagType};
+use crate::{DemuxRumbleTarget, HideType, SpoofTarget};
 use evdev::Device;
 use gilrs::{GamepadId, Gilrs};
 use log::info;
@@ -20,7 +20,6 @@ pub struct DemuxConfig {
     pub mode: DemuxModeType,
     pub hide: HideType,
     pub spoof: SpoofTarget,
-    pub tag: TagType,
     pub rumble: DemuxRumbleTarget,
 }
 
@@ -86,21 +85,13 @@ pub fn start_demux(
         },
     };
 
-    let use_tags = config.tag == TagType::All;
-    let _virtual_count = config.virtual_tags.len();
-
     // Create virtual devices
     let mut v_uinputs = Vec::new();
     let mut virtual_devices = Vec::new();
 
     for tag in &config.virtual_tags {
-        let tag_string;
-        let tag_str = if use_tags {
-            tag_string = format!("[{}]", tag);
-            Some(tag_string.as_str())
-        } else {
-            None
-        };
+        let tag_string = format!("[{}]", tag);
+        let tag_str = Some(tag_string.as_str());
 
         let mut v_uinput = evdev_helpers::create_virtual_gamepad(&virtual_info, tag_str)?;
         let v_resource = gilrs_helper::wait_for_virtual_device(&mut v_uinput)?;

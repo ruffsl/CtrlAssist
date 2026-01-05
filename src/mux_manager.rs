@@ -3,7 +3,7 @@ use crate::gilrs_helper::{self};
 use crate::mux_modes::ModeType;
 use crate::mux_runtime::RuntimeSettings;
 use crate::udev_helpers::ScopedDeviceHider;
-use crate::{HideType, RumbleTarget, SpoofTarget, TagType};
+use crate::{HideType, RumbleTarget, SpoofTarget};
 use evdev::Device;
 use gilrs::{GamepadId, Gilrs};
 use log::info;
@@ -20,7 +20,6 @@ pub struct MuxConfig {
     pub mode: ModeType,
     pub hide: HideType,
     pub spoof: SpoofTarget,
-    pub tag: TagType,
     pub rumble: RumbleTarget,
 }
 
@@ -87,10 +86,7 @@ pub fn start_mux(
         },
     };
 
-    let tag = match config.tag {
-        TagType::All => Some("[#]"),
-        TagType::None => None,
-    };
+    let tag = Some("[#]");
 
     let mut v_uinput = evdev_helpers::create_virtual_gamepad(&virtual_info, tag)?;
     let v_resource = gilrs_helper::wait_for_virtual_device(&mut v_uinput)?;

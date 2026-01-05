@@ -60,10 +60,6 @@ struct MuxArgs {
     #[arg(long, value_enum, default_value_t = SpoofTarget::default())]
     spoof: SpoofTarget,
 
-    /// Tag virtual devices.
-    #[arg(long, value_enum, default_value_t = TagType::default())]
-    tag: TagType,
-
     /// Mode type for combining controllers.
     #[arg(long, value_enum, default_value_t = mux_modes::ModeType::default())]
     mode: mux_modes::ModeType,
@@ -79,13 +75,9 @@ struct DemuxArgs {
     #[arg(long, default_value_t = 0)]
     primary: usize,
 
-    /// Count of virtual devices to create.
-    #[arg(long, conflicts_with = "virtual_tags")]
-    virtual_count: Option<usize>,
-
-    /// Comma-separated list of virtual device tags (e.g., "0,1,2" or "a,b,c").
-    #[arg(long, value_delimiter = ',', conflicts_with = "virtual_count")]
-    virtual_tags: Option<Vec<String>>,
+    /// Number of virtual devices to create.
+    #[arg(long, default_value_t = 2)]
+    sinks: usize,
 
     /// Hide primary controller.
     #[arg(long, value_enum, default_value_t = HideType::default())]
@@ -94,10 +86,6 @@ struct DemuxArgs {
     /// Spoof target for virtual devices.
     #[arg(long, value_enum, default_value_t = SpoofTarget::default())]
     spoof: SpoofTarget,
-
-    /// Tag virtual devices.
-    #[arg(long, value_enum, default_value_t = TagType::default())]
-    tag: TagType,
 
     /// Mode type for routing controller.
     #[arg(long, value_enum, default_value_t = demux_modes::DemuxModeType::default())]
@@ -122,13 +110,6 @@ pub enum SpoofTarget {
     Assist,
     #[default]
     None,
-}
-
-#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub enum TagType {
-    None,
-    #[default]
-    All,
 }
 
 #[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -210,7 +191,6 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
         mode: args.mode,
         hide: args.hide,
         spoof: args.spoof,
-        tag: args.tag,
         rumble: args.rumble,
     };
 
@@ -256,25 +236,7 @@ fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
     println!("{}", primary_msg);
 
     // Determine virtual tags
-    let virtual_tags = match (args.virtual_count, args.virtual_tags) {
-        (Some(count), None) => {
-            // Generate tags as "0", "1", "2", etc.
-            (0..count).map(|i| i.to_string()).collect()
-        }
-        (None, Some(tags)) => {
-            if tags.is_empty() {
-                return Err("Virtual tags list cannot be empty".into());
-            }
-            tags
-        }
-        (None, None) => {
-            // Default to 2 virtual devices
-            vec!["0".to_string(), "1".to_string()]
-        }
-        (Some(_), Some(_)) => {
-            unreachable!("clap should prevent this via conflicts_with")
-        }
-    };
+    let virtual_tags: Vec<String> = (0..args.sinks).map(|i| i.to_string()).collect();
 
     println!("Creating {} virtual devices", virtual_tags.len());
 
@@ -285,7 +247,6 @@ fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
         mode: args.mode,
         hide: args.hide,
         spoof: args.spoof,
-        tag: args.tag,
         rumble: args.rumble,
     };
 
