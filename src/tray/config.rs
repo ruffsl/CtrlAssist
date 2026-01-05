@@ -35,13 +35,12 @@ pub struct MuxConfig {
     pub rumble: RumbleTarget,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DemuxConfig {
     /// Last selected primary controller (by name)
     pub primary_name: Option<String>,
-    /// Last used virtual tags
-    #[serde(default = "default_virtual_tags")]
-    pub virtual_tags: Vec<String>,
+    /// Last used sinks count
+    pub sinks: usize,
     /// Last used demux mode
     #[serde(default)]
     pub mode: DemuxModeType,
@@ -49,32 +48,11 @@ pub struct DemuxConfig {
     #[serde(default)]
     pub hide: HideType,
     /// Last used spoof target
-    #[serde(default = "default_demux_spoof")]
+    #[serde(default)]
     pub spoof: SpoofTarget,
     /// Last used rumble target
     #[serde(default)]
     pub rumble: DemuxRumbleTarget,
-}
-
-fn default_virtual_tags() -> Vec<String> {
-    vec!["0".to_string(), "1".to_string()]
-}
-
-fn default_demux_spoof() -> SpoofTarget {
-    SpoofTarget::Primary
-}
-
-impl Default for DemuxConfig {
-    fn default() -> Self {
-        Self {
-            primary_name: None,
-            virtual_tags: default_virtual_tags(),
-            mode: DemuxModeType::default(),
-            hide: HideType::default(),
-            spoof: default_demux_spoof(),
-            rumble: DemuxRumbleTarget::default(),
-        }
-    }
 }
 
 impl TrayConfig {
