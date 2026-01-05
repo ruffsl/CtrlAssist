@@ -26,7 +26,6 @@ pub struct DemuxConfig {
 /// Virtual device info with its path
 pub struct VirtualDeviceInfo {
     pub path: PathBuf,
-    // pub tag: String,
 }
 
 /// Handle to a running demux session
@@ -104,7 +103,6 @@ pub fn start_demux(
 
         virtual_devices.push(VirtualDeviceInfo {
             path: v_resource.path.clone(),
-            // tag: tag_string.clone(),
         });
 
         v_uinputs.push((v_uinput, v_resource));
