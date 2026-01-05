@@ -235,15 +235,10 @@ fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
     info!("{}", primary_msg);
     println!("{}", primary_msg);
 
-    // Determine virtual tags
-    let virtual_tags: Vec<String> = (0..args.sinks).map(|i| i.to_string()).collect();
-
-    println!("Creating {} virtual devices", virtual_tags.len());
-
     // Start demux
     let config = demux_manager::DemuxConfig {
         primary_id: p_id,
-        virtual_tags,
+        sinks: args.sinks,
         mode: args.mode,
         hide: args.hide,
         spoof: args.spoof,

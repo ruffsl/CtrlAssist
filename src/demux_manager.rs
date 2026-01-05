@@ -16,7 +16,7 @@ use std::thread;
 /// Configuration for starting a demux session
 pub struct DemuxConfig {
     pub primary_id: GamepadId,
-    pub virtual_tags: Vec<String>,
+    pub sinks: usize,
     pub mode: DemuxModeType,
     pub hide: HideType,
     pub spoof: SpoofTarget,
@@ -89,8 +89,8 @@ pub fn start_demux(
     let mut v_uinputs = Vec::new();
     let mut virtual_devices = Vec::new();
 
-    for tag in &config.virtual_tags {
-        let tag_string = format!("[{}]", tag);
+    for i in 0..config.sinks {
+        let tag_string = format!("[{}]", i);
         let tag_str = Some(tag_string.as_str());
 
         let mut v_uinput = evdev_helpers::create_virtual_gamepad(&virtual_info, tag_str)?;
@@ -104,7 +104,7 @@ pub fn start_demux(
 
         virtual_devices.push(VirtualDeviceInfo {
             path: v_resource.path.clone(),
-            // tag: tag.clone(),
+            // tag: tag_string.clone(),
         });
 
         v_uinputs.push((v_uinput, v_resource));
