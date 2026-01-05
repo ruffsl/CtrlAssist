@@ -17,9 +17,9 @@ pub struct TrayConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MuxConfig {
-    /// Last selected primary controller (by name for best-effort matching)
+    /// Last selected primary controller
     pub primary_name: Option<String>,
-    /// Last selected assist controller (by name)
+    /// Last selected assist controller
     pub assist_name: Option<String>,
     /// Last used mux mode
     #[serde(default)]
@@ -37,7 +37,7 @@ pub struct MuxConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DemuxConfig {
-    /// Last selected primary controller (by name)
+    /// Last selected primary controller
     pub primary_name: Option<String>,
     /// Last used sinks count
     pub sinks: usize,
