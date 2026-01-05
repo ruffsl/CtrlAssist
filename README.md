@@ -344,7 +344,6 @@ assist_name = "PS4 Controller"
 mode = "Priority"
 hide = "Steam"
 spoof = "None"
-tag = "All"
 rumble = "Both"
 
 # Demux configuration
@@ -354,7 +353,6 @@ sinks = 2
 mode = "Unicast"
 hide = "Steam"
 spoof = "Primary"
-tag = "All"
 rumble = "Active"
 ```
 
