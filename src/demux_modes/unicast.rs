@@ -15,8 +15,6 @@ pub struct UnicastMode {
 }
 
 impl UnicastMode {
-    // ...neutral event generation now in evdev_helpers.rs...
-
     /// Synchronize controller state to newly active virtual device
     fn sync_controller_state(primary: gilrs::Gamepad) -> Vec<InputEvent> {
         let state = primary.state();
@@ -27,6 +25,11 @@ impl UnicastMode {
             let Some(gilrs::ev::AxisOrBtn::Btn(btn)) = primary.axis_or_btn_name(code) else {
                 continue;
             };
+
+            // Continue if button is Mode (exclusive binding)
+            if btn == gilrs::Button::Mode {
+                continue;
+            }
 
             // Handle buttons mapped to keys
             if let Some(event) = helpers::create_button_key_event(btn, button_data.is_pressed()) {
