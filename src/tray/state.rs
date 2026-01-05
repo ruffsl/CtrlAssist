@@ -16,16 +16,11 @@ pub struct ControllerInfo {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub enum OperationMode {
+    #[default]
     Mux,
     Demux,
-}
-
-impl Default for OperationMode {
-    fn default() -> Self {
-        OperationMode::Mux
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,25 +32,25 @@ pub enum OperationStatus {
 pub struct TrayState {
     /// Available controllers
     pub controllers: Vec<ControllerInfo>,
-    
+
     /// Current operation mode (Mux or Demux)
     pub operation_mode: OperationMode,
-    
+
     /// Operation running status
     pub status: OperationStatus,
-    
+
     /// Operation thread handle (if running)
     pub operation_handle: Option<thread::JoinHandle<()>>,
-    
+
     /// Shutdown signal for operation thread
     pub shutdown_signal: Option<Arc<AtomicBool>>,
-    
+
     /// Path(s) to virtual device(s) for FF thread unblocking
     pub virtual_device_paths: Vec<PathBuf>,
-    
+
     // Mux-specific state
     pub mux: MuxState,
-    
+
     // Demux-specific state
     pub demux: DemuxState,
 }

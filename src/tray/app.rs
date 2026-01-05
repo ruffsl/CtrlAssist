@@ -50,7 +50,7 @@ impl CtrlAssistTray {
 
     fn start_operation(&mut self) {
         let state = self.state.lock();
-        
+
         match state.operation_mode {
             OperationMode::Mux => {
                 if !state.is_valid_for_mux_start() {
@@ -377,10 +377,11 @@ impl Tray for CtrlAssistTray {
                     }
                 ),
                 icon_name: "media-playback-start".into(),
-                enabled: !is_running && match state.operation_mode {
-                    OperationMode::Mux => state.is_valid_for_mux_start(),
-                    OperationMode::Demux => state.is_valid_for_demux_start(),
-                },
+                enabled: !is_running
+                    && match state.operation_mode {
+                        OperationMode::Mux => state.is_valid_for_mux_start(),
+                        OperationMode::Demux => state.is_valid_for_demux_start(),
+                    },
                 activate: Box::new(|this: &mut Self| {
                     this.start_operation();
                 }),
@@ -430,7 +431,7 @@ fn create_operation_mode_item(
         activate: Box::new(move |this: &mut CtrlAssistTray| {
             let mut state = this.state.lock();
             state.operation_mode = mode;
-            
+
             // Save config
             if let Err(e) = state.to_config().save() {
                 error!("Failed to save config: {}", e);
@@ -534,9 +535,9 @@ fn create_mux_menu(
             icon_name: "media-playlist-shuffle".into(),
             enabled: true, // Dynamically configurable while running
             submenu: vec![
-                create_mux_mode_item(ModeType::Priority, &state, true),
-                create_mux_mode_item(ModeType::Average, &state, true),
-                create_mux_mode_item(ModeType::Toggle, &state, true),
+                create_mux_mode_item(ModeType::Priority, state, true),
+                create_mux_mode_item(ModeType::Average, state, true),
+                create_mux_mode_item(ModeType::Toggle, state, true),
             ],
             ..Default::default()
         }
@@ -547,9 +548,9 @@ fn create_mux_menu(
             icon_name: "view-visible".into(),
             enabled: !is_running,
             submenu: vec![
-                create_mux_hide_item(HideType::None, &state, is_running),
-                create_mux_hide_item(HideType::Steam, &state, is_running),
-                create_mux_hide_item(HideType::System, &state, is_running),
+                create_mux_hide_item(HideType::None, state, is_running),
+                create_mux_hide_item(HideType::Steam, state, is_running),
+                create_mux_hide_item(HideType::System, state, is_running),
             ],
             ..Default::default()
         }
@@ -560,9 +561,9 @@ fn create_mux_menu(
             icon_name: "edit-copy".into(),
             enabled: !is_running,
             submenu: vec![
-                create_mux_spoof_item(SpoofTarget::None, &state, is_running),
-                create_mux_spoof_item(SpoofTarget::Primary, &state, is_running),
-                create_mux_spoof_item(SpoofTarget::Assist, &state, is_running),
+                create_mux_spoof_item(SpoofTarget::None, state, is_running),
+                create_mux_spoof_item(SpoofTarget::Primary, state, is_running),
+                create_mux_spoof_item(SpoofTarget::Assist, state, is_running),
             ],
             ..Default::default()
         }
@@ -573,10 +574,10 @@ fn create_mux_menu(
             icon_name: "notification-active".into(),
             enabled: true, // Dynamically configurable while running
             submenu: vec![
-                create_mux_rumble_item(RumbleTarget::Both, &state, true),
-                create_mux_rumble_item(RumbleTarget::Primary, &state, true),
-                create_mux_rumble_item(RumbleTarget::Assist, &state, true),
-                create_mux_rumble_item(RumbleTarget::None, &state, true),
+                create_mux_rumble_item(RumbleTarget::Both, state, true),
+                create_mux_rumble_item(RumbleTarget::Primary, state, true),
+                create_mux_rumble_item(RumbleTarget::Assist, state, true),
+                create_mux_rumble_item(RumbleTarget::None, state, true),
             ],
             ..Default::default()
         }
@@ -697,8 +698,8 @@ fn create_demux_menu(
             icon_name: "media-playlist-shuffle".into(),
             enabled: true, // Dynamically configurable while running
             submenu: vec![
-                create_demux_mode_item(DemuxModeType::Unicast, &state, true),
-                create_demux_mode_item(DemuxModeType::Multicast, &state, true),
+                create_demux_mode_item(DemuxModeType::Unicast, state, true),
+                create_demux_mode_item(DemuxModeType::Multicast, state, true),
             ],
             ..Default::default()
         }
@@ -709,9 +710,9 @@ fn create_demux_menu(
             icon_name: "view-visible".into(),
             enabled: !is_running,
             submenu: vec![
-                create_demux_hide_item(HideType::None, &state, is_running),
-                create_demux_hide_item(HideType::Steam, &state, is_running),
-                create_demux_hide_item(HideType::System, &state, is_running),
+                create_demux_hide_item(HideType::None, state, is_running),
+                create_demux_hide_item(HideType::Steam, state, is_running),
+                create_demux_hide_item(HideType::System, state, is_running),
             ],
             ..Default::default()
         }
@@ -722,8 +723,8 @@ fn create_demux_menu(
             icon_name: "edit-copy".into(),
             enabled: !is_running,
             submenu: vec![
-                create_demux_spoof_item(SpoofTarget::None, &state, is_running),
-                create_demux_spoof_item(SpoofTarget::Primary, &state, is_running),
+                create_demux_spoof_item(SpoofTarget::None, state, is_running),
+                create_demux_spoof_item(SpoofTarget::Primary, state, is_running),
             ],
             ..Default::default()
         }
@@ -734,8 +735,8 @@ fn create_demux_menu(
             icon_name: "notification-active".into(),
             enabled: true, // Dynamically configurable while running
             submenu: vec![
-                create_demux_rumble_item(DemuxRumbleTarget::Active, &state, true),
-                create_demux_rumble_item(DemuxRumbleTarget::None, &state, true),
+                create_demux_rumble_item(DemuxRumbleTarget::Active, state, true),
+                create_demux_rumble_item(DemuxRumbleTarget::None, state, true),
             ],
             ..Default::default()
         }

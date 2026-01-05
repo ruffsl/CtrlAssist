@@ -1,7 +1,7 @@
-use crate::mux_modes::ModeType;
 use crate::demux_modes::DemuxModeType;
-use crate::{HideType, RumbleTarget, DemuxRumbleTarget, SpoofTarget};
+use crate::mux_modes::ModeType;
 use crate::tray::state::OperationMode;
+use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
