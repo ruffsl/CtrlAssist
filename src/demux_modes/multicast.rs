@@ -44,10 +44,7 @@ impl DemuxMode for MulticastMode {
         let primary = _gilrs.gamepad(primary_id);
 
         // Broadcast to all virtual devices
-        Self::convert_event(event, primary).map(|events| {
-            (0..sinks)
-                .map(|idx| (idx, events.clone()))
-                .collect()
-        })
+        Self::convert_event(event, primary)
+            .map(|events| (0..sinks).map(|idx| (idx, events.clone())).collect())
     }
 }
