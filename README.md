@@ -222,7 +222,6 @@ Target force feedback to either, none, or both physical controllers:
 
 ```sh
 $ ctrlassist mux --rumble both
-...
 ```
 
 ### 🙈 Hide Physical Devices
@@ -271,7 +270,7 @@ sudo ctrlassist mux --hide system
 Demultiplex via unicast between two virtual gamepads by default:
 
 ```sh
-$ ctrlassist mux
+$ ctrlassist demux
 Primary: (0) Microsoft Xbox One
 Virtual: (1) CtrlAssist Virtual Gamepad [0]
 Virtual: (2) CtrlAssist Virtual Gamepad [1]
@@ -283,23 +282,23 @@ Demux Active. Press Ctrl+C to exit.
 
 ### 🎮 Primary Virtual Mapping
 
-Manually specify Primary and Virtual controllers via IDs:
+Specify Primary via ID and number of virtual controllers:
 
 ```sh
-$ ctrlassist mux --primary 1 --virtual foo,bar,baz
+$ ctrlassist demux --primary 1 --sinks 3
 Primary: (1) PS4 Controller
-Virtual: (2) CtrlAssist Virtual Gamepad [foo]
-Virtual: (3) CtrlAssist Virtual Gamepad [bar]
-Virtual: (4) CtrlAssist Virtual Gamepad [baz]
+Virtual: (2) CtrlAssist Virtual Gamepad [0]
+Virtual: (3) CtrlAssist Virtual Gamepad [1]
+Virtual: (4) CtrlAssist Virtual Gamepad [2]
 ...
 ```
 
 ### 🎛️ Demux Mode Selection
 
-Manually specify mode to proxy controller:
+Manually specify mode for virtual controller:
 
 ```sh
-$ ctrlassist mux --mode multicast
+$ ctrlassist demux --mode multicast
 ```
 
 ### 🕹️ Spoof Virtual Device
@@ -307,7 +306,7 @@ $ ctrlassist mux --mode multicast
 Mimic controller hardware for in-game layout recognition:
 
 ```sh
-$ ctrlassist mux --spoof primary
+$ ctrlassist demux --spoof primary
 Primary: (0) Microsoft Xbox One
 Virtual: (1) Microsoft X-Box One pad (Firmware 2015) [0]
 Virtual: (2) Microsoft X-Box One pad (Firmware 2015) [1]
@@ -324,8 +323,7 @@ Virtual: (2) Microsoft X-Box One pad (Firmware 2015) [1]
 Forward force feedback from either `none`, or `active` virtual gamepad:
 
 ```sh
-$ ctrlassist mux --rumble active
-...
+$ ctrlassist demux --rumble active
 ```
 
 ### 🙈 Hide Physical Devices
@@ -352,7 +350,7 @@ rumble = "Both"
 # Demux configuration
 [demux]
 primary_name = "Microsoft Xbox One"
-virtual_tags = [ "0", "1" ]
+sinks = 2
 mode = "Unicast"
 hide = "Steam"
 spoof = "Primary"
