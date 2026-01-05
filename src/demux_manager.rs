@@ -127,8 +127,8 @@ pub fn start_demux(
     // Open new Device instances from paths for input thread
     let v_devices: Vec<_> = virtual_devices
         .iter()
-        .map(|v| Device::open(&v.path).expect("Failed to open virtual device"))
-        .collect();
+        .map(|v| Device::open(&v.path))
+        .collect::<Result<Vec<_>, _>>()?;
 
     // Spawn input thread
     let shutdown_input = Arc::clone(&shutdown);
