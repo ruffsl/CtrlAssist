@@ -104,7 +104,7 @@ macro_rules! enum_menu {
         menu::SubMenu {
             label: format!($label_fmt, $current),
             icon_name: $icon.into(),
-            enabled: true,
+            enabled: $enabled,
             submenu: vec![menu::RadioGroup {
                 selected: selected_idx,
                 select: Box::new(move |$tray: &mut CtrlAssistTray, index| {
