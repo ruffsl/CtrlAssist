@@ -10,6 +10,7 @@ use notify_rust::Notification;
 use parking_lot::Mutex;
 use std::error::Error;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use super::config::TrayConfig;
@@ -21,13 +22,13 @@ macro_rules! simple_item {
         label: $label:expr,
         icon: $icon:expr,
         enabled: $enabled:expr,
-        action: |$this:ident| $action_expr:expr
+        action: |$tray:ident| $action_expr:expr
     ) => {
         menu::StandardItem {
             label: $label.into(),
             icon_name: $icon.into(),
             enabled: $enabled,
-            activate: Box::new(|$this: &mut CtrlAssistTray| $action_expr),
+            activate: Box::new(|$tray: &mut CtrlAssistTray| $action_expr),
             ..Default::default()
         }
         .into()
@@ -133,8 +134,8 @@ macro_rules! enum_menu {
 
 pub struct CtrlAssistTray {
     state: Arc<Mutex<TrayState>>,
-    // Store shutdown sender for signaling
-    shutdown_tx: Option<std::sync::mpsc::Sender<()>>,
+    /// Used an AtomicBool for a cleaner, thread-safe shutdown flag.
+    shutdown_flag: Arc<AtomicBool>,
 }
 
 impl CtrlAssistTray {
@@ -145,13 +146,14 @@ impl CtrlAssistTray {
 
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
-            shutdown_tx: None,
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
         })
     }
 
     fn send_notification(summary: &str, body: &str) {
         let summary = summary.to_string();
         let body = body.to_string();
+        // Spawning on the tokio runtime to keep UI responsive
         tokio::task::spawn_blocking(move || {
             if let Err(e) = Notification::new()
                 .summary(&summary)
@@ -165,33 +167,28 @@ impl CtrlAssistTray {
     }
 
     fn start_operation(&mut self) {
-        let state = self.state.lock();
+        // Locked once to validate and determine mode
+        let (mode, valid) = {
+            let s = self.state.lock();
+            let v = match s.operation_mode {
+                OperationMode::Mux => s.is_valid_for_mux_start(),
+                OperationMode::Demux => s.is_valid_for_demux_start(),
+            };
+            (s.operation_mode, v)
+        };
 
-        match state.operation_mode {
-            OperationMode::Mux => {
-                if !state.is_valid_for_mux_start() {
-                    drop(state);
-                    Self::send_notification(
-                        "CtrlAssist - Cannot Start",
-                        "Please select two different controllers first",
-                    );
-                    return;
-                }
-                drop(state);
-                self.start_mux();
-            }
-            OperationMode::Demux => {
-                if !state.is_valid_for_demux_start() {
-                    drop(state);
-                    Self::send_notification(
-                        "CtrlAssist - Cannot Start",
-                        "Please select a primary controller first",
-                    );
-                    return;
-                }
-                drop(state);
-                self.start_demux();
-            }
+        if !valid {
+            let msg = match mode {
+                OperationMode::Mux => "Please select two different controllers first",
+                OperationMode::Demux => "Please select a primary controller first",
+            };
+            Self::send_notification("CtrlAssist - Cannot Start", msg);
+            return;
+        }
+
+        match mode {
+            OperationMode::Mux => self.start_mux(),
+            OperationMode::Demux => self.start_demux(),
         }
     }
 
@@ -206,7 +203,6 @@ impl CtrlAssistTray {
             primary_id, assist_id
         );
 
-        // Create notification with settings
         let notification_body = format!(
             "Primary: {}\nAssist: {}\nMode: {:?}\nHide: {:?}\nSpoof: {:?}\nRumble: {:?}",
             state.get_mux_primary_name(),
@@ -218,7 +214,6 @@ impl CtrlAssistTray {
         );
         Self::send_notification("CtrlAssist - Starting Mux", &notification_body);
 
-        // Prepare config for mux
         let config = MuxConfig {
             primary_id,
             assist_id,
@@ -228,17 +223,18 @@ impl CtrlAssistTray {
             rumble: state.mux.rumble.clone(),
         };
 
-        // Use a channel for shutdown signaling
-        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
-        self.shutdown_tx = Some(shutdown_tx);
-
+        // Reset and share the shutdown flag
+        self.shutdown_flag.store(false, Ordering::SeqCst);
+        let stop_signal = Arc::clone(&self.shutdown_flag);
         let state_arc = Arc::clone(&self.state);
+
         let handle = thread::spawn(move || {
             match start_mux_with_state(config, state_arc) {
                 Ok(mux_handle) => {
-                    // Wait for shutdown signal (blocks efficiently)
-                    let _ = shutdown_rx.recv();
-                    // Properly shutdown mux (unblocks FF thread)
+                    // Spin-wait or block until flag is set
+                    while !stop_signal.load(Ordering::SeqCst) {
+                        thread::park_timeout(std::time::Duration::from_millis(100));
+                    }
                     mux_handle.shutdown();
                 }
                 Err(e) => {
@@ -264,7 +260,6 @@ impl CtrlAssistTray {
 
         info!("Starting demux: primary={:?}", primary_id);
 
-        // Create notification with settings
         let notification_body = format!(
             "Primary: {}\nSinks: {}\nMode: {:?}\nHide: {:?}\nSpoof: {:?}\nRumble: {:?}",
             state.get_demux_primary_name(),
@@ -276,7 +271,6 @@ impl CtrlAssistTray {
         );
         Self::send_notification("CtrlAssist - Starting Demux", &notification_body);
 
-        // Prepare config for demux
         let config = DemuxConfig {
             primary_id,
             sinks: state.demux.sinks,
@@ -286,23 +280,20 @@ impl CtrlAssistTray {
             rumble: state.demux.rumble.clone(),
         };
 
-        // Use a channel for shutdown signaling
-        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
-        self.shutdown_tx = Some(shutdown_tx);
-
+        self.shutdown_flag.store(false, Ordering::SeqCst);
+        let stop_signal = Arc::clone(&self.shutdown_flag);
         let state_arc = Arc::clone(&self.state);
-        let handle = thread::spawn(move || {
-            match start_demux_with_state(config, state_arc) {
-                Ok(demux_handle) => {
-                    // Wait for shutdown signal (blocks efficiently)
-                    let _ = shutdown_rx.recv();
-                    // Properly shutdown demux (unblocks FF threads)
-                    demux_handle.shutdown();
+
+        let handle = thread::spawn(move || match start_demux_with_state(config, state_arc) {
+            Ok(demux_handle) => {
+                while !stop_signal.load(Ordering::SeqCst) {
+                    thread::park_timeout(std::time::Duration::from_millis(100));
                 }
-                Err(e) => {
-                    error!("Demux thread error: {}", e);
-                    Self::send_notification("CtrlAssist - Error", &format!("Demux failed: {}", e));
-                }
+                demux_handle.shutdown();
+            }
+            Err(e) => {
+                error!("Demux thread error: {}", e);
+                Self::send_notification("CtrlAssist - Error", &format!("Demux failed: {}", e));
             }
         });
 
@@ -324,15 +315,15 @@ impl CtrlAssistTray {
 
         info!("Stopping operation");
 
-        // Signal shutdown via channel
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(());
-        }
+        // Set the flag and unpark the thread if it's sleeping
+        self.shutdown_flag.store(true, Ordering::SeqCst);
+
         state.virtual_device_paths.clear();
 
-        // Wait for thread to finish
         if let Some(handle) = state.operation_handle.take() {
-            drop(state); // Release lock before joining
+            handle.thread().unpark();
+            // Drop lock to avoid deadlock during join if thread tries to lock state while stopping
+            drop(state);
             let _ = handle.join();
             state = self.state.lock();
         }
@@ -377,9 +368,11 @@ impl CtrlAssistTray {
 
 impl Tray for CtrlAssistTray {
     const MENU_ON_ACTIVATE: bool = true;
+
     fn id(&self) -> String {
         "ctrlassist".into()
     }
+
     fn category(&self) -> Category {
         Category::ApplicationStatus
     }
@@ -543,7 +536,6 @@ impl Tray for CtrlAssistTray {
                         enabled: !is_running,
                         assign: |s, id| { s.demux.selected_primary = Some(id); }
                     ),
-                    // Sinks Management
                     menu::SubMenu {
                         label: format!("Sinks: {}", state.demux.sinks),
                         icon_name: "list-add".into(),
@@ -646,7 +638,12 @@ impl Tray for CtrlAssistTray {
                     }, action: |t| t.start_operation()),
             simple_item!(label: "Stop", icon: "media-playback-stop", enabled: is_running, action: |t| t.stop_operation()),
             MenuItem::Separator,
-            simple_item!(label: "Exit", icon: "application-exit", enabled: true, action: |t| { t.stop_operation(); std::process::exit(0); }),
+            simple_item!(label: "Exit", icon: "application-exit", enabled: true, action: |t| { 
+                t.stop_operation();
+                // Graceful termination is preferred, but for tray apps exit(0) is often required
+                // to break out of the native event loop immediately.
+                std::process::exit(0);
+            }),
         ]);
         items
     }
