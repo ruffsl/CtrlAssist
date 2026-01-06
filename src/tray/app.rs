@@ -3,7 +3,7 @@ use crate::demux_modes::DemuxModeType;
 use crate::mux_manager::{self, MuxConfig, MuxHandle};
 use crate::mux_modes::MuxModeType;
 use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
-use gilrs::Gilrs;
+use gilrs::{GamepadId, Gilrs};
 use ksni::{Category, MenuItem, Status, ToolTip, Tray, menu};
 use log::{error, info};
 use notify_rust::Notification;
@@ -14,6 +14,122 @@ use std::thread;
 
 use super::config::TrayConfig;
 use super::state::{OperationMode, OperationStatus, TrayState};
+
+/// Helper macro for simple standard menu items
+macro_rules! simple_item {
+    (
+        label: $label:expr,
+        icon: $icon:expr,
+        enabled: $enabled:expr,
+        action: |$this:ident| $action_expr:expr
+    ) => {
+        menu::StandardItem {
+            label: $label.into(),
+            icon_name: $icon.into(),
+            enabled: $enabled,
+            activate: Box::new(|$this: &mut CtrlAssistTray| $action_expr),
+            ..Default::default()
+        }
+        .into()
+    };
+}
+
+/// Macro for Controller Selection Submenus
+macro_rules! controller_menu {
+    (
+        label: $label_prefix:literal,
+        current_id: $current_id:expr,
+        name: $name:expr,
+        controllers: $controllers:expr,
+        enabled: $enabled:expr,
+        assign: |$state:ident, $id:ident| $block:block
+    ) => {{
+        let display_name = truncate_name(&$name);
+        let id_str = $current_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "#".to_string());
+
+        menu::SubMenu {
+            label: format!("{}: ({}) {}", $label_prefix, id_str, display_name),
+            icon_name: "input-gaming".into(),
+            enabled: $enabled,
+            submenu: if $controllers.is_empty() {
+                vec![]
+            } else {
+                vec![menu::RadioGroup {
+                    selected: $current_id
+                        .and_then(|id| $controllers.iter().position(|c| c.id == id))
+                        .unwrap_or(0),
+                    select: Box::new(|this: &mut CtrlAssistTray, index| {
+                        let mut $state = this.state.lock();
+                        if let Some(c) = $state.controllers.get(index) {
+                            let $id = c.id;
+                            $block
+                            let _ = $state.to_config().save();
+                        }
+                    }),
+                    options: $controllers
+                        .iter()
+                        .map(|c| menu::RadioItem {
+                            label: format!("({}) {}", c.id, c.name),
+                            enabled: $enabled,
+                            ..Default::default()
+                        })
+                        .collect(),
+                }
+                .into()]
+            },
+            ..Default::default()
+        }
+        .into()
+    }};
+}
+
+/// Macro for Enum Selection Submenus (Modes, Hide, Spoof, Rumble)
+macro_rules! enum_menu {
+    (
+        label: $label_fmt:literal,
+        icon: $icon:expr,
+        current: $current:expr,
+        type: $enum_type:ty,
+        variants: [ $($variant:ident),+ ],
+        enabled: $enabled:expr,
+        access: { $($access:tt)+ },
+        on_change: |$tray:ident, $state:ident, $new_val:ident| $change_block:block
+    ) => {{
+        let variants = vec![ $( <$enum_type>::$variant ),+ ];
+        let selected_idx = variants.iter().position(|v| v == &$current).unwrap_or(0);
+
+        menu::SubMenu {
+            label: format!($label_fmt, $current),
+            icon_name: $icon.into(),
+            enabled: true,
+            submenu: vec![menu::RadioGroup {
+                selected: selected_idx,
+                select: Box::new(move |$tray: &mut CtrlAssistTray, index| {
+                    let variants = vec![ $( <$enum_type>::$variant ),+ ];
+                    if let Some($new_val) = variants.get(index).cloned() {
+                        let mut state = $tray.state.lock();
+                        if state.$($access)+ != $new_val {
+                            state.$($access)+ = $new_val.clone();
+                            let $state = &mut state;
+                            $change_block
+                            let _ = $state.to_config().save();
+                        }
+                    }
+                }),
+                options: variants.iter().map(|v| {
+                    menu::RadioItem {
+                        label: format!("{:?}", v),
+                        enabled: $enabled,
+                        ..Default::default()
+                    }
+                }).collect(),
+            }.into()],
+            ..Default::default()
+        }.into()
+    }};
+}
 
 pub struct CtrlAssistTray {
     state: Arc<Mutex<TrayState>>,
@@ -244,53 +360,35 @@ impl CtrlAssistTray {
                 .collect();
             state.controllers = controllers;
 
-            // Try to keep selected controllers if still present for mux
-            if let Some(primary_id) = state.mux.selected_primary {
-                if !state.controllers.iter().any(|c| c.id == primary_id) {
-                    state.mux.selected_primary = state.controllers.first().map(|c| c.id);
-                }
-            } else {
-                state.mux.selected_primary = state.controllers.first().map(|c| c.id);
-            }
+            let validate = |sel: Option<GamepadId>, ctrls: &[super::state::ControllerInfo]| {
+                sel.filter(|id| ctrls.iter().any(|c| c.id == *id))
+            };
 
-            if let Some(assist_id) = state.mux.selected_assist {
-                if !state.controllers.iter().any(|c| c.id == assist_id) {
-                    state.mux.selected_assist = state.controllers.get(1).map(|c| c.id);
-                }
-            } else {
-                state.mux.selected_assist = state.controllers.get(1).map(|c| c.id);
-            }
-
-            // Try to keep selected controller if still present for demux
-            if let Some(primary_id) = state.demux.selected_primary {
-                if !state.controllers.iter().any(|c| c.id == primary_id) {
-                    state.demux.selected_primary = state.controllers.first().map(|c| c.id);
-                }
-            } else {
-                state.demux.selected_primary = state.controllers.first().map(|c| c.id);
-            }
+            state.mux.selected_primary = validate(state.mux.selected_primary, &state.controllers)
+                .or_else(|| state.controllers.first().map(|c| c.id));
+            state.mux.selected_assist = validate(state.mux.selected_assist, &state.controllers)
+                .or_else(|| state.controllers.get(1).map(|c| c.id));
+            state.demux.selected_primary =
+                validate(state.demux.selected_primary, &state.controllers)
+                    .or_else(|| state.controllers.first().map(|c| c.id));
         }
     }
 }
 
 impl Tray for CtrlAssistTray {
     const MENU_ON_ACTIVATE: bool = true;
-
     fn id(&self) -> String {
         "ctrlassist".into()
     }
-
     fn category(&self) -> Category {
         Category::ApplicationStatus
     }
 
     fn title(&self) -> String {
         let state = self.state.lock();
-        match (state.operation_mode, state.status) {
-            (OperationMode::Mux, OperationStatus::Running) => "CtrlAssist [Mux Running]".into(),
-            (OperationMode::Demux, OperationStatus::Running) => "CtrlAssist [Demux Running]".into(),
-            (OperationMode::Mux, OperationStatus::Stopped) => "CtrlAssist [Mux]".into(),
-            (OperationMode::Demux, OperationStatus::Stopped) => "CtrlAssist [Demux]".into(),
+        match state.status {
+            OperationStatus::Running => format!("CtrlAssist [{:?} Running]", state.operation_mode),
+            OperationStatus::Stopped => format!("CtrlAssist [{:?}]", state.operation_mode),
         }
     }
 
@@ -312,25 +410,28 @@ impl Tray for CtrlAssistTray {
 
     fn tool_tip(&self) -> ToolTip {
         let state = self.state.lock();
-        let description = match (state.operation_mode, state.status) {
-            (OperationMode::Mux, OperationStatus::Running) => format!(
-                "Muxing: {} + {}",
-                state.get_mux_primary_name(),
-                state.get_mux_assist_name()
-            ),
-            (OperationMode::Demux, OperationStatus::Running) => format!(
-                "Demuxing: {} to {} sinks",
-                state.get_demux_primary_name(),
-                state.demux.sinks
-            ),
-            (_, OperationStatus::Stopped) => "Not running".to_string(),
+        let description = if state.status == OperationStatus::Running {
+            match state.operation_mode {
+                OperationMode::Mux => format!(
+                    "Mux: {} + {}",
+                    state.get_mux_primary_name(),
+                    state.get_mux_assist_name()
+                ),
+                OperationMode::Demux => format!(
+                    "Demux: {} to {} sinks",
+                    state.get_demux_primary_name(),
+                    state.demux.sinks
+                ),
+            }
+        } else {
+            "Not running".into()
         };
 
         ToolTip {
-            icon_name: "input-gaming".into(),
-            icon_pixmap: vec![],
             title: "CtrlAssist".into(),
             description,
+            icon_name: "input-gaming".into(),
+            ..Default::default()
         }
     }
 
@@ -338,752 +439,226 @@ impl Tray for CtrlAssistTray {
         self.refresh_controllers();
         let state = self.state.lock();
         let is_running = state.status == OperationStatus::Running;
+        let op_mode = state.operation_mode;
 
-        let mut menu_items = vec![
-            // Operation Mode Selection
-            menu::SubMenu {
-                label: format!("Operation: {:?}", state.operation_mode),
-                icon_name: "swap-panels".into(),
+        let mut items = vec![
+            enum_menu!(
+                label: "Operation: {:?}",
+                icon: "swap-panels",
+                current: op_mode,
+                type: OperationMode,
+                variants: [Mux, Demux],
                 enabled: !is_running,
-                submenu: vec![menu::RadioGroup {
-                    selected: match state.operation_mode {
-                        OperationMode::Mux => 0,
-                        OperationMode::Demux => 1,
-                    },
-                    select: Box::new(|this: &mut Self, index| {
-                        let mut state = this.state.lock();
-                        state.operation_mode = match index {
-                            0 => OperationMode::Mux,
-                            1 => OperationMode::Demux,
-                            _ => return,
-                        };
-
-                        // Save config
-                        if let Err(e) = state.to_config().save() {
-                            error!("Failed to save config: {}", e);
-                        }
-                    }),
-                    options: vec![
-                        menu::RadioItem {
-                            label: "Mux".into(),
-                            enabled: !is_running,
-                            ..Default::default()
-                        },
-                        menu::RadioItem {
-                            label: "Demux".into(),
-                            enabled: !is_running,
-                            ..Default::default()
-                        },
-                    ],
-                    ..Default::default()
-                }
-                .into()],
-                ..Default::default()
-            }
-            .into(),
+                access: { operation_mode },
+                on_change: |_tray, _state, _val| {}
+            ),
             MenuItem::Separator,
         ];
 
-        // Add mode-specific configuration
-        match state.operation_mode {
+        match op_mode {
             OperationMode::Mux => {
-                menu_items.extend(create_mux_menu(&state, is_running));
+                items.extend(vec![
+                    simple_item!(
+                        label: "Refresh Controllers",
+                        icon: "view-refresh",
+                        enabled: !is_running,
+                        action: |t| t.refresh_controllers()
+                    ),
+                    controller_menu!(
+                        label: "Primary",
+                        current_id: state.mux.selected_primary,
+                        name: state.get_mux_primary_name(),
+                        controllers: state.controllers,
+                        enabled: !is_running,
+                        assign: |s, id| { s.mux.selected_primary = Some(id); }
+                    ),
+                    controller_menu!(
+                        label: "Assist",
+                        current_id: state.mux.selected_assist,
+                        name: state.get_mux_assist_name(),
+                        controllers: state.controllers,
+                        enabled: !is_running,
+                        assign: |s, id| { s.mux.selected_assist = Some(id); }
+                    ),
+                    MenuItem::Separator,
+                    enum_menu!(
+                        label: "Mode: {:?}",
+                        icon: "media-playlist-shuffle",
+                        current: state.mux.mode,
+                        type: MuxModeType,
+                        variants: [Priority, Average, Toggle],
+                        enabled: true,
+                        access: { mux.mode },
+                        on_change: |_t, s, v| {
+                            if let Some(r) = &s.mux.runtime_settings { r.update_mode(v.clone()); }
+                        }
+                    ),
+                    enum_menu!(
+                        label: "Hide: {:?}",
+                        icon: "view-visible",
+                        current: state.mux.hide,
+                        type: HideType,
+                        variants: [None, Steam, System],
+                        enabled: !is_running,
+                        access: { mux.hide },
+                        on_change: |_t, _s, _v| {}
+                    ),
+                    enum_menu!(
+                        label: "Spoof: {:?}",
+                        icon: "edit-copy",
+                        current: state.mux.spoof,
+                        type: SpoofTarget,
+                        variants: [None, Primary, Assist],
+                        enabled: !is_running,
+                        access: { mux.spoof },
+                        on_change: |_t, _s, _v| {}
+                    ),
+                    enum_menu!(
+                        label: "Rumble: {:?}",
+                        icon: "notification-active",
+                        current: state.mux.rumble,
+                        type: RumbleTarget,
+                        variants: [Both, Primary, Assist, None],
+                        enabled: true,
+                        access: { mux.rumble },
+                        on_change: |_t, s, v| {
+                            if let Some(r) = &s.mux.runtime_settings { r.update_rumble(v.clone()); }
+                        }
+                    ),
+                ]);
             }
             OperationMode::Demux => {
-                menu_items.extend(create_demux_menu(&state, is_running));
+                items.extend(vec![
+                    simple_item!(
+                        label: "Refresh",
+                        icon: "view-refresh",
+                        enabled: !is_running,
+                        action: |t| t.refresh_controllers()
+                    ),
+                    controller_menu!(
+                        label: "Primary",
+                        current_id: state.demux.selected_primary,
+                        name: state.get_demux_primary_name(),
+                        controllers: state.controllers,
+                        enabled: !is_running,
+                        assign: |s, id| { s.demux.selected_primary = Some(id); }
+                    ),
+                    // Sinks Management
+                    menu::SubMenu {
+                        label: format!("Sinks: {}", state.demux.sinks),
+                        icon_name: "list-add".into(),
+                        enabled: !is_running,
+                        submenu: vec![
+                            menu::StandardItem {
+                                label: "Increment (+1)".into(),
+                                icon_name: "list-add".into(),
+                                enabled: !is_running,
+                                activate: Box::new(|this: &mut CtrlAssistTray| {
+                                    let mut state = this.state.lock();
+                                    state.demux.sinks += 1;
+                                    if let Err(e) = state.to_config().save() {
+                                        error!("Failed to save config: {}", e);
+                                    }
+                                }),
+                                ..Default::default()
+                            }
+                            .into(),
+                            menu::StandardItem {
+                                label: "Decrement (-1)".into(),
+                                icon_name: "list-remove".into(),
+                                enabled: !is_running && state.demux.sinks > 1,
+                                activate: Box::new(|this: &mut CtrlAssistTray| {
+                                    let mut state = this.state.lock();
+                                    if state.demux.sinks > 1 {
+                                        state.demux.sinks -= 1;
+                                    }
+                                    if let Err(e) = state.to_config().save() {
+                                        error!("Failed to save config: {}", e);
+                                    }
+                                }),
+                                ..Default::default()
+                            }
+                            .into(),
+                            menu::StandardItem {
+                                label: "Reset (to 2)".into(),
+                                icon_name: "view-refresh".into(),
+                                enabled: !is_running,
+                                activate: Box::new(|this: &mut CtrlAssistTray| {
+                                    let mut state = this.state.lock();
+                                    state.demux.sinks = 2;
+                                    if let Err(e) = state.to_config().save() {
+                                        error!("Failed to save config: {}", e);
+                                    }
+                                }),
+                                ..Default::default()
+                            }
+                            .into(),
+                        ],
+                        ..Default::default()
+                    }
+                    .into(),
+                    MenuItem::Separator,
+                    enum_menu!(
+                        label: "Mode: {:?}",
+                        icon: "media-playlist-shuffle",
+                        current: state.demux.mode,
+                        type: DemuxModeType,
+                        variants: [Unicast, Multicast],
+                        enabled: true,
+                        access: { demux.mode },
+                        on_change: |_t, s, v| {
+                            if let Some(r) = &s.demux.runtime_settings { r.update_mode(v.clone()); }
+                        }
+                    ),
+                    enum_menu!(
+                        label: "Hide: {:?}",
+                        icon: "view-visible",
+                        current: state.demux.hide,
+                        type: HideType,
+                        variants: [None, Steam, System],
+                        enabled: !is_running,
+                        access: { demux.hide },
+                        on_change: |_t, _s, _v| {}
+                    ),
+                    enum_menu!(
+                        label: "Spoof: {:?}",
+                        icon: "edit-copy",
+                        current: state.demux.spoof,
+                        type: SpoofTarget,
+                        variants: [None, Primary],
+                        enabled: !is_running,
+                        access: { demux.spoof },
+                        on_change: |_t, _s, _v| {}
+                    ),
+                    enum_menu!(
+                        label: "Rumble: {:?}",
+                        icon: "notification-active",
+                        current: state.demux.rumble,
+                        type: DemuxRumbleTarget,
+                        variants: [Active, None],
+                        enabled: true,
+                        access: { demux.rumble },
+                        on_change: |_t, s, v| {
+                            if let Some(r) = &s.demux.runtime_settings { r.update_rumble(v.clone()); }
+                        }
+                    ),
+                ]);
             }
         }
 
-        menu_items.extend(vec![
+        items.extend(vec![
             MenuItem::Separator,
-            // Start/Stop
-            menu::StandardItem {
-                label: format!(
-                    "Start {}",
-                    match state.operation_mode {
-                        OperationMode::Mux => "Mux",
-                        OperationMode::Demux => "Demux",
-                    }
-                ),
-                icon_name: "media-playback-start".into(),
-                enabled: !is_running
+            simple_item!(label: "Start", icon: "media-playback-start", enabled: !is_running
                     && match state.operation_mode {
                         OperationMode::Mux => state.is_valid_for_mux_start(),
                         OperationMode::Demux => state.is_valid_for_demux_start(),
-                    },
-                activate: Box::new(|this: &mut Self| {
-                    this.start_operation();
-                }),
-                ..Default::default()
-            }
-            .into(),
-            menu::StandardItem {
-                label: "Stop".into(),
-                icon_name: "media-playback-stop".into(),
-                enabled: is_running,
-                activate: Box::new(|this: &mut Self| {
-                    this.stop_operation();
-                }),
-                ..Default::default()
-            }
-            .into(),
+                    }, action: |t| t.start_operation()),
+            simple_item!(label: "Stop", icon: "media-playback-stop", enabled: is_running, action: |t| t.stop_operation()),
             MenuItem::Separator,
-            // Exit
-            menu::StandardItem {
-                label: "Exit".into(),
-                icon_name: "application-exit".into(),
-                activate: Box::new(|this: &mut Self| {
-                    this.stop_operation();
-                    std::process::exit(0);
-                }),
-                ..Default::default()
-            }
-            .into(),
+            simple_item!(label: "Exit", icon: "application-exit", enabled: true, action: |t| { t.stop_operation(); std::process::exit(0); }),
         ]);
-
-        menu_items
+        items
     }
-}
-
-// Create mux-specific menu items
-fn create_mux_menu(
-    state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
-    is_running: bool,
-) -> Vec<MenuItem<CtrlAssistTray>> {
-    vec![
-        // Refresh controllers
-        menu::StandardItem {
-            label: "Refresh Controllers".into(),
-            icon_name: "view-refresh".into(),
-            enabled: !is_running,
-            activate: Box::new(|this: &mut CtrlAssistTray| {
-                this.refresh_controllers();
-            }),
-            ..Default::default()
-        }
-        .into(),
-        // Primary Controller Selection
-        menu::SubMenu {
-            label: format!(
-                "Primary: ({}) {}",
-                state
-                    .mux
-                    .selected_primary
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| "#".to_string()),
-                truncate_name(&state.get_mux_primary_name())
-            ),
-            icon_name: "input-gaming".into(),
-            enabled: !is_running,
-            submenu: if state.controllers.is_empty() {
-                vec![]
-            } else {
-                vec![menu::RadioGroup {
-                    selected: state
-                        .mux
-                        .selected_primary
-                        .and_then(|id| state.controllers.iter().position(|c| c.id == id))
-                        .unwrap_or(0),
-                    select: Box::new(|this: &mut CtrlAssistTray, index| {
-                        let mut state = this.state.lock();
-                        if let Some(controller) = state.controllers.get(index) {
-                            state.mux.selected_primary = Some(controller.id);
-                        }
-                    }),
-                    options: state
-                        .controllers
-                        .iter()
-                        .map(|c| menu::RadioItem {
-                            label: format!("({}) {}", c.id, c.name),
-                            enabled: !is_running,
-                            ..Default::default()
-                        })
-                        .collect(),
-                    ..Default::default()
-                }
-                .into()]
-            },
-            ..Default::default()
-        }
-        .into(),
-        // Assist Controller Selection
-        menu::SubMenu {
-            label: format!(
-                "Assist: ({}) {}",
-                state
-                    .mux
-                    .selected_assist
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| "#".to_string()),
-                truncate_name(&state.get_mux_assist_name())
-            ),
-            icon_name: "input-gaming".into(),
-            enabled: !is_running,
-            submenu: if state.controllers.is_empty() {
-                vec![]
-            } else {
-                vec![menu::RadioGroup {
-                    selected: state
-                        .mux
-                        .selected_assist
-                        .and_then(|id| state.controllers.iter().position(|c| c.id == id))
-                        .unwrap_or(0),
-                    select: Box::new(|this: &mut CtrlAssistTray, index| {
-                        let mut state = this.state.lock();
-                        if let Some(controller) = state.controllers.get(index) {
-                            state.mux.selected_assist = Some(controller.id);
-                        }
-                    }),
-                    options: state
-                        .controllers
-                        .iter()
-                        .map(|c| menu::RadioItem {
-                            label: format!("({}) {}", c.id, c.name),
-                            enabled: !is_running,
-                            ..Default::default()
-                        })
-                        .collect(),
-                    ..Default::default()
-                }
-                .into()]
-            },
-            ..Default::default()
-        }
-        .into(),
-        MenuItem::Separator,
-        // Mux Mode
-        menu::SubMenu {
-            label: format!("Mode: {:?}", state.mux.mode),
-            icon_name: "media-playlist-shuffle".into(),
-            enabled: true,
-            submenu: vec![menu::RadioGroup {
-                selected: match state.mux.mode {
-                    MuxModeType::Priority => 0,
-                    MuxModeType::Average => 1,
-                    MuxModeType::Toggle => 2,
-                },
-                select: Box::new(|this: &mut CtrlAssistTray, index| {
-                    let mut state = this.state.lock();
-                    let new_mode = match index {
-                        0 => MuxModeType::Priority,
-                        1 => MuxModeType::Average,
-                        2 => MuxModeType::Toggle,
-                        _ => return,
-                    };
-                    let old_mode = state.mux.mode.clone();
-                    state.mux.mode = new_mode.clone();
-
-                    if old_mode != new_mode {
-                        // If running, update live
-                        if state.status == OperationStatus::Running
-                            && state.operation_mode == OperationMode::Mux
-                            && let Some(runtime_settings) = &state.mux.runtime_settings
-                        {
-                            runtime_settings.update_mode(new_mode.clone());
-                            CtrlAssistTray::send_notification(
-                                "CtrlAssist - Mode Changed",
-                                &format!("Mux mode changed from {:?} to {:?}", old_mode, new_mode),
-                            );
-                        }
-
-                        // Save config
-                        if let Err(e) = state.to_config().save() {
-                            error!("Failed to save config: {}", e);
-                        }
-                    }
-                }),
-                options: vec![
-                    menu::RadioItem {
-                        label: "Priority".into(),
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "Average".into(),
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "Toggle".into(),
-                        ..Default::default()
-                    },
-                ],
-                ..Default::default()
-            }
-            .into()],
-            ..Default::default()
-        }
-        .into(),
-        // Hide Strategy
-        menu::SubMenu {
-            label: format!("Hide: {:?}", state.mux.hide),
-            icon_name: "view-visible".into(),
-            enabled: !is_running,
-            submenu: vec![menu::RadioGroup {
-                selected: match state.mux.hide {
-                    HideType::None => 0,
-                    HideType::Steam => 1,
-                    HideType::System => 2,
-                },
-                select: Box::new(|this: &mut CtrlAssistTray, index| {
-                    let mut state = this.state.lock();
-                    state.mux.hide = match index {
-                        0 => HideType::None,
-                        1 => HideType::Steam,
-                        2 => HideType::System,
-                        _ => return,
-                    };
-                }),
-                options: vec![
-                    menu::RadioItem {
-                        label: "None".into(),
-                        enabled: !is_running,
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "Steam".into(),
-                        enabled: !is_running,
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "System".into(),
-                        enabled: !is_running,
-                        ..Default::default()
-                    },
-                ],
-                ..Default::default()
-            }
-            .into()],
-            ..Default::default()
-        }
-        .into(),
-        // Spoof Target
-        menu::SubMenu {
-            label: format!("Spoof: {:?}", state.mux.spoof),
-            icon_name: "edit-copy".into(),
-            enabled: !is_running,
-            submenu: vec![menu::RadioGroup {
-                selected: match state.mux.spoof {
-                    SpoofTarget::None => 0,
-                    SpoofTarget::Primary => 1,
-                    SpoofTarget::Assist => 2,
-                },
-                select: Box::new(|this: &mut CtrlAssistTray, index| {
-                    let mut state = this.state.lock();
-                    state.mux.spoof = match index {
-                        0 => SpoofTarget::None,
-                        1 => SpoofTarget::Primary,
-                        2 => SpoofTarget::Assist,
-                        _ => return,
-                    };
-                }),
-                options: vec![
-                    menu::RadioItem {
-                        label: "None".into(),
-                        enabled: !is_running,
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "Primary".into(),
-                        enabled: !is_running,
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "Assist".into(),
-                        enabled: !is_running,
-                        ..Default::default()
-                    },
-                ],
-                ..Default::default()
-            }
-            .into()],
-            ..Default::default()
-        }
-        .into(),
-        // Rumble Target
-        menu::SubMenu {
-            label: format!("Rumble: {:?}", state.mux.rumble),
-            icon_name: "notification-active".into(),
-            enabled: true,
-            submenu: vec![menu::RadioGroup {
-                selected: match state.mux.rumble {
-                    RumbleTarget::Both => 0,
-                    RumbleTarget::Primary => 1,
-                    RumbleTarget::Assist => 2,
-                    RumbleTarget::None => 3,
-                },
-                select: Box::new(|this: &mut CtrlAssistTray, index| {
-                    let mut state = this.state.lock();
-                    let new_rumble = match index {
-                        0 => RumbleTarget::Both,
-                        1 => RumbleTarget::Primary,
-                        2 => RumbleTarget::Assist,
-                        3 => RumbleTarget::None,
-                        _ => return,
-                    };
-                    let old_rumble = state.mux.rumble.clone();
-                    state.mux.rumble = new_rumble.clone();
-
-                    if old_rumble != new_rumble {
-                        // If running, update live
-                        if state.status == OperationStatus::Running
-                            && state.operation_mode == OperationMode::Mux
-                            && let Some(runtime_settings) = &state.mux.runtime_settings
-                        {
-                            runtime_settings.update_rumble(new_rumble.clone());
-                            CtrlAssistTray::send_notification(
-                                "CtrlAssist - Rumble Changed",
-                                &format!(
-                                    "Rumble target changed from {:?} to {:?}",
-                                    old_rumble, new_rumble
-                                ),
-                            );
-                        }
-
-                        // Save config
-                        if let Err(e) = state.to_config().save() {
-                            error!("Failed to save config: {}", e);
-                        }
-                    }
-                }),
-                options: vec![
-                    menu::RadioItem {
-                        label: "Both".into(),
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "Primary".into(),
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "Assist".into(),
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "None".into(),
-                        ..Default::default()
-                    },
-                ],
-                ..Default::default()
-            }
-            .into()],
-            ..Default::default()
-        }
-        .into(),
-    ]
-}
-
-// Create demux-specific menu items
-fn create_demux_menu(
-    state: &parking_lot::lock_api::MutexGuard<parking_lot::RawMutex, TrayState>,
-    is_running: bool,
-) -> Vec<MenuItem<CtrlAssistTray>> {
-    vec![
-        // Refresh controllers
-        menu::StandardItem {
-            label: "Refresh Controllers".into(),
-            icon_name: "view-refresh".into(),
-            enabled: !is_running,
-            activate: Box::new(|this: &mut CtrlAssistTray| {
-                this.refresh_controllers();
-            }),
-            ..Default::default()
-        }
-        .into(),
-        // Primary Controller Selection
-        menu::SubMenu {
-            label: format!(
-                "Primary: ({}) {}",
-                state
-                    .demux
-                    .selected_primary
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| "#".to_string()),
-                truncate_name(&state.get_demux_primary_name())
-            ),
-            icon_name: "input-gaming".into(),
-            enabled: !is_running,
-            submenu: if state.controllers.is_empty() {
-                vec![]
-            } else {
-                vec![menu::RadioGroup {
-                    selected: state
-                        .demux
-                        .selected_primary
-                        .and_then(|id| state.controllers.iter().position(|c| c.id == id))
-                        .unwrap_or(0),
-                    select: Box::new(|this: &mut CtrlAssistTray, index| {
-                        let mut state = this.state.lock();
-                        if let Some(controller) = state.controllers.get(index) {
-                            state.demux.selected_primary = Some(controller.id);
-                        }
-                    }),
-                    options: state
-                        .controllers
-                        .iter()
-                        .map(|c| menu::RadioItem {
-                            label: format!("({}) {}", c.id, c.name),
-                            enabled: !is_running,
-                            ..Default::default()
-                        })
-                        .collect(),
-                    ..Default::default()
-                }
-                .into()]
-            },
-            ..Default::default()
-        }
-        .into(),
-        MenuItem::Separator,
-        // Sinks Management
-        menu::SubMenu {
-            label: format!("Sinks: {}", state.demux.sinks),
-            icon_name: "list-add".into(),
-            enabled: !is_running,
-            submenu: vec![
-                menu::StandardItem {
-                    label: "Increment (+1)".into(),
-                    icon_name: "list-add".into(),
-                    enabled: !is_running,
-                    activate: Box::new(|this: &mut CtrlAssistTray| {
-                        let mut state = this.state.lock();
-                        state.demux.sinks += 1;
-                        if let Err(e) = state.to_config().save() {
-                            error!("Failed to save config: {}", e);
-                        }
-                    }),
-                    ..Default::default()
-                }
-                .into(),
-                menu::StandardItem {
-                    label: "Decrement (-1)".into(),
-                    icon_name: "list-remove".into(),
-                    enabled: !is_running && state.demux.sinks > 1,
-                    activate: Box::new(|this: &mut CtrlAssistTray| {
-                        let mut state = this.state.lock();
-                        if state.demux.sinks > 1 {
-                            state.demux.sinks -= 1;
-                        }
-                        if let Err(e) = state.to_config().save() {
-                            error!("Failed to save config: {}", e);
-                        }
-                    }),
-                    ..Default::default()
-                }
-                .into(),
-                menu::StandardItem {
-                    label: "Reset (to 2)".into(),
-                    icon_name: "view-refresh".into(),
-                    enabled: !is_running,
-                    activate: Box::new(|this: &mut CtrlAssistTray| {
-                        let mut state = this.state.lock();
-                        state.demux.sinks = 2;
-                        if let Err(e) = state.to_config().save() {
-                            error!("Failed to save config: {}", e);
-                        }
-                    }),
-                    ..Default::default()
-                }
-                .into(),
-            ],
-            ..Default::default()
-        }
-        .into(),
-        // Demux Mode
-        menu::SubMenu {
-            label: format!("Mode: {:?}", state.demux.mode),
-            icon_name: "media-playlist-shuffle".into(),
-            enabled: true,
-            submenu: vec![menu::RadioGroup {
-                selected: match state.demux.mode {
-                    DemuxModeType::Unicast => 0,
-                    DemuxModeType::Multicast => 1,
-                },
-                select: Box::new(|this: &mut CtrlAssistTray, index| {
-                    let mut state = this.state.lock();
-                    let new_mode = match index {
-                        0 => DemuxModeType::Unicast,
-                        1 => DemuxModeType::Multicast,
-                        _ => return,
-                    };
-                    let old_mode = state.demux.mode.clone();
-                    state.demux.mode = new_mode.clone();
-
-                    if old_mode != new_mode {
-                        // If running, update live
-                        if state.status == OperationStatus::Running
-                            && state.operation_mode == OperationMode::Demux
-                            && let Some(runtime_settings) = &state.demux.runtime_settings
-                        {
-                            runtime_settings.update_mode(new_mode.clone());
-                            CtrlAssistTray::send_notification(
-                                "CtrlAssist - Mode Changed",
-                                &format!(
-                                    "Demux mode changed from {:?} to {:?}",
-                                    old_mode, new_mode
-                                ),
-                            );
-                        }
-
-                        // Save config
-                        if let Err(e) = state.to_config().save() {
-                            error!("Failed to save config: {}", e);
-                        }
-                    }
-                }),
-                options: vec![
-                    menu::RadioItem {
-                        label: "Unicast".into(),
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "Multicast".into(),
-                        ..Default::default()
-                    },
-                ],
-                ..Default::default()
-            }
-            .into()],
-            ..Default::default()
-        }
-        .into(),
-        // Hide Strategy
-        menu::SubMenu {
-            label: format!("Hide: {:?}", state.demux.hide),
-            icon_name: "view-visible".into(),
-            enabled: !is_running,
-            submenu: vec![menu::RadioGroup {
-                selected: match state.demux.hide {
-                    HideType::None => 0,
-                    HideType::Steam => 1,
-                    HideType::System => 2,
-                },
-                select: Box::new(|this: &mut CtrlAssistTray, index| {
-                    let mut state = this.state.lock();
-                    state.demux.hide = match index {
-                        0 => HideType::None,
-                        1 => HideType::Steam,
-                        2 => HideType::System,
-                        _ => return,
-                    };
-                }),
-                options: vec![
-                    menu::RadioItem {
-                        label: "None".into(),
-                        enabled: !is_running,
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "Steam".into(),
-                        enabled: !is_running,
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "System".into(),
-                        enabled: !is_running,
-                        ..Default::default()
-                    },
-                ],
-                ..Default::default()
-            }
-            .into()],
-            ..Default::default()
-        }
-        .into(),
-        // Spoof Target
-        menu::SubMenu {
-            label: format!("Spoof: {:?}", state.demux.spoof),
-            icon_name: "edit-copy".into(),
-            enabled: !is_running,
-            submenu: vec![menu::RadioGroup {
-                selected: match state.demux.spoof {
-                    SpoofTarget::None => 0,
-                    SpoofTarget::Primary => 1,
-                    SpoofTarget::Assist => 2, // Won't be used in demux
-                },
-                select: Box::new(|this: &mut CtrlAssistTray, index| {
-                    let mut state = this.state.lock();
-                    state.demux.spoof = match index {
-                        0 => SpoofTarget::None,
-                        1 => SpoofTarget::Primary,
-                        _ => return,
-                    };
-                }),
-                options: vec![
-                    menu::RadioItem {
-                        label: "None".into(),
-                        enabled: !is_running,
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "Primary".into(),
-                        enabled: !is_running,
-                        ..Default::default()
-                    },
-                ],
-                ..Default::default()
-            }
-            .into()],
-            ..Default::default()
-        }
-        .into(),
-        // Rumble Target
-        menu::SubMenu {
-            label: format!("Rumble: {:?}", state.demux.rumble),
-            icon_name: "notification-active".into(),
-            enabled: true,
-            submenu: vec![menu::RadioGroup {
-                selected: match state.demux.rumble {
-                    DemuxRumbleTarget::Active => 0,
-                    DemuxRumbleTarget::None => 1,
-                },
-                select: Box::new(|this: &mut CtrlAssistTray, index| {
-                    let mut state = this.state.lock();
-                    let new_rumble = match index {
-                        0 => DemuxRumbleTarget::Active,
-                        1 => DemuxRumbleTarget::None,
-                        _ => return,
-                    };
-                    let old_rumble = state.demux.rumble.clone();
-                    state.demux.rumble = new_rumble.clone();
-
-                    if old_rumble != new_rumble {
-                        // If running, update live
-                        if state.status == OperationStatus::Running
-                            && state.operation_mode == OperationMode::Demux
-                            && let Some(runtime_settings) = &state.demux.runtime_settings
-                        {
-                            runtime_settings.update_rumble(new_rumble.clone());
-                            CtrlAssistTray::send_notification(
-                                "CtrlAssist - Rumble Changed",
-                                &format!(
-                                    "Rumble target changed from {:?} to {:?}",
-                                    old_rumble, new_rumble
-                                ),
-                            );
-                        }
-
-                        // Save config
-                        if let Err(e) = state.to_config().save() {
-                            error!("Failed to save config: {}", e);
-                        }
-                    }
-                }),
-                options: vec![
-                    menu::RadioItem {
-                        label: "Active".into(),
-                        ..Default::default()
-                    },
-                    menu::RadioItem {
-                        label: "None".into(),
-                        ..Default::default()
-                    },
-                ],
-                ..Default::default()
-            }
-            .into()],
-            ..Default::default()
-        }
-        .into(),
-    ]
 }
 
 // Helper function to start mux and update state
@@ -1091,18 +666,11 @@ fn start_mux_with_state(
     config: MuxConfig,
     state_arc: Arc<Mutex<TrayState>>,
 ) -> Result<MuxHandle, Box<dyn Error>> {
-    let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {}", e))?;
-    let (mux_handle, runtime_settings) = mux_manager::start_mux(gilrs, config)?;
-
-    // Store handle reference in state
-    {
-        let mut state = state_arc.lock();
-        state.virtual_device_paths = vec![mux_handle.virtual_device_path.clone()];
-        state.shutdown_signal = Some(Arc::clone(&mux_handle.shutdown));
-        state.mux.runtime_settings = Some(runtime_settings);
-    }
-
-    Ok(mux_handle)
+    let (h, r) = mux_manager::start_mux(Gilrs::new()?, config)?;
+    let mut s = state_arc.lock();
+    s.virtual_device_paths = vec![h.virtual_device_path.clone()];
+    s.mux.runtime_settings = Some(r);
+    Ok(h)
 }
 
 // Helper function to start demux and update state
@@ -1110,27 +678,17 @@ fn start_demux_with_state(
     config: DemuxConfig,
     state_arc: Arc<Mutex<TrayState>>,
 ) -> Result<DemuxHandle, Box<dyn Error>> {
-    let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {}", e))?;
-    let (demux_handle, runtime_settings) = demux_manager::start_demux(gilrs, config)?;
-
-    // Store handle reference in state
-    {
-        let mut state = state_arc.lock();
-        state.virtual_device_paths = demux_handle.virtual_device_paths.clone();
-        state.shutdown_signal = Some(Arc::clone(&demux_handle.shutdown));
-        state.demux.runtime_settings = Some(runtime_settings);
-    }
-
-    Ok(demux_handle)
+    let (h, r) = demux_manager::start_demux(Gilrs::new()?, config)?;
+    let mut s = state_arc.lock();
+    s.virtual_device_paths = h.virtual_device_paths.clone();
+    s.demux.runtime_settings = Some(r);
+    Ok(h)
 }
 
 // Helper to truncate controller name for SubMenu label
 fn truncate_name(name: &str) -> String {
-    const MAX_LEN: usize = 17;
-    const ELLIPSIS: &str = "...";
-    if name.len() > MAX_LEN {
-        let cutoff = MAX_LEN - ELLIPSIS.len();
-        format!("{}{}", &name[..cutoff], ELLIPSIS)
+    if name.len() > 17 {
+        format!("{}...", &name[..14])
     } else {
         name.to_string()
     }

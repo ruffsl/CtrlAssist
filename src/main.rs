@@ -96,7 +96,7 @@ struct DemuxArgs {
     rumble: DemuxRumbleTarget,
 }
 
-#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub enum HideType {
     #[default]
     None,
@@ -104,7 +104,7 @@ pub enum HideType {
     System,
 }
 
-#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub enum SpoofTarget {
     Primary,
     Assist,
