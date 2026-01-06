@@ -9,8 +9,7 @@ use log::{error, info};
 use notify_rust::Notification;
 use parking_lot::Mutex;
 use std::error::Error;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 
 use super::config::TrayConfig;
@@ -134,8 +133,8 @@ macro_rules! enum_menu {
 
 pub struct CtrlAssistTray {
     state: Arc<Mutex<TrayState>>,
-    /// Used an AtomicBool for a cleaner, thread-safe shutdown flag.
-    shutdown_flag: Arc<AtomicBool>,
+    /// Store shutdown sender for signaling
+    shutdown_tx: Option<mpsc::Sender<()>>,
 }
 
 impl CtrlAssistTray {
@@ -146,7 +145,7 @@ impl CtrlAssistTray {
 
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
-            shutdown_flag: Arc::new(AtomicBool::new(false)),
+            shutdown_tx: None,
         })
     }
 
@@ -223,24 +222,20 @@ impl CtrlAssistTray {
             rumble: state.mux.rumble.clone(),
         };
 
-        // Reset and share the shutdown flag
-        self.shutdown_flag.store(false, Ordering::SeqCst);
-        let stop_signal = Arc::clone(&self.shutdown_flag);
+        // Use a channel for shutdown signaling
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+        self.shutdown_tx = Some(shutdown_tx);
         let state_arc = Arc::clone(&self.state);
 
-        let handle = thread::spawn(move || {
-            match start_mux_with_state(config, state_arc) {
-                Ok(mux_handle) => {
-                    // Spin-wait or block until flag is set
-                    while !stop_signal.load(Ordering::SeqCst) {
-                        thread::park_timeout(std::time::Duration::from_millis(100));
-                    }
-                    mux_handle.shutdown();
-                }
-                Err(e) => {
-                    error!("Mux thread error: {}", e);
-                    Self::send_notification("CtrlAssist - Error", &format!("Mux failed: {}", e));
-                }
+        let handle = thread::spawn(move || match start_mux_with_state(config, state_arc) {
+            Ok(mux_handle) => {
+                // Wait for shutdown signal (blocks efficiently)
+                let _ = shutdown_rx.recv();
+                mux_handle.shutdown();
+            }
+            Err(e) => {
+                error!("Mux thread error: {}", e);
+                Self::send_notification("CtrlAssist - Error", &format!("Mux failed: {}", e));
             }
         });
 
@@ -280,15 +275,15 @@ impl CtrlAssistTray {
             rumble: state.demux.rumble.clone(),
         };
 
-        self.shutdown_flag.store(false, Ordering::SeqCst);
-        let stop_signal = Arc::clone(&self.shutdown_flag);
+        // Use a channel for shutdown signaling
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+        self.shutdown_tx = Some(shutdown_tx);
         let state_arc = Arc::clone(&self.state);
 
         let handle = thread::spawn(move || match start_demux_with_state(config, state_arc) {
             Ok(demux_handle) => {
-                while !stop_signal.load(Ordering::SeqCst) {
-                    thread::park_timeout(std::time::Duration::from_millis(100));
-                }
+                // Wait for shutdown signal (blocks efficiently)
+                let _ = shutdown_rx.recv();
                 demux_handle.shutdown();
             }
             Err(e) => {
@@ -315,13 +310,14 @@ impl CtrlAssistTray {
 
         info!("Stopping operation");
 
-        // Set the flag and unpark the thread if it's sleeping
-        self.shutdown_flag.store(true, Ordering::SeqCst);
+        // Signal shutdown via channel
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
 
         state.virtual_device_paths.clear();
 
         if let Some(handle) = state.operation_handle.take() {
-            handle.thread().unpark();
             // Drop lock to avoid deadlock during join if thread tries to lock state while stopping
             drop(state);
             let _ = handle.join();
