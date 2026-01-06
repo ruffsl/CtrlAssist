@@ -166,14 +166,11 @@ impl CtrlAssistTray {
     }
 
     fn start_operation(&mut self) {
-        // Locked once to validate and determine mode
-        let (mode, valid) = {
-            let s = self.state.lock();
-            let v = match s.operation_mode {
-                OperationMode::Mux => s.is_valid_for_mux_start(),
-                OperationMode::Demux => s.is_valid_for_demux_start(),
-            };
-            (s.operation_mode, v)
+        let state = self.state.lock();
+        let mode = state.operation_mode;
+        let valid = match mode {
+            OperationMode::Mux => state.is_valid_for_mux_start(),
+            OperationMode::Demux => state.is_valid_for_demux_start(),
         };
 
         if !valid {
@@ -186,8 +183,14 @@ impl CtrlAssistTray {
         }
 
         match mode {
-            OperationMode::Mux => self.start_mux(),
-            OperationMode::Demux => self.start_demux(),
+            OperationMode::Mux => {
+                drop(state);
+                self.start_mux();
+            }
+            OperationMode::Demux => {
+                drop(state);
+                self.start_demux();
+            }
         }
     }
 
