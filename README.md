@@ -352,7 +352,7 @@ primary_name = "Microsoft Xbox One"
 sinks = 2
 mode = "Unicast"
 hide = "Steam"
-spoof = "Primary"
+spoof = "None"
 rumble = "Active"
 ```
 
