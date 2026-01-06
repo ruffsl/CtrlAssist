@@ -56,27 +56,29 @@ macro_rules! controller_menu {
             submenu: if $controllers.is_empty() {
                 vec![]
             } else {
-                vec![menu::RadioGroup {
-                    selected: $current_id
-                        .and_then(|id| $controllers.iter().position(|c| c.id == id))
-                        .unwrap_or(0),
-                    select: Box::new(|this: &mut CtrlAssistTray, index| {
-                        let mut $state = this.state.lock();
-                        if let Some(c) = $state.controllers.get(index) {
-                            let $id = c.id;
-                            $block
-                        }
-                    }),
-                    options: $controllers
-                        .iter()
-                        .map(|c| menu::RadioItem {
-                            label: format!("({}) {}", c.id, c.name),
-                            enabled: $enabled,
-                            ..Default::default()
-                        })
-                        .collect(),
-                }
-                .into()]
+                vec![
+                    menu::RadioGroup {
+                        selected: $current_id
+                            .and_then(|id| $controllers.iter().position(|c| c.id == id))
+                            .unwrap_or(0),
+                        select: Box::new(|this: &mut CtrlAssistTray, index| {
+                            let mut $state = this.state.lock();
+                            if let Some(c) = $state.controllers.get(index) {
+                                let $id = c.id;
+                                $block
+                            }
+                        }),
+                        options: $controllers
+                            .iter()
+                            .map(|c| menu::RadioItem {
+                                label: format!("({}) {}", c.id, c.name),
+                                enabled: $enabled,
+                                ..Default::default()
+                            })
+                            .collect(),
+                    }
+                    .into(),
+                ]
             },
             ..Default::default()
         }
