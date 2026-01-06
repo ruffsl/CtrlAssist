@@ -671,8 +671,11 @@ fn start_demux_with_state(
 
 // Helper to truncate controller name for SubMenu label
 fn truncate_name(name: &str) -> String {
-    if name.len() > 17 {
-        format!("{}...", &name[..14])
+    const MAX_LEN: usize = 17;
+    const ELLIPSIS: &str = "...";
+    if name.len() > MAX_LEN {
+        let cutoff = MAX_LEN - ELLIPSIS.len();
+        format!("{}{}", &name[..cutoff], ELLIPSIS)
     } else {
         name.to_string()
     }
