@@ -107,14 +107,16 @@ macro_rules! enum_menu {
             enabled: $enabled,
             submenu: vec![menu::RadioGroup {
                 selected: selected_idx,
-                select: Box::new(move |$tray: &mut CtrlAssistTray, index| {
-                    let variants = vec![ $( <$enum_type>::$variant ),+ ];
-                    if let Some($new_val) = variants.get(index).cloned() {
-                        let mut state = $tray.state.lock();
-                        if state.$($access)+ != $new_val {
-                            state.$($access)+ = $new_val.clone();
-                            let $state = &mut state;
-                            $change_block
+                select: Box::new({
+                    let variants = variants.clone();
+                    move |$tray: &mut CtrlAssistTray, index| {
+                        if let Some($new_val) = variants.get(index).cloned() {
+                            let mut state = $tray.state.lock();
+                            if state.$($access)+ != $new_val {
+                                state.$($access)+ = $new_val.clone();
+                                let $state = &mut state;
+                                $change_block
+                            }
                         }
                     }
                 }),
