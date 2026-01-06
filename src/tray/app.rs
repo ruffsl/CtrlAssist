@@ -65,7 +65,6 @@ macro_rules! controller_menu {
                         if let Some(c) = $state.controllers.get(index) {
                             let $id = c.id;
                             $block
-                            let _ = $state.to_config().save();
                         }
                     }),
                     options: $controllers
@@ -114,7 +113,6 @@ macro_rules! enum_menu {
                             state.$($access)+ = $new_val.clone();
                             let $state = &mut state;
                             $change_block
-                            let _ = $state.to_config().save();
                         }
                     }
                 }),
@@ -556,9 +554,6 @@ impl Tray for CtrlAssistTray {
                                 activate: Box::new(|this: &mut CtrlAssistTray| {
                                     let mut state = this.state.lock();
                                     state.demux.sinks += 1;
-                                    if let Err(e) = state.to_config().save() {
-                                        error!("Failed to save config: {}", e);
-                                    }
                                 }),
                                 ..Default::default()
                             }
@@ -572,9 +567,6 @@ impl Tray for CtrlAssistTray {
                                     if state.demux.sinks > 1 {
                                         state.demux.sinks -= 1;
                                     }
-                                    if let Err(e) = state.to_config().save() {
-                                        error!("Failed to save config: {}", e);
-                                    }
                                 }),
                                 ..Default::default()
                             }
@@ -586,9 +578,6 @@ impl Tray for CtrlAssistTray {
                                 activate: Box::new(|this: &mut CtrlAssistTray| {
                                     let mut state = this.state.lock();
                                     state.demux.sinks = 2;
-                                    if let Err(e) = state.to_config().save() {
-                                        error!("Failed to save config: {}", e);
-                                    }
                                 }),
                                 ..Default::default()
                             }
