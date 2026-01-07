@@ -1,10 +1,8 @@
-use super::{DemuxMode, helpers};
+use super::{DemuxMode, DemuxOutput, helpers};
 use evdev::InputEvent;
 use gilrs::{Button, Event, EventType, GamepadId, Gilrs};
 
 /// Build-time flag to control latching behavior on active device switch.
-/// When `false` (default), non-active devices are neutralized (axes centered, buttons released).
-/// When `true`, non-active devices retain their last state (latching behavior).
 const DEMUX_UNICAST_LATCHING: bool = false;
 
 /// Unicast mode: Route primary to currently active virtual gamepad
@@ -85,8 +83,7 @@ impl DemuxMode for UnicastMode {
         primary_id: GamepadId,
         sinks: usize,
         gilrs: &Gilrs,
-    ) -> Option<Vec<(usize, Vec<InputEvent>)>> {
-        // Only handle primary controller
+    ) -> Option<DemuxOutput> {
         if event.id != primary_id {
             return None;
         }
@@ -99,22 +96,31 @@ impl DemuxMode for UnicastMode {
             let primary = gilrs.gamepad(primary_id);
             let sync_events = Self::sync_controller_state(primary);
 
-            let mut result = Vec::new();
+            let mut events = Vec::new();
 
             // If latching is disabled, neutralize the previously active device
             if !DEMUX_UNICAST_LATCHING && old_active != self.active_index {
                 let neutral_events = crate::evdev_helpers::generate_neutral_gamepad_events();
-                result.push((old_active, neutral_events));
+                events.push((old_active, neutral_events));
             }
 
-            // Sync the newly active device
-            result.push((self.active_index, sync_events));
+            events.push((self.active_index, sync_events));
 
-            return Some(result);
+            // Return events AND request to update active sinks
+            return Some(DemuxOutput {
+                events,
+                set_active_sinks: Some(vec![self.active_index]),
+            });
         }
 
         // Forward event to active device
         let primary = gilrs.gamepad(primary_id);
-        Self::convert_event(event, primary).map(|events| vec![(self.active_index, events)])
+        Self::convert_event(event, primary)
+            .map(|e| DemuxOutput::events(vec![(self.active_index, e)]))
+    }
+
+    fn initial_active_sinks(&self, _sinks: usize) -> Vec<usize> {
+        // Unicast always starts at 0
+        vec![0]
     }
 }

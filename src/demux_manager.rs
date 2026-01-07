@@ -114,7 +114,11 @@ pub fn start_demux(
     }
 
     // Create runtime settings
-    let runtime_settings = Arc::new(DemuxRuntimeSettings::new(config.mode, config.rumble));
+    let runtime_settings = Arc::new(DemuxRuntimeSettings::new(
+        config.mode,
+        config.rumble,
+        config.sinks,
+    ));
 
     // Setup shutdown signal
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -151,7 +155,7 @@ pub fn start_demux(
 
     // Spawn FF threads (one per virtual device)
     let mut ff_handles = Vec::new();
-    for (mut v_uinput, _) in v_uinputs {
+    for (sink_idx, (mut v_uinput, _)) in v_uinputs.into_iter().enumerate() {
         let shutdown_ff = Arc::clone(&shutdown);
         let runtime_settings_ff = Arc::clone(&runtime_settings);
         let primary_ff = primary_resource.clone();
@@ -161,6 +165,7 @@ pub fn start_demux(
                 &mut v_uinput,
                 primary_ff,
                 runtime_settings_ff,
+                sink_idx,
                 shutdown_ff,
             );
         });

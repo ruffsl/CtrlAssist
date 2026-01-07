@@ -14,15 +14,37 @@ pub enum DemuxModeType {
     Unicast,
 }
 
+/// Output from a demux mode handling an event
+pub struct DemuxOutput {
+    /// Events routed to specific virtual devices
+    pub events: Vec<(usize, Vec<InputEvent>)>,
+    /// Optional request to update which sinks are considered "active"
+    pub set_active_sinks: Option<Vec<usize>>,
+}
+
+impl DemuxOutput {
+    /// Create output with only events
+    pub fn events(events: Vec<(usize, Vec<InputEvent>)>) -> Self {
+        Self {
+            events,
+            set_active_sinks: None,
+        }
+    }
+}
+
 /// The trait all demuxing modes must implement
 pub trait DemuxMode {
+    /// Handle an input event and return routed events
     fn handle_event(
         &mut self,
         event: &Event,
         primary_id: GamepadId,
         sinks: usize,
         gilrs: &gilrs::Gilrs,
-    ) -> Option<Vec<(usize, Vec<InputEvent>)>>; // Returns (virtual_index, events) pairs
+    ) -> Option<DemuxOutput>;
+
+    /// Define which sinks should be active by default for this mode
+    fn initial_active_sinks(&self, sinks: usize) -> Vec<usize>;
 }
 
 /// Factory function to create the correct demux mode

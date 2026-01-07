@@ -1,4 +1,4 @@
-use super::{DemuxMode, helpers};
+use super::{DemuxMode, DemuxOutput, helpers};
 use evdev::InputEvent;
 use gilrs::{Event, EventType, GamepadId, Gilrs};
 
@@ -35,16 +35,20 @@ impl DemuxMode for MulticastMode {
         primary_id: GamepadId,
         sinks: usize,
         _gilrs: &Gilrs,
-    ) -> Option<Vec<(usize, Vec<InputEvent>)>> {
-        // Only handle primary controller
+    ) -> Option<DemuxOutput> {
         if event.id != primary_id {
             return None;
         }
 
         let primary = _gilrs.gamepad(primary_id);
 
-        // Broadcast to all virtual devices
-        Self::convert_event(event, primary)
-            .map(|events| (0..sinks).map(|idx| (idx, events.clone())).collect())
+        Self::convert_event(event, primary).map(|events| {
+            let distributed = (0..sinks).map(|idx| (idx, events.clone())).collect();
+            DemuxOutput::events(distributed)
+        })
+    }
+
+    fn initial_active_sinks(&self, sinks: usize) -> Vec<usize> {
+        (0..sinks).collect()
     }
 }

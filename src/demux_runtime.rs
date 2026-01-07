@@ -5,6 +5,7 @@ use evdev::{Device, EventType, InputEvent};
 use gilrs::{GamepadId, Gilrs};
 use log::{debug, error, info};
 use parking_lot::RwLock;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -25,19 +26,45 @@ pub enum DemuxRumbleTarget {
 pub struct DemuxRuntimeSettings {
     pub mode: Arc<RwLock<DemuxModeType>>,
     pub rumble: Arc<RwLock<DemuxRumbleTarget>>,
+    pub active_sinks: Arc<RwLock<HashSet<usize>>>,
 }
 
 impl DemuxRuntimeSettings {
-    pub fn new(mode: DemuxModeType, rumble: DemuxRumbleTarget) -> Self {
+    pub fn new(mode: DemuxModeType, rumble: DemuxRumbleTarget, sinks: usize) -> Self {
+        // Delegate initial active sinks calculation to the mode implementation
+        let mode_impl = demux_modes::create_demux_mode(mode.clone());
+        let initial_active = mode_impl.initial_active_sinks(sinks).into_iter().collect();
+
         Self {
             mode: Arc::new(RwLock::new(mode)),
             rumble: Arc::new(RwLock::new(rumble)),
+            active_sinks: Arc::new(RwLock::new(initial_active)),
         }
     }
 
-    pub fn update_mode(&self, new_mode: DemuxModeType) {
-        let mut mode = self.mode.write();
-        *mode = new_mode;
+    pub fn update_mode(&self, new_mode: DemuxModeType, sinks: usize) {
+        let mut mode_lock = self.mode.write();
+        *mode_lock = new_mode.clone();
+
+        // Reset active sinks by asking the new mode for its defaults
+        let mode_impl = demux_modes::create_demux_mode(new_mode);
+        let defaults = mode_impl.initial_active_sinks(sinks);
+
+        let mut active_lock = self.active_sinks.write();
+        active_lock.clear();
+        active_lock.extend(defaults);
+    }
+
+    pub fn set_active_sinks(&self, indices: Vec<usize>) {
+        let mut active = self.active_sinks.write();
+        active.clear();
+        for idx in indices {
+            active.insert(idx);
+        }
+    }
+
+    pub fn is_sink_active(&self, sink_index: usize) -> bool {
+        self.active_sinks.read().contains(&sink_index)
     }
 
     pub fn update_rumble(&self, new_rumble: DemuxRumbleTarget) {
@@ -73,6 +100,8 @@ pub fn run_input_loop(
                 "Switching demux mode from {:?} to {:?}",
                 last_mode, current_mode
             );
+            // Ensure settings are synced with the new mode
+            runtime_settings.update_mode(current_mode.clone(), sinks);
             demux_mode = demux_modes::create_demux_mode(current_mode.clone());
             last_mode = current_mode;
         }
@@ -82,8 +111,14 @@ pub fn run_input_loop(
                 break;
             }
 
-            if let Some(routing) = demux_mode.handle_event(&event, p_id, sinks, &gilrs) {
-                for (virt_idx, mut out_events) in routing {
+            if let Some(output) = demux_mode.handle_event(&event, p_id, sinks, &gilrs) {
+                // Update active sinks if requested by the mode
+                if let Some(new_active) = output.set_active_sinks {
+                    runtime_settings.set_active_sinks(new_active);
+                }
+
+                // Process output events
+                for (virt_idx, mut out_events) in output.events {
                     if virt_idx >= v_devs.len() {
                         error!("Invalid virtual device index: {}", virt_idx);
                         continue;
@@ -105,6 +140,7 @@ pub fn run_ff_loop(
     v_uinput: &mut evdev::uinput::VirtualDevice,
     primary_resource: GamepadResource,
     runtime_settings: Arc<DemuxRuntimeSettings>,
+    sink_index: usize,
     shutdown: Arc<AtomicBool>,
 ) {
     use crate::ff_helpers::EffectManager;
@@ -112,7 +148,7 @@ pub fn run_ff_loop(
     let mut effect_manager = EffectManager::new();
     let mut phys_dev = PhysicalFFDev::new(primary_resource);
 
-    info!("FF Thread started for virtual device");
+    info!("FF Thread started for virtual device {}", sink_index);
 
     while !shutdown.load(Ordering::SeqCst) {
         let events: Vec<_> = match v_uinput.fetch_events() {
@@ -125,7 +161,9 @@ pub fn run_ff_loop(
         };
 
         // Check if rumble is enabled
-        let rumble_enabled = runtime_settings.get_rumble() == DemuxRumbleTarget::Active;
+        let is_rumble_active = runtime_settings.get_rumble() == DemuxRumbleTarget::Active;
+        // Check if this specific sink is currently active (allowed to rumble)
+        let is_sink_active = runtime_settings.is_sink_active(sink_index);
 
         for event in events {
             match event.destructure() {
@@ -136,10 +174,11 @@ pub fn run_ff_loop(
 
                         effect_manager.upload(virt_id, effect_data);
 
-                        if rumble_enabled
-                            && let Err(e) = phys_dev.upload_effect(virt_id, effect_data)
-                        {
-                            error!("Failed to upload effect {}: {}", virt_id, e);
+                        if let Err(e) = phys_dev.upload_effect(virt_id, effect_data) {
+                            error!(
+                                "Failed to upload effect {} (sink {}): {}",
+                                virt_id, sink_index, e
+                            );
                         }
                     }
                 }
@@ -148,8 +187,11 @@ pub fn run_ff_loop(
                     if let Ok(erase_ev) = v_uinput.process_ff_erase(ev) {
                         let virt_id = erase_ev.effect_id() as i16;
 
-                        if rumble_enabled && let Err(e) = phys_dev.erase_effect(virt_id) {
-                            error!("Failed to erase effect {}: {}", virt_id, e);
+                        if let Err(e) = phys_dev.erase_effect(virt_id) {
+                            error!(
+                                "Failed to erase effect {} (sink {}): {}",
+                                virt_id, sink_index, e
+                            );
                         }
 
                         effect_manager.erase(virt_id);
@@ -162,8 +204,15 @@ pub fn run_ff_loop(
 
                     effect_manager.set_playing(virt_id, is_playing);
 
-                    if rumble_enabled && let Err(e) = phys_dev.control_effect(virt_id, is_playing) {
-                        error!("Failed to control effect {}: {}", virt_id, e);
+                    // Only forward playback commands if rumble is enabled AND this sink is active
+                    if is_rumble_active
+                        && is_sink_active
+                        && let Err(e) = phys_dev.control_effect(virt_id, is_playing)
+                    {
+                        error!(
+                            "Failed to control effect {} (sink {}): {}",
+                            virt_id, sink_index, e
+                        );
                     }
                 }
 
