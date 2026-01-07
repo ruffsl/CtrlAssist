@@ -29,6 +29,8 @@ pub struct MuxHandle {
     pub ff_handle: thread::JoinHandle<()>,
     pub shutdown: Arc<AtomicBool>,
     pub virtual_device_path: PathBuf,
+    #[allow(dead_code)]
+    pub hider: ScopedDeviceHider,
 }
 
 impl MuxHandle {
@@ -67,12 +69,12 @@ pub fn start_mux(
     let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
     // Setup hiding
-    let mut _hider = ScopedDeviceHider::new(config.hide.clone());
+    let mut hider = ScopedDeviceHider::new(config.hide);
     if let Some(primary_res) = resources.get(&config.primary_id) {
-        _hider.hide_gamepad_devices(primary_res)?;
+        hider.hide_gamepad_devices(primary_res)?;
     }
     if let Some(assist_res) = resources.get(&config.assist_id) {
-        _hider.hide_gamepad_devices(assist_res)?;
+        hider.hide_gamepad_devices(assist_res)?;
     }
 
     // Setup virtual device
@@ -141,6 +143,7 @@ pub fn start_mux(
             ff_handle,
             shutdown,
             virtual_device_path,
+            hider,
         },
         runtime_settings,
     ))

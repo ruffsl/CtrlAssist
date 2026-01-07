@@ -34,6 +34,8 @@ pub struct DemuxHandle {
     pub ff_handles: Vec<thread::JoinHandle<()>>,
     pub shutdown: Arc<AtomicBool>,
     pub virtual_device_paths: Vec<PathBuf>,
+    #[allow(dead_code)]
+    pub hider: ScopedDeviceHider,
 }
 
 impl DemuxHandle {
@@ -74,9 +76,9 @@ pub fn start_demux(
     }
 
     // Setup hiding
-    let mut _hider = ScopedDeviceHider::new(config.hide.clone());
+    let mut hider = ScopedDeviceHider::new(config.hide);
     if let Some(primary_res) = resources.get(&config.primary_id) {
-        _hider.hide_gamepad_devices(primary_res)?;
+        hider.hide_gamepad_devices(primary_res)?;
     }
 
     // Determine virtual device info
@@ -179,6 +181,7 @@ pub fn start_demux(
             ff_handles,
             shutdown,
             virtual_device_paths,
+            hider,
         },
         runtime_settings,
     ))
