@@ -68,6 +68,8 @@
   - Ideal for replicating Primary input across multiple devices
     - E.g. For more advanced input multiplexing pipelines
 
+[Screencast_20260108_173024.webm](https://github.com/user-attachments/assets/67b4ec7f-c667-4dfc-b9e3-a5965d20c0d1)
+
 # ⬇️ Install
 
 The following installation methods are available:
