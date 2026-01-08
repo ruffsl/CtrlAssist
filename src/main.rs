@@ -135,9 +135,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 fn list_gamepads() -> Result<(), Box<dyn Error>> {
     let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
     let mut found = false;
     for (id, gamepad) in gilrs.gamepads() {
-        println!("({}) {}", id, gamepad.name());
+        println!(
+            "({}) {} @ {}",
+            id,
+            gamepad.name(),
+            resources[&id].path.display()
+        );
         found = true;
     }
     if !found {
