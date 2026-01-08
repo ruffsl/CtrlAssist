@@ -3,7 +3,7 @@ use crate::demux_modes::DemuxModeType;
 use crate::mux_manager::{self, MuxConfig, MuxHandle};
 use crate::mux_modes::MuxModeType;
 use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
-use gilrs::{GamepadId, Gilrs};
+use gilrs::{GamepadId, GilrsBuilder};
 use ksni::{Category, MenuItem, Status, ToolTip, Tray, menu};
 use log::{error, info};
 use notify_rust::Notification;
@@ -141,7 +141,10 @@ pub struct CtrlAssistTray {
 
 impl CtrlAssistTray {
     pub fn new() -> Result<Self, Box<dyn Error>> {
-        let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {}", e))?;
+        let gilrs = GilrsBuilder::new()
+            .with_force_feedback(false)
+            .build()
+            .map_err(|e| format!("Failed to init Gilrs: {}", e))?;
         let config = TrayConfig::load();
         let state = TrayState::new(&gilrs, config);
 
@@ -342,7 +345,7 @@ impl CtrlAssistTray {
 
     fn refresh_controllers(&self) {
         let mut state = self.state.lock();
-        if let Ok(gilrs) = Gilrs::new() {
+        if let Ok(gilrs) = crate::gilrs_helper::new_gilrs() {
             let controllers: Vec<_> = gilrs
                 .gamepads()
                 .map(|(id, gamepad)| super::state::ControllerInfo {
@@ -655,7 +658,8 @@ fn start_mux_with_state(
     config: MuxConfig,
     state_arc: Arc<Mutex<TrayState>>,
 ) -> Result<MuxHandle, Box<dyn Error>> {
-    let (h, r) = mux_manager::start_mux(Gilrs::new()?, config)?;
+    let gilrs = crate::gilrs_helper::new_gilrs()?;
+    let (h, r) = mux_manager::start_mux(gilrs, config)?;
     let mut s = state_arc.lock();
     s.virtual_device_paths = vec![h.virtual_device_path.clone()];
     s.mux.runtime_settings = Some(r);
@@ -667,7 +671,8 @@ fn start_demux_with_state(
     config: DemuxConfig,
     state_arc: Arc<Mutex<TrayState>>,
 ) -> Result<DemuxHandle, Box<dyn Error>> {
-    let (h, r) = demux_manager::start_demux(Gilrs::new()?, config)?;
+    let gilrs = crate::gilrs_helper::new_gilrs()?;
+    let (h, r) = demux_manager::start_demux(gilrs, config)?;
     let mut s = state_arc.lock();
     s.virtual_device_paths = h.virtual_device_paths.clone();
     s.demux.runtime_settings = Some(r);
