@@ -141,9 +141,7 @@ pub struct CtrlAssistTray {
 
 impl CtrlAssistTray {
     pub fn new() -> Result<Self, Box<dyn Error>> {
-        let gilrs = GilrsBuilder::new()
-            .with_force_feedback(false)
-            .build()
+        let gilrs = crate::gilrs_helper::new_gilrs()
             .map_err(|e| format!("Failed to init Gilrs: {}", e))?;
         let config = TrayConfig::load();
         let state = TrayState::new(&gilrs, config);
