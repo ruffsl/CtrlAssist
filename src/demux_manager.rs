@@ -130,7 +130,7 @@ pub fn start_demux(
         virtual_devices.iter().map(|v| v.path.clone()).collect();
 
     // Clone for FF threads
-    let primary_resource = resources
+    let primary_resource_ff = resources
         .get(&config.primary_id)
         .ok_or("Primary controller not found")?
         .clone();
@@ -157,17 +157,17 @@ pub fn start_demux(
 
     // Spawn FF threads (one per virtual device)
     let mut ff_handles = Vec::new();
-    for (sink_idx, (mut v_uinput, _)) in v_uinputs.into_iter().enumerate() {
+    for (sink_index, (mut v_uinput, _)) in v_uinputs.into_iter().enumerate() {
         let shutdown_ff = Arc::clone(&shutdown);
         let runtime_settings_ff = Arc::clone(&runtime_settings);
-        let primary_ff = primary_resource.clone();
+        let primary_resource = primary_resource_ff.clone();
 
         let handle = thread::spawn(move || {
             crate::demux_runtime::run_ff_loop(
                 &mut v_uinput,
-                primary_ff,
+                primary_resource,
                 runtime_settings_ff,
-                sink_idx,
+                sink_index,
                 shutdown_ff,
             );
         });
