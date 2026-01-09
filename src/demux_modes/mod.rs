@@ -18,8 +18,8 @@ pub enum DemuxModeType {
 pub struct DemuxOutput {
     /// Events routed to specific virtual devices
     pub events: Vec<(usize, Vec<InputEvent>)>,
-    /// Optional request to update which sinks are considered "active"
-    pub set_active_sinks: Option<Vec<usize>>,
+    /// Optional request to update which virtuals are considered "active"
+    pub set_active_virtuals: Option<Vec<usize>>,
 }
 
 impl DemuxOutput {
@@ -27,7 +27,7 @@ impl DemuxOutput {
     pub fn events(events: Vec<(usize, Vec<InputEvent>)>) -> Self {
         Self {
             events,
-            set_active_sinks: None,
+            set_active_virtuals: None,
         }
     }
 }
@@ -39,12 +39,12 @@ pub trait DemuxMode {
         &mut self,
         event: &Event,
         primary_id: GamepadId,
-        sinks: usize,
+        virtuals: usize,
         gilrs: &gilrs::Gilrs,
     ) -> Option<DemuxOutput>;
 
-    /// Define which sinks should be active by default for this mode
-    fn initial_active_sinks(&self, sinks: usize) -> Vec<usize>;
+    /// Define which virtuals should be active by default for this mode
+    fn initial_active_virtuals(&self, virtuals: usize) -> Vec<usize>;
 }
 
 /// Factory function to create the correct demux mode

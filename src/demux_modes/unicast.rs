@@ -81,7 +81,7 @@ impl DemuxMode for UnicastMode {
         &mut self,
         event: &Event,
         primary_id: GamepadId,
-        sinks: usize,
+        virtuals: usize,
         gilrs: &Gilrs,
     ) -> Option<DemuxOutput> {
         if event.id != primary_id {
@@ -91,7 +91,7 @@ impl DemuxMode for UnicastMode {
         // Handle mode button to cycle active device
         if matches!(event.event, EventType::ButtonPressed(Button::Mode, _)) {
             let old_active = self.active_index;
-            self.active_index = (self.active_index + 1) % sinks;
+            self.active_index = (self.active_index + 1) % virtuals;
 
             let primary = gilrs.gamepad(primary_id);
             let sync_events = Self::sync_controller_state(primary);
@@ -106,10 +106,10 @@ impl DemuxMode for UnicastMode {
 
             events.push((self.active_index, sync_events));
 
-            // Return events AND request to update active sinks
+            // Return events AND request to update active virtuals
             return Some(DemuxOutput {
                 events,
-                set_active_sinks: Some(vec![self.active_index]),
+                set_active_virtuals: Some(vec![self.active_index]),
             });
         }
 
@@ -119,7 +119,7 @@ impl DemuxMode for UnicastMode {
             .map(|e| DemuxOutput::events(vec![(self.active_index, e)]))
     }
 
-    fn initial_active_sinks(&self, _sinks: usize) -> Vec<usize> {
+    fn initial_active_virtuals(&self, _virtuals: usize) -> Vec<usize> {
         // Unicast always starts at 0
         vec![0]
     }

@@ -262,9 +262,9 @@ impl CtrlAssistTray {
         info!("Starting demux: primary={:?}", primary_id);
 
         let notification_body = format!(
-            "Primary: {}\nSinks: {}\nMode: {:?}\nHide: {:?}\nSpoof: {:?}\nRumble: {:?}",
+            "Primary: {}\nVirtuals: {}\nMode: {:?}\nHide: {:?}\nSpoof: {:?}\nRumble: {:?}",
             state.get_demux_primary_name(),
-            state.demux.sinks,
+            state.demux.virtuals,
             state.demux.mode,
             state.demux.hide,
             state.demux.spoof,
@@ -274,7 +274,7 @@ impl CtrlAssistTray {
 
         let config = DemuxConfig {
             primary_id,
-            sinks: state.demux.sinks,
+            virtuals: state.demux.virtuals,
             mode: state.demux.mode.clone(),
             hide: state.demux.hide.clone(),
             spoof: state.demux.spoof.clone(),
@@ -413,9 +413,9 @@ impl Tray for CtrlAssistTray {
                     state.get_mux_assist_name()
                 ),
                 OperationMode::Demux => format!(
-                    "Demux: {} to {} sinks",
+                    "Demux: {} to {} virtuals",
                     state.get_demux_primary_name(),
-                    state.demux.sinks
+                    state.demux.virtuals
                 ),
             }
         } else {
@@ -539,7 +539,7 @@ impl Tray for CtrlAssistTray {
                         assign: |s, id| { s.demux.selected_primary = Some(id); }
                     ),
                     menu::SubMenu {
-                        label: format!("Sinks: {}", state.demux.sinks),
+                        label: format!("Virtuals: {}", state.demux.virtuals),
                         icon_name: "input-gaming".into(),
                         enabled: !is_running,
                         submenu: vec![
@@ -549,7 +549,7 @@ impl Tray for CtrlAssistTray {
                                 enabled: !is_running,
                                 activate: Box::new(|this: &mut CtrlAssistTray| {
                                     let mut state = this.state.lock();
-                                    state.demux.sinks += 1;
+                                    state.demux.virtuals += 1;
                                 }),
                                 ..Default::default()
                             }
@@ -557,11 +557,11 @@ impl Tray for CtrlAssistTray {
                             menu::StandardItem {
                                 label: "Decrement (-1)".into(),
                                 icon_name: "list-remove".into(),
-                                enabled: !is_running && state.demux.sinks > 1,
+                                enabled: !is_running && state.demux.virtuals > 1,
                                 activate: Box::new(|this: &mut CtrlAssistTray| {
                                     let mut state = this.state.lock();
-                                    if state.demux.sinks > 1 {
-                                        state.demux.sinks -= 1;
+                                    if state.demux.virtuals > 1 {
+                                        state.demux.virtuals -= 1;
                                     }
                                 }),
                                 ..Default::default()
@@ -573,7 +573,7 @@ impl Tray for CtrlAssistTray {
                                 enabled: !is_running,
                                 activate: Box::new(|this: &mut CtrlAssistTray| {
                                     let mut state = this.state.lock();
-                                    state.demux.sinks = 2;
+                                    state.demux.virtuals = 2;
                                 }),
                                 ..Default::default()
                             }
@@ -592,7 +592,7 @@ impl Tray for CtrlAssistTray {
                         enabled: true,
                         access: { demux.mode },
                         on_change: |_t, s, v| {
-                            if let Some(r) = &s.demux.runtime_settings { r.update_mode(v.clone(), s.demux.sinks); }
+                            if let Some(r) = &s.demux.runtime_settings { r.update_mode(v.clone(), s.demux.virtuals); }
                         }
                     ),
                     enum_menu!(

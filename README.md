@@ -287,7 +287,7 @@ Demux Active. Press Ctrl+C to exit.
 Specify Primary via ID and number of virtual controllers:
 
 ```sh
-$ ctrlassist demux --primary 1 --sinks 3
+$ ctrlassist demux --primary 1 --virtuals 3
 Primary: (1) PS4 Controller
 Virtual: (2) CtrlAssist Virtual Gamepad [0]
 Virtual: (3) CtrlAssist Virtual Gamepad [1]
@@ -351,7 +351,7 @@ rumble = "Both"
 # Demux configuration
 [demux]
 primary_name = "Microsoft Xbox One"
-sinks = 2
+virtuals = 2
 mode = "Unicast"
 hide = "Steam"
 spoof = "None"

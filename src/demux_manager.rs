@@ -16,7 +16,7 @@ use std::thread;
 /// Configuration for starting a demux session
 pub struct DemuxConfig {
     pub primary_id: GamepadId,
-    pub sinks: usize,
+    pub virtuals: usize,
     pub mode: DemuxModeType,
     pub hide: HideType,
     pub spoof: SpoofTarget,
@@ -70,9 +70,9 @@ pub fn start_demux(
 ) -> Result<(DemuxHandle, Arc<DemuxRuntimeSettings>), Box<dyn Error>> {
     let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
-    // Validate input: sinks must be greater than 0
-    if config.sinks == 0 {
-        return Err("DemuxConfig.sinks must be greater than 0".into());
+    // Validate input: virtuals must be greater than 0
+    if config.virtuals == 0 {
+        return Err("DemuxConfig.virtuals must be greater than 0".into());
     }
 
     // Setup hiding
@@ -95,7 +95,7 @@ pub fn start_demux(
     let mut v_uinputs = Vec::new();
     let mut virtual_devices = Vec::new();
 
-    for i in 0..config.sinks {
+    for i in 0..config.virtuals {
         let tag_string = format!("[{}]", i);
         let tag_str = Some(tag_string.as_str());
 
@@ -119,7 +119,7 @@ pub fn start_demux(
     let runtime_settings = Arc::new(DemuxRuntimeSettings::new(
         config.mode,
         config.rumble,
-        config.sinks,
+        config.virtuals,
     ));
 
     // Setup shutdown signal
@@ -157,7 +157,7 @@ pub fn start_demux(
 
     // Spawn FF threads (one per virtual device)
     let mut ff_handles = Vec::new();
-    for (sink_index, (mut v_uinput, _)) in v_uinputs.into_iter().enumerate() {
+    for (virtual_index, (mut v_uinput, _)) in v_uinputs.into_iter().enumerate() {
         let shutdown_ff = Arc::clone(&shutdown);
         let runtime_settings_ff = Arc::clone(&runtime_settings);
         let primary_resource = primary_resource_ff.clone();
@@ -167,7 +167,7 @@ pub fn start_demux(
                 &mut v_uinput,
                 primary_resource,
                 runtime_settings_ff,
-                sink_index,
+                virtual_index,
                 shutdown_ff,
             );
         });

@@ -33,7 +33,7 @@ impl DemuxMode for MulticastMode {
         &mut self,
         event: &Event,
         primary_id: GamepadId,
-        sinks: usize,
+        virtuals: usize,
         _gilrs: &Gilrs,
     ) -> Option<DemuxOutput> {
         if event.id != primary_id {
@@ -43,12 +43,12 @@ impl DemuxMode for MulticastMode {
         let primary = _gilrs.gamepad(primary_id);
 
         Self::convert_event(event, primary).map(|events| {
-            let distributed = (0..sinks).map(|idx| (idx, events.clone())).collect();
+            let distributed = (0..virtuals).map(|idx| (idx, events.clone())).collect();
             DemuxOutput::events(distributed)
         })
     }
 
-    fn initial_active_sinks(&self, sinks: usize) -> Vec<usize> {
-        (0..sinks).collect()
+    fn initial_active_virtuals(&self, virtuals: usize) -> Vec<usize> {
+        (0..virtuals).collect()
     }
 }

@@ -42,8 +42,8 @@ pub struct MuxConfig {
 pub struct DemuxConfig {
     /// Last selected primary controller (by name)
     pub primary_name: Option<String>,
-    /// Last used sinks count
-    pub sinks: usize,
+    /// Last used virtuals count
+    pub virtuals: usize,
     /// Last used demux mode
     #[serde(default)]
     pub mode: DemuxModeType,

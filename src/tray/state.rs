@@ -75,8 +75,8 @@ pub struct MuxState {
 pub struct DemuxState {
     /// Currently selected primary controller ID
     pub selected_primary: Option<GamepadId>,
-    /// Number of virtual sinks
-    pub sinks: usize,
+    /// Number of virtual devices
+    pub virtuals: usize,
     /// Current demux mode
     pub mode: DemuxModeType,
     /// Current hide strategy
@@ -142,7 +142,7 @@ impl TrayState {
             },
             demux: DemuxState {
                 selected_primary: demux_primary,
-                sinks: config.demux.sinks,
+                virtuals: config.demux.virtuals,
                 mode: config.demux.mode,
                 hide: config.demux.hide,
                 spoof: config.demux.spoof,
@@ -177,7 +177,7 @@ impl TrayState {
                     .selected_primary
                     .and_then(|id| self.controllers.iter().find(|c| c.id == id))
                     .map(|c| c.name.clone()),
-                sinks: self.demux.sinks,
+                virtuals: self.demux.virtuals,
                 mode: self.demux.mode.clone(),
                 hide: self.demux.hide.clone(),
                 spoof: self.demux.spoof.clone(),
@@ -197,7 +197,7 @@ impl TrayState {
     pub fn is_valid_for_demux_start(&self) -> bool {
         self.operation_mode == OperationMode::Demux
             && self.demux.selected_primary.is_some()
-            && self.demux.sinks > 0
+            && self.demux.virtuals > 0
             && self.status == OperationStatus::Stopped
     }
 

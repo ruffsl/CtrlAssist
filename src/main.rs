@@ -76,7 +76,7 @@ struct DemuxArgs {
 
     /// Number of virtual devices to create.
     #[arg(long, default_value_t = 2)]
-    sinks: usize,
+    virtuals: usize,
 
     /// Hide primary controller.
     #[arg(long, value_enum, default_value_t = HideType::default())]
@@ -243,7 +243,7 @@ fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
     // Start demux
     let config = demux_manager::DemuxConfig {
         primary_id: p_id,
-        sinks: args.sinks,
+        virtuals: args.virtuals,
         mode: args.mode,
         hide: args.hide,
         spoof: args.spoof,
