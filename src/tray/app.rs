@@ -525,7 +525,7 @@ impl Tray for CtrlAssistTray {
             OperationMode::Demux => {
                 items.extend(vec![
                     simple_item!(
-                        label: "Refresh",
+                        label: "Refresh Controllers",
                         icon: "view-refresh",
                         enabled: !is_running,
                         action: |t| t.refresh_controllers()
