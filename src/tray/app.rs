@@ -540,7 +540,7 @@ impl Tray for CtrlAssistTray {
                     ),
                     menu::SubMenu {
                         label: format!("Sinks: {}", state.demux.sinks),
-                        icon_name: "list-add".into(),
+                        icon_name: "input-gaming".into(),
                         enabled: !is_running,
                         submenu: vec![
                             menu::StandardItem {
