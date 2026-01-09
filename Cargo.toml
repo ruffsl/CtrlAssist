@@ -30,7 +30,7 @@ exclude = [
 github = { repository = "ruffsl/CtrlAssist" }
 
 [dependencies]
-clap = { version = "4.5.51", features = ["derive"] }
+clap = { version = "4.5.54", features = ["derive"] }
 ctrlc = "3.5.1"
 dirs = "6.0.0"
 env_logger = "0.11.8"
@@ -38,8 +38,8 @@ evdev = "0.13.2"
 # gilrs = "0.11.0"
 # use gilrs from local path
 gilrs = { path = "../gilrs/gilrs" }
-libc = "0.2.178"
-log = "0.4.28"
+libc = "0.2.180"
+log = "0.4.29"
 udev = "0.9.3"
 uuid = "1.19.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -52,7 +52,7 @@ ksni = "0.3.3"
 notify-rust = "4.11.7"
 parking_lot = "0.12.5"
 serde = "1.0.228"
-toml = "0.9.10"
+toml = "0.9.11"
 
 [package.metadata.deb]
 depends = "libudev1"
