@@ -30,7 +30,11 @@
 
 ## 🎛️ Modes
 
+Mux or Demux physical controllers into virtual gamepads via various modes.
+
 ### 🔀 mux
+
+Combine Primary and Assist controllers into one virtual gamepad.
 
 - 👑 **Priority** (default): Assist controller overrides when active
   - Axes: Prioritize Assist when active (exceeds deadzone)
@@ -54,6 +58,8 @@
 [Screencast_20251230_070245.webm](https://github.com/user-attachments/assets/40f72091-cfeb-461b-a4fb-5b4198604e9d)
 
 ### 🔁 demux
+
+Split one Primary controller into multiple virtual gamepads.
 
 - 🔂 **Unicast** (default): route Primary to Active gamepad
   - All inputs forwarded to currently active virtual gamepad
