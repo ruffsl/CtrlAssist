@@ -442,6 +442,20 @@ Additionally, each instance can use different hiding strategies, spoofing option
 Examples include:
 - Dual wielding one for each hand, like split Nintendo Switch Joy-Cons
 - Combining a standard gamepad with an accessible Xbox Adaptive Controller
+- Assist multiple Primary players using demux outputs as mux Assist inputs
+
+```mermaid
+flowchart LR
+    A[Assist <br> Controller] --> B[Demux <br> Unicast]
+    B --> C[Assist 1]
+    B --> D[Assist 2]
+    G[Primary 1 <br> Controller] --> E[Mux <br> Priority]
+    C[Assist 1 <br> Virtual] --> E
+    D[Assist 2 <br> Virtual] --> F[Mux <br> Priority]
+    H[Primary 2 <br> Controller] --> F
+    E --> I[Virtual 1 <br> Gamepad]
+    F --> J[Virtual 2 <br> Gamepad]
+```
 
 # 📚 Background
 
