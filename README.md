@@ -30,8 +30,6 @@
 
 ## 🎛️ Modes
 
-Mux or Demux physical controllers into virtual gamepads via various modes.
-
 ### 🔀 mux
 
 Combine Primary and Assist controllers into one virtual gamepad.
@@ -50,7 +48,7 @@ Combine Primary and Assist controllers into one virtual gamepad.
     - E.g. For counter steer/brake assist in racing games
 - 🔃 **Toggle**: Switch Active controller on demand
   - All inputs forwarded from currently active controller
-    - Toggle Active controller via the Mode button on Assist
+    - Toggle Active controller via reserved Mode button on Assist
     - Immediately synchronizes input to current Active state
   - Ideal when fine-grain conflict-free control is needed
     - E.g. Game menu navigation or precise interventions
@@ -63,7 +61,7 @@ Split one Primary controller into multiple virtual gamepads.
 
 - 🔂 **Unicast** (default): route Primary to Active gamepad
   - All inputs forwarded to currently active virtual gamepad
-    - Cycle Active gamepad via the Mode button on Primary
+    - Cycle Active gamepad via reserved Mode button on Primary
     - Force feedback synchronized with Active gamepad
   - Ideal for switching between multiple virtual gamepads
     - E.g. Assist multiple players across multiple mux instances
