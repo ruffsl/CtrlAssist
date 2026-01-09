@@ -133,8 +133,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn list_gamepads() -> Result<(), Box<dyn Error>> {
-    let gilrs =
-        gilrs_helper::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let gilrs = gilrs_helper::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
     let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
     let mut found = false;
     for (id, gamepad) in gilrs.gamepads() {
@@ -157,8 +156,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
         return Err("Primary and Assist controllers must be separate devices.".into());
     }
 
-    let gilrs =
-        gilrs_helper::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let gilrs = gilrs_helper::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
     let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
     // Identify primary and assist resources
@@ -223,8 +221,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
-    let gilrs =
-        gilrs_helper::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let gilrs = gilrs_helper::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
     let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
     // Identify primary resource

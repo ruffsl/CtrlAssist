@@ -3,7 +3,7 @@ use crate::demux_modes::DemuxModeType;
 use crate::mux_manager::{self, MuxConfig, MuxHandle};
 use crate::mux_modes::MuxModeType;
 use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
-use gilrs::{GamepadId, GilrsBuilder};
+use gilrs::GamepadId;
 use ksni::{Category, MenuItem, Status, ToolTip, Tray, menu};
 use log::{error, info};
 use notify_rust::Notification;
@@ -141,8 +141,8 @@ pub struct CtrlAssistTray {
 
 impl CtrlAssistTray {
     pub fn new() -> Result<Self, Box<dyn Error>> {
-        let gilrs = crate::gilrs_helper::new_gilrs()
-            .map_err(|e| format!("Failed to init Gilrs: {}", e))?;
+        let gilrs =
+            crate::gilrs_helper::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {}", e))?;
         let config = TrayConfig::load();
         let state = TrayState::new(&gilrs, config);
 
