@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 const RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const VIRTUAL_DEV_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[allow(clippy::result_large_err)]
 /// Helper to create Gilrs with CtrlAssist's preferred settings
 pub fn new_gilrs() -> Result<Gilrs, gilrs::Error> {
     GilrsBuilder::new().with_force_feedback(false).build()
