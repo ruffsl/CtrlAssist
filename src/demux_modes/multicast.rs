@@ -34,13 +34,13 @@ impl DemuxMode for MulticastMode {
         event: &Event,
         primary_id: GamepadId,
         virtuals: usize,
-        _gilrs: &Gilrs,
+        gilrs: &Gilrs,
     ) -> Option<DemuxOutput> {
         if event.id != primary_id {
             return None;
         }
 
-        let primary = _gilrs.gamepad(primary_id);
+        let primary = gilrs.gamepad(primary_id);
 
         Self::convert_event(event, primary).map(|events| {
             let distributed = (0..virtuals).map(|idx| (idx, events.clone())).collect();
