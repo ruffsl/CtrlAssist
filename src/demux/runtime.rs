@@ -1,6 +1,6 @@
-use crate::demux_modes::{self, DemuxModeType};
-use crate::ff_helpers::PhysicalFFDev;
-use crate::gilrs_helper::GamepadResource;
+use crate::demux::modes::DemuxModeType;
+use crate::utils::ff::{EffectManager, PhysicalFFDev};
+use crate::utils::gilrs::GamepadResource;
 use evdev::{Device, EventType, InputEvent};
 use gilrs::{GamepadId, Gilrs};
 use log::{debug, error, info};
@@ -32,7 +32,7 @@ pub struct DemuxRuntimeSettings {
 impl DemuxRuntimeSettings {
     pub fn new(mode: DemuxModeType, rumble: DemuxRumbleTarget, virtuals: usize) -> Self {
         // Delegate initial active virtuals calculation to the mode implementation
-        let mode_impl = demux_modes::create_demux_mode(mode.clone());
+        let mode_impl = crate::demux::modes::create_demux_mode(mode.clone());
         let initial_active = mode_impl
             .initial_active_virtuals(virtuals)
             .into_iter()
@@ -50,7 +50,7 @@ impl DemuxRuntimeSettings {
         *mode_lock = new_mode.clone();
 
         // Reset active virtuals by asking the new mode for its defaults
-        let mode_impl = demux_modes::create_demux_mode(new_mode);
+        let mode_impl = crate::demux::modes::create_demux_mode(new_mode);
         let defaults = mode_impl.initial_active_virtuals(virtuals);
 
         let mut active_lock = self.active_virtuals.write();
@@ -92,7 +92,7 @@ pub fn run_input_loop(
     shutdown: Arc<AtomicBool>,
 ) {
     let virtuals = v_devs.len();
-    let mut demux_mode = demux_modes::create_demux_mode(runtime_settings.get_mode());
+    let mut demux_mode = crate::demux::modes::create_demux_mode(runtime_settings.get_mode());
     let mut last_mode = runtime_settings.get_mode();
 
     while !shutdown.load(Ordering::SeqCst) {
@@ -105,7 +105,7 @@ pub fn run_input_loop(
             );
             // Ensure settings are synced with the new mode
             runtime_settings.update_mode(current_mode.clone(), virtuals);
-            demux_mode = demux_modes::create_demux_mode(current_mode.clone());
+            demux_mode = crate::demux::modes::create_demux_mode(current_mode.clone());
             last_mode = current_mode;
         }
 
@@ -146,8 +146,6 @@ pub fn run_ff_loop(
     virtual_index: usize,
     shutdown: Arc<AtomicBool>,
 ) {
-    use crate::ff_helpers::EffectManager;
-
     let mut effect_manager = EffectManager::new();
     let mut phys_dev = PhysicalFFDev::new(primary_resource);
 

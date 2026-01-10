@@ -2,8 +2,6 @@ use super::{MuxMode, helpers};
 use evdev::InputEvent;
 use gilrs::{Event, EventType, GamepadId, Gilrs};
 
-use crate::evdev_helpers;
-
 #[derive(Default)]
 pub struct ToggleMode {
     active_id: Option<GamepadId>,
@@ -36,7 +34,7 @@ impl ToggleMode {
             }
 
             // Handle buttons mapped to axes (triggers, D-pad)
-            if let Some(abs_axis) = evdev_helpers::gilrs_button_to_evdev_axis(btn) {
+            if let Some(abs_axis) = crate::utils::evdev::gilrs_button_to_evdev_axis(btn) {
                 events.push(helpers::process_button_axis(btn, &active, abs_axis));
             }
         }
@@ -64,7 +62,7 @@ impl ToggleMode {
             }
 
             EventType::ButtonChanged(btn, _, _) => {
-                let abs_axis = evdev_helpers::gilrs_button_to_evdev_axis(btn)?;
+                let abs_axis = crate::utils::evdev::gilrs_button_to_evdev_axis(btn)?;
                 Some(vec![helpers::process_button_axis(btn, &active, abs_axis)])
             }
 

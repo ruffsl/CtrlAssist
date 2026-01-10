@@ -1,5 +1,5 @@
 use crate::HideType;
-use crate::gilrs_helper::GamepadResource;
+use crate::utils::gilrs::GamepadResource;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs;

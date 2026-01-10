@@ -1,11 +1,10 @@
-use crate::evdev_helpers::{self, VirtualGamepadInfo};
-use crate::gilrs_helper::{self};
-use crate::mux_modes::MuxModeType;
-use crate::mux_runtime::RuntimeSettings;
-use crate::udev_helpers::ScopedDeviceHider;
+use crate::mux::modes::MuxModeType;
+use crate::mux::runtime::RuntimeSettings;
+use crate::utils::evdev::VirtualGamepadInfo;
+use crate::utils::gilrs::{GamepadId, Gilrs};
+use crate::utils::udev::ScopedDeviceHider;
 use crate::{HideType, RumbleTarget, SpoofTarget};
 use evdev::Device;
-use gilrs::{GamepadId, Gilrs};
 use log::info;
 use std::error::Error;
 use std::path::PathBuf;
@@ -66,7 +65,7 @@ pub fn start_mux(
     gilrs: Gilrs,
     config: MuxConfig,
 ) -> Result<(MuxHandle, Arc<RuntimeSettings>), Box<dyn Error>> {
-    let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
+    let resources = crate::utils::gilrs::discover_gamepad_resources(&gilrs);
 
     // Setup hiding
     let mut hider = ScopedDeviceHider::new(config.hide);
@@ -90,8 +89,8 @@ pub fn start_mux(
 
     let tag = Some("[#]");
 
-    let mut v_uinput = evdev_helpers::create_virtual_gamepad(&virtual_info, tag)?;
-    let v_resource = gilrs_helper::wait_for_virtual_device(&mut v_uinput)?;
+    let mut v_uinput = crate::utils::evdev::create_virtual_gamepad(&virtual_info, tag)?;
+    let v_resource = crate::utils::gilrs::wait_for_virtual_device(&mut v_uinput)?;
     let virtual_device_path = v_resource.path.clone();
 
     info!(
@@ -113,7 +112,7 @@ pub fn start_mux(
     let shutdown_input = Arc::clone(&shutdown);
     let runtime_settings_input = Arc::clone(&runtime_settings);
     let input_handle = thread::spawn(move || {
-        crate::mux_runtime::run_input_loop(
+        crate::mux::runtime::run_input_loop(
             gilrs,
             v_resource.device,
             runtime_settings_input,
@@ -127,7 +126,7 @@ pub fn start_mux(
     let shutdown_ff = Arc::clone(&shutdown);
     let runtime_settings_ff = Arc::clone(&runtime_settings);
     let ff_handle = thread::spawn(move || {
-        crate::mux_runtime::run_ff_loop(
+        crate::mux::runtime::run_ff_loop(
             &mut v_uinput,
             all_resources,
             runtime_settings_ff,

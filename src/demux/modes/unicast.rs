@@ -35,7 +35,7 @@ impl UnicastMode {
             }
 
             // Handle buttons mapped to axes (triggers, D-pad)
-            if let Some(abs_axis) = crate::evdev_helpers::gilrs_button_to_evdev_axis(btn) {
+            if let Some(abs_axis) = crate::utils::evdev::gilrs_button_to_evdev_axis(btn) {
                 events.push(helpers::process_button_axis(btn, &primary, abs_axis));
             }
         }
@@ -63,7 +63,7 @@ impl UnicastMode {
             }
 
             EventType::ButtonChanged(btn, _, _) => {
-                let abs_axis = crate::evdev_helpers::gilrs_button_to_evdev_axis(btn)?;
+                let abs_axis = crate::utils::evdev::gilrs_button_to_evdev_axis(btn)?;
                 Some(vec![helpers::process_button_axis(btn, &primary, abs_axis)])
             }
 
@@ -100,7 +100,7 @@ impl DemuxMode for UnicastMode {
 
             // If latching is disabled, neutralize the previously active device
             if !DEMUX_UNICAST_LATCHING && old_active != self.active_index {
-                let neutral_events = crate::evdev_helpers::generate_neutral_gamepad_events();
+                let neutral_events = crate::utils::evdev::generate_neutral_gamepad_events();
                 events.push((old_active, neutral_events));
             }
 

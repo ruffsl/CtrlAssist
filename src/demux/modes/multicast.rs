@@ -15,7 +15,7 @@ impl MulticastMode {
             }
 
             EventType::ButtonChanged(btn, _, _) => {
-                let abs_axis = crate::evdev_helpers::gilrs_button_to_evdev_axis(btn)?;
+                let abs_axis = crate::utils::evdev::gilrs_button_to_evdev_axis(btn)?;
                 Some(vec![helpers::process_button_axis(btn, &primary, abs_axis)])
             }
 

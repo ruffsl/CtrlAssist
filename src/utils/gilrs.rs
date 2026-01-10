@@ -1,7 +1,7 @@
 use evdev::Device;
 use evdev::uinput::VirtualDevice;
 use gilrs::GilrsBuilder;
-use gilrs::{GamepadId, Gilrs};
+pub use gilrs::{GamepadId, Gilrs};
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;

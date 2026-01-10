@@ -1,8 +1,7 @@
 use crate::RumbleTarget;
-use crate::ff_helpers::PhysicalFFDev;
-use crate::gilrs_helper::GamepadResource;
-use crate::mux_modes;
-use crate::mux_modes::MuxModeType;
+use crate::mux::modes::MuxModeType;
+use crate::utils::ff::{EffectManager, PhysicalFFDev};
+use crate::utils::gilrs::GamepadResource;
 use evdev::uinput::VirtualDevice;
 use evdev::{Device, EventType, InputEvent};
 use gilrs::{GamepadId, Gilrs};
@@ -56,7 +55,7 @@ pub fn run_input_loop(
     a_id: GamepadId,
     shutdown: Arc<AtomicBool>,
 ) {
-    let mut mux_mode = mux_modes::create_mux_mode(runtime_settings.get_mode());
+    let mut mux_mode = crate::mux::modes::create_mux_mode(runtime_settings.get_mode());
     let mut last_mode = runtime_settings.get_mode();
 
     while !shutdown.load(Ordering::SeqCst) {
@@ -67,7 +66,7 @@ pub fn run_input_loop(
                 "Switching mux mode from {:?} to {:?}",
                 last_mode, current_mode
             );
-            mux_mode = mux_modes::create_mux_mode(current_mode.clone());
+            mux_mode = crate::mux::modes::create_mux_mode(current_mode.clone());
             last_mode = current_mode;
         }
 
@@ -98,8 +97,6 @@ pub fn run_ff_loop(
     a_id: GamepadId,
     shutdown: Arc<AtomicBool>,
 ) {
-    use crate::ff_helpers::EffectManager;
-
     // Centralized effect state
     let mut effect_manager = EffectManager::new();
 
