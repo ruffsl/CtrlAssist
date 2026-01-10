@@ -1,4 +1,4 @@
-use crate::gilrs_helper::GamepadResource;
+use crate::utils::gilrs::GamepadResource;
 use evdev::{Device, FFEffectData};
 use log::{error, warn};
 use std::collections::HashMap;

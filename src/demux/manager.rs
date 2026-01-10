@@ -1,8 +1,7 @@
-use crate::demux_modes::DemuxModeType;
-use crate::demux_runtime::DemuxRuntimeSettings;
-use crate::evdev_helpers::{self, VirtualGamepadInfo};
-use crate::gilrs_helper;
-use crate::udev_helpers::ScopedDeviceHider;
+use crate::demux::modes::DemuxModeType;
+use crate::demux::runtime::DemuxRuntimeSettings;
+use crate::utils::evdev::VirtualGamepadInfo;
+use crate::utils::udev::ScopedDeviceHider;
 use crate::{DemuxRumbleTarget, HideType, SpoofTarget};
 use evdev::Device;
 use gilrs::{GamepadId, Gilrs};
@@ -68,7 +67,7 @@ pub fn start_demux(
     gilrs: Gilrs,
     config: DemuxConfig,
 ) -> Result<(DemuxHandle, Arc<DemuxRuntimeSettings>), Box<dyn Error>> {
-    let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
+    let resources = crate::utils::gilrs::discover_gamepad_resources(&gilrs);
 
     // Validate input: virtuals must be greater than 0
     if config.virtuals == 0 {
@@ -99,8 +98,8 @@ pub fn start_demux(
         let tag_string = format!("[{}]", i);
         let tag_str = Some(tag_string.as_str());
 
-        let mut v_uinput = evdev_helpers::create_virtual_gamepad(&virtual_info, tag_str)?;
-        let v_resource = gilrs_helper::wait_for_virtual_device(&mut v_uinput)?;
+        let mut v_uinput = crate::utils::evdev::create_virtual_gamepad(&virtual_info, tag_str)?;
+        let v_resource = crate::utils::gilrs::wait_for_virtual_device(&mut v_uinput)?;
 
         info!(
             "Virtual: {} @ {}",
@@ -146,7 +145,7 @@ pub fn start_demux(
     let runtime_settings_input = Arc::clone(&runtime_settings);
 
     let input_handle = thread::spawn(move || {
-        crate::demux_runtime::run_input_loop(
+        crate::demux::runtime::run_input_loop(
             gilrs,
             v_devices,
             runtime_settings_input,
@@ -163,7 +162,7 @@ pub fn start_demux(
         let primary_resource = primary_resource_ff.clone();
 
         let handle = thread::spawn(move || {
-            crate::demux_runtime::run_ff_loop(
+            crate::demux::runtime::run_ff_loop(
                 &mut v_uinput,
                 primary_resource,
                 runtime_settings_ff,

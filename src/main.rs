@@ -1,22 +1,13 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use demux::runtime::DemuxRumbleTarget;
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 
-mod demux_manager;
-mod demux_modes;
-mod demux_runtime;
-mod evdev_helpers;
-mod ff_helpers;
-mod gilrs_helper;
-mod mux_manager;
-mod mux_modes;
-mod mux_runtime;
+mod demux;
+mod mux;
 mod tray;
-mod udev_helpers;
-
-// Re-export DemuxRumbleTarget from demux_runtime
-pub use demux_runtime::DemuxRumbleTarget;
+mod utils;
 
 /// Multiplex multiple controllers into virtual gamepad.
 #[derive(Parser, Debug)]
@@ -60,8 +51,8 @@ struct MuxArgs {
     spoof: SpoofTarget,
 
     /// Mode type for combining controllers.
-    #[arg(long, value_enum, default_value_t = mux_modes::MuxModeType::default())]
-    mode: mux_modes::MuxModeType,
+    #[arg(long, value_enum, default_value_t = crate::mux::modes::MuxModeType::default())]
+    mode: crate::mux::modes::MuxModeType,
 
     /// Rumble target for virtual device.
     #[arg(long, value_enum, default_value_t = RumbleTarget::default())]
@@ -87,8 +78,8 @@ struct DemuxArgs {
     spoof: SpoofTarget,
 
     /// Mode type for routing controller.
-    #[arg(long, value_enum, default_value_t = demux_modes::DemuxModeType::default())]
-    mode: demux_modes::DemuxModeType,
+    #[arg(long, value_enum, default_value_t = crate::demux::modes::DemuxModeType::default())]
+    mode: crate::demux::modes::DemuxModeType,
 
     /// Rumble target for force feedback.
     #[arg(long, value_enum, default_value_t = DemuxRumbleTarget::default())]
@@ -133,8 +124,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn list_gamepads() -> Result<(), Box<dyn Error>> {
-    let gilrs = gilrs_helper::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
-    let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
+    let gilrs =
+        crate::utils::gilrs::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let resources = crate::utils::gilrs::discover_gamepad_resources(&gilrs);
     let mut found = false;
     for (id, gamepad) in gilrs.gamepads() {
         println!(
@@ -156,8 +148,9 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
         return Err("Primary and Assist controllers must be separate devices.".into());
     }
 
-    let gilrs = gilrs_helper::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
-    let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
+    let gilrs =
+        crate::utils::gilrs::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let resources = crate::utils::gilrs::discover_gamepad_resources(&gilrs);
 
     // Identify primary and assist resources
     let p_id = resources
@@ -190,7 +183,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     println!("{}", assist_msg);
 
     // Start mux
-    let config = mux_manager::MuxConfig {
+    let config = crate::mux::manager::MuxConfig {
         primary_id: p_id,
         assist_id: a_id,
         mode: args.mode,
@@ -203,7 +196,8 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
 
     let mux_thread = std::thread::spawn(move || {
-        let mux_handle = mux_manager::start_mux(gilrs, config).expect("Failed to start mux");
+        let mux_handle =
+            crate::mux::manager::start_mux(gilrs, config).expect("Failed to start mux");
         let _ = shutdown_rx.recv();
         mux_handle.0.shutdown();
     });
@@ -221,8 +215,9 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
-    let gilrs = gilrs_helper::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
-    let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
+    let gilrs =
+        crate::utils::gilrs::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let resources = crate::utils::gilrs::discover_gamepad_resources(&gilrs);
 
     // Identify primary resource
     let p_id = resources
@@ -241,7 +236,7 @@ fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
     println!("{}", primary_msg);
 
     // Start demux
-    let config = demux_manager::DemuxConfig {
+    let config = crate::demux::manager::DemuxConfig {
         primary_id: p_id,
         virtuals: args.virtuals,
         mode: args.mode,
@@ -255,7 +250,7 @@ fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
 
     let demux_thread = std::thread::spawn(move || {
         let demux_handle =
-            demux_manager::start_demux(gilrs, config).expect("Failed to start demux");
+            crate::demux::manager::start_demux(gilrs, config).expect("Failed to start demux");
         let _ = shutdown_rx.recv();
         demux_handle.0.shutdown();
     });

@@ -1,5 +1,5 @@
-use crate::demux_modes::DemuxModeType;
-use crate::mux_modes::MuxModeType;
+use crate::demux::modes::DemuxModeType;
+use crate::mux::modes::MuxModeType;
 use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
 use gilrs::{GamepadId, Gilrs};
 use serde::{Deserialize, Serialize};
@@ -69,7 +69,7 @@ pub struct MuxState {
     /// Current rumble target
     pub rumble: RumbleTarget,
     /// Shared runtime settings for live updates
-    pub runtime_settings: Option<Arc<crate::mux_runtime::RuntimeSettings>>,
+    pub runtime_settings: Option<Arc<crate::mux::runtime::RuntimeSettings>>,
 }
 
 pub struct DemuxState {
@@ -86,7 +86,7 @@ pub struct DemuxState {
     /// Current rumble target
     pub rumble: DemuxRumbleTarget,
     /// Shared runtime settings for live updates
-    pub runtime_settings: Option<Arc<crate::demux_runtime::DemuxRuntimeSettings>>,
+    pub runtime_settings: Option<Arc<crate::demux::runtime::DemuxRuntimeSettings>>,
 }
 
 impl TrayState {

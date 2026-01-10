@@ -1,5 +1,5 @@
-use crate::demux_modes::DemuxModeType;
-use crate::mux_modes::MuxModeType;
+use crate::demux::modes::DemuxModeType;
+use crate::mux::modes::MuxModeType;
 use crate::tray::state::OperationMode;
 use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
 use log::{info, warn};
