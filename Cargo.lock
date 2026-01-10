@@ -705,7 +705,7 @@ dependencies = [
 [[package]]
 name = "gilrs"
 version = "0.11.0"
-source = "git+https://gitlab.com/ruffsl/gilrs.git?branch=patch#9f58ddc2b461f4b6a467fb7ff2f4b16a64abc8f5"
+source = "git+https://gitlab.com/gilrs-project/gilrs.git?branch=master#11fc4305d95326c740db20d9e54a9dffc2376306"
 dependencies = [
  "fnv",
  "gilrs-core",
@@ -717,7 +717,7 @@ dependencies = [
 [[package]]
 name = "gilrs-core"
 version = "0.6.6"
-source = "git+https://gitlab.com/ruffsl/gilrs.git?branch=patch#9f58ddc2b461f4b6a467fb7ff2f4b16a64abc8f5"
+source = "git+https://gitlab.com/gilrs-project/gilrs.git?branch=master#11fc4305d95326c740db20d9e54a9dffc2376306"
 dependencies = [
  "inotify",
  "js-sys",
