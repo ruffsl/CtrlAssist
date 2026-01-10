@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use demux::runtime::DemuxRumbleTarget;
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -7,9 +8,6 @@ mod demux;
 mod mux;
 mod tray;
 mod utils;
-
-// Re-export DemuxRumbleTarget from demux_runtime
-pub use crate::demux::runtime::DemuxRumbleTarget;
 
 /// Multiplex multiple controllers into virtual gamepad.
 #[derive(Parser, Debug)]
