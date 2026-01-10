@@ -362,17 +362,11 @@ Settings are loaded on startup and saved when using the mux. Controllers are mat
 
 # ⚠️ Limitations
 
-- System hiding requires root access (not available in Flatpak)
-  - Temporarily modifies group permissions for selected devices
 - Hiding must be done before starting games or launchers
   - Processes with open file handles may retain device access
 - Reconnecting a hidden controller may revert its visibility
   - Steam hiding persists across reconnects while CtrlAssist is running
   - System hiding: custom udev rules needed for persistent permissions
-- Steam hiding affects all controllers of the same make and model
-  - Blacklists by vendor/product ID, not individual devices
-- Steam hiding requires Steam restart
-  - Steam only checks controller_blacklist config on startup
 - Toggle mode requires pressing all buttons and axes after startup
   - gilrs lazily initializes gamepad state used for synchronization
 
