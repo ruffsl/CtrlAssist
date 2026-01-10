@@ -187,8 +187,6 @@ Assist:  (1) PS4 Controller
 Mux Active. Press Ctrl+C to exit.
 ```
 
-<details><summary>More options</summary>
-
 ### 🎮 Primary Assist Mapping
 
 Manually specify Primary and Assist controllers via IDs:
@@ -268,8 +266,6 @@ sudo ctrlassist mux --hide system
 
 > [!IMPORTANT]
 > Not possible via Flatpak sandbox for security. Use `--hide steam` instead.
-
-</details>
 
 ## 🔁 demux
 
