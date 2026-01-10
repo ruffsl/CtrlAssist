@@ -38,7 +38,7 @@ evdev = "0.13.2"
 # gilrs = "0.11.0"
 # use gilrs from local path
 # gilrs = { path = "../gilrs/gilrs" }
-gilrs = { git = "https://gitlab.com/ruffsl/gilrs.git", branch = "patch" }
+gilrs = { git = "https://gitlab.com/gilrs-project/gilrs.git", branch = "master" }
 libc = "0.2.180"
 log = "0.4.29"
 udev = "0.9.3"
