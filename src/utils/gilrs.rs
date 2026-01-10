@@ -1,7 +1,6 @@
 use evdev::Device;
 use evdev::uinput::VirtualDevice;
-use gilrs::GilrsBuilder;
-use gilrs::{GamepadId, Gilrs};
+use gilrs::{GamepadExt, GamepadId, Gilrs, GilrsBuilder};
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
@@ -62,13 +61,8 @@ pub fn wait_for_virtual_device(
 pub fn discover_gamepad_resources(gilrs: &Gilrs) -> HashMap<GamepadId, GamepadResource> {
     let mut resources = HashMap::new();
 
-    use std::path::PathBuf;
     for (id, gamepad) in gilrs.gamepads() {
-        let Some(path_str) = gamepad.devpath() else {
-            eprintln!("Failed to get devpath for gamepad {}", gamepad.name(),);
-            continue;
-        };
-        let path = PathBuf::from(path_str);
+        let path = gamepad.devpath().to_path_buf();
         match Device::open(&path) {
             Ok(device) => {
                 resources.insert(
