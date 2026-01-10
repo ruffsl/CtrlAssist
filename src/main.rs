@@ -1,9 +1,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use gilrs::Gilrs;
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 
+mod demux_manager;
+mod demux_modes;
+mod demux_runtime;
 mod evdev_helpers;
 mod ff_helpers;
 mod gilrs_helper;
@@ -12,6 +14,9 @@ mod mux_modes;
 mod mux_runtime;
 mod tray;
 mod udev_helpers;
+
+// Re-export DemuxRumbleTarget from demux_runtime
+pub use demux_runtime::DemuxRumbleTarget;
 
 /// Multiplex multiple controllers into virtual gamepad.
 #[derive(Parser, Debug)]
@@ -28,6 +33,9 @@ enum Commands {
 
     /// Multiplex connected controllers into virtual gamepad.
     Mux(MuxArgs),
+
+    /// Demultiplex one controller to multiple virtual gamepads.
+    Demux(DemuxArgs),
 
     /// Launch system tray app for graphical control.
     Tray,
@@ -52,15 +60,42 @@ struct MuxArgs {
     spoof: SpoofTarget,
 
     /// Mode type for combining controllers.
-    #[arg(long, value_enum, default_value_t = mux_modes::ModeType::default())]
-    mode: mux_modes::ModeType,
+    #[arg(long, value_enum, default_value_t = mux_modes::MuxModeType::default())]
+    mode: mux_modes::MuxModeType,
 
     /// Rumble target for virtual device.
     #[arg(long, value_enum, default_value_t = RumbleTarget::default())]
     rumble: RumbleTarget,
 }
 
-#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(clap::Args, Debug)]
+struct DemuxArgs {
+    /// Primary controller ID (see 'list' command).
+    #[arg(long, default_value_t = 0)]
+    primary: usize,
+
+    /// Number of virtual devices to create.
+    #[arg(long, default_value_t = 2)]
+    virtuals: usize,
+
+    /// Hide primary controller.
+    #[arg(long, value_enum, default_value_t = HideType::default())]
+    hide: HideType,
+
+    /// Spoof target for virtual devices.
+    #[arg(long, value_enum, default_value_t = SpoofTarget::default())]
+    spoof: SpoofTarget,
+
+    /// Mode type for routing controller.
+    #[arg(long, value_enum, default_value_t = demux_modes::DemuxModeType::default())]
+    mode: demux_modes::DemuxModeType,
+
+    /// Rumble target for force feedback.
+    #[arg(long, value_enum, default_value_t = DemuxRumbleTarget::default())]
+    rumble: DemuxRumbleTarget,
+}
+
+#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub enum HideType {
     #[default]
     None,
@@ -68,7 +103,7 @@ pub enum HideType {
     System,
 }
 
-#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub enum SpoofTarget {
     Primary,
     Assist,
@@ -92,15 +127,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     match cli.command {
         Commands::List => list_gamepads(),
         Commands::Mux(args) => run_mux(args),
+        Commands::Demux(args) => run_demux(args),
         Commands::Tray => tray::run_tray().await,
     }
 }
 
 fn list_gamepads() -> Result<(), Box<dyn Error>> {
-    let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let gilrs = gilrs_helper::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
     let mut found = false;
     for (id, gamepad) in gilrs.gamepads() {
-        println!("({}) {}", id, gamepad.name());
+        println!(
+            "({}) {} @ {}",
+            id,
+            gamepad.name(),
+            resources[&id].path.display()
+        );
         found = true;
     }
     if !found {
@@ -114,7 +156,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
         return Err("Primary and Assist controllers must be separate devices.".into());
     }
 
-    let gilrs = Gilrs::new().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let gilrs = gilrs_helper::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
     let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
     // Identify primary and assist resources
@@ -147,7 +189,7 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     info!("{}", assist_msg);
     println!("{}", assist_msg);
 
-    // Start mux using the shared helper
+    // Start mux
     let config = mux_manager::MuxConfig {
         primary_id: p_id,
         assist_id: a_id,
@@ -160,25 +202,72 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     use std::sync::mpsc;
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
 
-    // Spawn mux in a thread, so we can join it in main
     let mux_thread = std::thread::spawn(move || {
         let mux_handle = mux_manager::start_mux(gilrs, config).expect("Failed to start mux");
-        // Wait for shutdown signal (blocks efficiently)
         let _ = shutdown_rx.recv();
         mux_handle.0.shutdown();
     });
 
-    // Setup Ctrl+C handler to send shutdown signal
     ctrlc::set_handler(move || {
         println!("\nShutting down...");
-        // Ignore error if already sent
         let _ = shutdown_tx.send(());
     })?;
 
     info!("Mux Active. Press Ctrl+C to exit.");
     println!("Mux Active. Press Ctrl+C to exit.");
 
-    // Wait for mux thread to finish
     let _ = mux_thread.join();
+    Ok(())
+}
+
+fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
+    let gilrs = gilrs_helper::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
+
+    // Identify primary resource
+    let p_id = resources
+        .keys()
+        .find(|&&id| usize::from(id) == args.primary)
+        .copied()
+        .ok_or(format!("Primary ID {} not found", args.primary))?;
+
+    let primary_msg = format!(
+        "Primary: ({}) {} @ {}",
+        p_id,
+        resources[&p_id].name,
+        resources[&p_id].path.display()
+    );
+    info!("{}", primary_msg);
+    println!("{}", primary_msg);
+
+    // Start demux
+    let config = demux_manager::DemuxConfig {
+        primary_id: p_id,
+        virtuals: args.virtuals,
+        mode: args.mode,
+        hide: args.hide,
+        spoof: args.spoof,
+        rumble: args.rumble,
+    };
+
+    use std::sync::mpsc;
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+
+    let demux_thread = std::thread::spawn(move || {
+        let demux_handle =
+            demux_manager::start_demux(gilrs, config).expect("Failed to start demux");
+        let _ = shutdown_rx.recv();
+        demux_handle.0.shutdown();
+    });
+
+    ctrlc::set_handler(move || {
+        println!("\nShutting down...");
+        let _ = shutdown_tx.send(());
+    })?;
+
+    info!("Demux Active. Press Ctrl+C to exit.");
+    println!("Demux Active. Press Ctrl+C to exit.");
+
+    let _ = demux_thread.join();
     Ok(())
 }

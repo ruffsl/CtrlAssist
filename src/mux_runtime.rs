@@ -2,7 +2,7 @@ use crate::RumbleTarget;
 use crate::ff_helpers::PhysicalFFDev;
 use crate::gilrs_helper::GamepadResource;
 use crate::mux_modes;
-use crate::mux_modes::ModeType;
+use crate::mux_modes::MuxModeType;
 use evdev::uinput::VirtualDevice;
 use evdev::{Device, EventType, InputEvent};
 use gilrs::{GamepadId, Gilrs};
@@ -17,19 +17,19 @@ const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Runtime-updatable mux settings
 pub struct RuntimeSettings {
-    pub mode: Arc<RwLock<ModeType>>,
+    pub mode: Arc<RwLock<MuxModeType>>,
     pub rumble: Arc<RwLock<RumbleTarget>>,
 }
 
 impl RuntimeSettings {
-    pub fn new(mode: ModeType, rumble: RumbleTarget) -> Self {
+    pub fn new(mode: MuxModeType, rumble: RumbleTarget) -> Self {
         Self {
             mode: Arc::new(RwLock::new(mode)),
             rumble: Arc::new(RwLock::new(rumble)),
         }
     }
 
-    pub fn update_mode(&self, new_mode: ModeType) {
+    pub fn update_mode(&self, new_mode: MuxModeType) {
         let mut mode = self.mode.write();
         *mode = new_mode;
     }
@@ -39,7 +39,7 @@ impl RuntimeSettings {
         *rumble = new_rumble;
     }
 
-    pub fn get_mode(&self) -> ModeType {
+    pub fn get_mode(&self) -> MuxModeType {
         self.mode.read().clone()
     }
 

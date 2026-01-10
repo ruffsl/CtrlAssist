@@ -1,6 +1,6 @@
 use crate::evdev_helpers::{self, VirtualGamepadInfo};
 use crate::gilrs_helper::{self};
-use crate::mux_modes::ModeType;
+use crate::mux_modes::MuxModeType;
 use crate::mux_runtime::RuntimeSettings;
 use crate::udev_helpers::ScopedDeviceHider;
 use crate::{HideType, RumbleTarget, SpoofTarget};
@@ -17,7 +17,7 @@ use std::thread;
 pub struct MuxConfig {
     pub primary_id: GamepadId,
     pub assist_id: GamepadId,
-    pub mode: ModeType,
+    pub mode: MuxModeType,
     pub hide: HideType,
     pub spoof: SpoofTarget,
     pub rumble: RumbleTarget,
@@ -29,6 +29,8 @@ pub struct MuxHandle {
     pub ff_handle: thread::JoinHandle<()>,
     pub shutdown: Arc<AtomicBool>,
     pub virtual_device_path: PathBuf,
+    #[allow(dead_code)]
+    pub hider: ScopedDeviceHider,
 }
 
 impl MuxHandle {
@@ -67,12 +69,12 @@ pub fn start_mux(
     let resources = gilrs_helper::discover_gamepad_resources(&gilrs);
 
     // Setup hiding
-    let mut _hider = ScopedDeviceHider::new(config.hide.clone());
+    let mut hider = ScopedDeviceHider::new(config.hide);
     if let Some(primary_res) = resources.get(&config.primary_id) {
-        _hider.hide_gamepad_devices(primary_res)?;
+        hider.hide_gamepad_devices(primary_res)?;
     }
     if let Some(assist_res) = resources.get(&config.assist_id) {
-        _hider.hide_gamepad_devices(assist_res)?;
+        hider.hide_gamepad_devices(assist_res)?;
     }
 
     // Setup virtual device
@@ -86,7 +88,9 @@ pub fn start_mux(
         },
     };
 
-    let mut v_uinput = evdev_helpers::create_virtual_gamepad(&virtual_info)?;
+    let tag = Some("[#]");
+
+    let mut v_uinput = evdev_helpers::create_virtual_gamepad(&virtual_info, tag)?;
     let v_resource = gilrs_helper::wait_for_virtual_device(&mut v_uinput)?;
     let virtual_device_path = v_resource.path.clone();
 
@@ -139,6 +143,7 @@ pub fn start_mux(
             ff_handle,
             shutdown,
             virtual_device_path,
+            hider,
         },
         runtime_settings,
     ))

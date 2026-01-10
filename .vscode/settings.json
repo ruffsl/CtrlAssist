@@ -8,6 +8,7 @@
         "deadzone",
         "devnode",
         "devnodes",
+        "devpath",
         "envrc",
         "evdev",
         "flathub",

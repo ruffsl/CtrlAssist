@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 // Enum for all muxing modes
 #[derive(clap::ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub enum ModeType {
+pub enum MuxModeType {
     Average,
     #[default]
     Priority,
@@ -28,10 +28,10 @@ pub trait MuxMode {
 }
 
 /// Factory function to create the correct mux mode
-pub fn create_mux_mode(mode: ModeType) -> Box<dyn MuxMode> {
+pub fn create_mux_mode(mode: MuxModeType) -> Box<dyn MuxMode> {
     match mode {
-        ModeType::Average => Box::new(average::AverageMode),
-        ModeType::Priority => Box::new(priority::PriorityMode),
-        ModeType::Toggle => Box::new(toggle::ToggleMode::default()),
+        MuxModeType::Average => Box::new(average::AverageMode),
+        MuxModeType::Priority => Box::new(priority::PriorityMode),
+        MuxModeType::Toggle => Box::new(toggle::ToggleMode::default()),
     }
 }

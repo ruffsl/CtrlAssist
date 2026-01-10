@@ -30,6 +30,10 @@
 
 ## 🎛️ Modes
 
+### 🔀 mux
+
+Combine Primary and Assist controllers into one virtual gamepad.
+
 - 👑 **Priority** (default): Assist controller overrides when active
   - Axes: Prioritize Assist when active (exceeds deadzone)
     - Buttons: Prioritize Assist when button released
@@ -42,14 +46,33 @@
     - Triggers: Averaged when both are active (exceed deadzone)
   - Ideal for cooperative input and subtle corrections
     - E.g. For counter steer/brake assist in racing games
-- 🔄 **Toggle**: Switch Active controller on demand
+- 🔃 **Toggle**: Switch Active controller on demand
   - All inputs forwarded from currently active controller
-    - Toggle Active controller via the Mode button on Assist
+    - Toggle Active controller via reserved Mode button on Assist
     - Immediately synchronizes input to current Active state
   - Ideal when fine-grain conflict-free control is needed
     - E.g. Game menu navigation or precise interventions
 
 [Screencast_20251230_070245.webm](https://github.com/user-attachments/assets/40f72091-cfeb-461b-a4fb-5b4198604e9d)
+
+### 🔁 demux
+
+Split one Primary controller into multiple virtual gamepads.
+
+- 🔂 **Unicast** (default): route Primary to Active gamepad
+  - All inputs forwarded to currently active virtual gamepad
+    - Cycle Active gamepad via reserved Mode button on Primary
+    - Force feedback synchronized with Active gamepad
+  - Ideal for switching between multiple virtual gamepads
+    - E.g. Assist multiple players across multiple mux instances
+- 📢 **Multicast**: route Primary to all virtual gamepads
+  - All inputs forwarded to all virtual gamepads simultaneously
+    - Including Mode button events from Primary controller
+    - Force feedback synchronized with all virtual gamepads
+  - Ideal for replicating Primary input across multiple devices
+    - E.g. For more advanced input multiplexing pipelines
+
+[Screencast_20260108_173024.webm](https://github.com/user-attachments/assets/67b4ec7f-c667-4dfc-b9e3-a5965d20c0d1)
 
 # ⬇️ Install
 
@@ -191,7 +214,7 @@ Mimic controller hardware for in-game layout recognition:
 $ ctrlassist mux --spoof primary
 Primary: (0) Microsoft Xbox One
 Assist:  (1) PS4 Controller
-Virtual: (2) Microsoft X-Box One pad (Firmware 2015)
+Virtual: (2) Microsoft X-Box One pad (Firmware 2015) [#]
 ```
 
 > [!WARNING]
@@ -203,7 +226,6 @@ Target force feedback to either, none, or both physical controllers:
 
 ```sh
 $ ctrlassist mux --rumble both
-...
 ```
 
 ### 🙈 Hide Physical Devices
@@ -245,37 +267,106 @@ sudo ctrlassist mux --hide system
 > [!IMPORTANT]
 > Not possible via Flatpak sandbox for security. Use `--hide steam` instead.
 
+## 🔁 demux
+
+Demultiplex via unicast between two virtual gamepads by default:
+
+```sh
+$ ctrlassist demux
+Primary: (0) Microsoft Xbox One
+Virtual: (1) CtrlAssist Virtual Gamepad [0]
+Virtual: (2) CtrlAssist Virtual Gamepad [1]
+...
+Demux Active. Press Ctrl+C to exit.
+```
+
+<details><summary>More options</summary>
+
+### 🎮 Primary Virtual Mapping
+
+Specify Primary via ID and number of virtual controllers:
+
+```sh
+$ ctrlassist demux --primary 1 --virtuals 3
+Primary: (1) PS4 Controller
+Virtual: (2) CtrlAssist Virtual Gamepad [0]
+Virtual: (3) CtrlAssist Virtual Gamepad [1]
+Virtual: (4) CtrlAssist Virtual Gamepad [2]
+...
+```
+
+### 🎛️ Demux Mode Selection
+
+Manually specify mode for virtual controller:
+
+```sh
+$ ctrlassist demux --mode multicast
+```
+
+### 🕹️ Spoof Virtual Device
+
+Mimic controller hardware for in-game layout recognition:
+
+```sh
+$ ctrlassist demux --spoof primary
+Primary: (0) Microsoft Xbox One
+Virtual: (1) Microsoft X-Box One pad (Firmware 2015) [0]
+Virtual: (2) Microsoft X-Box One pad (Firmware 2015) [1]
+```
+
+> [!WARNING]
+> Combining spoofing with some hiding strategies may also hide the virtual device.
+
+> [!NOTE]
+> Hiding virtual devices used by other mux instances of CtrlAssist may be desirable.
+
+### 🫨 Rumble Pass-Through
+
+Forward force feedback from either `none`, or `active` virtual gamepad:
+
+```sh
+$ ctrlassist demux --rumble active
+```
+
+### 🙈 Hide Physical Devices
+
+Same as mux command; see other for details.
+
+</details>
+
 # ⚙️ Configuration
 
 The system tray saves settings to `$XDG_CONFIG_HOME/ctrlassist/config.toml`:
 
 ```toml
-# Last selected controllers (by name for best-effort matching)
+# Mux configuration
+[mux]
 primary_name = "Microsoft Xbox One"
 assist_name = "PS4 Controller"
-
-# Mux configuration
 mode = "Priority"
 hide = "Steam"
 spoof = "None"
 rumble = "Both"
+
+# Demux configuration
+[demux]
+primary_name = "Microsoft Xbox One"
+virtuals = 2
+mode = "Unicast"
+hide = "Steam"
+spoof = "None"
+rumble = "Active"
 ```
 
 Settings are loaded on startup and saved when using the mux. Controllers are matched by name (best-effort) if IDs change between sessions.
 
 # ⚠️ Limitations
 
-- System hiding requires root access (not available in Flatpak)
-  - Temporarily modifies group permissions for selected devices
 - Hiding must be done before starting games or launchers
   - Processes with open file handles may retain device access
 - Reconnecting a hidden controller may revert its visibility
   - Steam hiding persists across reconnects while CtrlAssist is running
   - System hiding: custom udev rules needed for persistent permissions
-- Steam hiding affects all controllers of the same make and model
-  - Blacklists by vendor/product ID, not individual devices
-- Steam hiding requires Steam restart
-  - Steam only checks controller_blacklist config on startup
 - Toggle mode requires pressing all buttons and axes after startup
   - gilrs lazily initializes gamepad state used for synchronization
 
@@ -345,6 +436,20 @@ Additionally, each instance can use different hiding strategies, spoofing option
 Examples include:
 - Dual wielding one for each hand, like split Nintendo Switch Joy-Cons
 - Combining a standard gamepad with an accessible Xbox Adaptive Controller
+- Assist multiple Primary players using demux outputs as mux Assist inputs
+
+```mermaid
+flowchart LR
+    A[Assist <br> Controller] --> B[Demux <br> Unicast]
+    B --> C[Assist 1]
+    B --> D[Assist 2]
+    G[Primary 1 <br> Controller] --> E[Mux <br> Priority]
+    C[Assist 1 <br> Virtual] --> E
+    D[Assist 2 <br> Virtual] --> F[Mux <br> Priority]
+    H[Primary 2 <br> Controller] --> F
+    E --> I[Virtual 1 <br> Gamepad]
+    F --> J[Virtual 2 <br> Gamepad]
+```
 
 # 📚 Background
 

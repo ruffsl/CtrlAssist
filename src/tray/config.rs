@@ -1,5 +1,7 @@
-use crate::mux_modes::ModeType;
-use crate::{HideType, RumbleTarget, SpoofTarget};
+use crate::demux_modes::DemuxModeType;
+use crate::mux_modes::MuxModeType;
+use crate::tray::state::OperationMode;
+use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -8,13 +10,23 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TrayConfig {
+    #[serde(default)]
+    pub operation_mode: OperationMode,
+    #[serde(default)]
+    pub mux: MuxConfig,
+    #[serde(default)]
+    pub demux: DemuxConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MuxConfig {
     /// Last selected primary controller (by name for best-effort matching)
     pub primary_name: Option<String>,
     /// Last selected assist controller (by name)
     pub assist_name: Option<String>,
     /// Last used mux mode
     #[serde(default)]
-    pub mode: ModeType,
+    pub mode: MuxModeType,
     /// Last used hide strategy
     #[serde(default)]
     pub hide: HideType,
@@ -24,6 +36,26 @@ pub struct TrayConfig {
     /// Last used rumble target
     #[serde(default)]
     pub rumble: RumbleTarget,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DemuxConfig {
+    /// Last selected primary controller (by name)
+    pub primary_name: Option<String>,
+    /// Last used virtuals count
+    pub virtuals: usize,
+    /// Last used demux mode
+    #[serde(default)]
+    pub mode: DemuxModeType,
+    /// Last used hide strategy
+    #[serde(default)]
+    pub hide: HideType,
+    /// Last used spoof target
+    #[serde(default)]
+    pub spoof: SpoofTarget,
+    /// Last used rumble target
+    #[serde(default)]
+    pub rumble: DemuxRumbleTarget,
 }
 
 impl TrayConfig {
