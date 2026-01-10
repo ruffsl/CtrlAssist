@@ -1,10 +1,10 @@
 use crate::mux::modes::MuxModeType;
 use crate::mux::runtime::RuntimeSettings;
 use crate::utils::evdev::VirtualGamepadInfo;
-use crate::utils::gilrs::{GamepadId, Gilrs};
 use crate::utils::udev::ScopedDeviceHider;
 use crate::{HideType, RumbleTarget, SpoofTarget};
 use evdev::Device;
+use gilrs::{GamepadId, Gilrs};
 use log::info;
 use std::error::Error;
 use std::path::PathBuf;
