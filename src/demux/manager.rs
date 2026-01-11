@@ -1,7 +1,7 @@
 use crate::demux::modes::DemuxModeType;
 use crate::demux::runtime::DemuxRuntimeSettings;
 use crate::utils::evdev::VirtualGamepadInfo;
-use crate::utils::udev::ScopedDeviceHider;
+use crate::utils::hide::ScopedDeviceHider;
 use crate::{DemuxRumbleTarget, HideType, SpoofTarget};
 use evdev::Device;
 use gilrs::{GamepadId, Gilrs};
