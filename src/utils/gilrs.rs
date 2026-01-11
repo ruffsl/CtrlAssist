@@ -1,6 +1,6 @@
 use evdev::Device;
 use evdev::uinput::VirtualDevice;
-use gilrs::{GamepadExt, GamepadId, Gilrs, GilrsBuilder};
+use gilrs::{GamepadId, Gilrs, GilrsBuilder, LinuxGamepadExt};
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
