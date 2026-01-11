@@ -11,6 +11,7 @@ use parking_lot::Mutex;
 use std::error::Error;
 use std::sync::{Arc, mpsc};
 use std::thread;
+use tokio::sync::watch;
 
 use super::config::TrayConfig;
 use super::state::{OperationMode, OperationStatus, TrayState};
@@ -135,21 +136,38 @@ macro_rules! enum_menu {
 
 pub struct CtrlAssistTray {
     state: Arc<Mutex<TrayState>>,
-    /// Store shutdown sender for signaling
-    shutdown_tx: Option<mpsc::Sender<()>>,
+    /// Broadcast channel to signal shutdown to all listeners
+    shutdown_tx: watch::Sender<bool>,
+    /// Synchronous channel for signaling operation threads
+    op_shutdown_tx: Option<mpsc::Sender<()>>,
 }
 
 impl CtrlAssistTray {
-    pub fn new() -> Result<Self, Box<dyn Error>> {
+    pub fn new() -> Result<(Self, watch::Receiver<bool>), Box<dyn Error>> {
         let gilrs =
             crate::utils::gilrs::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {}", e))?;
         let config = TrayConfig::load();
         let state = TrayState::new(&gilrs, config);
 
-        Ok(Self {
-            state: Arc::new(Mutex::new(state)),
-            shutdown_tx: None,
-        })
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        Ok((
+            Self {
+                state: Arc::new(Mutex::new(state)),
+                shutdown_tx,
+                op_shutdown_tx: None,
+            },
+            shutdown_rx,
+        ))
+    }
+
+    /// Signal shutdown to all listeners
+    pub fn shutdown(&self) {
+        // Stop any running operation first
+        self.stop_operation();
+
+        // Signal shutdown
+        let _ = self.shutdown_tx.send(true);
     }
 
     fn send_notification(summary: &str, body: &str) {
@@ -230,7 +248,7 @@ impl CtrlAssistTray {
 
         // Use a channel for shutdown signaling
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
-        self.shutdown_tx = Some(shutdown_tx);
+        self.op_shutdown_tx = Some(shutdown_tx);
         let state_arc = Arc::clone(&self.state);
 
         let handle = thread::spawn(move || match start_mux_with_state(config, state_arc) {
@@ -283,7 +301,7 @@ impl CtrlAssistTray {
 
         // Use a channel for shutdown signaling
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
-        self.shutdown_tx = Some(shutdown_tx);
+        self.op_shutdown_tx = Some(shutdown_tx);
         let state_arc = Arc::clone(&self.state);
 
         let handle = thread::spawn(move || match start_demux_with_state(config, state_arc) {
@@ -307,7 +325,7 @@ impl CtrlAssistTray {
         }
     }
 
-    fn stop_operation(&mut self) {
+    pub fn stop_operation(&self) {
         let mut state = self.state.lock();
 
         if state.status == OperationStatus::Stopped {
@@ -317,27 +335,33 @@ impl CtrlAssistTray {
         info!("Stopping operation");
 
         // Signal shutdown via channel
-        if let Some(tx) = self.shutdown_tx.take() {
+        if let Some(tx) = self.op_shutdown_tx.as_ref() {
             let _ = tx.send(());
         }
 
+        // Clear virtual paths before joining threads
         state.virtual_device_paths.clear();
 
+        // Join the operation thread BEFORE clearing the handle
         if let Some(handle) = state.operation_handle.take() {
-            // Drop lock to avoid deadlock during join if thread tries to lock state while stopping
+            // CRITICAL: Drop lock before joining to avoid deadlock
             drop(state);
-            let _ = handle.join();
+
+            match handle.join() {
+                Ok(_) => info!("Operation thread joined successfully"),
+                Err(e) => error!("Failed to join operation thread: {:?}", e),
+            }
+
+            // Re-acquire lock after join
             state = self.state.lock();
         }
 
         state.status = OperationStatus::Stopped;
         state.shutdown_signal = None;
-
-        // Clear runtime settings
         state.mux.runtime_settings = None;
         state.demux.runtime_settings = None;
 
-        info!("Operation stopped");
+        info!("Operation stopped completely");
         Self::send_notification("CtrlAssist", "Operation stopped");
     }
 
@@ -364,6 +388,17 @@ impl CtrlAssistTray {
             state.demux.selected_primary =
                 validate(state.demux.selected_primary, &state.controllers)
                     .or_else(|| state.controllers.first().map(|c| c.id));
+        }
+    }
+}
+
+impl Drop for CtrlAssistTray {
+    fn drop(&mut self) {
+        // Ensure operation is stopped on drop
+        // This will invoke ScopedDeviceHider::drop
+        if self.state.lock().status == OperationStatus::Running {
+            error!("CtrlAssistTray dropped while operation running, forcing stop");
+            self.stop_operation();
         }
     }
 }
@@ -640,12 +675,14 @@ impl Tray for CtrlAssistTray {
                     }, action: |t| t.start_operation()),
             simple_item!(label: "Stop", icon: "media-playback-stop", enabled: is_running, action: |t| t.stop_operation()),
             MenuItem::Separator,
-            simple_item!(label: "Exit", icon: "application-exit", enabled: true, action: |t| { 
-                t.stop_operation();
-                // Graceful termination is preferred, but for tray apps exit(0) is often required
-                // to break out of the native event loop immediately.
-                std::process::exit(0);
-            }),
+            simple_item!(
+                label: "Exit", 
+                icon: "application-exit", 
+                enabled: true,
+                action: |t| {
+                    t.shutdown();
+                }
+            ),
         ]);
         items
     }
