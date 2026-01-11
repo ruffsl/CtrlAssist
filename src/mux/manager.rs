@@ -1,7 +1,7 @@
 use crate::mux::modes::MuxModeType;
 use crate::mux::runtime::RuntimeSettings;
 use crate::utils::evdev::VirtualGamepadInfo;
-use crate::utils::udev::ScopedDeviceHider;
+use crate::utils::hide::ScopedDeviceHider;
 use crate::{HideType, RumbleTarget, SpoofTarget};
 use evdev::Device;
 use gilrs::{GamepadId, Gilrs};
