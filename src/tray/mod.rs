@@ -32,13 +32,8 @@ pub async fn run_tray() -> Result<(), Box<dyn Error>> {
 
     tokio::spawn(async move {
         // Wait for Ctrl+C signal
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                let _ = ctrlc_tx.send(true);
-            }
-            Err(e) => {
-                eprintln!("Failed to listen for Ctrl+C: {}", e);
-            }
+        if tokio::signal::ctrl_c().await.is_ok() {
+            let _ = ctrlc_tx.send(true);
         }
     });
 
@@ -49,13 +44,10 @@ pub async fn run_tray() -> Result<(), Box<dyn Error>> {
     // Wait for either shutdown signal or Ctrl+C
     tokio::select! {
         _ = shutdown_rx.changed() => {
-            // Exit button was clicked
-            handle.update(|tray: &mut CtrlAssistTray| {
-                tray.stop_operation();
-            }).await;
+            // Exit button clicked, tray handled shutdown
         }
         _ = ctrlc_rx.changed() => {
-            // Ctrl+C was pressed
+            // Ctrl+C pressed, handle shutdown here
             handle.update(|tray: &mut CtrlAssistTray| {
                 tray.shutdown();
             }).await;
