@@ -34,7 +34,6 @@ pub async fn run_tray() -> Result<(), Box<dyn Error>> {
         // Wait for Ctrl+C signal
         match tokio::signal::ctrl_c().await {
             Ok(()) => {
-                println!("\nShutting down gracefully...");
                 let _ = ctrlc_tx.send(true);
             }
             Err(e) => {
@@ -51,24 +50,19 @@ pub async fn run_tray() -> Result<(), Box<dyn Error>> {
     tokio::select! {
         _ = shutdown_rx.changed() => {
             // Exit button was clicked
+            handle.update(|tray: &mut CtrlAssistTray| {
+                tray.stop_operation();
+            }).await;
         }
         _ = ctrlc_rx.changed() => {
-            // Ctrl+C was pressed, trigger shutdown through the tray
+            // Ctrl+C was pressed
             handle.update(|tray: &mut CtrlAssistTray| {
                 tray.shutdown();
             }).await;
         }
     }
 
-    // Perform cleanup
-    println!("Stopping operations...");
-    handle
-        .update(|tray: &mut CtrlAssistTray| {
-            tray.stop_operation();
-        })
-        .await;
-
-    println!("Shutting down tray...");
+    println!("\nShutting down tray...");
     handle.shutdown().await;
 
     println!("Cleanup complete, exiting.");
