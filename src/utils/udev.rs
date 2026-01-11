@@ -134,18 +134,26 @@ where
     let content = fs::read_to_string(path)?;
     let mut lines: Vec<String> = content.lines().map(String::from).collect();
 
-    let (line_idx, current_val) = lines
+    let (line_idx, current_val) = match lines
         .iter()
         .enumerate()
         .find(|(_, l)| l.trim().starts_with("\"controller_blacklist\""))
         .map(|(i, l)| (i, parse_vdf_value(l)))
-        .unwrap_or_else(|| {
+    {
+        Some((i, v)) => (i, v),
+        None => {
             let idx = lines
                 .iter()
                 .position(|l| l.contains("\"InstallConfigStore\""))
-                .expect("Steam config missing InstallConfigStore");
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Steam config missing InstallConfigStore",
+                    )
+                })?;
             (idx + 2, None)
-        });
+        }
+    };
 
     let mut blacklist: HashSet<String> = current_val
         .as_deref()
