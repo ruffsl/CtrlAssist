@@ -26,8 +26,8 @@ struct SystemHideState {
 /// Tracks Steam config modifications
 struct SteamHideState {
     config_path: Option<PathBuf>,
-    original_blacklist: Option<String>,
-    added_ids: Vec<String>,
+    original_blacklist: Option<HashSet<String>>,
+    added_ids: HashSet<String>,
 }
 
 impl ScopedDeviceHider {
@@ -40,7 +40,7 @@ impl ScopedDeviceHider {
             steam_state: SteamHideState {
                 config_path: None,
                 original_blacklist: None,
-                added_ids: Vec::new(),
+                added_ids: HashSet::new(),
             },
         }
     }
@@ -110,36 +110,37 @@ impl ScopedDeviceHider {
         log::info!("Adding {} to Steam blacklist", id_pair);
 
         // Read and modify Steam config
-        if self.steam_state.original_blacklist.is_none() {
-            // First time - backup original config
-            let config_content = fs::read_to_string(config_path).map_err(|e| {
-                let kind = e.kind();
-                let detail = match kind {
-                    io::ErrorKind::NotFound => "config file not found",
-                    io::ErrorKind::PermissionDenied => {
-                        "insufficient permissions to read config file"
-                    }
-                    _ => "I/O error while reading config file",
-                };
-                format!("Failed to read Steam config ({}): {}", detail, e)
-            })?;
+        self.steam_state.original_blacklist.get_or_insert_with(|| {
+            let config_content = fs::read_to_string(config_path)
+                .map_err(|e| {
+                    let kind = e.kind();
+                    let detail = match kind {
+                        io::ErrorKind::NotFound => "config file not found",
+                        io::ErrorKind::PermissionDenied => {
+                            "insufficient permissions to read config file"
+                        }
+                        _ => "I/O error while reading config file",
+                    };
+                    format!("Failed to read Steam config ({}): {}", detail, e)
+                })
+                .unwrap();
+            parse_blacklist_set(&config_content)
+        });
 
-            let original_blacklist = parse_controller_blacklist(&config_content);
-            self.steam_state.original_blacklist = Some(original_blacklist.unwrap_or_default());
+        // Add new ID (deduplicated)
+        let inserted = self.steam_state.added_ids.insert(id_pair.clone());
+        if !inserted {
+            return Ok(());
         }
 
-        // Add new ID
-        self.steam_state.added_ids.push(id_pair.clone());
-
-        // Build new blacklist
-        let mut all_ids = Vec::new();
-        if let Some(original) = &self.steam_state.original_blacklist
-            && !original.is_empty()
-        {
-            all_ids.push(original.clone());
-        }
-        all_ids.extend(self.steam_state.added_ids.clone());
-        let new_blacklist = all_ids.join(",");
+        // Build new blacklist as a deduplicated set
+        let mut id_set = self
+            .steam_state
+            .original_blacklist
+            .clone()
+            .unwrap_or_default();
+        id_set.extend(self.steam_state.added_ids.iter().cloned());
+        let new_blacklist = join_blacklist_set(&id_set);
 
         // Update config file
         update_steam_config(config_path, &new_blacklist)?;
@@ -181,20 +182,56 @@ impl Drop for ScopedDeviceHider {
                 }
             }
             HideType::Steam => {
-                // Restore original Steam config
-                if let (Some(config_path), Some(original)) = (
-                    &self.steam_state.config_path,
-                    &self.steam_state.original_blacklist,
-                ) {
-                    if let Err(e) = update_steam_config(config_path, original) {
-                        log::error!("Failed to restore Steam config: {}", e);
-                    } else {
-                        log::info!("Restored Steam blacklist to original state");
+                // Robustly remove only the IDs we added from the current Steam config
+                if let Some(config_path) = &self.steam_state.config_path {
+                    // Read the current config
+                    match std::fs::read_to_string(config_path) {
+                        Ok(config_content) => {
+                            let mut current_set = parse_blacklist_set(&config_content);
+                            for id in &self.steam_state.added_ids {
+                                current_set.remove(id);
+                            }
+                            // Always deduplicate before writing
+                            let new_blacklist = join_blacklist_set(&current_set);
+                            if let Err(e) = update_steam_config(config_path, &new_blacklist) {
+                                log::error!("Failed to update Steam config: {}", e);
+                            } else {
+                                log::info!("Removed added IDs from Steam blacklist");
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to read Steam config for cleanup: {}", e);
+                        }
                     }
                 }
             }
         }
     }
+}
+
+// --- Blacklist Set Helpers ---
+
+/// Parse the controller_blacklist value from Steam config content into a set of IDs.
+fn parse_blacklist_set(content: &str) -> std::collections::HashSet<String> {
+    parse_controller_blacklist(content)
+        .map(|s| {
+            s.split(',')
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Join a set of IDs into a comma-separated string for the Steam config.
+fn join_blacklist_set<T>(set: T) -> String
+where
+    T: IntoIterator,
+    T::Item: AsRef<str>,
+{
+    let mut ids: Vec<String> = set.into_iter().map(|s| s.as_ref().to_string()).collect();
+    ids.sort();
+    ids.join(",")
 }
 
 // --- Steam Config Helpers ---
