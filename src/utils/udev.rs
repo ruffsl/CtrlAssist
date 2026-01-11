@@ -27,20 +27,23 @@ enum HiderState {
 }
 
 impl ScopedDeviceHider {
-    pub fn new(hide_type: HideType) -> Self {
+    pub fn new(hide_type: HideType) -> Result<Self, Box<dyn Error>> {
         let state = match hide_type {
             HideType::None => HiderState::None,
             HideType::System => HiderState::System {
                 hidden_paths: HashSet::new(),
             },
-            HideType::Steam => HiderState::Steam {
-                config_path: dirs::home_dir()
-                    .map(|h| h.join(".local/share/Steam/config/config.vdf"))
-                    .unwrap_or_default(),
-                added_ids: HashSet::new(),
-            },
+            HideType::Steam => {
+                let home = dirs::home_dir().ok_or_else(|| {
+                    "Home directory not found; cannot locate Steam config".to_string()
+                })?;
+                HiderState::Steam {
+                    config_path: home.join(".local/share/Steam/config/config.vdf"),
+                    added_ids: HashSet::new(),
+                }
+            }
         };
-        Self { state }
+        Ok(Self { state })
     }
 
     pub fn hide_gamepad_devices(
@@ -49,31 +52,23 @@ impl ScopedDeviceHider {
     ) -> Result<(), Box<dyn Error>> {
         match &mut self.state {
             HiderState::None => Ok(()),
-
             HiderState::System { hidden_paths } => {
                 let path = resource.path.as_path();
                 let Some(device) = find_udev_device(path)? else {
                     return hide_path_fs(path, hidden_paths);
                 };
-
                 let root = find_physical_root(device);
                 for node_path in find_child_devnodes(&root)? {
                     hide_path_fs(&node_path, hidden_paths)?;
                 }
                 Ok(())
             }
-
             HiderState::Steam {
                 config_path,
                 added_ids,
             } => {
-                if config_path.as_os_str().is_empty() {
-                    return Err("Home directory not found; cannot locate Steam config".into());
-                }
-
                 let input_id = resource.device.input_id();
                 let id = format!("{:04x}/{:04x}", input_id.vendor(), input_id.product());
-
                 if added_ids.insert(id.clone()) {
                     modify_steam_config(config_path, |blacklist| {
                         blacklist.insert(id);

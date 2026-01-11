@@ -75,7 +75,7 @@ pub fn start_demux(
     }
 
     // Setup hiding
-    let mut hider = ScopedDeviceHider::new(config.hide);
+    let mut hider = ScopedDeviceHider::new(config.hide)?;
     if let Some(primary_res) = resources.get(&config.primary_id) {
         hider.hide_gamepad_devices(primary_res)?;
     }
