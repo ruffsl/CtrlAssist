@@ -9,11 +9,10 @@ pub use app::CtrlAssistTray;
 use ashpd::is_sandboxed;
 use ksni::TrayMethods;
 use std::error::Error;
-use std::sync::{Arc, Mutex};
-use tokio::sync::oneshot;
+use tokio::sync::watch;
 
 pub async fn run_tray() -> Result<(), Box<dyn Error>> {
-    let tray = CtrlAssistTray::new()?;
+    let (tray, mut shutdown_rx) = CtrlAssistTray::new()?;
 
     let is_sandboxed = is_sandboxed().await;
 
@@ -28,40 +27,34 @@ pub async fn run_tray() -> Result<(), Box<dyn Error>> {
             .await?
     };
 
-    // Set up async shutdown channel (shared for Ctrl+C and tray Exit)
-    let (tx, shutdown_rx) = oneshot::channel::<()>();
-    let shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>> =
-        Arc::new(Mutex::new(Some(tx)));
+    // Create a separate shutdown channel for Ctrl+C
+    let (ctrlc_tx, mut ctrlc_rx) = watch::channel(false);
 
-    // Set up Ctrl+C handler
-    let shutdown_tx_ctrlc = Arc::clone(&shutdown_tx);
-    ctrlc::set_handler(move || {
+    tokio::spawn(async move {
+        // Wait for Ctrl+C signal
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to listen for Ctrl+C");
         println!("\nShutting down gracefully...");
-        if let Some(tx) = shutdown_tx_ctrlc.lock().unwrap().take() {
-            let _ = tx.send(());
-        }
-    })?;
-
-    // Store handle and shutdown sender in tray
-    let handle_clone = handle.clone();
-    let shutdown_tx_tray = Arc::clone(&shutdown_tx);
-    handle
-        .update(|tray: &mut CtrlAssistTray| {
-            tray.tray_handle = Some(handle_clone);
-            tray.shutdown_tx = Some(Box::new(move || {
-                if let Some(tx) = shutdown_tx_tray.lock().unwrap().take() {
-                    let _ = tx.send(());
-                }
-            }));
-        })
-        .await;
+        let _ = ctrlc_tx.send(true);
+    });
 
     println!("CtrlAssist system tray started");
     println!("Configure and control the mux from your system tray");
     println!("Press Ctrl+C to exit");
 
-    // Wait for shutdown signal (from either Ctrl+C or Exit button)
-    let _ = shutdown_rx.await;
+    // Wait for either shutdown signal or Ctrl+C
+    tokio::select! {
+        _ = shutdown_rx.changed() => {
+            // Exit button was clicked
+        }
+        _ = ctrlc_rx.changed() => {
+            // Ctrl+C was pressed, trigger shutdown through the tray
+            handle.update(|tray: &mut CtrlAssistTray| {
+                tray.shutdown();
+            }).await;
+        }
+    }
 
     // Perform cleanup
     println!("Stopping operations...");

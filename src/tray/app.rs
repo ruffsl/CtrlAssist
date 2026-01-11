@@ -11,6 +11,7 @@ use parking_lot::Mutex;
 use std::error::Error;
 use std::sync::{Arc, mpsc};
 use std::thread;
+use tokio::sync::watch;
 
 use super::config::TrayConfig;
 use super::state::{OperationMode, OperationStatus, TrayState};
@@ -135,42 +136,38 @@ macro_rules! enum_menu {
 
 pub struct CtrlAssistTray {
     state: Arc<Mutex<TrayState>>,
-    /// Store shutdown sender for tray main loop (async channel)
-    pub shutdown_tx: Option<Box<dyn FnOnce() + Send + 'static>>,
-    pub tray_handle: Option<ksni::Handle<CtrlAssistTray>>,
-    /// Store shutdown sender for operation threads (mpsc)
+    /// Broadcast channel to signal shutdown to all listeners
+    shutdown_tx: watch::Sender<bool>,
+    /// Synchronous channel for signaling operation threads
     op_shutdown_tx: Option<mpsc::Sender<()>>,
 }
 
 impl CtrlAssistTray {
-    pub fn new() -> Result<Self, Box<dyn Error>> {
+    pub fn new() -> Result<(Self, watch::Receiver<bool>), Box<dyn Error>> {
         let gilrs =
             crate::utils::gilrs::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {}", e))?;
         let config = TrayConfig::load();
         let state = TrayState::new(&gilrs, config);
 
-        Ok(Self {
-            state: Arc::new(Mutex::new(state)),
-            shutdown_tx: None,
-            tray_handle: None,
-            op_shutdown_tx: None,
-        })
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        Ok((
+            Self {
+                state: Arc::new(Mutex::new(state)),
+                shutdown_tx,
+                op_shutdown_tx: None,
+            },
+            shutdown_rx,
+        ))
     }
 
-    fn shutdown_tray(&mut self) {
+    /// Signal shutdown to all listeners
+    pub fn shutdown(&self) {
         // Stop any running operation first
         self.stop_operation();
 
-        // Signal the main loop to exit via async channel
-        if let Some(shutdown) = self.shutdown_tx.take() {
-            shutdown();
-        }
-
-        // Shutdown the tray service itself
-        if let Some(handle) = &self.tray_handle {
-            // Request shutdown - this will break the event loop
-            std::mem::drop(handle.shutdown());
-        }
+        // Signal shutdown
+        let _ = self.shutdown_tx.send(true);
     }
 
     fn send_notification(summary: &str, body: &str) {
@@ -328,7 +325,7 @@ impl CtrlAssistTray {
         }
     }
 
-    pub fn stop_operation(&mut self) {
+    pub fn stop_operation(&self) {
         let mut state = self.state.lock();
 
         if state.status == OperationStatus::Stopped {
@@ -338,7 +335,7 @@ impl CtrlAssistTray {
         info!("Stopping operation");
 
         // Signal shutdown via channel
-        if let Some(tx) = self.op_shutdown_tx.take() {
+        if let Some(tx) = self.op_shutdown_tx.as_ref() {
             let _ = tx.send(());
         }
 
@@ -367,6 +364,7 @@ impl CtrlAssistTray {
         info!("Operation stopped completely");
         Self::send_notification("CtrlAssist", "Operation stopped");
     }
+
     fn refresh_controllers(&self) {
         let mut state = self.state.lock();
         if let Ok(gilrs) = crate::utils::gilrs::new_gilrs() {
@@ -399,7 +397,7 @@ impl Drop for CtrlAssistTray {
         // Ensure operation is stopped on drop
         // This will invoke ScopedDeviceHider::drop
         if self.state.lock().status == OperationStatus::Running {
-            eprintln!("Warning: CtrlAssistTray dropped while operation running, forcing stop");
+            error!("CtrlAssistTray dropped while operation running, forcing stop");
             self.stop_operation();
         }
     }
@@ -682,7 +680,7 @@ impl Tray for CtrlAssistTray {
                 icon: "application-exit", 
                 enabled: true,
                 action: |t| {
-                    t.shutdown_tray();
+                    t.shutdown();
                 }
             ),
         ]);
