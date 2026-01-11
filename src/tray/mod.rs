@@ -32,11 +32,15 @@ pub async fn run_tray() -> Result<(), Box<dyn Error>> {
 
     tokio::spawn(async move {
         // Wait for Ctrl+C signal
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to listen for Ctrl+C");
-        println!("\nShutting down gracefully...");
-        let _ = ctrlc_tx.send(true);
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                println!("\nShutting down gracefully...");
+                let _ = ctrlc_tx.send(true);
+            }
+            Err(e) => {
+                eprintln!("Failed to listen for Ctrl+C: {}", e);
+            }
+        }
     });
 
     println!("CtrlAssist system tray started");
