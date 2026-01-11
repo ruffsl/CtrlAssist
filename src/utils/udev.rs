@@ -142,7 +142,8 @@ where
     {
         Some((i, v)) => (i, v),
         None => {
-            let idx = lines
+            // Fallback: insert inside the InstallConfigStore block, just after its opening brace.
+            let install_idx = lines
                 .iter()
                 .position(|l| l.contains("\"InstallConfigStore\""))
                 .ok_or_else(|| {
@@ -151,7 +152,27 @@ where
                         "Steam config missing InstallConfigStore",
                     )
                 })?;
-            (idx + 2, None)
+
+            // Check if the opening brace is on the same line as InstallConfigStore
+            let install_line = &lines[install_idx];
+            let brace_idx = if install_line.contains('{') {
+                install_idx
+            } else {
+                // Otherwise, find the next non-empty, non-whitespace-only line that starts with '{'
+                lines
+                    .iter()
+                    .skip(install_idx + 1)
+                    .position(|l| !l.trim().is_empty() && l.trim_start().starts_with('{'))
+                    .map(|rel| install_idx + 1 + rel)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Steam config InstallConfigStore block missing opening '{'",
+                        )
+                    })?
+            };
+
+            (brace_idx + 1, None)
         }
     };
 
