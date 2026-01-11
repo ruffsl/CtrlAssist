@@ -9,6 +9,7 @@ use log::{error, info};
 use notify_rust::Notification;
 use parking_lot::Mutex;
 use std::error::Error;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, mpsc};
 use std::thread;
 
@@ -137,6 +138,9 @@ pub struct CtrlAssistTray {
     state: Arc<Mutex<TrayState>>,
     /// Store shutdown sender for signaling
     shutdown_tx: Option<mpsc::Sender<()>>,
+    pub tray_handle: Option<ksni::Handle<CtrlAssistTray>>,
+    /// Shutdown signal for main loop
+    pub shutdown_signal: Option<Arc<AtomicBool>>,
 }
 
 impl CtrlAssistTray {
@@ -149,7 +153,25 @@ impl CtrlAssistTray {
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
             shutdown_tx: None,
+            tray_handle: None,
+            shutdown_signal: None,
         })
+    }
+
+    fn shutdown_tray(&mut self) {
+        // Stop any running operation first
+        self.stop_operation();
+
+        // Signal the main loop to exit
+        if let Some(signal) = &self.shutdown_signal {
+            signal.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        // Shutdown the tray service itself
+        if let Some(handle) = &self.tray_handle {
+            // Request shutdown - this will break the event loop
+            let _ = handle.shutdown();
+        }
     }
 
     fn send_notification(summary: &str, body: &str) {
@@ -307,7 +329,7 @@ impl CtrlAssistTray {
         }
     }
 
-    fn stop_operation(&mut self) {
+    pub fn stop_operation(&mut self) {
         let mut state = self.state.lock();
 
         if state.status == OperationStatus::Stopped {
@@ -321,26 +343,31 @@ impl CtrlAssistTray {
             let _ = tx.send(());
         }
 
+        // Clear virtual paths before joining threads
         state.virtual_device_paths.clear();
 
+        // Join the operation thread BEFORE clearing the handle
         if let Some(handle) = state.operation_handle.take() {
-            // Drop lock to avoid deadlock during join if thread tries to lock state while stopping
+            // CRITICAL: Drop lock before joining to avoid deadlock
             drop(state);
-            let _ = handle.join();
+
+            match handle.join() {
+                Ok(_) => info!("Operation thread joined successfully"),
+                Err(e) => error!("Failed to join operation thread: {:?}", e),
+            }
+
+            // Re-acquire lock after join
             state = self.state.lock();
         }
 
         state.status = OperationStatus::Stopped;
         state.shutdown_signal = None;
-
-        // Clear runtime settings
         state.mux.runtime_settings = None;
         state.demux.runtime_settings = None;
 
-        info!("Operation stopped");
+        info!("Operation stopped completely");
         Self::send_notification("CtrlAssist", "Operation stopped");
     }
-
     fn refresh_controllers(&self) {
         let mut state = self.state.lock();
         if let Ok(gilrs) = crate::utils::gilrs::new_gilrs() {
@@ -364,6 +391,17 @@ impl CtrlAssistTray {
             state.demux.selected_primary =
                 validate(state.demux.selected_primary, &state.controllers)
                     .or_else(|| state.controllers.first().map(|c| c.id));
+        }
+    }
+}
+
+impl Drop for CtrlAssistTray {
+    fn drop(&mut self) {
+        // Ensure operation is stopped on drop
+        // This will invoke ScopedDeviceHider::drop
+        if self.state.lock().status == OperationStatus::Running {
+            eprintln!("Warning: CtrlAssistTray dropped while operation running, forcing stop");
+            self.stop_operation();
         }
     }
 }
@@ -640,12 +678,14 @@ impl Tray for CtrlAssistTray {
                     }, action: |t| t.start_operation()),
             simple_item!(label: "Stop", icon: "media-playback-stop", enabled: is_running, action: |t| t.stop_operation()),
             MenuItem::Separator,
-            simple_item!(label: "Exit", icon: "application-exit", enabled: true, action: |t| { 
-                t.stop_operation();
-                // Graceful termination is preferred, but for tray apps exit(0) is often required
-                // to break out of the native event loop immediately.
-                std::process::exit(0);
-            }),
+            simple_item!(
+                label: "Exit", 
+                icon: "application-exit", 
+                enabled: true,
+                action: |t| {
+                    t.shutdown_tray();
+                }
+            ),
         ]);
         items
     }
