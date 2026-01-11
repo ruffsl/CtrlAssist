@@ -9,9 +9,8 @@ pub use app::CtrlAssistTray;
 use ashpd::is_sandboxed;
 use ksni::TrayMethods;
 use std::error::Error;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use tokio::sync::oneshot;
 
 pub async fn run_tray() -> Result<(), Box<dyn Error>> {
     let tray = CtrlAssistTray::new()?;
@@ -29,22 +28,31 @@ pub async fn run_tray() -> Result<(), Box<dyn Error>> {
             .await?
     };
 
-    // Set up Ctrl+C handler
-    let shutdown_signal = Arc::new(AtomicBool::new(false));
-    let shutdown_signal_ctrlc = Arc::clone(&shutdown_signal);
+    // Set up async shutdown channel (shared for Ctrl+C and tray Exit)
+    let (tx, shutdown_rx) = oneshot::channel::<()>();
+    let shutdown_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>> =
+        Arc::new(Mutex::new(Some(tx)));
 
+    // Set up Ctrl+C handler
+    let shutdown_tx_ctrlc = Arc::clone(&shutdown_tx);
     ctrlc::set_handler(move || {
         println!("\nShutting down gracefully...");
-        shutdown_signal_ctrlc.store(true, Ordering::SeqCst);
+        if let Some(tx) = shutdown_tx_ctrlc.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
     })?;
 
-    // Store handle and shutdown signal in tray
+    // Store handle and shutdown sender in tray
     let handle_clone = handle.clone();
-    let shutdown_signal_clone = Arc::clone(&shutdown_signal);
+    let shutdown_tx_tray = Arc::clone(&shutdown_tx);
     handle
         .update(|tray: &mut CtrlAssistTray| {
             tray.tray_handle = Some(handle_clone);
-            tray.shutdown_signal = Some(shutdown_signal_clone);
+            tray.shutdown_tx = Some(Box::new(move || {
+                if let Some(tx) = shutdown_tx_tray.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+            }));
         })
         .await;
 
@@ -53,9 +61,7 @@ pub async fn run_tray() -> Result<(), Box<dyn Error>> {
     println!("Press Ctrl+C to exit");
 
     // Wait for shutdown signal (from either Ctrl+C or Exit button)
-    while !shutdown_signal.load(Ordering::SeqCst) {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    let _ = shutdown_rx.await;
 
     // Perform cleanup
     println!("Stopping operations...");

@@ -9,7 +9,6 @@ use log::{error, info};
 use notify_rust::Notification;
 use parking_lot::Mutex;
 use std::error::Error;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, mpsc};
 use std::thread;
 
@@ -136,11 +135,11 @@ macro_rules! enum_menu {
 
 pub struct CtrlAssistTray {
     state: Arc<Mutex<TrayState>>,
-    /// Store shutdown sender for signaling
-    shutdown_tx: Option<mpsc::Sender<()>>,
+    /// Store shutdown sender for tray main loop (async channel)
+    pub shutdown_tx: Option<Box<dyn FnOnce() + Send + 'static>>,
     pub tray_handle: Option<ksni::Handle<CtrlAssistTray>>,
-    /// Shutdown signal for main loop
-    pub shutdown_signal: Option<Arc<AtomicBool>>,
+    /// Store shutdown sender for operation threads (mpsc)
+    op_shutdown_tx: Option<mpsc::Sender<()>>,
 }
 
 impl CtrlAssistTray {
@@ -154,7 +153,7 @@ impl CtrlAssistTray {
             state: Arc::new(Mutex::new(state)),
             shutdown_tx: None,
             tray_handle: None,
-            shutdown_signal: None,
+            op_shutdown_tx: None,
         })
     }
 
@@ -162,15 +161,15 @@ impl CtrlAssistTray {
         // Stop any running operation first
         self.stop_operation();
 
-        // Signal the main loop to exit
-        if let Some(signal) = &self.shutdown_signal {
-            signal.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Signal the main loop to exit via async channel
+        if let Some(shutdown) = self.shutdown_tx.take() {
+            shutdown();
         }
 
         // Shutdown the tray service itself
         if let Some(handle) = &self.tray_handle {
             // Request shutdown - this will break the event loop
-            let _ = handle.shutdown();
+            std::mem::drop(handle.shutdown());
         }
     }
 
@@ -252,7 +251,7 @@ impl CtrlAssistTray {
 
         // Use a channel for shutdown signaling
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
-        self.shutdown_tx = Some(shutdown_tx);
+        self.op_shutdown_tx = Some(shutdown_tx);
         let state_arc = Arc::clone(&self.state);
 
         let handle = thread::spawn(move || match start_mux_with_state(config, state_arc) {
@@ -305,7 +304,7 @@ impl CtrlAssistTray {
 
         // Use a channel for shutdown signaling
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
-        self.shutdown_tx = Some(shutdown_tx);
+        self.op_shutdown_tx = Some(shutdown_tx);
         let state_arc = Arc::clone(&self.state);
 
         let handle = thread::spawn(move || match start_demux_with_state(config, state_arc) {
@@ -339,7 +338,7 @@ impl CtrlAssistTray {
         info!("Stopping operation");
 
         // Signal shutdown via channel
-        if let Some(tx) = self.shutdown_tx.take() {
+        if let Some(tx) = self.op_shutdown_tx.take() {
             let _ = tx.send(());
         }
 
