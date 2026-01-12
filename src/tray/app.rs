@@ -520,7 +520,11 @@ impl Tray for CtrlAssistTray {
                         enabled: true,
                         access: { mux.mode },
                         on_change: |_t, s, v| {
-                            if let Some(r) = &s.mux.runtime_settings { r.update_mode(v.clone()); }
+                            if let Some(r) = &s.mux.runtime_settings {
+                                let primary_id = s.mux.selected_primary.unwrap();
+                                let assist_id = s.mux.selected_assist.unwrap();
+                                r.update_mode(v.clone(), primary_id, assist_id);
+                            }
                         }
                     ),
                     enum_menu!(
@@ -548,7 +552,7 @@ impl Tray for CtrlAssistTray {
                         icon: "notification-active",
                         current: state.mux.rumble,
                         type: RumbleTarget,
-                        variants: [Both, Primary, Assist, None],
+                        variants: [Both, Primary, Assist, Active, None],
                         enabled: true,
                         access: { mux.rumble },
                         on_change: |_t, s, v| {

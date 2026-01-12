@@ -108,6 +108,7 @@ pub enum RumbleTarget {
     Assist,
     #[default]
     Both,
+    Active,
     None,
 }
 

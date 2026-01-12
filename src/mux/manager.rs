@@ -100,7 +100,12 @@ pub fn start_mux(
     );
 
     // Create runtime settings
-    let runtime_settings = Arc::new(RuntimeSettings::new(config.mode, config.rumble));
+    let runtime_settings = Arc::new(RuntimeSettings::new(
+        config.mode, 
+        config.rumble,
+        config.primary_id,
+        config.assist_id
+    ));
 
     // Setup shutdown signal
     let shutdown = Arc::new(AtomicBool::new(false));
