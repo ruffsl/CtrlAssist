@@ -463,6 +463,7 @@ $ ctrlassist list
 ```bash
 #!/usr/bin/env bash
 ctrlassist mux --primary 0 --assist 1 --mode toggle --hide steam &
+sleep 1 # wait to ensure virtual devices are discoverable
 ctrlassist mux --primary 1 --assist 0 --mode toggle --hide steam &
 wait
 ```
@@ -496,6 +497,7 @@ ctrlassist demux --primary 2 --virtuals 2 --mode unicast \
   --hide steam --spoof primary & # spoof to not also hide virtual 1 & 2
 sleep 1 # wait to ensure virtual devices are discoverable
 ctrlassist mux --primary 0 --assist 3 --mode priority --hide steam &
+sleep 1 # wait to ensure virtual devices are discoverable
 ctrlassist mux --primary 1 --assist 4 --mode priority --hide steam &
 wait
 ```
