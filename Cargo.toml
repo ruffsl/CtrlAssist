@@ -39,6 +39,7 @@ fs2 = "0.4.3"
 gilrs = "0.11.1"
 libc = "0.2.180"
 log = "0.4.29"
+signal-hook = "0.4.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 udev = "0.9.3"
 uuid = "1.19.0"
