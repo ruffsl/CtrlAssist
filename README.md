@@ -462,7 +462,6 @@ $ ctrlassist list
 
 ```bash
 #!/usr/bin/env bash
-trap 'kill 0' SIGINT
 ctrlassist mux --primary 0 --assist 1 --mode toggle --hide steam &
 ctrlassist mux --primary 1 --assist 0 --mode toggle --hide steam &
 wait
@@ -493,7 +492,6 @@ $ ctrlassist list
 
 ```bash
 #!/usr/bin/env bash
-trap 'kill 0' SIGINT
 ctrlassist demux --primary 2 --virtuals 2 --mode unicast \
   --hide steam --spoof primary & # spoof to not also hide virtual 1 & 2
 sleep 1 # wait to ensure virtual devices are discoverable
