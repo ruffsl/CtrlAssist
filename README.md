@@ -449,7 +449,7 @@ Other basic examples of how else CtrlAssist can be used include:
 - Dual wielding one for each hand, like split Nintendo Switch Joy-Cons
 - Combining a standard gamepad with an accessible Xbox Adaptive Controller
 
-However, because running multiple instances is possible, more complex setups can be achieved by chaining mux and demux commands together.
+However, because running multiple instances is possible, more complex setups can be achieved by chaining multiple mux and demux commands together.
 
 ## Couch Co-Op Swap
 
@@ -479,7 +479,7 @@ flowchart LR
     D --> F[Virtual 2 <br> Gamepad]
 ```
 
-Or to specify a single assist controller, toggle once before starting the second matching mux.
+Or specify a single assist controller by toggling once before duplicating first mux.
 
 ## Double Agent Tag Team
 
