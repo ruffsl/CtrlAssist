@@ -93,11 +93,13 @@ pub fn start_mux(
     let v_resource = crate::utils::gilrs::wait_for_virtual_device(&mut v_uinput)?;
     let virtual_device_path = v_resource.path.clone();
 
-    info!(
-        "Virtual: {} @ {}",
+    let virtual_msg = format!(
+        "Virtual: (#) {} @ {}",
         v_resource.name,
         v_resource.path.display()
     );
+    info!("{}", virtual_msg);
+    println!("{}", virtual_msg);
 
     // Create runtime settings
     let runtime_settings = Arc::new(RuntimeSettings::new(
