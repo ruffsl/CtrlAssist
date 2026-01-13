@@ -1,5 +1,4 @@
 use super::{MuxMode, MuxOutput, helpers};
-use evdev::InputEvent;
 use gilrs::{Button, Event, EventType, GamepadId, Gilrs};
 
 #[derive(Default)]
@@ -38,7 +37,8 @@ impl MuxMode for PriorityMode {
                     return None;
                 }
 
-                helpers::create_button_key_event(btn, is_pressed).map(|e| MuxOutput::events(vec![e]))
+                helpers::create_button_key_event(btn, is_pressed)
+                    .map(|e| MuxOutput::events(vec![e]))
             }
 
             EventType::ButtonChanged(btn, _, _) => {

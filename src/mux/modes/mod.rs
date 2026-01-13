@@ -32,7 +32,7 @@ impl MuxOutput {
             set_active_controllers: None,
         }
     }
-    
+
     /// Create output with events and active controller update
     pub fn with_active(events: Vec<InputEvent>, active: Vec<GamepadId>) -> Self {
         Self {
@@ -51,10 +51,14 @@ pub trait MuxMode {
         assist_id: GamepadId,
         gilrs: &gilrs::Gilrs,
     ) -> Option<MuxOutput>;
-    
+
     /// Return the initial set of active controllers for this mode.
     /// Used when the mode is first initialized or changes.
-    fn initial_active_controllers(&self, primary_id: GamepadId, assist_id: GamepadId) -> Vec<GamepadId> {
+    fn initial_active_controllers(
+        &self,
+        primary_id: GamepadId,
+        assist_id: GamepadId,
+    ) -> Vec<GamepadId> {
         vec![primary_id, assist_id]
     }
 }

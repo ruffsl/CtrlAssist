@@ -26,11 +26,16 @@ pub struct RuntimeSettings {
 }
 
 impl RuntimeSettings {
-    pub fn new(mode: MuxModeType, rumble: RumbleTarget, primary_id: GamepadId, assist_id: GamepadId) -> Self {
+    pub fn new(
+        mode: MuxModeType,
+        rumble: RumbleTarget,
+        primary_id: GamepadId,
+        assist_id: GamepadId,
+    ) -> Self {
         // Get initial active controllers from the mode
         let mode_impl = crate::mux::modes::create_mux_mode(mode.clone());
         let initial_active = mode_impl.initial_active_controllers(primary_id, assist_id);
-        
+
         Self {
             mode: Arc::new(RwLock::new(mode)),
             rumble: Arc::new(RwLock::new(rumble)),
@@ -42,15 +47,15 @@ impl RuntimeSettings {
     pub fn update_mode(&self, new_mode: MuxModeType, primary_id: GamepadId, assist_id: GamepadId) {
         let mut mode = self.mode.write();
         *mode = new_mode.clone();
-        
+
         // Reset active controllers based on new mode's defaults
         let mode_impl = crate::mux::modes::create_mux_mode(new_mode);
         let defaults = mode_impl.initial_active_controllers(primary_id, assist_id);
-        
+
         let mut active = self.active_controllers.write();
         active.clear();
         active.extend(defaults);
-        
+
         // Increment generation to trigger FF rebuild
         self.ff_generation.fetch_add(1, Ordering::Release);
     }
@@ -59,7 +64,7 @@ impl RuntimeSettings {
         let mut active = self.active_controllers.write();
         active.clear();
         active.extend(controllers);
-        
+
         // Increment generation to trigger FF rebuild
         self.ff_generation.fetch_add(1, Ordering::Release);
     }
@@ -67,7 +72,7 @@ impl RuntimeSettings {
     pub fn update_rumble(&self, new_rumble: RumbleTarget) {
         let mut rumble = self.rumble.write();
         *rumble = new_rumble;
-        
+
         // Increment generation to trigger FF rebuild
         self.ff_generation.fetch_add(1, Ordering::Release);
     }
@@ -79,12 +84,12 @@ impl RuntimeSettings {
     pub fn get_rumble(&self) -> RumbleTarget {
         self.rumble.read().clone()
     }
-    
+
     /// Get current FF generation for change detection
     pub fn ff_generation(&self) -> u64 {
         self.ff_generation.load(Ordering::Acquire)
     }
-    
+
     /// Get the current set of active controllers for FF routing
     pub fn get_active_controllers(&self) -> Vec<GamepadId> {
         self.active_controllers.read().iter().copied().collect()
@@ -122,13 +127,13 @@ pub fn run_input_loop(
             if event.id != p_id && event.id != a_id {
                 continue;
             }
-            
+
             if let Some(output) = mux_mode.handle_event(&event, p_id, a_id, &gilrs) {
                 // NEW: Update active controllers if requested by the mode
                 if let Some(new_active) = output.set_active_controllers {
                     runtime_settings.set_active_controllers(new_active);
                 }
-                
+
                 // Send events
                 if !output.events.is_empty() {
                     let mut out_events = output.events;
@@ -163,7 +168,10 @@ pub fn run_ff_loop(
         // Check if FF targets need rebuilding (catches rumble changes AND active controller changes)
         let current_generation = runtime_settings.ff_generation();
         if current_generation != last_ff_generation {
-            info!("FF targets changed, rebuilding (generation {} -> {})", last_ff_generation, current_generation);
+            info!(
+                "FF targets changed, rebuilding (generation {} -> {})",
+                last_ff_generation, current_generation
+            );
 
             // Build new device set
             let mut new_phys_devs = build_ff_targets(&all_resources, &runtime_settings, p_id, a_id);
@@ -323,7 +331,7 @@ fn build_ff_targets(
     a_id: GamepadId,
 ) -> Vec<PhysicalFFDev> {
     let rumble = runtime_settings.get_rumble();
-    
+
     let rumble_ids = match rumble {
         RumbleTarget::Primary => vec![p_id],
         RumbleTarget::Assist => vec![a_id],
