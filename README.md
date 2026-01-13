@@ -129,15 +129,16 @@ Use the `--help` flag for information on each CLI subcommand:
 
 ```sh
 $ ctrlassist --help
-Multiplex multiple controllers into virtual gamepad
+Controller Assist for gaming on Linux
 
 Usage: ctrlassist <COMMAND>
 
 Commands:
-  list  List all detected controllers and respective IDs
-  mux   Multiplex connected controllers into virtual gamepad
-  tray  Launch system tray app for graphical control
-  help  Print this message or the help of the given subcommand(s)
+  list   List all detected controllers and respective IDs
+  mux    Multiplex connected controllers into virtual gamepad
+  demux  Demultiplex one controller to multiple virtual gamepads
+  tray   Launch system tray app for graphical control
+  help   Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
