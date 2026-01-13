@@ -43,7 +43,7 @@ uuid = "1.19.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 
 # New dependencies for tray
-ashpd = "0.12.0"
+ashpd = "0.12.1"
 futures = "0.3.31"
 futures-util = "0.3.31"
 ksni = "0.3.3"
