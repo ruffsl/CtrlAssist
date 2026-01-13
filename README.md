@@ -228,6 +228,12 @@ Target force feedback to either, none, or both physical controllers:
 $ ctrlassist mux --rumble both
 ```
 
+Some modes also support dynamically targeting active controllers:
+
+```sh
+$ ctrlassist mux --mode toggle --rumble active
+```
+
 ### 🙈 Hide Physical Devices
 
 Multiple hiding strategies are available to avoid input conflicts:
