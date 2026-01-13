@@ -705,7 +705,8 @@ dependencies = [
 [[package]]
 name = "gilrs"
 version = "0.11.1"
-source = "git+https://gitlab.com/gilrs-project/gilrs.git?branch=maint#984c4337f090431c0ab8f59287de9b4266d14ab2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fa85c2e35dc565c90511917897ea4eae16b77f2773d5223536f7b602536d462"
 dependencies = [
  "fnv",
  "gilrs-core",
@@ -717,7 +718,8 @@ dependencies = [
 [[package]]
 name = "gilrs-core"
 version = "0.6.7"
-source = "git+https://gitlab.com/gilrs-project/gilrs.git?branch=maint#984c4337f090431c0ab8f59287de9b4266d14ab2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d23f2cc5144060a7f8d9e02d3fce5d06705376568256a509cdbc3c24d47e4f04"
 dependencies = [
  "inotify",
  "js-sys",
