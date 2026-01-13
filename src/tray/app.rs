@@ -554,7 +554,7 @@ impl Tray for CtrlAssistTray {
                         icon: "notification-active",
                         current: state.mux.rumble,
                         type: MuxRumbleTarget,
-                        variants: [Both, Primary, Assist, Active, None],
+                        variants: [Active, Both, Primary, Assist, None],
                         enabled: true,
                         access: { mux.rumble },
                         on_change: |_t, s, v| {
