@@ -9,7 +9,7 @@ use log::{debug, error, info, warn};
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -18,8 +18,11 @@ const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
 pub struct RuntimeSettings {
     pub mode: Arc<RwLock<MuxModeType>>,
     pub rumble: Arc<RwLock<RumbleTarget>>,
-    /// NEW: Track currently active controllers for force feedback
-    pub active_controllers: Arc<RwLock<HashSet<GamepadId>>>,
+    /// Track currently active controllers for force feedback
+    active_controllers: Arc<RwLock<HashSet<GamepadId>>>,
+    /// Generation counter incremented when FF targets need rebuilding
+    /// This covers both rumble target changes AND active controller changes
+    ff_generation: Arc<AtomicU64>,
 }
 
 impl RuntimeSettings {
@@ -32,6 +35,7 @@ impl RuntimeSettings {
             mode: Arc::new(RwLock::new(mode)),
             rumble: Arc::new(RwLock::new(rumble)),
             active_controllers: Arc::new(RwLock::new(initial_active.into_iter().collect())),
+            ff_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -46,21 +50,26 @@ impl RuntimeSettings {
         let mut active = self.active_controllers.write();
         active.clear();
         active.extend(defaults);
+        
+        // Increment generation to trigger FF rebuild
+        self.ff_generation.fetch_add(1, Ordering::Release);
     }
 
     pub fn set_active_controllers(&self, controllers: Vec<GamepadId>) {
         let mut active = self.active_controllers.write();
         active.clear();
         active.extend(controllers);
-    }
-
-    pub fn is_controller_active(&self, controller_id: GamepadId) -> bool {
-        self.active_controllers.read().contains(&controller_id)
+        
+        // Increment generation to trigger FF rebuild
+        self.ff_generation.fetch_add(1, Ordering::Release);
     }
 
     pub fn update_rumble(&self, new_rumble: RumbleTarget) {
         let mut rumble = self.rumble.write();
         *rumble = new_rumble;
+        
+        // Increment generation to trigger FF rebuild
+        self.ff_generation.fetch_add(1, Ordering::Release);
     }
 
     pub fn get_mode(&self) -> MuxModeType {
@@ -69,6 +78,16 @@ impl RuntimeSettings {
 
     pub fn get_rumble(&self) -> RumbleTarget {
         self.rumble.read().clone()
+    }
+    
+    /// Get current FF generation for change detection
+    pub fn ff_generation(&self) -> u64 {
+        self.ff_generation.load(Ordering::Acquire)
+    }
+    
+    /// Get the current set of active controllers for FF routing
+    pub fn get_active_controllers(&self) -> Vec<GamepadId> {
+        self.active_controllers.read().iter().copied().collect()
     }
 }
 
@@ -135,23 +154,19 @@ pub fn run_ff_loop(
     let mut effect_manager = EffectManager::new();
 
     // Current physical devices
-    let mut phys_devs = build_ff_targets(&all_resources, runtime_settings.get_rumble(), &runtime_settings, p_id, a_id);
-    let mut last_rumble = runtime_settings.get_rumble();
+    let mut phys_devs = build_ff_targets(&all_resources, &runtime_settings, p_id, a_id);
+    let mut last_ff_generation = runtime_settings.ff_generation();
 
     info!("FF Thread started.");
 
     while !shutdown.load(Ordering::SeqCst) {
-        // Check for rumble target changes
-        let current_rumble = runtime_settings.get_rumble();
-        if current_rumble != last_rumble {
-            info!(
-                "Switching rumble target from {:?} to {:?}",
-                last_rumble, current_rumble
-            );
+        // Check if FF targets need rebuilding (catches rumble changes AND active controller changes)
+        let current_generation = runtime_settings.ff_generation();
+        if current_generation != last_ff_generation {
+            info!("FF targets changed, rebuilding (generation {} -> {})", last_ff_generation, current_generation);
 
             // Build new device set
-            let mut new_phys_devs =
-                build_ff_targets(&all_resources, current_rumble.clone(), &runtime_settings, p_id, a_id);
+            let mut new_phys_devs = build_ff_targets(&all_resources, &runtime_settings, p_id, a_id);
 
             // Synchronize all effects to new devices
             for dev in &mut new_phys_devs {
@@ -174,7 +189,7 @@ pub fn run_ff_loop(
             }
 
             phys_devs = new_phys_devs;
-            last_rumble = current_rumble.clone();
+            last_ff_generation = current_generation;
         }
 
         // Process events
@@ -186,24 +201,6 @@ pub fn run_ff_loop(
                 vec![]
             }
         };
-
-        // Always update phys_devs if RumbleTarget::Active, to track changes in active controllers
-        if current_rumble == RumbleTarget::Active {
-            let mut new_phys_devs = build_ff_targets(&all_resources, current_rumble.clone(), &runtime_settings, p_id, a_id);
-            // Synchronize all effects to new devices
-            for dev in &mut new_phys_devs {
-                let errors = dev.sync_effects(&effect_manager);
-                for (virt_id, error) in errors {
-                    error!(
-                        "Failed to sync effect {} to {}: {}",
-                        virt_id,
-                        dev.resource.path.display(),
-                        error
-                    );
-                }
-            }
-            phys_devs = new_phys_devs;
-        }
 
         for event in events {
             match event.destructure() {
@@ -319,22 +316,19 @@ pub fn run_ff_loop(
 }
 
 // Helper function to build FF targets based on rumble setting
-// UPDATED: Now handles Active variant using runtime_settings
 fn build_ff_targets(
     all_resources: &HashMap<GamepadId, GamepadResource>,
-    rumble: RumbleTarget,
     runtime_settings: &Arc<RuntimeSettings>,
     p_id: GamepadId,
     a_id: GamepadId,
 ) -> Vec<PhysicalFFDev> {
+    let rumble = runtime_settings.get_rumble();
+    
     let rumble_ids = match rumble {
         RumbleTarget::Primary => vec![p_id],
         RumbleTarget::Assist => vec![a_id],
         RumbleTarget::Both => vec![p_id, a_id],
-        RumbleTarget::Active => {
-            // NEW: Use the tracked active controllers
-            runtime_settings.active_controllers.read().iter().copied().collect()
-        }
+        RumbleTarget::Active => runtime_settings.get_active_controllers(),
         RumbleTarget::None => vec![],
     };
 
