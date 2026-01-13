@@ -1,8 +1,10 @@
+use crate::demux::DemuxRumbleTarget;
 use crate::demux::manager::{DemuxConfig, DemuxHandle};
 use crate::demux::modes::DemuxModeType;
+use crate::mux::MuxRumbleTarget;
 use crate::mux::manager::{MuxConfig, MuxHandle};
 use crate::mux::modes::MuxModeType;
-use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
+use crate::{HideType, SpoofTarget};
 use gilrs::GamepadId;
 use ksni::{Category, MenuItem, Status, ToolTip, Tray, menu};
 use log::{error, info};
@@ -551,7 +553,7 @@ impl Tray for CtrlAssistTray {
                         label: "Rumble: {:?}",
                         icon: "notification-active",
                         current: state.mux.rumble,
-                        type: RumbleTarget,
+                        type: MuxRumbleTarget,
                         variants: [Both, Primary, Assist, Active, None],
                         enabled: true,
                         access: { mux.rumble },

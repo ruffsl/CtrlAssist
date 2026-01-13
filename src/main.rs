@@ -1,5 +1,6 @@
+use crate::demux::DemuxRumbleTarget;
+use crate::mux::MuxRumbleTarget;
 use clap::{Parser, Subcommand, ValueEnum};
-use demux::runtime::DemuxRumbleTarget;
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -55,8 +56,8 @@ struct MuxArgs {
     mode: crate::mux::modes::MuxModeType,
 
     /// Rumble target for virtual device.
-    #[arg(long, value_enum, default_value_t = RumbleTarget::default())]
-    rumble: RumbleTarget,
+    #[arg(long, value_enum, default_value_t = MuxRumbleTarget::default())]
+    rumble: MuxRumbleTarget,
 }
 
 #[derive(clap::Args, Debug)]
@@ -96,20 +97,10 @@ pub enum HideType {
 
 #[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub enum SpoofTarget {
-    Primary,
     Assist,
     #[default]
     None,
-}
-
-#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub enum RumbleTarget {
     Primary,
-    Assist,
-    #[default]
-    Both,
-    Active,
-    None,
 }
 
 #[tokio::main]

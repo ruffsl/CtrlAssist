@@ -1,4 +1,4 @@
-use crate::RumbleTarget;
+use crate::mux::MuxRumbleTarget;
 use crate::mux::modes::MuxModeType;
 use crate::utils::ff::{EffectManager, PhysicalFFDev};
 use crate::utils::gilrs::GamepadResource;
@@ -17,7 +17,7 @@ const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
 /// Runtime-updatable mux settings
 pub struct RuntimeSettings {
     pub mode: Arc<RwLock<MuxModeType>>,
-    pub rumble: Arc<RwLock<RumbleTarget>>,
+    pub rumble: Arc<RwLock<MuxRumbleTarget>>,
     /// Track currently active controllers for force feedback
     active_controllers: Arc<RwLock<HashSet<GamepadId>>>,
     /// Generation counter incremented when FF targets need rebuilding
@@ -28,7 +28,7 @@ pub struct RuntimeSettings {
 impl RuntimeSettings {
     pub fn new(
         mode: MuxModeType,
-        rumble: RumbleTarget,
+        rumble: MuxRumbleTarget,
         primary_id: GamepadId,
         assist_id: GamepadId,
     ) -> Self {
@@ -69,7 +69,7 @@ impl RuntimeSettings {
         self.ff_generation.fetch_add(1, Ordering::Release);
     }
 
-    pub fn update_rumble(&self, new_rumble: RumbleTarget) {
+    pub fn update_rumble(&self, new_rumble: MuxRumbleTarget) {
         let mut rumble = self.rumble.write();
         *rumble = new_rumble;
 
@@ -81,7 +81,7 @@ impl RuntimeSettings {
         self.mode.read().clone()
     }
 
-    pub fn get_rumble(&self) -> RumbleTarget {
+    pub fn get_rumble(&self) -> MuxRumbleTarget {
         self.rumble.read().clone()
     }
 
@@ -333,11 +333,11 @@ fn build_ff_targets(
     let rumble = runtime_settings.get_rumble();
 
     let rumble_ids = match rumble {
-        RumbleTarget::Primary => vec![p_id],
-        RumbleTarget::Assist => vec![a_id],
-        RumbleTarget::Both => vec![p_id, a_id],
-        RumbleTarget::Active => runtime_settings.get_active_controllers(),
-        RumbleTarget::None => vec![],
+        MuxRumbleTarget::Active => runtime_settings.get_active_controllers(),
+        MuxRumbleTarget::Assist => vec![a_id],
+        MuxRumbleTarget::Both => vec![p_id, a_id],
+        MuxRumbleTarget::None => vec![],
+        MuxRumbleTarget::Primary => vec![p_id],
     };
 
     rumble_ids

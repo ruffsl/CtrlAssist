@@ -2,7 +2,7 @@ use crate::mux::modes::MuxModeType;
 use crate::mux::runtime::RuntimeSettings;
 use crate::utils::evdev::VirtualGamepadInfo;
 use crate::utils::hide::ScopedDeviceHider;
-use crate::{HideType, RumbleTarget, SpoofTarget};
+use crate::{HideType, MuxRumbleTarget, SpoofTarget};
 use evdev::Device;
 use gilrs::{GamepadId, Gilrs};
 use log::info;
@@ -19,7 +19,7 @@ pub struct MuxConfig {
     pub mode: MuxModeType,
     pub hide: HideType,
     pub spoof: SpoofTarget,
-    pub rumble: RumbleTarget,
+    pub rumble: MuxRumbleTarget,
 }
 
 /// Handle to a running mux session

@@ -1,7 +1,9 @@
+use crate::demux::DemuxRumbleTarget;
 use crate::demux::modes::DemuxModeType;
+use crate::mux::MuxRumbleTarget;
 use crate::mux::modes::MuxModeType;
 use crate::tray::state::OperationMode;
-use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
+use crate::{HideType, SpoofTarget};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -35,7 +37,7 @@ pub struct MuxConfig {
     pub spoof: SpoofTarget,
     /// Last used rumble target
     #[serde(default)]
-    pub rumble: RumbleTarget,
+    pub rumble: MuxRumbleTarget,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
