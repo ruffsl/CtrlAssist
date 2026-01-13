@@ -525,7 +525,9 @@ impl Tray for CtrlAssistTray {
                             if let Some(r) = &s.mux.runtime_settings {
                                 let primary_id = s.mux.selected_primary.unwrap();
                                 let assist_id = s.mux.selected_assist.unwrap();
-                                r.update_mode(v.clone(), primary_id, assist_id);
+                                let mode_impl = crate::mux::modes::create_mux_mode(v.clone());
+                                let defaults = mode_impl.initial_active_controllers(primary_id, assist_id);
+                                r.update_mode(v.clone(), defaults);
                             }
                         }
                     ),

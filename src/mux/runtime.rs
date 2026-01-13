@@ -44,17 +44,14 @@ impl RuntimeSettings {
         }
     }
 
-    pub fn update_mode(&self, new_mode: MuxModeType, primary_id: GamepadId, assist_id: GamepadId) {
+    pub fn update_mode(&self, new_mode: MuxModeType, initial_active: Vec<GamepadId>) {
         let mut mode = self.mode.write();
-        *mode = new_mode.clone();
+        *mode = new_mode;
 
-        // Reset active controllers based on new mode's defaults
-        let mode_impl = crate::mux::modes::create_mux_mode(new_mode);
-        let defaults = mode_impl.initial_active_controllers(primary_id, assist_id);
-
+        // Update active controllers directly with the provided list
         let mut active = self.active_controllers.write();
         active.clear();
-        active.extend(defaults);
+        active.extend(initial_active);
 
         // Increment generation to trigger FF rebuild
         self.ff_generation.fetch_add(1, Ordering::Release);
@@ -110,13 +107,17 @@ pub fn run_input_loop(
     while !shutdown.load(Ordering::SeqCst) {
         // Check for mode changes
         let current_mode = runtime_settings.get_mode();
+
         if current_mode != last_mode {
             info!(
                 "Switching mux mode from {:?} to {:?}",
                 last_mode, current_mode
             );
-            runtime_settings.update_mode(current_mode.clone(), p_id, a_id);
+
             mux_mode = crate::mux::modes::create_mux_mode(current_mode.clone());
+            let defaults = mux_mode.initial_active_controllers(p_id, a_id);
+            runtime_settings.update_mode(current_mode.clone(), defaults);
+
             last_mode = current_mode;
         }
 
