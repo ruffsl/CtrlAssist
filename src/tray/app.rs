@@ -523,11 +523,18 @@ impl Tray for CtrlAssistTray {
                         access: { mux.mode },
                         on_change: |_t, s, v| {
                             if let Some(r) = &s.mux.runtime_settings {
-                                let primary_id = s.mux.selected_primary.unwrap();
-                                let assist_id = s.mux.selected_assist.unwrap();
-                                let mode_impl = crate::mux::modes::create_mux_mode(v.clone());
-                                let defaults = mode_impl.initial_active_controllers(primary_id, assist_id);
-                                r.update_mode(v.clone(), defaults);
+                                if let (Some(primary_id), Some(assist_id)) = (
+                                    s.mux.selected_primary.as_ref(),
+                                    s.mux.selected_assist.as_ref(),
+                                ) {
+                                    let mode_impl = crate::mux::modes::create_mux_mode(v.clone());
+                                    let defaults = mode_impl.initial_active_controllers(*primary_id, *assist_id);
+                                    r.update_mode(v.clone(), defaults);
+                                } else {
+                                    error!(
+                                        "Cannot update mux mode: primary or assist controller not selected"
+                                    );
+                                }
                             }
                         }
                     ),
