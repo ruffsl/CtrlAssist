@@ -28,8 +28,8 @@ modules:
     sources:
       # - type: git
       #   url: https://github.com/ruffsl/CtrlAssist.git
-      #   tag: "v0.3.0"
-      #   commit: "73e85e70e8e8d9263ac4019fa6042cb46f9d6091"
+      #   tag: "v0.4.0"
+      #   commit: "0000000000000000000000000000000000000000"
       - cargo-sources.json
       - type: dir
         path: ../
