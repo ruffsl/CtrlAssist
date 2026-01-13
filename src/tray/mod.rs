@@ -32,10 +32,10 @@ pub async fn run_tray() -> Result<(), Box<dyn Error>> {
 
     tokio::spawn(async move {
         // Wait for either SIGINT or SIGTERM
-        let mut sigint = signal(SignalKind::interrupt())
-            .expect("Failed to register SIGINT handler");
-        let mut sigterm = signal(SignalKind::terminate())
-            .expect("Failed to register SIGTERM handler");
+        let mut sigint =
+            signal(SignalKind::interrupt()).expect("Failed to register SIGINT handler");
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
         tokio::select! {
             _ = sigint.recv() => {
                 let _ = ctrlc_tx.send(true);
