@@ -31,7 +31,6 @@ github = { repository = "ruffsl/CtrlAssist" }
 
 [dependencies]
 clap = { version = "4.5.54", features = ["derive"] }
-ctrlc = "3.5.1"
 dirs = "6.0.0"
 env_logger = "0.11.8"
 evdev = "0.13.2"

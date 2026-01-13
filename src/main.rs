@@ -3,6 +3,8 @@ use crate::mux::MuxRumbleTarget;
 use clap::{Parser, Subcommand, ValueEnum};
 use log::info;
 use serde::{Deserialize, Serialize};
+use signal_hook::consts::signal::{SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
 use std::error::Error;
 
 mod demux;
@@ -194,10 +196,14 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
         mux_handle.0.shutdown();
     });
 
-    ctrlc::set_handler(move || {
-        println!("\nShutting down...");
-        let _ = shutdown_tx.send(());
-    })?;
+    // Handle both SIGINT and SIGTERM
+    let mut signals = Signals::new([SIGINT, SIGTERM])?;
+    std::thread::spawn(move || {
+        if let Some(_sig) = signals.forever().next() {
+            println!("\nShutting down...");
+            let _ = shutdown_tx.send(());
+        }
+    });
 
     info!("Mux Active. Press Ctrl+C to exit.");
     println!("Mux Active. Press Ctrl+C to exit.");
@@ -247,10 +253,14 @@ fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
         demux_handle.0.shutdown();
     });
 
-    ctrlc::set_handler(move || {
-        println!("\nShutting down...");
-        let _ = shutdown_tx.send(());
-    })?;
+    // Handle both SIGINT and SIGTERM
+    let mut signals = Signals::new([SIGINT, SIGTERM])?;
+    std::thread::spawn(move || {
+        if let Some(_sig) = signals.forever().next() {
+            println!("\nShutting down...");
+            let _ = shutdown_tx.send(());
+        }
+    });
 
     info!("Demux Active. Press Ctrl+C to exit.");
     println!("Demux Active. Press Ctrl+C to exit.");

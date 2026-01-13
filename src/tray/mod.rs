@@ -1,15 +1,15 @@
+use ashpd::is_sandboxed;
 use futures_util::TryFutureExt;
+use ksni::TrayMethods;
+use std::error::Error;
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::watch;
 
 pub mod app;
 pub mod config;
 pub mod state;
 
 pub use app::CtrlAssistTray;
-
-use ashpd::is_sandboxed;
-use ksni::TrayMethods;
-use std::error::Error;
-use tokio::sync::watch;
 
 pub async fn run_tray() -> Result<(), Box<dyn Error>> {
     let (tray, mut shutdown_rx) = CtrlAssistTray::new()?;
@@ -27,13 +27,20 @@ pub async fn run_tray() -> Result<(), Box<dyn Error>> {
             .await?
     };
 
-    // Create a separate shutdown channel for Ctrl+C
+    // Create a separate shutdown channel for Ctrl+C or SIGTERM
     let (ctrlc_tx, mut ctrlc_rx) = watch::channel(false);
 
     tokio::spawn(async move {
-        // Wait for Ctrl+C signal
-        if tokio::signal::ctrl_c().await.is_ok() {
-            let _ = ctrlc_tx.send(true);
+        // Wait for either SIGINT or SIGTERM
+        let mut sigint = signal(SignalKind::interrupt()).unwrap();
+        let mut sigterm = signal(SignalKind::terminate()).unwrap();
+        tokio::select! {
+            _ = sigint.recv() => {
+                let _ = ctrlc_tx.send(true);
+            }
+            _ = sigterm.recv() => {
+                let _ = ctrlc_tx.send(true);
+            }
         }
     });
 
@@ -41,13 +48,13 @@ pub async fn run_tray() -> Result<(), Box<dyn Error>> {
     println!("Configure and control the mux from your system tray");
     println!("Press Ctrl+C to exit");
 
-    // Wait for either shutdown signal or Ctrl+C
+    // Wait for either shutdown signal or Ctrl+C/SIGTERM
     tokio::select! {
         _ = shutdown_rx.changed() => {
             // Exit button clicked, tray handled shutdown
         }
         _ = ctrlc_rx.changed() => {
-            // Ctrl+C pressed, handle shutdown here
+            // Ctrl+C or SIGTERM, handle shutdown here
             handle.update(|tray: &mut CtrlAssistTray| {
                 tray.shutdown();
             }).await;
