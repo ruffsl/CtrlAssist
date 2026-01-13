@@ -110,7 +110,7 @@ cargo install ctrlassist --force
 Download latest bundle from [releases page](https://github.com/ruffsl/ctrlassist/releases) and install:
 
 ```sh
-export VERSION=v0.3.0
+export VERSION=v0.4.0
 wget https://github.com/ruffsl/ctrlassist/releases/download/$VERSION/ctrlassist.flatpak
 flatpak install --user ctrlassist.flatpak
 ```
