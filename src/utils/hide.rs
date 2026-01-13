@@ -1,5 +1,6 @@
 use crate::HideType;
 use crate::utils::gilrs::GamepadResource;
+use fs2::FileExt;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs;
@@ -126,7 +127,19 @@ fn modify_steam_config<F>(path: &Path, modifier: F) -> Result<(), Box<dyn Error>
 where
     F: FnOnce(&mut HashSet<String>),
 {
-    let content = fs::read_to_string(path)?;
+    // Lock the config file for exclusive access
+    let mut file = fs::OpenOptions::new().read(true).write(true).open(path)?;
+    file.lock_exclusive()?;
+
+    // Read the file contents after locking
+    let mut content = String::new();
+    use std::io::Seek;
+    use std::io::SeekFrom;
+    {
+        use std::io::Read;
+        file.seek(SeekFrom::Start(0))?;
+        file.read_to_string(&mut content)?;
+    }
     let mut lines: Vec<String> = content.lines().map(String::from).collect();
 
     let (line_idx, current_val) = match lines
@@ -197,11 +210,15 @@ where
         lines.insert(line_idx, new_line);
     }
 
+    // Write back atomically using a temp file, then rename, while holding the lock
     let tmp_path = path.with_extension("tmp");
-    let mut file = fs::File::create(&tmp_path)?;
-    file.write_all(lines.join("\n").as_bytes())?;
-    file.sync_all()?;
-    fs::rename(tmp_path, path)?;
+    {
+        let mut tmp_file = fs::File::create(&tmp_path)?;
+        tmp_file.write_all(lines.join("\n").as_bytes())?;
+        tmp_file.sync_all()?;
+    }
+    fs::rename(&tmp_path, path)?;
+    file.unlock()?;
 
     Ok(())
 }

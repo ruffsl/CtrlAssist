@@ -35,12 +35,14 @@ ctrlc = "3.5.1"
 dirs = "6.0.0"
 env_logger = "0.11.8"
 evdev = "0.13.2"
+fs2 = "0.4.3"
 gilrs = "0.11.1"
 libc = "0.2.180"
 log = "0.4.29"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 udev = "0.9.3"
 uuid = "1.19.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+
 
 # New dependencies for tray
 ashpd = "0.12.1"
