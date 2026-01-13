@@ -7,9 +7,9 @@ pub mod runtime;
     clap::ValueEnum, Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq,
 )]
 pub enum MuxRumbleTarget {
+    #[default]
     Active,
     Assist,
-    #[default]
     Both,
     None,
     Primary,
