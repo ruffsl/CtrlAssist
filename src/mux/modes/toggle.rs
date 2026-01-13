@@ -99,7 +99,7 @@ impl MuxMode for ToggleMode {
             let active = gilrs.gamepad(*active_id);
             let sync_events = Self::sync_controller_state(active, *active_id, assist_id);
 
-            // NEW: Report the active controller change
+            // Report the active controller change
             return Some(MuxOutput::with_active(sync_events, vec![*active_id]));
         }
 
@@ -112,7 +112,7 @@ impl MuxMode for ToggleMode {
         Self::convert_event(event, active).map(MuxOutput::events)
     }
 
-    /// NEW: Toggle always starts with primary active
+    /// Toggle always starts with primary active
     fn initial_active_controllers(
         &self,
         primary_id: GamepadId,

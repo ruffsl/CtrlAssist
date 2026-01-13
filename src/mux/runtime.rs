@@ -130,7 +130,7 @@ pub fn run_input_loop(
             }
 
             if let Some(output) = mux_mode.handle_event(&event, p_id, a_id, &gilrs) {
-                // NEW: Update active controllers if requested by the mode
+                // Update active controllers if requested by the mode
                 if let Some(new_active) = output.set_active_controllers {
                     runtime_settings.set_active_controllers(new_active);
                 }
