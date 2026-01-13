@@ -448,7 +448,7 @@ Other basic examples of how else CtrlAssist can be used include:
 - Dual wielding one for each hand, like split Nintendo Switch Joy-Cons
 - Combining a standard gamepad with an accessible Xbox Adaptive Controller
 
-However, because running multiple instances possible, more complex setups can be achieved by chaining mux and demux commands together.
+However, because running multiple instances is possible, more complex setups can be achieved by chaining mux and demux commands together.
 
 ## Couch Co-Op Swap
 
