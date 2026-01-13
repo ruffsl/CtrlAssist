@@ -1,4 +1,4 @@
-use super::{MuxMode, helpers};
+use super::{MuxMode, MuxOutput, helpers};
 use evdev::InputEvent;
 use gilrs::{Event, EventType, GamepadId, Gilrs};
 
@@ -82,7 +82,7 @@ impl MuxMode for ToggleMode {
         primary_id: GamepadId,
         assist_id: GamepadId,
         gilrs: &Gilrs,
-    ) -> Option<Vec<InputEvent>> {
+    ) -> Option<MuxOutput> {
         let active_id = self.active_id.get_or_insert(primary_id);
 
         // Handle toggle logic
@@ -97,7 +97,10 @@ impl MuxMode for ToggleMode {
             };
 
             let active = gilrs.gamepad(*active_id);
-            return Some(Self::sync_controller_state(active, *active_id, assist_id));
+            let sync_events = Self::sync_controller_state(active, *active_id, assist_id);
+
+            // Report the active controller change
+            return Some(MuxOutput::with_active(sync_events, vec![*active_id]));
         }
 
         // Only forward events from the active controller
@@ -106,6 +109,15 @@ impl MuxMode for ToggleMode {
         }
 
         let active = gilrs.gamepad(*active_id);
-        Self::convert_event(event, active)
+        Self::convert_event(event, active).map(MuxOutput::events)
+    }
+
+    /// Toggle always starts with primary active
+    fn initial_active_controllers(
+        &self,
+        primary_id: GamepadId,
+        _assist_id: GamepadId,
+    ) -> Vec<GamepadId> {
+        vec![primary_id]
     }
 }

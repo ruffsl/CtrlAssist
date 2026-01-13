@@ -1,5 +1,4 @@
-use super::{MuxMode, helpers};
-use evdev::InputEvent;
+use super::{MuxMode, MuxOutput, helpers};
 use gilrs::{Button, Event, EventType, GamepadId, Gilrs};
 
 #[derive(Default)]
@@ -12,7 +11,7 @@ impl MuxMode for PriorityMode {
         primary_id: GamepadId,
         assist_id: GamepadId,
         gilrs: &Gilrs,
-    ) -> Option<Vec<InputEvent>> {
+    ) -> Option<MuxOutput> {
         // Filter out irrelevant devices
         if event.id != primary_id && event.id != assist_id {
             return None;
@@ -38,7 +37,8 @@ impl MuxMode for PriorityMode {
                     return None;
                 }
 
-                helpers::create_button_key_event(btn, is_pressed).map(|e| vec![e])
+                helpers::create_button_key_event(btn, is_pressed)
+                    .map(|e| MuxOutput::events(vec![e]))
             }
 
             EventType::ButtonChanged(btn, _, _) => {
@@ -67,7 +67,7 @@ impl MuxMode for PriorityMode {
                     helpers::create_trigger_event(max_val, abs_axis)
                 };
 
-                Some(vec![event])
+                Some(MuxOutput::events(vec![event]))
             }
 
             EventType::AxisChanged(axis, _, _) => {
@@ -92,7 +92,7 @@ impl MuxMode for PriorityMode {
                     })
                     .collect::<Vec<_>>();
 
-                (!events.is_empty()).then_some(events)
+                (!events.is_empty()).then_some(MuxOutput::events(events))
             }
 
             _ => None,

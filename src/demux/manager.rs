@@ -1,8 +1,9 @@
+use crate::demux::DemuxRumbleTarget;
 use crate::demux::modes::DemuxModeType;
 use crate::demux::runtime::DemuxRuntimeSettings;
 use crate::utils::evdev::VirtualGamepadInfo;
 use crate::utils::hide::ScopedDeviceHider;
-use crate::{DemuxRumbleTarget, HideType, SpoofTarget};
+use crate::{HideType, SpoofTarget};
 use evdev::Device;
 use gilrs::{GamepadId, Gilrs};
 use log::info;
@@ -101,11 +102,13 @@ pub fn start_demux(
         let mut v_uinput = crate::utils::evdev::create_virtual_gamepad(&virtual_info, tag_str)?;
         let v_resource = crate::utils::gilrs::wait_for_virtual_device(&mut v_uinput)?;
 
-        info!(
-            "Virtual: {} @ {}",
+        let virtual_msg = format!(
+            "Virtual: (#) {} @ {}",
             v_resource.name,
             v_resource.path.display()
         );
+        info!("{}", virtual_msg);
+        println!("{}", virtual_msg);
 
         virtual_devices.push(VirtualDeviceInfo {
             path: v_resource.path.clone(),

@@ -2,7 +2,7 @@ use crate::mux::modes::MuxModeType;
 use crate::mux::runtime::RuntimeSettings;
 use crate::utils::evdev::VirtualGamepadInfo;
 use crate::utils::hide::ScopedDeviceHider;
-use crate::{HideType, RumbleTarget, SpoofTarget};
+use crate::{HideType, MuxRumbleTarget, SpoofTarget};
 use evdev::Device;
 use gilrs::{GamepadId, Gilrs};
 use log::info;
@@ -19,7 +19,7 @@ pub struct MuxConfig {
     pub mode: MuxModeType,
     pub hide: HideType,
     pub spoof: SpoofTarget,
-    pub rumble: RumbleTarget,
+    pub rumble: MuxRumbleTarget,
 }
 
 /// Handle to a running mux session
@@ -93,14 +93,21 @@ pub fn start_mux(
     let v_resource = crate::utils::gilrs::wait_for_virtual_device(&mut v_uinput)?;
     let virtual_device_path = v_resource.path.clone();
 
-    info!(
-        "Virtual: {} @ {}",
+    let virtual_msg = format!(
+        "Virtual: (#) {} @ {}",
         v_resource.name,
         v_resource.path.display()
     );
+    info!("{}", virtual_msg);
+    println!("{}", virtual_msg);
 
     // Create runtime settings
-    let runtime_settings = Arc::new(RuntimeSettings::new(config.mode, config.rumble));
+    let runtime_settings = Arc::new(RuntimeSettings::new(
+        config.mode,
+        config.rumble,
+        config.primary_id,
+        config.assist_id,
+    ));
 
     // Setup shutdown signal
     let shutdown = Arc::new(AtomicBool::new(false));

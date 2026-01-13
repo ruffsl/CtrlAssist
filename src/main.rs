@@ -1,7 +1,10 @@
+use crate::demux::DemuxRumbleTarget;
+use crate::mux::MuxRumbleTarget;
 use clap::{Parser, Subcommand, ValueEnum};
-use demux::runtime::DemuxRumbleTarget;
 use log::info;
 use serde::{Deserialize, Serialize};
+use signal_hook::consts::signal::{SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
 use std::error::Error;
 
 mod demux;
@@ -55,8 +58,8 @@ struct MuxArgs {
     mode: crate::mux::modes::MuxModeType,
 
     /// Rumble target for virtual device.
-    #[arg(long, value_enum, default_value_t = RumbleTarget::default())]
-    rumble: RumbleTarget,
+    #[arg(long, value_enum, default_value_t = MuxRumbleTarget::default())]
+    rumble: MuxRumbleTarget,
 }
 
 #[derive(clap::Args, Debug)]
@@ -96,19 +99,10 @@ pub enum HideType {
 
 #[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub enum SpoofTarget {
-    Primary,
     Assist,
     #[default]
     None,
-}
-
-#[derive(ValueEnum, Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub enum RumbleTarget {
     Primary,
-    Assist,
-    #[default]
-    Both,
-    None,
 }
 
 #[tokio::main]
@@ -202,10 +196,14 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
         mux_handle.0.shutdown();
     });
 
-    ctrlc::set_handler(move || {
-        println!("\nShutting down...");
-        let _ = shutdown_tx.send(());
-    })?;
+    // Handle both SIGINT and SIGTERM
+    let mut signals = Signals::new([SIGINT, SIGTERM])?;
+    std::thread::spawn(move || {
+        if let Some(_sig) = signals.forever().next() {
+            println!("\nShutting down...");
+            let _ = shutdown_tx.send(());
+        }
+    });
 
     info!("Mux Active. Press Ctrl+C to exit.");
     println!("Mux Active. Press Ctrl+C to exit.");
@@ -255,10 +253,14 @@ fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
         demux_handle.0.shutdown();
     });
 
-    ctrlc::set_handler(move || {
-        println!("\nShutting down...");
-        let _ = shutdown_tx.send(());
-    })?;
+    // Handle both SIGINT and SIGTERM
+    let mut signals = Signals::new([SIGINT, SIGTERM])?;
+    std::thread::spawn(move || {
+        if let Some(_sig) = signals.forever().next() {
+            println!("\nShutting down...");
+            let _ = shutdown_tx.send(());
+        }
+    });
 
     info!("Demux Active. Press Ctrl+C to exit.");
     println!("Demux Active. Press Ctrl+C to exit.");

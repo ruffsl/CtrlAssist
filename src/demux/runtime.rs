@@ -1,3 +1,4 @@
+use crate::demux::DemuxRumbleTarget;
 use crate::demux::modes::DemuxModeType;
 use crate::utils::ff::{EffectManager, PhysicalFFDev};
 use crate::utils::gilrs::GamepadResource;
@@ -11,16 +12,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const NEXT_EVENT_TIMEOUT: Duration = Duration::from_millis(1000);
-
-/// Rumble target for demux
-#[derive(
-    clap::ValueEnum, Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq,
-)]
-pub enum DemuxRumbleTarget {
-    #[default]
-    Active,
-    None,
-}
 
 /// Runtime-updatable demux settings
 pub struct DemuxRuntimeSettings {

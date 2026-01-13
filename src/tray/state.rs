@@ -1,6 +1,8 @@
+use crate::demux::DemuxRumbleTarget;
 use crate::demux::modes::DemuxModeType;
+use crate::mux::MuxRumbleTarget;
 use crate::mux::modes::MuxModeType;
-use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
+use crate::{HideType, SpoofTarget};
 use gilrs::{GamepadId, Gilrs};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -67,7 +69,7 @@ pub struct MuxState {
     /// Current spoof target
     pub spoof: SpoofTarget,
     /// Current rumble target
-    pub rumble: RumbleTarget,
+    pub rumble: MuxRumbleTarget,
     /// Shared runtime settings for live updates
     pub runtime_settings: Option<Arc<crate::mux::runtime::RuntimeSettings>>,
 }

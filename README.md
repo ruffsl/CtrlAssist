@@ -129,15 +129,16 @@ Use the `--help` flag for information on each CLI subcommand:
 
 ```sh
 $ ctrlassist --help
-Multiplex multiple controllers into virtual gamepad
+Controller Assist for gaming on Linux
 
 Usage: ctrlassist <COMMAND>
 
 Commands:
-  list  List all detected controllers and respective IDs
-  mux   Multiplex connected controllers into virtual gamepad
-  tray  Launch system tray app for graphical control
-  help  Print this message or the help of the given subcommand(s)
+  list   List all detected controllers and respective IDs
+  mux    Multiplex connected controllers into virtual gamepad
+  demux  Demultiplex one controller to multiple virtual gamepads
+  tray   Launch system tray app for graphical control
+  help   Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
@@ -226,6 +227,12 @@ Target force feedback to either, none, or both physical controllers:
 
 ```sh
 $ ctrlassist mux --rumble both
+```
+
+Some modes also support dynamically targeting active controllers:
+
+```sh
+$ ctrlassist mux --mode toggle --rumble active
 ```
 
 ### 🙈 Hide Physical Devices
@@ -407,6 +414,8 @@ CtrlAssist was first created out of personal necessity. After migrating househol
 
 Following its initial release and personal household success, as well as the broader trend of Linux adoption, CtrlAssist evolved from a simple CLI tool into a desktop-friendly utility. This category of accessibility features has significantly enhanced family gaming time, transforming passive spectators into active participants. From helping grandparents experience new immersive and interactive single player stories, to leveling age gaps across nieces and nephews in multiplayer PvPs, to rescuing friends from critical damage and finally overcoming a challenging boss, assistive players may expect as much enjoyment as primary players.
 
+<details><summary>More QA</summary>
+
 ### **What games are compatible?**
 
 CtrlAssist works with most Linux games that support standard gamepad input. Some games or launchers may require restarting after changing controller visibility or virtual device settings. Note that many games have no explicit setting for controller selection, thus the motivation for various hiding strategies to avoid input conflicts between physical and virtual devices. For best compatibility, use the appropriate hiding strategy as described above.
@@ -431,12 +440,68 @@ Yes! For scenarios where multiple primary players would like assistance, such as
 
 Additionally, each instance can use different hiding strategies, spoofing options, and rumble targets to suit the needs of each player. Just be mindful that selected hiding strategies do not conflict between instances, causing one virtual device to be hidden by another instance.
 
-### **How else can CtrlAssist be used?**
+</details>
 
-Examples include:
+# 🧑‍🍳 Cookbook
+
+Other basic examples of how else CtrlAssist can be used include:
+
 - Dual wielding one for each hand, like split Nintendo Switch Joy-Cons
 - Combining a standard gamepad with an accessible Xbox Adaptive Controller
-- Assist multiple Primary players using demux outputs as mux Assist inputs
+
+However, because running multiple instances is possible, more complex setups can be achieved by chaining multiple mux and demux commands together.
+
+## Couch Co-Op Swap
+
+Two players can take turns assisting each other using toggle mode:
+
+```sh
+$ ctrlassist list
+(0) PS4 Controller
+(1) PS5 Controller
+```
+
+```bash
+#!/usr/bin/env bash
+ctrlassist mux --primary 0 --assist 1 --mode toggle --hide steam &
+sleep 1 # wait to ensure virtual devices are discoverable
+ctrlassist mux --primary 1 --assist 0 --mode toggle --hide steam &
+wait
+```
+
+```mermaid
+flowchart LR
+    A[Assist 1 <br> Controller] --> C[Mux <br> Toggle]
+    B[Assist 2 <br> Controller] --> C
+    A --> D[Mux <br> Toggle]
+    B --> D
+    C --> E[Virtual 1 <br> Gamepad]
+    D --> F[Virtual 2 <br> Gamepad]
+```
+
+Or specify a single assist controller by toggling once before duplicating first mux.
+
+## Double Agent Tag Team
+
+Assist multiple Primary players using demux outputs as mux Assist inputs:
+
+```sh
+$ ctrlassist list
+(0) PS4 Controller
+(1) PS5 Controller
+(2) Xbox One Controller
+```
+
+```bash
+#!/usr/bin/env bash
+ctrlassist demux --primary 2 --virtuals 2 --mode unicast \
+  --hide steam --spoof primary & # spoof to not also hide virtual 1 & 2
+sleep 1 # wait to ensure virtual devices are discoverable
+ctrlassist mux --primary 0 --assist 3 --mode priority --hide steam &
+sleep 1 # wait to ensure virtual devices are discoverable
+ctrlassist mux --primary 1 --assist 4 --mode priority --hide steam &
+wait
+```
 
 ```mermaid
 flowchart LR
@@ -450,6 +515,8 @@ flowchart LR
     E --> I[Virtual 1 <br> Gamepad]
     F --> J[Virtual 2 <br> Gamepad]
 ```
+
+Simply scale with number of Primary players by adjusting the `--virtuals` count.
 
 # 📚 Background
 

@@ -1,8 +1,10 @@
+use crate::demux::DemuxRumbleTarget;
 use crate::demux::manager::{DemuxConfig, DemuxHandle};
 use crate::demux::modes::DemuxModeType;
+use crate::mux::MuxRumbleTarget;
 use crate::mux::manager::{MuxConfig, MuxHandle};
 use crate::mux::modes::MuxModeType;
-use crate::{DemuxRumbleTarget, HideType, RumbleTarget, SpoofTarget};
+use crate::{HideType, SpoofTarget};
 use gilrs::GamepadId;
 use ksni::{Category, MenuItem, Status, ToolTip, Tray, menu};
 use log::{error, info};
@@ -520,7 +522,20 @@ impl Tray for CtrlAssistTray {
                         enabled: true,
                         access: { mux.mode },
                         on_change: |_t, s, v| {
-                            if let Some(r) = &s.mux.runtime_settings { r.update_mode(v.clone()); }
+                            if let Some(r) = &s.mux.runtime_settings {
+                                if let (Some(primary_id), Some(assist_id)) = (
+                                    s.mux.selected_primary.as_ref(),
+                                    s.mux.selected_assist.as_ref(),
+                                ) {
+                                    let mode_impl = crate::mux::modes::create_mux_mode(v.clone());
+                                    let defaults = mode_impl.initial_active_controllers(*primary_id, *assist_id);
+                                    r.update_mode(v.clone(), defaults);
+                                } else {
+                                    error!(
+                                        "Cannot update mux mode: primary or assist controller not selected"
+                                    );
+                                }
+                            }
                         }
                     ),
                     enum_menu!(
@@ -547,8 +562,8 @@ impl Tray for CtrlAssistTray {
                         label: "Rumble: {:?}",
                         icon: "notification-active",
                         current: state.mux.rumble,
-                        type: RumbleTarget,
-                        variants: [Both, Primary, Assist, None],
+                        type: MuxRumbleTarget,
+                        variants: [Active, Both, Primary, Assist, None],
                         enabled: true,
                         access: { mux.rumble },
                         on_change: |_t, s, v| {
