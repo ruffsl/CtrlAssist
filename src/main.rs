@@ -7,6 +7,7 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use std::error::Error;
 
+mod core;
 mod demux;
 mod mux;
 mod tray;
