@@ -10,6 +10,7 @@ use std::error::Error;
 mod core;
 mod demux;
 mod mux;
+mod mux2;
 mod tray;
 mod utils;
 
@@ -28,6 +29,9 @@ enum Commands {
 
     /// Multiplex connected controllers into virtual gamepad.
     Mux(MuxArgs),
+
+    /// [Experimental] Graph-based mux implementation.
+    Mux2(Mux2Args),
 
     /// Demultiplex one controller to multiple virtual gamepads.
     Demux(DemuxArgs),
@@ -61,6 +65,29 @@ struct MuxArgs {
     /// Rumble target for virtual device.
     #[arg(long, value_enum, default_value_t = MuxRumbleTarget::default())]
     rumble: MuxRumbleTarget,
+}
+
+#[derive(clap::Args, Debug)]
+struct Mux2Args {
+    /// Primary controller ID (see 'list' command).
+    #[arg(long, default_value_t = 0)]
+    primary: usize,
+
+    /// Assist controller ID (see 'list' command).
+    #[arg(long, default_value_t = 1)]
+    assist: usize,
+
+    /// Hide primary and assist controllers.
+    #[arg(long, value_enum, default_value_t = HideType::default())]
+    hide: HideType,
+
+    /// Spoof target for virtual device.
+    #[arg(long, value_enum, default_value_t = SpoofTarget::default())]
+    spoof: SpoofTarget,
+
+    /// Mode type for combining controllers.
+    #[arg(long, value_enum, default_value_t = crate::mux::modes::MuxModeType::default())]
+    mode: crate::mux::modes::MuxModeType,
 }
 
 #[derive(clap::Args, Debug)]
@@ -113,6 +140,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     match cli.command {
         Commands::List => list_gamepads(),
         Commands::Mux(args) => run_mux(args),
+        Commands::Mux2(args) => run_mux2(args),
         Commands::Demux(args) => run_demux(args),
         Commands::Tray => tray::run_tray().await,
     }
@@ -267,5 +295,31 @@ fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
     println!("Demux Active. Press Ctrl+C to exit.");
 
     let _ = demux_thread.join();
+    Ok(())
+}
+
+use crate::mux2::manager::Mux2Config;
+use crate::mux2::manager::start_mux2;
+
+fn run_mux2(args: Mux2Args) -> Result<(), Box<dyn std::error::Error>> {
+    // Convert CLI args to config as needed
+    let gilrs =
+        crate::utils::gilrs::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let config = Mux2Config {
+        primary_id: gilrs
+            .gamepads()
+            .find(|(id, _)| usize::from(*id) == args.primary)
+            .map(|(id, _)| id)
+            .ok_or_else(|| format!("Primary ID {} not found", args.primary))?,
+        assist_id: gilrs
+            .gamepads()
+            .find(|(id, _)| usize::from(*id) == args.assist)
+            .map(|(id, _)| id)
+            .ok_or_else(|| format!("Assist ID {} not found", args.assist))?,
+        mode: crate::core::nodes::mux::MuxModeType::Priority,
+        hide: args.hide,
+        spoof: args.spoof,
+    };
+    let _handle = start_mux2(gilrs, config).map_err(|e| format!("Mux2 error: {e}"))?;
     Ok(())
 }

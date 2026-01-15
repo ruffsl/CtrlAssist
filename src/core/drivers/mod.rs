@@ -6,6 +6,3 @@
 
 pub mod gilrs_driver;
 pub mod sink;
-
-pub use gilrs_driver::*;
-pub use sink::*;

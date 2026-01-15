@@ -7,5 +7,3 @@
 //! - [`SinkNode`]: Writes to virtual devices via evdev (TODO)
 
 pub mod mux;
-
-pub use mux::*;
