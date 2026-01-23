@@ -1,7 +1,7 @@
-//! Mux2: Graph-based multiplexing implementation.
+//! Mux2: Graph-based multiplexer implementation.
 //!
-//! This is an experimental reimplementation of the mux functionality
-//! using the new graph architecture. It can be used to compare behavior
-//! with the original mux implementation.
+//! This module provides a new graph-based implementation of the mux functionality,
+//! intended to eventually replace the original mux implementation.
 
 pub mod manager;
+pub mod runtime;

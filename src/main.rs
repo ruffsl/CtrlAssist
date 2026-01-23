@@ -30,7 +30,7 @@ enum Commands {
     /// Multiplex connected controllers into virtual gamepad.
     Mux(MuxArgs),
 
-    /// [Experimental] Graph-based mux implementation.
+    /// Multiplex controllers using new graph-based architecture (experimental).
     Mux2(Mux2Args),
 
     /// Demultiplex one controller to multiple virtual gamepads.
@@ -86,8 +86,8 @@ struct Mux2Args {
     spoof: SpoofTarget,
 
     /// Mode type for combining controllers.
-    #[arg(long, value_enum, default_value_t = crate::mux::modes::MuxModeType::default())]
-    mode: crate::mux::modes::MuxModeType,
+    #[arg(long, value_enum, default_value_t = crate::core::nodes::mux::MuxModeType::default())]
+    mode: crate::core::nodes::mux::MuxModeType,
 }
 
 #[derive(clap::Args, Debug)]
@@ -241,6 +241,80 @@ fn run_mux(args: MuxArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn run_mux2(args: Mux2Args) -> Result<(), Box<dyn Error>> {
+    if args.primary == args.assist {
+        return Err("Primary and Assist controllers must be separate devices.".into());
+    }
+
+    let gilrs =
+        crate::utils::gilrs::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
+    let resources = crate::utils::gilrs::discover_gamepad_resources(&gilrs);
+
+    // Identify primary and assist resources
+    let p_id = resources
+        .keys()
+        .find(|&&id| usize::from(id) == args.primary)
+        .copied()
+        .ok_or(format!("Primary ID {} not found", args.primary))?;
+    let a_id = resources
+        .keys()
+        .find(|&&id| usize::from(id) == args.assist)
+        .copied()
+        .ok_or(format!("Assist ID {} not found", args.assist))?;
+
+    let primary_msg = format!(
+        "Primary: ({}) {} @ {}",
+        p_id,
+        resources[&p_id].name,
+        resources[&p_id].path.display()
+    );
+    info!("{}", primary_msg);
+    println!("{}", primary_msg);
+
+    let assist_msg = format!(
+        "Assist:  ({}) {} @ {}",
+        a_id,
+        resources[&a_id].name,
+        resources[&a_id].path.display()
+    );
+    info!("{}", assist_msg);
+    println!("{}", assist_msg);
+
+    // Get spoof info if needed
+    let spoof_info = match args.spoof {
+        SpoofTarget::Primary => Some(crate::utils::evdev::VirtualGamepadInfo::from(
+            &gilrs.gamepad(p_id),
+        )),
+        SpoofTarget::Assist => Some(crate::utils::evdev::VirtualGamepadInfo::from(
+            &gilrs.gamepad(a_id),
+        )),
+        SpoofTarget::None => None,
+    };
+
+    // Need to drop gilrs before starting mux2 (which creates its own)
+    drop(gilrs);
+
+    // Start mux2
+    let mux2_handle =
+        crate::mux2::manager::start_mux2(p_id, a_id, args.mode, args.hide, spoof_info)?;
+
+    // Handle both SIGINT and SIGTERM
+    let shutdown = mux2_handle.shutdown.clone();
+    let mut signals = Signals::new([SIGINT, SIGTERM])?;
+    std::thread::spawn(move || {
+        if let Some(_sig) = signals.forever().next() {
+            println!("\nShutting down...");
+            shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+
+    info!("Mux2 Active (graph-based). Press Ctrl+C to exit.");
+    println!("Mux2 Active (graph-based). Press Ctrl+C to exit.");
+
+    let _ = mux2_handle.input_thread.join();
+    Ok(())
+}
+
 fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
     let gilrs =
         crate::utils::gilrs::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
@@ -295,31 +369,5 @@ fn run_demux(args: DemuxArgs) -> Result<(), Box<dyn Error>> {
     println!("Demux Active. Press Ctrl+C to exit.");
 
     let _ = demux_thread.join();
-    Ok(())
-}
-
-use crate::mux2::manager::Mux2Config;
-use crate::mux2::manager::start_mux2;
-
-fn run_mux2(args: Mux2Args) -> Result<(), Box<dyn std::error::Error>> {
-    // Convert CLI args to config as needed
-    let gilrs =
-        crate::utils::gilrs::new_gilrs().map_err(|e| format!("Failed to init Gilrs: {e}"))?;
-    let config = Mux2Config {
-        primary_id: gilrs
-            .gamepads()
-            .find(|(id, _)| usize::from(*id) == args.primary)
-            .map(|(id, _)| id)
-            .ok_or_else(|| format!("Primary ID {} not found", args.primary))?,
-        assist_id: gilrs
-            .gamepads()
-            .find(|(id, _)| usize::from(*id) == args.assist)
-            .map(|(id, _)| id)
-            .ok_or_else(|| format!("Assist ID {} not found", args.assist))?,
-        mode: crate::core::nodes::mux::MuxModeType::Priority,
-        hide: args.hide,
-        spoof: args.spoof,
-    };
-    let _handle = start_mux2(gilrs, config).map_err(|e| format!("Mux2 error: {e}"))?;
     Ok(())
 }

@@ -11,7 +11,17 @@ use crate::core::node::{Node, NodePorts, PortDef, PortId, ProcessContext, ports}
 use crate::core::state::EdgeState;
 
 /// Mode for multiplexing inputs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum MuxModeType {
     /// Assist input takes priority when active
     #[default]
@@ -39,6 +49,11 @@ impl MuxNode {
             mode,
             toggle_active_port: ports::MUX_PRIMARY_IN,
         }
+    }
+
+    /// Get the current mode
+    pub fn mode(&self) -> MuxModeType {
+        self.mode
     }
 
     /// Process with Priority mode: Assist overrides when active
