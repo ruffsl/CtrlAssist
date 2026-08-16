@@ -91,12 +91,14 @@ pub enum InputKind {
 }
 
 /// Force feedback events
+///
+/// These carry evdev's FFEffectData directly for compatibility with physical devices.
 #[derive(Debug, Clone)]
 pub enum FFEvent {
     /// Upload a new effect
     Upload {
         effect_id: EffectId,
-        effect: FFEffectKind,
+        effect_data: evdev::FFEffectData,
     },
     /// Remove an effect
     Erase { effect_id: EffectId },
@@ -104,22 +106,6 @@ pub enum FFEvent {
     Play { effect_id: EffectId },
     /// Stop playing an effect
     Stop { effect_id: EffectId },
-}
-
-/// Types of force feedback effects
-#[derive(Debug, Clone)]
-pub enum FFEffectKind {
-    /// Basic rumble with strong and weak motors
-    Rumble {
-        strong_magnitude: u16,
-        weak_magnitude: u16,
-        duration_ms: u16,
-    },
-    // Future extensions for exotic FF:
-    // Spring { ... },
-    // Damper { ... },
-    // Friction { ... },
-    // Constant { ... },
 }
 
 /// LED control events

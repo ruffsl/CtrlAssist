@@ -1,0 +1,240 @@
+# CtrlAssist Architecture Refactor Investigation Plan
+
+## Design Requirements Summary
+
+Based on discussion, the refactored architecture should support:
+
+| Requirement | Current | Target |
+|-------------|---------|--------|
+| Pipeline Model | Fixed mux/demux pipelines | DAG with bidirectional event flow |
+| Event Types | gilrs/evdev primitives | Custom packet abstraction (extensible) |
+| Node State | Some stateful (Toggle), some stateless | Unified trait with optional state |
+| Hot-Swap | Mode, rumble target | Mode, rumble, LED target (future) |
+| Cold Config | Hide, spoof, device selection | Same (requires restart) |
+| CLI | [mux](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/main.rs#140-214)/[demux](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/main.rs#215-271) commands | Keep + add `graph` or TOML file option |
+| Exotic Devices | Not supported | Future: gyro, touchpad, adaptive triggers, LED |
+
+### Bidirectional Event Model
+
+```
+┌─────────────┐                          ┌─────────────┐
+│  Physical   │ ───── Input Events ────▶ │   Virtual   │
+│  Devices    │ ◀──── FF/LED Events ──── │   Devices   │
+└─────────────┘                          └─────────────┘
+```
+
+- Input events flow: Physical → Graph → Virtual
+- Feedback events flow: Virtual → Graph (reversed edges) → Physical
+
+---
+
+## Code Smells & Refactoring Candidates
+
+### 1. Mux/Demux Module Duplication
+
+**Current State**:
+- [mux/manager.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/manager.rs) (157 lines) ≈ [demux/manager.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/manager.rs) (191 lines)
+- [mux/runtime.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/runtime.rs) (363 lines) ≈ [demux/runtime.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/runtime.rs) (218 lines)
+- [mux/modes/mod.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/mod.rs) ≈ [demux/modes/mod.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/mod.rs) (nearly identical traits)
+
+**Problems**:
+- 80%+ structural duplication
+- Bug fixes must be applied in two places
+- Adding new node types requires copy-paste of boilerplate
+
+**Proposed Refactor**:
+- Unify into generic `Node` trait with `SourceNode`, `SinkNode`, `ProcessorNode` variants
+- Single graph executor replaces both runtimes
+
+---
+
+### 2. gilrs/evdev Type Coupling
+
+**Current State**:
+- `gilrs::GamepadId`, `gilrs::Button`, `gilrs::Axis` appear in mode logic
+- `evdev::InputEvent`, `evdev::FFEffectData` appear in runtime and helpers
+- Conversion scattered across 5+ files
+
+**Files Affected**:
+| File | gilrs Types | evdev Types |
+|------|-------------|-------------|
+| [mux/modes/helpers.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/helpers.rs) | ✓ | ✓ |
+| [mux/modes/priority.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/priority.rs) | ✓ | ✓ |
+| [mux/modes/average.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/average.rs) | ✓ | ✓ |
+| [mux/modes/toggle.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/toggle.rs) | ✓ | ✓ |
+| [utils/evdev.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/evdev.rs) | ✓ | ✓ |
+
+**Proposed Refactor**:
+- Define `CtrlEvent` enum: `Input(...)`, `ForceFeedback(...)`, `LED(...)`, `Raw(...)`
+- Drivers convert to/from `CtrlEvent` at boundaries
+- Nodes operate only on `CtrlEvent`
+
+---
+
+### 3. Force Feedback Hardcoded for Rumble
+
+**Current State**:
+- [EffectManager](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#106-112) tracks `HashMap<i16, FFEffectData>` and playing state
+- Only `FF_RUMBLE` effect type supported
+- No abstraction for exotic FF (spring, damper, inertia)
+
+**Proposed Refactor**:
+- `FeedbackEffect` trait abstracting effect lifecycle
+- `RumbleEffect`, `SpringEffect`, `LEDCommand` implementations
+- Effect routing configurable per-node
+
+---
+
+### 4. RuntimeSettings Pattern Repetition
+
+**Current State**:
+```rust
+// mux/runtime.rs
+pub struct RuntimeSettings {
+    pub mode: Arc<RwLock<MuxModeType>>,
+    pub rumble: Arc<RwLock<MuxRumbleTarget>>,
+    active_controllers: Arc<RwLock<HashSet<GamepadId>>>,
+    ff_generation: Arc<AtomicU64>,
+}
+
+// demux/runtime.rs  
+pub struct DemuxRuntimeSettings {
+    pub mode: Arc<RwLock<DemuxModeType>>,
+    pub rumble: Arc<RwLock<DemuxRumbleTarget>>,
+    pub active_virtuals: Arc<RwLock<HashSet<usize>>>,
+}
+```
+
+**Problems**:
+- Parallel structs with similar patterns
+- Generation tracking inconsistent (mux has it, demux doesn't)
+
+**Proposed Refactor**:
+- Generic `NodeSettings<M, R>` or trait-based approach
+- Unified hot-swap mechanism with generation tracking
+
+---
+
+### 5. Tray State Monolith
+
+**Current State**:
+```rust
+pub struct TrayState {
+    pub controllers: Vec<ControllerInfo>,
+    pub operation_mode: OperationMode,
+    pub mux: MuxState,
+    pub demux: DemuxState,
+    // ... thread handles, shutdown signals
+}
+```
+
+**Problems**:
+- Adding new operation modes (e.g., `graph`) requires touching TrayState
+- Mux/Demux state always allocated even when unused
+
+**Proposed Refactor**:
+- Trait-based operation handling
+- State per active operation only
+
+---
+
+### 6. No Graph Abstraction
+
+**Current State**:
+- Fixed pipeline: Source → Mode → Sink
+- [mux](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/main.rs#140-214) = 2 sources → 1 sink
+- [demux](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/main.rs#215-271) = 1 source → N sinks
+
+**Proposed Refactor**:
+- `Graph` struct holding `Vec<Box<dyn Node>>` and edge connections
+- `GraphExecutor` polling all nodes, routing events
+- Serializable to/from TOML for presets
+
+---
+
+## Investigation Action Items
+
+### Phase 1: Deep Analysis (Before Any Refactoring)
+
+- [ ] **I-01**: Catalog all event types currently processed
+  - Button press/release, axis changes, FF upload/erase/play/stop
+  - Document data carried at each step
+  
+- [ ] **I-02**: Trace complete event lifecycle
+  - Input: gilrs poll → mode processing → evdev emit
+  - FF: evdev fetch → target selection → physical upload
+  
+- [ ] **I-03**: Identify all gilrs/evdev API touchpoints
+  - Which APIs are used?
+  - What would an abstraction layer look like?
+
+- [ ] **I-04**: Research node-graph patterns in Rust
+  - `petgraph` crate evaluation
+  - Event-driven graph executors
+  - Prior art: InputPlumber, similar projects
+
+- [ ] **I-05**: Analyze mode state requirements
+  - What state does Toggle mode actually need?
+  - Can Average/Priority truly be stateless?
+
+- [ ] **I-06**: Document exotic device Linux support
+  - Steam Controller: evdev vs hidraw
+  - DualSense: hid-playstation driver capabilities
+  - What events are available at which level?
+
+### Phase 2: Prototype Design
+
+- [ ] **P-01**: Draft `CtrlEvent` packet enum
+  - Input events with device context
+  - Feedback events with targeting
+  - Extensibility for LED, motion
+
+- [ ] **P-02**: Draft `Node` trait hierarchy
+  ```rust
+  trait Node {
+      fn process(&mut self, event: CtrlEvent) -> Vec<(PortId, CtrlEvent)>;
+      fn ports(&self) -> NodePorts; // describes inputs/outputs
+  }
+  ```
+
+- [ ] **P-03**: Draft `Graph` and `GraphExecutor`
+  - Edge management
+  - Event routing with bidirectionality
+
+- [ ] **P-04**: Draft serialization format for graph TOML
+
+- [ ] **P-05**: Draft driver abstraction
+  - `InputDriver` trait (gilrs wrapper initially)
+  - `OutputDriver` trait (evdev wrapper initially)
+
+### Phase 3: Migration Strategy
+
+- [ ] **M-01**: Define compatibility shim
+  - [mux](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/main.rs#140-214) CLI constructs single-node graph internally
+  - Existing tests should pass
+
+- [ ] **M-02**: Incremental module migration order
+  - Utils → Core types → Drivers → Nodes → Graph → CLI → Tray
+
+---
+
+## Open Questions for Further Discussion
+
+1. **Graph serialization format**: Pure TOML, or a more graph-friendly format like DOT or JSON with custom schema?
+
+2. **Driver abstraction depth**: Should we abstract evdev now, or defer until hidraw support is needed?
+
+3. **Error handling strategy**: How should node processing errors propagate through the graph?
+
+4. **Testing approach**: Unit test nodes in isolation, or integration test complete graphs?
+
+---
+
+## Next Steps
+
+After you review this plan, I recommend we:
+
+1. Execute investigation items I-01 through I-03 to fully document current state
+2. Discuss findings and refine the prototype designs (P-01 through P-05)
+3. Create a detailed implementation plan with specific file changes
+4. Begin incremental refactoring with M-01 compatibility shim first

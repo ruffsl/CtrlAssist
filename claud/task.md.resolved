@@ -1,0 +1,55 @@
+# CtrlAssist Refactor Investigation Tasks
+
+## Phase 1: Deep Analysis ✅
+
+- [x] **I-01**: Catalog all event types currently processed
+  - [x] Input events (buttons, axes, triggers, D-pad)
+  - [x] Force feedback events (upload, erase, play, stop)
+  - [x] Synchronization events
+  
+- [x] **I-02**: Trace complete event lifecycle
+  - [x] Input path: gilrs poll → mode → evdev emit
+  - [x] FF path: evdev fetch → targeting → physical upload
+  
+- [x] **I-03**: Identify all gilrs/evdev API touchpoints
+  - [x] List gilrs types used in business logic
+  - [x] List evdev types used in business logic
+  - [x] Identify conversion points
+
+- [x] **I-04**: Research node-graph patterns in Rust
+  - [x] Evaluate petgraph crate
+  - [x] Review InputPlumber architecture
+  - [x] Document applicable patterns
+
+- [x] **I-05**: Analyze mode state requirements
+  - [x] Toggle mode state analysis
+  - [x] Priority/Average state analysis
+  - [x] Unicast/Multicast state analysis
+
+- [x] **I-06**: Document exotic device Linux support
+  - [x] Steam Controller capabilities
+  - [x] DualSense capabilities
+  - [x] Racing wheel FF effects
+
+## Phase 2: Prototype Design ✅
+
+- [x] **P-01**: Draft `CtrlEvent` packet enum
+- [x] **P-02**: Draft [Node](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/node.rs#97-129) trait hierarchy  
+- [x] **P-03**: Draft [Graph](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/graph.rs#26-39) and [GraphExecutor](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/graph.rs#133-138)
+- [ ] **P-04**: Draft JSON serialization format
+- [ ] **P-05**: Draft driver abstraction (deferred)
+
+## Phase 3: Migration Strategy (In Progress)
+
+- [ ] **M-01**: True Graph Refactor for mux2
+  - [x] Built core abstractions (CtrlEvent, Node, Graph, GraphExecutor)
+  - [x] Built MuxNode for Priority/Average/Toggle modes
+  - [ ] Create SourceNode (gilrs + FF handling)
+  - [ ] Create SinkNode (evdev + FF polling)
+  - [ ] Update MuxNode for bidirectional FF routing
+  - [ ] Update GraphExecutor with tick_all()
+  - [ ] Rewrite mux2/manager.rs to use GraphExecutor
+  - [ ] Delete mux2/runtime.rs shim code
+  - [ ] Cleanup dead driver code
+  - [ ] Verify toggle mode FF routes to active only
+- [ ] **M-02**: Define incremental migration order

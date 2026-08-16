@@ -331,6 +331,38 @@ impl MuxNode {
     }
 }
 
+impl MuxNode {
+    /// Route FF events based on mode.
+    ///
+    /// - Priority/Average: Forward to both sources
+    /// - Toggle: Forward only to the active source
+    fn route_ff(&self, event: CtrlEvent) -> Vec<(PortId, CtrlEvent)> {
+        match self.mode {
+            MuxModeType::Priority | MuxModeType::Average => {
+                // Forward to both controllers
+                vec![
+                    (ports::MUX_PRIMARY_FF_OUT, event.clone()),
+                    (ports::MUX_ASSIST_FF_OUT, event),
+                ]
+            }
+            MuxModeType::Toggle => {
+                // Forward only to the active controller
+                let out_port = if self.toggle_active_port == ports::MUX_PRIMARY_IN {
+                    ports::MUX_PRIMARY_FF_OUT
+                } else {
+                    ports::MUX_ASSIST_FF_OUT
+                };
+                vec![(out_port, event)]
+            }
+        }
+    }
+
+    /// Get the currently active port (for toggle mode).
+    pub fn active_port(&self) -> PortId {
+        self.toggle_active_port
+    }
+}
+
 impl Node for MuxNode {
     fn name(&self) -> &str {
         "MuxNode"
@@ -341,8 +373,13 @@ impl Node for MuxNode {
             inputs: vec![
                 PortDef::new(ports::MUX_PRIMARY_IN, "primary"),
                 PortDef::new(ports::MUX_ASSIST_IN, "assist"),
+                PortDef::new(ports::MUX_FF_IN, "ff_in"),
             ],
-            outputs: vec![PortDef::new(ports::MUX_OUTPUT, "output")],
+            outputs: vec![
+                PortDef::new(ports::MUX_OUTPUT, "output"),
+                PortDef::new(ports::MUX_PRIMARY_FF_OUT, "primary_ff"),
+                PortDef::new(ports::MUX_ASSIST_FF_OUT, "assist_ff"),
+            ],
         }
     }
 
@@ -352,10 +389,27 @@ impl Node for MuxNode {
         event: CtrlEvent,
         ctx: &mut ProcessContext,
     ) -> Vec<(PortId, CtrlEvent)> {
+        // Handle FF events on the FF input port
+        if input_port == ports::MUX_FF_IN {
+            if let CtrlEvent::ForceFeedback(_) = &event {
+                return self.route_ff(event);
+            }
+            return vec![];
+        }
+
+        // Handle input events
         match self.mode {
             MuxModeType::Priority => self.process_priority(input_port, event, ctx),
             MuxModeType::Average => self.process_average(input_port, event, ctx),
             MuxModeType::Toggle => self.process_toggle(input_port, event, ctx),
+        }
+    }
+
+    fn has_capability(&self, cap: crate::core::node::NodeCapability) -> bool {
+        match cap {
+            crate::core::node::NodeCapability::ProcessesInput => true,
+            crate::core::node::NodeCapability::ProcessesFeedback => true,
+            crate::core::node::NodeCapability::Tickable => false,
         }
     }
 }
@@ -454,5 +508,83 @@ mod tests {
         // Now assist should be active
         let output = mux.process(ports::MUX_ASSIST_IN, event.clone(), &mut ctx);
         assert!(!output.is_empty(), "Assist should be active after toggle");
+    }
+
+    #[test]
+    fn test_toggle_mode_ff_routes_to_active_only() {
+        use crate::core::event::{EffectId, FFEvent};
+
+        let mut mux = MuxNode::new(MuxModeType::Toggle);
+
+        let primary_state = EdgeState::new();
+        let assist_state = EdgeState::new();
+
+        let (states, mut node_state) = make_context(&primary_state, &assist_state);
+        let mut ctx = ProcessContext {
+            input_states: &states,
+            node_state: node_state.as_mut(),
+        };
+
+        // Create a dummy FF event
+        let ff_event = CtrlEvent::ForceFeedback(FFEvent::Play {
+            effect_id: EffectId(1),
+        });
+
+        // Initially primary is active, FF should only go to primary
+        let output = mux.process(ports::MUX_FF_IN, ff_event.clone(), &mut ctx);
+        assert_eq!(output.len(), 1, "FF should route to one controller only");
+        assert_eq!(
+            output[0].0,
+            ports::MUX_PRIMARY_FF_OUT,
+            "FF should go to primary when primary is active"
+        );
+
+        // Toggle to assist
+        let mode_event = CtrlEvent::Input(InputEvent::button(ButtonId::Mode, true));
+        let _ = mux.process(ports::MUX_ASSIST_IN, mode_event, &mut ctx);
+
+        // Now FF should only go to assist
+        let output = mux.process(ports::MUX_FF_IN, ff_event.clone(), &mut ctx);
+        assert_eq!(output.len(), 1, "FF should route to one controller only");
+        assert_eq!(
+            output[0].0,
+            ports::MUX_ASSIST_FF_OUT,
+            "FF should go to assist when assist is active"
+        );
+    }
+
+    #[test]
+    fn test_priority_mode_ff_routes_to_both() {
+        use crate::core::event::{EffectId, FFEvent};
+
+        let mut mux = MuxNode::new(MuxModeType::Priority);
+
+        let primary_state = EdgeState::new();
+        let assist_state = EdgeState::new();
+
+        let (states, mut node_state) = make_context(&primary_state, &assist_state);
+        let mut ctx = ProcessContext {
+            input_states: &states,
+            node_state: node_state.as_mut(),
+        };
+
+        // FF should go to both controllers in priority mode
+        let ff_event = CtrlEvent::ForceFeedback(FFEvent::Play {
+            effect_id: EffectId(1),
+        });
+
+        let output = mux.process(ports::MUX_FF_IN, ff_event, &mut ctx);
+        assert_eq!(output.len(), 2, "FF should route to both controllers");
+
+        // Check both outputs are present
+        let ports: Vec<_> = output.iter().map(|(p, _)| *p).collect();
+        assert!(
+            ports.contains(&ports::MUX_PRIMARY_FF_OUT),
+            "Should route to primary"
+        );
+        assert!(
+            ports.contains(&ports::MUX_ASSIST_FF_OUT),
+            "Should route to assist"
+        );
     }
 }

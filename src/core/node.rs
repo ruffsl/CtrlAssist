@@ -19,18 +19,25 @@ pub struct PortId(pub u32);
 pub mod ports {
     use super::PortId;
 
+    // Source node ports (physical device wrapper)
+    pub const SOURCE_OUTPUT: PortId = PortId(0); // Input events out (to graph)
+    pub const SOURCE_FF_IN: PortId = PortId(1); // FF events in (from graph)
+
     // Mux node ports
-    pub const MUX_PRIMARY_IN: PortId = PortId(0);
-    pub const MUX_ASSIST_IN: PortId = PortId(1);
-    pub const MUX_OUTPUT: PortId = PortId(0);
+    pub const MUX_PRIMARY_IN: PortId = PortId(0); // Input from primary source
+    pub const MUX_ASSIST_IN: PortId = PortId(1); // Input from assist source
+    pub const MUX_OUTPUT: PortId = PortId(2); // Combined input out to sink
+    pub const MUX_FF_IN: PortId = PortId(3); // FF events in from sink
+    pub const MUX_PRIMARY_FF_OUT: PortId = PortId(4); // FF events out to primary source
+    pub const MUX_ASSIST_FF_OUT: PortId = PortId(5); // FF events out to assist source
 
     // Demux node ports
     pub const DEMUX_INPUT: PortId = PortId(0);
-    // Output ports: PortId(0), PortId(1), ...
+    // Output ports: PortId(1), PortId(2), ... for multiple virtual devices
 
-    // Source/Sink ports
-    pub const SOURCE_OUTPUT: PortId = PortId(0);
-    pub const SINK_INPUT: PortId = PortId(0);
+    // Sink node ports (virtual device wrapper)
+    pub const SINK_INPUT: PortId = PortId(0); // Input events in (from graph)
+    pub const SINK_FF_OUT: PortId = PortId(1); // FF events out (to graph)
 }
 
 /// Describes the ports a node has

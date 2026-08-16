@@ -1,0 +1,310 @@
+# Phase 1 Investigation Report: CtrlAssist Architecture Refactor
+
+## I-01: Event Type Catalog
+
+### Input Events (gilrs → evdev)
+
+| gilrs Event Type | evdev Output | Data |
+|------------------|--------------|------|
+| `ButtonPressed(Button, Code)` | `EV_KEY` | key code, value=1 |
+| `ButtonReleased(Button, Code)` | `EV_KEY` | key code, value=0 |
+| `ButtonChanged(Button, value, Code)` | `EV_ABS` | trigger/D-pad axis value |
+| `AxisChanged(Axis, value, Code)` | `EV_ABS` | stick axis value |
+
+### Force Feedback Events (evdev virtual → physical)
+
+| evdev Event | Direction | Data |
+|-------------|-----------|------|
+| `UI_FF_UPLOAD` | Virtual→Manager | `FFEffectData` (rumble params) |
+| `UI_FF_ERASE` | Virtual→Manager | effect_id |
+| `ForceFeedback` (play/stop) | Virtual→Physical | effect_id, status |
+
+### Synchronization Events
+
+| Event | Purpose |
+|-------|---------|
+| `EV_SYN/SYN_REPORT` | Marks end of event batch |
+
+---
+
+## I-02: Event Lifecycle Traces
+
+### Input Event Flow
+
+```
+┌─────────────┐     ┌──────────┐     ┌────────────┐     ┌───────────┐
+│ Physical    │     │ gilrs    │     │ MuxMode/   │     │ evdev     │
+│ Controllers │────▶│ Poll     │────▶│ DemuxMode  │────▶│ VirtualDev│
+└─────────────┘     └──────────┘     └────────────┘     └───────────┘
+                         │                 │
+                         │ Event           │ MuxOutput/
+                         │ {id, event,     │ DemuxOutput
+                         │  time}          │ {events, active}
+                         ▼                 ▼
+                    next_event_        InputEvent::new()
+                    blocking()         send_events()
+```
+
+**Steps**:
+1. `gilrs.next_event_blocking()` returns `gilrs::Event`
+2. Filter by Primary/Assist IDs
+3. `mode.handle_event()` processes, returns [MuxOutput](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/mod.rs#20-26)
+4. Convert gilrs types → `evdev::InputEvent`
+5. `device.send_events()` to virtual device
+
+### Force Feedback Flow
+
+```
+┌───────────┐     ┌─────────────┐     ┌─────────────┐     ┌──────────────┐
+│ Game      │     │ Virtual     │     │ FF Thread   │     │ Physical     │
+│ (writes)  │────▶│ Device      │────▶│ (routes)    │────▶│ Controllers  │
+└───────────┘     └─────────────┘     └─────────────┘     └──────────────┘
+                        │                    │
+                        │ fetch_events()     │ EffectManager
+                        │ EventSummary       │ PhysicalFFDev
+                        ▼                    ▼
+                   upload/erase/        upload_ff_effect()
+                   play/stop            play()/stop()
+```
+
+**Steps**:
+1. Game writes to virtual device (evdev file)
+2. `v_uinput.fetch_events()` returns `EventSummary`
+3. `EffectManager.upload()`/[erase()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#127-132)/[set_playing()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#133-137) tracks state
+4. [PhysicalFFDev](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#6-11) forwards to physical controllers based on `RumbleTarget`
+
+---
+
+## I-03: API Touchpoint Analysis
+
+### gilrs Types in Business Logic
+
+| Type | Files Used | Count |
+|------|-----------|-------|
+| `GamepadId` | 15 files | ~30 |
+| `Gilrs` | 8 files | ~15 |
+| [Gamepad](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/gilrs.rs#20-25) | 6 files | ~10 |
+| `Button` | 6 files | ~20 |
+| `Axis` | 4 files | ~8 |
+| `Event` | 5 files | ~10 |
+| `EventType` | 5 files | ~25 |
+| `ev::AxisOrBtn` | 2 files | ~6 |
+
+**Files with gilrs in mode logic** (needs abstraction):
+- [mux/modes/priority.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/priority.rs)
+- [mux/modes/average.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/average.rs)
+- [mux/modes/toggle.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/toggle.rs)
+- [mux/modes/helpers.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/helpers.rs)
+- [demux/modes/unicast.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/unicast.rs)
+- [demux/modes/multicast.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/multicast.rs)
+
+### evdev Types in Business Logic
+
+| Type | Files Used | Count |
+|------|-----------|-------|
+| `InputEvent` | 10 files | ~40 |
+| `EventType` | 8 files | ~30 |
+| `AbsoluteAxisCode` | 3 files | ~15 |
+| `KeyCode` | 2 files | ~20 |
+| `FFEffectData` | 2 files | ~5 |
+| [VirtualDevice](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/manager.rs#27-30) | 3 files | ~5 |
+
+---
+
+## I-04: Rust Graph Pattern Research
+
+### petgraph Evaluation
+
+**Pros**:
+- Mature, well-maintained
+- Multiple graph types (`Graph`, `StableGraph`, `GraphMap`)
+- Algorithm library (traversal, pathfinding)
+
+**Cons**:
+- No built-in event routing
+- Would need custom executor layer
+
+**Recommendation**: Use for graph structure, build custom event routing
+
+### InputPlumber Architecture
+
+| Feature | Implementation |
+|---------|----------------|
+| Config Format | YAML |
+| Device Merging | Composite Devices |
+| Profile System | Input Profiles (loadable) |
+| IPC | DBus |
+| Interception | Overlay mode via DBus |
+
+**Key Insight**: InputPlumber uses YAML for config and DBus for live interaction—we can use JSON for presets and keep simpler in-process config.
+
+### Recommended Pattern
+
+```rust
+trait Node: Send + Sync {
+    fn process(&mut self, event: CtrlEvent, ctx: &mut Context) -> Vec<(PortId, CtrlEvent)>;
+    fn tick(&mut self, ctx: &mut Context) {} // Optional polling
+}
+
+struct Graph {
+    nodes: Vec<Box<dyn Node>>,
+    edges: Vec<(NodeId, PortId, NodeId, PortId)>,
+}
+
+struct GraphExecutor {
+    graph: Graph,
+    event_queue: VecDeque<(NodeId, CtrlEvent)>,
+}
+```
+
+---
+
+## I-05: Mode State Requirements
+
+### Mux Modes
+
+| Mode | State | Rationale |
+|------|-------|-----------|
+| **Priority** | None | Uses gilrs [Gamepad](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/gilrs.rs#20-25) state at event time |
+| **Average** | None | Sum values from both gamepads at event time |
+| **Toggle** | `active_id: Option<GamepadId>` | Tracks which controller is active |
+
+### Demux Modes
+
+| Mode | State | Rationale |
+|------|-------|-----------|
+| **Unicast** | `active_index: usize` | Tracks active virtual device |
+| **Multicast** | None | Broadcasts to all |
+
+### State Abstraction
+
+```rust
+enum NodeState {
+    Stateless,
+    Stateful(Box<dyn Any + Send + Sync>),
+}
+```
+
+**Key Insight**: Most modes query gilrs [Gamepad](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/gilrs.rs#20-25) for current values—after abstraction, this becomes a "device state query" mechanism.
+
+---
+
+## I-06: Exotic Device Support Research
+
+### DualSense Controller (PS5)
+
+| Feature | Linux Support | API |
+|---------|--------------|-----|
+| Buttons/Sticks | ✅ hid-playstation | evdev |
+| Triggers (analog) | ✅ hid-playstation | evdev |
+| Touchpad | ✅ hid-playstation | evdev |
+| Gyro/Accel | ✅ hid-playstation | evdev |
+| Rumble | ✅ hid-playstation | evdev FF |
+| Player LEDs | ✅ hid-playstation | leds-class |
+| Lightbar RGB | ✅ hid-playstation | leds-class-multicolor |
+| **Adaptive Triggers** | ❌ Not in driver | hidraw only |
+| **Advanced Haptics** | ❌ Not in driver | hidraw only |
+
+### evdev Force Feedback Types
+
+| Effect Type | Use Case | Supported by evdev |
+|-------------|----------|-------------------|
+| `FF_RUMBLE` | Strong/weak motor | ✅ |
+| `FF_SPRING` | Return to center | ✅ |
+| `FF_DAMPER` | Velocity resistance | ✅ |
+| `FF_FRICTION` | Position resistance | ✅ |
+| `FF_INERTIA` | Mass simulation | ✅ |
+| `FF_CONSTANT` | Constant force | ✅ |
+| `FF_PERIODIC` | Sine/triangle waves | ✅ |
+| `FF_RAMP` | Linear force change | ✅ |
+
+### Future hidraw Requirements
+
+For adaptive triggers, RGB LEDs beyond leds-class, and VCM haptics:
+- Direct hidraw access needed
+- Custom packet structure per device
+- Device-specific drivers in userspace
+
+---
+
+## Prototype Recommendations
+
+### P-01: CtrlEvent Enum
+
+```rust
+pub enum CtrlEvent {
+    // Input events (forward direction)
+    Input(InputEvent),
+    
+    // Feedback events (reverse direction)
+    ForceFeedback(FFEvent),
+    LED(LEDEvent),
+    
+    // Future extensions
+    Motion(MotionEvent),
+    Touchpad(TouchpadEvent),
+    
+    // Raw for exotic devices
+    Raw { device_id: DeviceId, data: Vec<u8> },
+}
+
+pub struct InputEvent {
+    pub source: DeviceId,
+    pub input: InputKind,
+    pub value: f32, // Normalized -1.0 to 1.0 or 0.0 to 1.0
+}
+
+pub enum InputKind {
+    Button(ButtonId),
+    Axis(AxisId),
+    Trigger(TriggerId),
+}
+```
+
+### P-02: Node Trait Hierarchy
+
+```rust
+pub trait Node: Send + Sync {
+    fn name(&self) -> &str;
+    fn ports(&self) -> NodePorts;
+    fn process(&mut self, port: PortId, event: CtrlEvent) -> Vec<(PortId, CtrlEvent)>;
+}
+
+pub struct NodePorts {
+    pub inputs: Vec<PortDef>,
+    pub outputs: Vec<PortDef>,
+}
+```
+
+### P-03: Graph Executor
+
+```rust
+pub struct Graph {
+    nodes: SlotMap<NodeId, Box<dyn Node>>,
+    edges: Vec<Edge>,
+}
+
+pub struct Edge {
+    from_node: NodeId,
+    from_port: PortId,
+    to_node: NodeId,
+    to_port: PortId,
+}
+
+impl Graph {
+    pub fn inject(&mut self, node: NodeId, port: PortId, event: CtrlEvent);
+    pub fn tick(&mut self) -> Vec<(NodeId, PortId, CtrlEvent)>; // Outputs
+}
+```
+
+---
+
+## Next Steps
+
+Phase 1 investigation complete. Recommend proceeding to Phase 2:
+
+1. **P-01**: Finalize `CtrlEvent` enum with user review
+2. **P-02**: Implement `Node` trait with Priority mode as first example
+3. **P-03**: Build minimal `Graph` executor
+4. **P-04**: Define JSON schema for graph serialization
+5. Test compatibility shim that wraps existing mux/demux as graphs

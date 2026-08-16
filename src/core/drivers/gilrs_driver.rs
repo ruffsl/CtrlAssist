@@ -170,6 +170,33 @@ impl GilrsDriver {
         self.poll_event()
     }
 
+    /// Blocking poll with optional timeout.
+    /// Returns (GamepadId, CtrlEvent) if an event is available from an accepted gamepad.
+    /// Returns None if timeout expires (or immediately if timeout is None and no event).
+    pub fn poll_event_blocking(
+        &mut self,
+        timeout: Option<std::time::Duration>,
+    ) -> Option<(GamepadId, CtrlEvent)> {
+        loop {
+            match self.gilrs.next_event_blocking(timeout) {
+                Some(event) => {
+                    // Filter by accepted IDs
+                    if !self.accepted_ids.contains(&event.id) {
+                        continue;
+                    }
+
+                    // Convert to CtrlEvent
+                    if let Some(ctrl_event) = gilrs_event_to_ctrl_event(&event) {
+                        return Some((event.id, ctrl_event));
+                    }
+                    // If conversion failed (e.g., Unknown button), try next event
+                    continue;
+                }
+                None => return None,
+            }
+        }
+    }
+
     /// Get a reference to the underlying gilrs instance
     pub fn gilrs(&self) -> &Gilrs {
         &self.gilrs

@@ -299,19 +299,18 @@ fn run_mux2(args: Mux2Args) -> Result<(), Box<dyn Error>> {
         crate::mux2::manager::start_mux2(p_id, a_id, args.mode, args.hide, spoof_info)?;
 
     // Handle both SIGINT and SIGTERM
-    let shutdown = mux2_handle.shutdown.clone();
     let mut signals = Signals::new([SIGINT, SIGTERM])?;
-    std::thread::spawn(move || {
-        if let Some(_sig) = signals.forever().next() {
-            println!("\nShutting down...");
-            shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-    });
 
     info!("Mux2 Active (graph-based). Press Ctrl+C to exit.");
     println!("Mux2 Active (graph-based). Press Ctrl+C to exit.");
 
-    let _ = mux2_handle.input_thread.join();
+    // Wait for shutdown signal
+    if signals.forever().next().is_some() {
+        println!("\nShutting down...");
+    }
+
+    // Use the proper shutdown mechanism (unblocks FF thread and joins all threads)
+    mux2_handle.shutdown();
     Ok(())
 }
 

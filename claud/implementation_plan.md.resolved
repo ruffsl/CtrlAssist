@@ -1,0 +1,267 @@
+# True Graph Refactor Implementation Plan
+
+## Goal
+
+Replace the hand-wired mux2 shim with a proper GraphExecutor-based implementation where:
+- All events (input AND force feedback) flow through the graph
+- MuxNode routes FF to the active source based on mode
+- Single event loop driven by GraphExecutor
+
+---
+
+## Architecture
+
+```mermaid
+graph LR
+    subgraph "Event Flow"
+        GS1[SourceNode<br>Primary] -->|CtrlEvent::Input| MUX[MuxNode]
+        GS2[SourceNode<br>Assist] -->|CtrlEvent::Input| MUX
+        MUX -->|CtrlEvent::Input| SINK[SinkNode]
+        SINK -->|CtrlEvent::FF| MUX
+        MUX -->|CtrlEvent::FF| GS1
+        MUX -->|CtrlEvent::FF| GS2
+    end
+```
+
+Key insight: **FF events flow backwards through the same graph**. MuxNode receives FF from SinkNode and routes to the appropriate physical source based on mode state.
+
+---
+
+## Proposed Changes
+
+### 1. Core Node Implementations
+
+#### [NEW] `src/core/nodes/source.rs` - GilrsSourceNode
+
+A node that wraps gilrs and emits CtrlEvents. Also receives FF events and forwards them to the physical device.
+
+```rust
+pub struct SourceNode {
+    driver: GilrsDriver,          // polls gilrs events
+    ff_dev: Option<PhysicalFFDev>, // for FF forwarding
+    gamepad_id: GamepadId,
+}
+
+impl Node for SourceNode {
+    fn process(&mut self, port: PortId, event: CtrlEvent, ctx: &mut ProcessContext) -> Vec<(PortId, CtrlEvent)> {
+        match event {
+            CtrlEvent::ForceFeedback(ff) => {
+                // Forward FF to physical device
+                self.handle_ff(ff);
+                vec![]
+            }
+            _ => vec![] // Source doesn't process input events inbound
+        }
+    }
+    
+    fn tick(&mut self) -> Vec<(PortId, CtrlEvent)> {
+        // Poll gilrs and emit events on output port
+        self.poll_events()
+    }
+}
+```
+
+---
+
+#### [NEW] `src/core/nodes/sink.rs` - EvdevSinkNode
+
+A node that receives CtrlEvents and writes them to a virtual device. Also reads FF events from the virtual device and emits them as CtrlEvents.
+
+```rust
+pub struct SinkNode {
+    device: VirtualDevice,
+}
+
+impl Node for SinkNode {
+    fn process(&mut self, port: PortId, event: CtrlEvent, ctx: &mut ProcessContext) -> Vec<(PortId, CtrlEvent)> {
+        match event {
+            CtrlEvent::Input(input) => {
+                self.write_input(input);
+                vec![]
+            }
+            _ => vec![]
+        }
+    }
+    
+    fn tick(&mut self) -> Vec<(PortId, CtrlEvent)> {
+        // Read FF events from virtual device and emit as CtrlEvents
+        self.poll_ff_events()
+    }
+}
+```
+
+---
+
+#### [MODIFY] [src/core/nodes/mux.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/nodes/mux.rs) - Update MuxNode for Bidirectional FF
+
+Add handling for FF events - route them to the appropriate source based on mode:
+
+```rust
+fn process(&mut self, port: PortId, event: CtrlEvent, ctx: &mut ProcessContext) -> Vec<(PortId, CtrlEvent)> {
+    match event {
+        CtrlEvent::Input(input) => {
+            // Existing input processing logic
+            self.process_input(port, input, ctx)
+        }
+        CtrlEvent::ForceFeedback(ff) => {
+            // Route FF based on mode
+            self.route_ff(ff)
+        }
+        _ => vec![]
+    }
+}
+
+fn route_ff(&self, ff: FFEvent) -> Vec<(PortId, CtrlEvent)> {
+    match self.mode {
+        MuxModeType::Priority => {
+            // FF to both (or could be configurable)
+            vec![
+                (ports::MUX_PRIMARY_IN, CtrlEvent::ForceFeedback(ff.clone())),
+                (ports::MUX_ASSIST_IN, CtrlEvent::ForceFeedback(ff)),
+            ]
+        }
+        MuxModeType::Toggle => {
+            // FF only to active controller
+            vec![(self.toggle_active_port, CtrlEvent::ForceFeedback(ff))]
+        }
+        MuxModeType::Average => {
+            // FF to both
+            vec![
+                (ports::MUX_PRIMARY_IN, CtrlEvent::ForceFeedback(ff.clone())),
+                (ports::MUX_ASSIST_IN, CtrlEvent::ForceFeedback(ff)),
+            ]
+        }
+    }
+}
+```
+
+---
+
+### 2. Update GraphExecutor for Bidirectional Flow
+
+#### [MODIFY] [src/core/graph.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/graph.rs)
+
+- Add `tick_all()` method that calls [tick()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/node.rs#114-119) on all nodes (for SourceNode/SinkNode polling)
+- Support bidirectional edges (FF flows opposite direction)
+- Handle events emitted by [tick()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/node.rs#114-119) as well as [process()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/graph.rs#166-231)
+
+---
+
+### 3. Clean Up mux2 Module
+
+#### [DELETE] [src/mux2/runtime.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux2/runtime.rs) - Remove shim runtime
+
+The entire [run_input_loop](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/runtime.rs#78-132) and [run_ff_loop](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/runtime.rs#133-218) functions are replaced by GraphExecutor.
+
+#### [REWRITE] [src/mux2/manager.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux2/manager.rs) - Use GraphExecutor
+
+```rust
+pub fn start_mux2(...) -> Result<Mux2Handle, ...> {
+    // Create nodes
+    let source_primary = SourceNode::new(gilrs, primary_id);
+    let source_assist = SourceNode::new(gilrs, assist_id);
+    let mux = MuxNode::new(mode);
+    let sink = SinkNode::new(virtual_device);
+    
+    // Build graph
+    let mut graph = Graph::new();
+    let primary_id = graph.add_node(source_primary);
+    let assist_id = graph.add_node(source_assist);
+    let mux_id = graph.add_node(mux);
+    let sink_id = graph.add_node(sink);
+    
+    // Connect edges (input direction)
+    graph.connect(primary_id, ports::SOURCE_OUTPUT, mux_id, ports::MUX_PRIMARY_IN);
+    graph.connect(assist_id, ports::SOURCE_OUTPUT, mux_id, ports::MUX_ASSIST_IN);
+    graph.connect(mux_id, ports::MUX_OUTPUT, sink_id, ports::SINK_INPUT);
+    
+    // Connect edges (FF direction - reversed)
+    graph.connect(sink_id, ports::SINK_FF_OUT, mux_id, ports::MUX_FF_IN);
+    graph.connect(mux_id, ports::MUX_PRIMARY_IN, primary_id, ports::SOURCE_FF_IN);
+    graph.connect(mux_id, ports::MUX_ASSIST_IN, assist_id, ports::SOURCE_FF_IN);
+    
+    // Create executor and run
+    let executor = GraphExecutor::new(graph);
+    
+    // Single thread with tick loop
+    thread::spawn(move || {
+        while !shutdown.load(Ordering::Relaxed) {
+            executor.tick_all();  // Polls sources, processes, forwards FF
+            thread::sleep(Duration::from_micros(500));
+        }
+    });
+}
+```
+
+---
+
+### 4. Port Definitions Update
+
+#### [MODIFY] [src/core/node.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/node.rs)
+
+Add bidirectional port constants:
+
+```rust
+pub mod ports {
+    // Source ports
+    pub const SOURCE_OUTPUT: PortId = PortId(0);    // Input events out
+    pub const SOURCE_FF_IN: PortId = PortId(1);     // FF events in
+    
+    // Mux ports  
+    pub const MUX_PRIMARY_IN: PortId = PortId(0);
+    pub const MUX_ASSIST_IN: PortId = PortId(1);
+    pub const MUX_OUTPUT: PortId = PortId(2);
+    pub const MUX_FF_IN: PortId = PortId(3);        // FF from sink
+    
+    // Sink ports
+    pub const SINK_INPUT: PortId = PortId(0);       // Input events in
+    pub const SINK_FF_OUT: PortId = PortId(1);      // FF events out
+}
+```
+
+---
+
+## Files Summary
+
+| Action | File | Purpose |
+|--------|------|---------|
+| NEW | `core/nodes/source.rs` | GilrsSourceNode wrapping gilrs + FF forwarding |
+| NEW | `core/nodes/sink.rs` | EvdevSinkNode wrapping virtual device |
+| MODIFY | [core/nodes/mux.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/nodes/mux.rs) | Add FF routing based on mode |
+| MODIFY | [core/nodes/mod.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/nodes/mod.rs) | Export new nodes |
+| MODIFY | [core/graph.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/graph.rs) | Add `tick_all()`, bidirectional edge support |
+| MODIFY | [core/node.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/node.rs) | Update port definitions |
+| DELETE | [mux2/runtime.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux2/runtime.rs) | Remove shim code |
+| REWRITE | [mux2/manager.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux2/manager.rs) | Use GraphExecutor |
+| DELETE | [core/drivers/sink.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/drivers/sink.rs) | No longer needed (replaced by SinkNode) |
+| KEEP | [core/drivers/gilrs_driver.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/drivers/gilrs_driver.rs) | Still useful as low-level driver for SourceNode |
+
+---
+
+## Verification Plan
+
+### Unit Tests
+- `SourceNode` emits events on tick, handles FF input
+- `SinkNode` writes events on process, emits FF on tick
+- [MuxNode](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/nodes/mux.rs#36-41) routes FF correctly per mode
+- `GraphExecutor.tick_all()` processes all nodes
+
+### Integration Test
+- Build full graph with mock nodes
+- Inject FF event at sink, verify it reaches correct source based on mode
+
+### Manual Test
+```bash
+cargo run -- mux2 --mode toggle --primary 0 --assist 1
+fftest /dev/input/eventXX  # Test rumble on both, verify only active rumbles
+```
+
+---
+
+## User Review Required
+
+> [!IMPORTANT]
+> This is a significant refactor that changes the core execution model. Please confirm:
+> 1. The bidirectional port model makes sense
+> 2. Deleting [mux2/runtime.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux2/runtime.rs) and removing drivers is acceptable
+> 3. You want to proceed with this approach

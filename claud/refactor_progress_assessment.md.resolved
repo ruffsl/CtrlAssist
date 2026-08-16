@@ -1,0 +1,101 @@
+# Refactor Progress Assessment
+
+## What We've Built vs. Original Plan
+
+### ✅ Completed - Core Abstractions (P-01 to P-03)
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `CtrlEvent` (P-01) | ✅ | Unified packet type with normalized values |
+| [EdgeState](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/state.rs#16-20) | ✅ | gilrs-inspired cached button/axis state |
+| [Node](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/node.rs#97-129) trait (P-02) | ✅ | [process(port, event, ctx) → Vec<(port, event)>](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/graph.rs#298-307) |
+| [ProcessContext](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/node.rs#66-73) | ✅ | Allows querying input states |
+| [Graph](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/graph.rs#26-39)/[GraphExecutor](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/graph.rs#133-138) (P-03) | ✅ | Built but **not used** |
+| [MuxNode](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/nodes/mux.rs#36-41) | ✅ | Implements Node trait for Priority/Average/Toggle |
+
+### ⚠️ Where We Went Off Track
+
+Looking at [mux2/runtime.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux2/runtime.rs) and [mux2/manager.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux2/manager.rs), we essentially **copied the original mux architecture**:
+
+```
+Original mux:
+  gilrs → MuxMode → evdev (separate FF loop)
+
+mux2 (what we built):
+  GilrsDriver → MuxNode → EvdevSinkFromDevice (separate FF loop)
+```
+
+The key problems:
+
+1. **FF loop is completely outside the graph** - It's a separate thread that doesn't use nodes at all
+2. **No GraphExecutor usage** - We manually wire GilrsDriver → MuxNode → Sink
+3. **MuxNode doesn't know about FF** - Can't track active sources for FF routing
+4. **EdgeState manually managed** - Not using GraphExecutor's automatic state tracking
+
+### What True Graph Integration Should Look Like
+
+```mermaid
+graph LR
+    subgraph "Input Direction (→)"
+        GS1[GilrsSourceNode<br>Primary] --> MUX[MuxNode]
+        GS2[GilrsSourceNode<br>Assist] --> MUX
+        MUX --> SINK[SinkNode]
+    end
+    
+    subgraph "Feedback Direction (←)"
+        SINK -->|FFEvent| MUX
+        MUX -->|route to active| GS1
+        MUX -->|route to active| GS2
+    end
+```
+
+Key insight: **FF should flow backwards through the same graph**, allowing MuxNode to route based on its `active_port` state.
+
+---
+
+## The Core Issue
+
+We built the [Graph](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/graph.rs#26-39)/[GraphExecutor](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/graph.rs#133-138) but didn't actually use them. The mux2 implementation is a hand-wired shim that:
+- Calls `MuxNode.process()` directly
+- Manually maintains EdgeState
+- Has a completely separate FF loop
+
+This defeats the purpose of the refactor - we have two parallel architectures now!
+
+---
+
+## Options Forward
+
+### Option A: Continue Shim Approach (Quick)
+- Fix the toggle-mode FF routing bug manually
+- Keep current two-loop architecture
+- Accept technical debt, defer true graph integration
+
+### Option B: Refactor to True Graph (Bigger)
+- Create `GilrsSourceNode` and `EvdevSinkNode` implementing [Node](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/node.rs#97-129) trait
+- Route FF events **through the same graph** (reversed direction)
+- MuxNode tracks active sources and routes FF accordingly
+- Single event loop using GraphExecutor
+
+### Option C: Hybrid
+- Fix FF routing bug in current architecture now
+- Then incrementally move to GraphExecutor later
+
+---
+
+## User's Toggle Mode FF Bug
+
+The immediate issue: in toggle mode, FF goes to **both** controllers instead of just the active one. 
+
+Quick fix for Option A/C: In [run_ff_loop](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/runtime.rs#133-218), only add the currently active controller's resource to `phys_devs`. This requires passing the active state somehow.
+
+---
+
+## Recommendation
+
+I recommend **Option C**:
+1. First, acknowledge we need to use [GraphExecutor](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/core/graph.rs#133-138) as designed
+2. For now, do minimal fix for toggle FF (read active port from MuxNode state)
+3. Then properly integrate FF into the graph model
+
+Which direction would you like to go?

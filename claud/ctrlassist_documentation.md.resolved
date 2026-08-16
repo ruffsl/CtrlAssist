@@ -1,0 +1,652 @@
+# CtrlAssist Codebase Documentation
+
+A comprehensive breakdown of the CtrlAssist project structure, source files, and a feature specification for clean room replication.
+
+---
+
+## Table of Contents
+
+1. [Project Overview](#project-overview)
+2. [Architecture Summary](#architecture-summary)
+3. [File-by-File Breakdown](#file-by-file-breakdown)
+4. [User Needs & Feature Specification](#user-needs--feature-specification)
+5. [Clean Room Implementation Guide](#clean-room-implementation-guide)
+
+---
+
+## Project Overview
+
+**CtrlAssist** is a Linux gaming accessibility tool that enables multiple physical controllers to operate as a single virtual input device. It provides:
+
+- **Controller Multiplexing (mux)**: Combine two controllers (Primary + Assist) into one virtual gamepad
+- **Controller Demultiplexing (demux)**: Split one controller to multiple virtual gamepads
+- **System Tray Interface**: GUI for configuration via the desktop taskbar
+- **Force Feedback**: Rumble pass-through from virtual to physical devices
+- **Device Hiding**: Strategies to hide physical devices from games
+
+### Technology Stack
+
+| Dependency | Version | Purpose |
+|------------|---------|---------|
+| [gilrs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/gilrs.rs#14-18) | ^0.11.1 | Gamepad input detection and events |
+| [evdev](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/evdev.rs#159-170) | 0.13 | Linux event device creation/interaction |
+| `clap` | ^4.5 | CLI argument parsing |
+| `tokio` | 1.x | Async runtime for tray |
+| `ksni` | ^0.3.3 | System tray (StatusNotifierItem) |
+| [udev](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/hide.rs#239-246) | 0.9 | Device tree navigation for hiding |
+| `notify-rust` | 4.11 | Desktop notifications |
+| `serde`/[toml](file:///home/ruffsl/git/ruffsl/CtrlAssist/Cargo.toml) | 1/0.9 | Configuration serialization |
+
+---
+
+## Architecture Summary
+
+```mermaid
+graph TD
+    subgraph CLI["CLI (main.rs)"]
+        List["list"]
+        Mux["mux"]
+        Demux["demux"]
+        Tray["tray"]
+    end
+
+    subgraph MuxModule["mux/"]
+        MuxManager["manager.rs"]
+        MuxRuntime["runtime.rs"]
+        MuxModes["modes/"]
+    end
+
+    subgraph DemuxModule["demux/"]
+        DemuxManager["manager.rs"]
+        DemuxRuntime["runtime.rs"]
+        DemuxModes["modes/"]
+    end
+
+    subgraph TrayModule["tray/"]
+        TrayApp["app.rs"]
+        TrayConfig["config.rs"]
+        TrayState["state.rs"]
+    end
+
+    subgraph Utils["utils/"]
+        Evdev["evdev.rs"]
+        FF["ff.rs"]
+        Gilrs["gilrs.rs"]
+        Hide["hide.rs"]
+    end
+
+    Mux --> MuxManager
+    Demux --> DemuxManager
+    Tray --> TrayApp
+    
+    MuxManager --> MuxRuntime
+    MuxRuntime --> MuxModes
+    DemuxManager --> DemuxRuntime
+    DemuxRuntime --> DemuxModes
+    
+    MuxManager --> Utils
+    DemuxManager --> Utils
+    TrayApp --> MuxManager
+    TrayApp --> DemuxManager
+```
+
+---
+
+## File-by-File Breakdown
+
+### Root Level
+
+#### [main.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/main.rs) (271 lines)
+
+**Purpose**: Application entry point and CLI command dispatcher.
+
+**Key Components**:
+- [Cli](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/main.rs#18-22) struct: Clap-derived CLI parser with subcommands
+- `Commands` enum: `List`, [Mux](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/mod.rs#46-65), [Demux](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/mod.rs#36-49), [Tray](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/state.rs#34-59)
+- [MuxArgs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/main.rs#39-64)/[DemuxArgs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/main.rs#66-91): Argument structures for each mode
+- `HideType` enum: `None`, `Steam`, `System`
+- `SpoofTarget` enum: `Primary`, [Assist](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/app.rs#139-146), `None`
+
+**Functions**:
+| Function | Purpose |
+|----------|---------|
+| [main()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/main.rs#108-119) | Tokio async entry, routes to subcommands |
+| [list_gamepads()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/main.rs#120-139) | Prints all detected controllers with IDs and paths |
+| [run_mux(args)](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/main.rs#140-214) | Starts mux session with signal handling |
+| [run_demux(args)](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/main.rs#215-271) | Starts demux session with signal handling |
+
+---
+
+### mux/ Module
+
+#### [mod.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/mod.rs) (16 lines)
+
+**Purpose**: Module declaration and rumble target enum.
+
+**Exports**:
+- `MuxRumbleTarget` enum: `Active`, [Assist](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/app.rs#139-146), `Both`, `None`, `Primary`
+
+---
+
+#### [manager.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/manager.rs) (157 lines)
+
+**Purpose**: Session lifecycle management for mux operations.
+
+**Key Types**:
+- [MuxConfig](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/config.rs#24-42): Configuration for starting a mux session (IDs, mode, hide, spoof, rumble)
+- [MuxHandle](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/manager.rs#26-34): Handle to running session with thread handles and shutdown signal
+
+**Functions**:
+| Function | Purpose |
+|----------|---------|
+| [start_mux(gilrs, config)](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/app.rs#220-276) | Sets up hiding, creates virtual gamepad, spawns input/FF threads |
+| `MuxHandle::shutdown()` | Signals shutdown and joins threads |
+
+**Workflow**:
+1. Setup device hiding via [ScopedDeviceHider](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/hide.rs#15-18)
+2. Create virtual gamepad (with optional spoofing)
+3. Create [RuntimeSettings](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/runtime.rs#18-27) for live updates
+4. Spawn input thread (handles controller events)
+5. Spawn FF thread (handles force feedback)
+
+---
+
+#### [runtime.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/runtime.rs) (363 lines)
+
+**Purpose**: Core event processing loops for input and force feedback.
+
+**Key Types**:
+- [RuntimeSettings](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/runtime.rs#18-27): Thread-safe settings container with RwLock-wrapped mode/rumble/active controllers
+
+**Functions**:
+| Function | Purpose |
+|----------|---------|
+| [run_input_loop()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/runtime.rs#78-132) | Polls gilrs events, delegates to mux mode, sends to virtual device |
+| [run_ff_loop()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/runtime.rs#133-218) | Handles FF upload/erase/play/stop events from virtual device |
+| [build_ff_targets()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/runtime.rs#327-363) | Constructs [PhysicalFFDev](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#6-11) list based on rumble setting |
+
+**Input Loop Logic**:
+1. Check for mode changes (hot-swappable)
+2. Poll events with 1s timeout
+3. Filter to Primary/Assist only
+4. Delegate to `MuxMode::handle_event()`
+5. Forward output events to virtual device
+
+**FF Loop Logic**:
+1. Monitor FF generation for target changes
+2. Handle `UI_FF_UPLOAD`: Store effect, upload to physical devices
+3. Handle `UI_FF_ERASE`: Remove from devices and manager
+4. Handle playback: Control effects on physical devices
+5. Device recovery on ENODEV errors
+
+---
+
+#### modes/[mod.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/mod.rs) (74 lines)
+
+**Purpose**: Mode trait definition and factory.
+
+**Key Types**:
+- `MuxModeType` enum: [Average](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/average.rs#5-6), [Priority](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/priority.rs#5-6), [Toggle](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/toggle.rs#6-9)
+- [MuxOutput](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/mod.rs#20-26): Events to emit + optional active controller update
+- [MuxMode](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/mod.rs#46-65) trait: [handle_event()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/unicast.rs#80-121), [initial_active_controllers()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/toggle.rs#115-123)
+
+---
+
+#### modes/[helpers.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/helpers.rs) (83 lines)
+
+**Purpose**: Shared helper functions for event conversion.
+
+**Constants**: `DEADZONE = 0.1`
+
+**Functions**:
+| Function | Purpose |
+|----------|---------|
+| [calculate_dpad_net_value()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/helpers.rs#6-12) | Computes D-pad axis from button states |
+| [is_stick_active()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/helpers.rs#13-19) | Circular deadzone check for sticks |
+| [map_to_stick_pair()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/helpers.rs#20-28) | Maps axis to its X/Y pair |
+| [create_button_key_event()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/helpers.rs#29-34) | Converts gilrs button to evdev KEY event |
+| [create_dpad_event()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/helpers.rs#35-53) | Creates D-pad HAT axis event |
+| [create_trigger_event()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/helpers.rs#54-59) | Creates trigger axis event |
+| [create_stick_event()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/helpers.rs#60-68) | Creates stick axis event |
+| [process_button_axis()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/helpers.rs#69-83) | Handles buttons mapped to axes |
+
+---
+
+#### modes/[priority.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/priority.rs) (102 lines)
+
+**Purpose**: Priority mode - Assist overrides Primary when active.
+
+**Logic**:
+- **Buttons**: Block Primary if Assist is holding same button
+- **D-Pad**: Assist priority when active (above deadzone)
+- **Triggers**: Maximum value from either controller
+- **Sticks**: Assist priority when active (circular deadzone)
+
+---
+
+#### modes/[average.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/average.rs) (124 lines)
+
+**Purpose**: Average mode - Blend inputs from both controllers.
+
+**Logic**:
+- **Buttons**: OR logic (either pressed = pressed)
+- **D-Pad**: Average when both active
+- **Triggers**: Average when both active
+- **Sticks**: Average X/Y when both active
+
+---
+
+#### modes/[toggle.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/toggle.rs) (124 lines)
+
+**Purpose**: Toggle mode - Switch active controller on demand.
+
+**State**: `active_id: Option<GamepadId>`
+
+**Logic**:
+- Mode button on Assist toggles active controller
+- Full state sync on toggle (buttons + axes)
+- Only active controller's events are forwarded
+- Reports active controller changes for FF routing
+
+---
+
+### demux/ Module
+
+#### [mod.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/mod.rs) (13 lines)
+
+**Purpose**: Module declaration and rumble target enum.
+
+**Exports**:
+- `DemuxRumbleTarget` enum: `Active`, `None`
+
+---
+
+#### [manager.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/manager.rs) (191 lines)
+
+**Purpose**: Session lifecycle management for demux operations.
+
+**Key Types**:
+- [DemuxConfig](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/manager.rs#17-25): Configuration (primary ID, virtuals count, mode, hide, spoof, rumble)
+- [VirtualDeviceInfo](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/manager.rs#27-30): Path to a virtual device
+- [DemuxHandle](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/manager.rs#32-40): Handle with multiple FF thread handles
+
+**Workflow**:
+1. Validate virtuals > 0
+2. Setup device hiding
+3. Create N virtual gamepads with indexed tags `[0]`, `[1]`, etc.
+4. Spawn single input thread
+5. Spawn N FF threads (one per virtual device)
+
+---
+
+#### [runtime.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/runtime.rs) (218 lines)
+
+**Purpose**: Event processing for demux mode.
+
+**Key Types**:
+- [DemuxRuntimeSettings](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/runtime.rs#17-22): Mode, rumble, and active virtuals tracking
+
+**Differences from Mux Runtime**:
+- Input loop writes to multiple virtual devices
+- Each FF thread handles one virtual device
+- FF forwarding conditional on rumble setting AND virtual being active
+
+---
+
+#### modes/[mod.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/mod.rs) (57 lines)
+
+**Purpose**: Mode trait and factory for demux.
+
+**Key Types**:
+- `DemuxModeType` enum: [Multicast](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/multicast.rs#6-7), [Unicast](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/unicast.rs#11-14)
+- [DemuxOutput](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/mod.rs#18-24): Events routed to specific virtual indices
+- [DemuxMode](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/mod.rs#36-49) trait: [handle_event()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/unicast.rs#80-121), [initial_active_virtuals()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/unicast.rs#122-126)
+
+---
+
+#### modes/[helpers.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/helpers.rs) (3 lines)
+
+**Purpose**: Re-exports helpers from mux module.
+
+---
+
+#### modes/[unicast.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/unicast.rs) (127 lines)
+
+**Purpose**: Unicast mode - Route to one active virtual at a time.
+
+**State**: `active_index: usize`
+
+**Logic**:
+- Mode button cycles active virtual device
+- Full state sync on switch
+- Optional latching behavior (compile-time flag)
+- Neutralizes previous device on switch (if latching disabled)
+
+---
+
+#### modes/[multicast.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/multicast.rs) (55 lines)
+
+**Purpose**: Multicast mode - Route to all virtual devices.
+
+**Logic**:
+- Every event cloned to all virtual devices
+- All virtuals considered active for FF
+
+---
+
+### tray/ Module
+
+#### [mod.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/mod.rs) (72 lines)
+
+**Purpose**: Tray entry point and async signal handling.
+
+**Functions**:
+- [run_tray()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/mod.rs#14-72): Spawns tray, handles SIGINT/SIGTERM, manages shutdown
+
+**Features**:
+- Sandbox detection via `ashpd`
+- DBus name workaround for Flatpak
+
+---
+
+#### [app.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/app.rs) (743 lines)
+
+**Purpose**: System tray implementation with ksni.
+
+**Key Types**:
+- [CtrlAssistTray](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/app.rs#139-146): Main tray struct with state, shutdown channels
+
+**Macros**:
+- `simple_item!`: Standard menu items
+- `controller_menu!`: Controller selection submenus
+- `enum_menu!`: Enum option submenus (modes, hide, spoof, rumble)
+
+**Tray Trait Implementation**:
+- Dynamic icon based on running status
+- Tooltip with current configuration
+- Menu with operation mode, controller selection, options
+
+**Key Functions**:
+| Function | Purpose |
+|----------|---------|
+| [start_operation()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/app.rs#191-219) | Validates and starts mux or demux |
+| [start_mux()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/app.rs#220-276)/[start_demux()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/manager.rs#66-191) | Thread spawn with config |
+| [stop_operation()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/app.rs#330-369) | Signals shutdown, joins threads |
+| [refresh_controllers()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/app.rs#370-395) | Re-discovers available gamepads |
+| [send_notification()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/app.rs#175-190) | Desktop notifications via Tokio spawn |
+
+---
+
+#### [config.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/config.rs) (113 lines)
+
+**Purpose**: Persistent configuration management.
+
+**Location**: `$XDG_CONFIG_HOME/ctrlassist/config.toml`
+
+**Key Types**:
+- [TrayConfig](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/config.rs#14-22): Root with mux and demux sub-configs
+- [MuxConfig](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/config.rs#24-42)/[DemuxConfig](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/manager.rs#17-25): Saved settings (names, not IDs)
+
+**Functions**:
+- [load()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/config.rs#74-103): Load from disk or return defaults
+- [save()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/config.rs#104-112): Write TOML to disk
+
+---
+
+#### [state.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/state.rs) (230 lines)
+
+**Purpose**: Runtime state for tray application.
+
+**Key Types**:
+- [ControllerInfo](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/state.rs#16-20): ID + name pair
+- `OperationMode` enum: [Mux](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/mux/modes/mod.rs#46-65), [Demux](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/demux/modes/mod.rs#36-49)
+- `OperationStatus` enum: `Stopped`, `Running`
+- [TrayState](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/state.rs#34-59): Full state including controllers, mux/demux state, handles
+- [MuxState](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/state.rs#60-76)/[DemuxState](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/state.rs#77-93): Per-mode configuration + runtime settings
+
+**Functions**:
+- [new()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/state.rs#95-156): Initialize from gilrs and config
+- [to_config()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/tray/state.rs#157-190): Convert to persistable config
+- `is_valid_for_*_start()`: Validation helpers
+
+---
+
+### utils/ Module
+
+#### [mod.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/mod.rs) (5 lines)
+
+**Purpose**: Module exports for utilities.
+
+---
+
+#### [evdev.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/evdev.rs) (253 lines)
+
+**Purpose**: Virtual gamepad creation and event conversion.
+
+**Constants**:
+- `MAX_FF_EFFECTS = 16`
+- `AXIS_MAX = 65535` (u16::MAX)
+
+**Key Types**:
+- [VirtualGamepadInfo](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/evdev.rs#29-34): Name, vendor/product IDs for spoofing
+
+**Functions**:
+| Function | Purpose |
+|----------|---------|
+| [scale_stick(val, invert)](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/evdev.rs#16-21) | -1..1 → 0..65535 (invert for Y axes) |
+| [scale_trigger(val)](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/evdev.rs#22-26) | 0..1 → 0..65535 |
+| [create_virtual_gamepad()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/evdev.rs#47-120) | Creates evdev uinput device with full gamepad layout |
+| [gilrs_button_to_evdev_key()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/evdev.rs#123-145) | Button → KeyCode mapping |
+| [gilrs_button_to_evdev_axis()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/evdev.rs#146-158) | Button → AbsoluteAxisCode (triggers, D-pad) |
+| [gilrs_axis_to_evdev_axis()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/evdev.rs#159-170) | Axis → AbsoluteAxisCode |
+| [dpad_axis_pair()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/evdev.rs#171-179) | Returns opposing D-pad buttons |
+| [generate_neutral_gamepad_events()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/evdev.rs#180-253) | Creates events to reset all inputs |
+
+---
+
+#### [ff.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs) (151 lines)
+
+**Purpose**: Force feedback effect management.
+
+**Key Types**:
+- [PhysicalFFDev](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#6-11): Manages effects on one physical device
+- [EffectManager](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#106-112): Centralized effect state (master copy)
+
+**PhysicalFFDev Functions**:
+| Function | Purpose |
+|----------|---------|
+| [upload_effect()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#20-30) | Upload to device, store handle |
+| [erase_effect()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#31-38) | Stop and remove effect |
+| [control_effect()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#39-51) | Play or stop an effect |
+| [sync_effects()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#52-74) | Sync all effects from manager |
+| [recover()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#75-103) | Reopen device after disconnect |
+
+**EffectManager Functions**:
+- [upload()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#121-126)/[erase()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#127-132): Track effect data
+- [set_playing()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#133-137): Track playback state
+- [get_effects()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#138-142)/[get_playing()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/ff.rs#143-150): Iterators for sync
+
+---
+
+#### [gilrs.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/gilrs.rs) (89 lines)
+
+**Purpose**: Gilrs initialization and gamepad resource discovery.
+
+**Key Types**:
+- [GamepadResource](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/gilrs.rs#20-25): Name, path, evdev Device handle
+
+**Functions**:
+| Function | Purpose |
+|----------|---------|
+| [new_gilrs()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/gilrs.rs#14-18) | Create gilrs with FF disabled |
+| [wait_for_virtual_device()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/gilrs.rs#36-59) | Block until uinput device is ready |
+| [discover_gamepad_resources()](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/gilrs.rs#60-89) | Map GamepadId → GamepadResource |
+
+---
+
+#### [hide.rs](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/hide.rs) (270 lines)
+
+**Purpose**: Device hiding strategies.
+
+**Key Types**:
+- [ScopedDeviceHider](file:///home/ruffsl/git/ruffsl/CtrlAssist/src/utils/hide.rs#15-18): RAII wrapper that restores on drop
+- `HiderState` enum: `None`, `System`, `Steam`
+
+**System Hiding**:
+- Changes device permissions to 0o600 (root only)
+- Finds physical USB/Bluetooth root and hides all child nodes
+- Restores to 0o660 on drop
+
+**Steam Hiding**:
+- Modifies `~/.local/share/Steam/config/config.vdf`
+- Adds vendor/product ID to `controller_blacklist`
+- Uses file locking for safety
+- Removes IDs on drop
+
+---
+
+## User Needs & Feature Specification
+
+### Target Users
+
+1. **Players with disabilities** needing assistive input
+2. **Parents/guardians** helping children learn controller gameplay
+3. **Experienced gamers** coaching newcomers through difficult content
+4. **Sim enthusiasts** using wheel + gamepad combinations
+5. **Accessibility researchers** testing adaptive control schemes
+
+### Core Requirements
+
+#### FR-01: Controller Detection
+- **FR-01.1**: Detect all connected gamepads via Linux input subsystem
+- **FR-01.2**: Display controller name, ID, and device path
+- **FR-01.3**: Support standard Xbox/PlayStation layout controllers
+- **FR-01.4**: Handle controller connect/disconnect during operation
+
+#### FR-02: Controller Multiplexing (Mux)
+- **FR-02.1**: Combine two physical controllers into one virtual gamepad
+- **FR-02.2**: Designate controllers as Primary or Assist
+- **FR-02.3**: Support multiple merging modes:
+  - **Priority**: Assist overrides when active
+  - **Average**: Blend inputs from both
+  - **Toggle**: Switch active controller via Mode button
+- **FR-02.4**: Handle all input types: buttons, sticks, triggers, D-pad
+- **FR-02.5**: Apply deadzone filtering for stick priority detection
+
+#### FR-03: Controller Demultiplexing (Demux)
+- **FR-03.1**: Route one controller to multiple virtual gamepads
+- **FR-03.2**: Configurable number of virtual outputs
+- **FR-03.3**: Support routing modes:
+  - **Unicast**: Route to one active virtual (cycle via Mode button)
+  - **Multicast**: Route to all virtuals simultaneously
+- **FR-03.4**: State sync on virtual switch (neutralize previous)
+
+#### FR-04: Virtual Device Creation
+- **FR-04.1**: Create evdev uinput devices recognized as gamepads
+- **FR-04.2**: Support spoofing vendor/product IDs from physical controllers
+- **FR-04.3**: Tag virtual devices for identification `[#]`, `[0]`, `[1]`...
+- **FR-04.4**: Full gamepad layout: 17 buttons, 6 axes, 2 HAT axes
+
+#### FR-05: Force Feedback (Rumble)
+- **FR-05.1**: Forward FF effects from virtual to physical devices
+- **FR-05.2**: Configurable rumble targets: Primary, Assist, Both, Active, None
+- **FR-05.3**: Effect upload/erase/play/stop synchronization
+- **FR-05.4**: Device recovery on disconnect
+- **FR-05.5**: Generation-based target rebuilding on settings change
+
+#### FR-06: Device Hiding
+- **FR-06.1**: Prevent games from seeing physical controllers
+- **FR-06.2**: System hiding: filesystem permission changes (requires root)
+- **FR-06.3**: Steam hiding: config.vdf blacklist modification (no root)
+- **FR-06.4**: Automatic restoration on application exit (RAII)
+- **FR-06.5**: Hide all child nodes of physical device
+
+#### FR-07: System Tray Interface
+- **FR-07.1**: StatusNotifierItem (SNI) protocol support
+- **FR-07.2**: Controller selection menus
+- **FR-07.3**: Mode/options configuration submenus
+- **FR-07.4**: Start/Stop controls with visual feedback
+- **FR-07.5**: Live status in tray icon
+- **FR-07.6**: Desktop notifications for status changes
+- **FR-07.7**: Persistent settings via TOML config file
+
+#### FR-08: Runtime Configuration
+- **FR-08.1**: Hot-swappable mux/demux modes during operation
+- **FR-08.2**: Live rumble target changes
+- **FR-08.3**: Thread-safe settings with RwLock
+
+### Non-Functional Requirements
+
+#### NFR-01: Performance
+- Event processing latency < 5ms
+- Minimal CPU usage during idle polling
+
+#### NFR-02: Compatibility
+- Linux only (evdev/uinput dependency)
+- Flatpak sandbox support
+- Steam integration without modification
+
+#### NFR-03: Reliability
+- Graceful handling of device disconnect
+- Signal handling (SIGINT, SIGTERM)
+- Clean resource cleanup on exit
+
+#### NFR-04: Usability
+- Sensible defaults (Priority mode, first two controllers)
+- Name-based controller matching across sessions
+- Intuitive tray menu organization
+
+---
+
+## Clean Room Implementation Guide
+
+To replicate CtrlAssist from scratch, implement in this order:
+
+### Phase 1: Foundation
+1. **Gamepad detection**: Use gilrs to enumerate controllers
+2. **evdev basics**: Create uinput virtual devices with full gamepad layout
+3. **Event conversion**: Map gilrs events to evdev input events
+
+### Phase 2: Core Mux
+1. **Input loop**: Poll gilrs, forward to virtual device
+2. **Priority mode**: Implement deadzone and override logic
+3. **FF forwarding**: Handle effect upload/erase/play
+
+### Phase 3: Modes
+1. **Average mode**: Add blending logic
+2. **Toggle mode**: Add state sync on switch
+3. **Mode trait**: Abstract common interface
+
+### Phase 4: Demux
+1. **Multiple virtuals**: Index-based routing
+2. **Unicast mode**: Active index with cycling
+3. **Multicast mode**: Broadcast to all
+
+### Phase 5: Device Hiding
+1. **System hiding**: udev traversal, permission changes
+2. **Steam hiding**: VDF parsing and modification
+3. **RAII wrapper**: Drop-based restoration
+
+### Phase 6: System Tray
+1. **ksni integration**: Basic tray with tooltip
+2. **Menus**: Controller selection, mode options
+3. **State management**: Thread handles, shutdown signals
+4. **Persistence**: TOML config save/load
+
+### Phase 7: Polish
+1. **Notifications**: Desktop alerts
+2. **Flatpak support**: Sandbox detection, workarounds
+3. **Error handling**: Recovery, logging
+4. **CLI**: Clap argument parsing
+
+### Key Technical Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Input library | gilrs | Cross-platform abstraction, good Linux support |
+| Virtual devices | evdev/uinput | Native Linux kernel interface |
+| Tray protocol | SNI (ksni) | Modern freedesktop standard |
+| Async runtime | Tokio | Widely used, good ecosystem |
+| Config format | TOML | Human-readable, Rust-native support |
+| Concurrency | Threads + channels | Simple, avoids async complexity in event loops |
+
