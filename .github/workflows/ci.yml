@@ -109,8 +109,10 @@ jobs:
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: |
+            cargo-deny@0.20.2
             cargo-llvm-cov
             cargo-nextest
+            cargo-shear@1.14.0
             just
             tombi@1.7.1
             typos@1.51.1

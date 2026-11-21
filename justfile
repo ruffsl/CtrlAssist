@@ -49,6 +49,24 @@ clippy:
 doc:
     {{ deny_warnings }} cargo doc --profile test --workspace --no-deps --all-features
 
+# cargo-shear parses the sources (no build), so it runs in seconds; false
+# positives go under a crate's `[package.metadata.cargo-shear] ignored`,
+# with a comment saying why.
+#
+# Find unused or misplaced dependencies
+[group('check')]
+shear:
+    cargo shear --deny-warnings
+
+# `-D unnecessary-skip -D unmatched-skip` make a stale skip-list entry an
+# error too, so the list can't outlive the duplicates it excuses.
+#
+# Check licenses, one version per crate, and that everything comes from crates.io
+[group('check')]
+deny:
+    cargo deny --config packaging/licensing/deny.toml check \
+        -D unnecessary-skip -D unmatched-skip licenses bans sources
+
 # typos doesn't search `.config/` yet, so the config path is explicit.
 #
 # Spell-check code, docs and identifiers, enforcing American English
@@ -78,7 +96,7 @@ zizmor:
 
 # Run every local gate
 [group('check')]
-check: typos actionlint zizmor fmt build clippy doc test
+check: deny shear typos actionlint zizmor fmt build clippy doc test
 
 # --- CI ------------------------------------------------------------------
 #
@@ -88,10 +106,21 @@ check: typos actionlint zizmor fmt build clippy doc test
 # coverage rises; never lower it.
 cov_baseline_lines := "95"
 
+# Test infrastructure is kept out of the coverage figure: it is exercised
+# by the virtual machine checks, not by the unit tests.
+cov_exclude := "--ignore-filename-regex 'ctrlassist-test/'"
+
+# Advisories and yanked crates, which change without the lockfile changing.
+#
+# Check the dependencies against the RustSec advisory database
+[group('ci')]
+audit:
+    cargo deny --config packaging/licensing/deny.toml check advisories
+
 # Print a coverage summary
 [group('ci')]
 cov:
-    cargo llvm-cov nextest --workspace --all-features --summary-only
+    cargo llvm-cov nextest --workspace --all-features {{ cov_exclude }} --summary-only
 
 # One instrumented build serves clippy, the tests and the report:
 # `show-env` routes every later cargo command through cargo-llvm-cov, so
@@ -110,8 +139,9 @@ test-ci:
     cargo clippy --workspace --all-targets --all-features
     cargo nextest run --workspace --all-features
     cargo test --workspace --all-features --doc
-    cargo llvm-cov report --lcov --output-path lcov.info
-    cargo llvm-cov report --fail-under-lines {{ cov_baseline_lines }} --summary-only
+    cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
+    cargo llvm-cov report {{ cov_exclude }} \
+        --fail-under-lines {{ cov_baseline_lines }} --summary-only
 
 # The flake's `msrv-rust` toolchain (read from Cargo.toml's `rust-version`)
 # goes first on PATH. No `--ignore-rust-version`: the toolchain is the
@@ -124,6 +154,14 @@ msrv:
     set -euo pipefail
     tc=$(nix build --no-link --print-out-paths .#msrv-rust)
     PATH="$tc/bin:$PATH" cargo check --workspace --all-targets --all-features --target-dir target/msrv
+
+# The checks are in packaging/nix/test-*.nix. Each boots a NixOS virtual
+# machine, so they need KVM and take a minute or two.
+#
+# Run one virtual machine check, such as `just vm platform`
+[group('ci')]
+vm name:
+    nix build .#checks.x86_64-linux.{{ name }} --print-build-logs
 
 # --- Spikes --------------------------------------------------------------
 

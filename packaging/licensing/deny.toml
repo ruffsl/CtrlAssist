@@ -1,0 +1,40 @@
+# cargo-deny config: the license policy and the one-version-per-crate gate.
+#
+# `[licenses]` enforces the SPDX allow-list. `[bans]` fails on a crate
+# appearing in two versions, except for a skip-list of duplicates forced
+# from upstream, each with its reason. `[sources]` pins code provenance to
+# crates.io. `[advisories]` is not part of `just deny`: advisories are
+# checked on their own schedule, so a newly disclosed one against an
+# unchanged dependency doesn't gate unrelated changes.
+
+# Only the platforms shipped for. Without this, cargo-deny considers every
+# target triple and reports duplicates among crates never compiled here.
+[graph]
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "deny"
+skip = []
+
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

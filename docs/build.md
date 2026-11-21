@@ -8,6 +8,8 @@ Every project command is a `just` recipe, and each prek hook runs the recipe of 
 
 | Recipe | Checks |
 |---|---|
+| `just deny` | Licenses against the allow-list, one version of each crate, everything from crates.io |
+| `just shear` | No unused or misplaced dependencies |
 | `just typos` | Spelling, American English |
 | `just fmt` | rustfmt, and tombi for TOML (formatting only: it doesn't sort, since the manifests group dependencies under comments) |
 | `just build` | The workspace builds: test profile, all targets, all features |
@@ -87,6 +89,10 @@ Recorded so nobody re-scouts. TisVlay's build notes have the measurements.
 ## Dependencies
 
 Every dependency is declared once in `[workspace.dependencies]` and inherited. The core crate has none.
+
+`just deny` holds the graph to one version of each crate. When an update brings a second version of something, first try to move the crates that pin the old one; only if upstream forces the duplicate does it go in `packaging/licensing/deny.toml`'s skip-list, with its reason. A skip that no longer matches anything fails the gate, so the list can't outlive what it excuses.
+
+`just audit` checks the RustSec advisory database. It is not part of `just check`: advisories change without the lockfile changing, so they are checked on their own schedule rather than gating unrelated work.
 
 ### Review triggers
 

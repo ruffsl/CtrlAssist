@@ -13,14 +13,20 @@ Cargo.toml                    # workspace root: one version, the lint table, the
 crates/
   ctrlassist-core/            # the routing model: controls, pad state, groups, mux and
                               # demux nodes, the graph, the feedback router. No dependencies.
+  ctrlassist-test/            # fake pads made through uinput and uhid, and the
+                              # ctrlassist-fixture binary the VM checks drive
 spikes/                       # throwaway workspaces, each deleted by the build step that
                               # replaces it; excluded from the workspace
 docs/
   architecture.md             # the design, and what the platform was observed to do
   build.md                    # gates, toolchain, lint policy, dependency review triggers
+  testing.md                  # the test layers, the fake pads, the VM checks
   conventions.md              # code conventions (imported below)
   plans/                      # the plan in flight
   concerns/, ideas/           # one doc per item; each README.md is its index
+packaging/
+  nix/                        # the fixture package and the VM checks (test-*.nix)
+  licensing/                  # deny.toml: license policy and the one-version gate
 .claude/CLAUDE.md             # this file
 ```
 

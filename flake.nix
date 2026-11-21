@@ -11,6 +11,7 @@
 
   outputs =
     {
+      self,
       nixpkgs,
       rust-overlay,
       ...
@@ -68,6 +69,14 @@
           in
           pkgs.rust-bin.stable.${if parts == 2 then "${floor}.0" else floor}.minimal;
 
+        # The test fixture the virtual machine checks drive.
+        packages.fixture = pkgs.callPackage ./packaging/nix/fixture.nix { };
+
+        # What a clean machine gives a seat user; see docs/testing.md.
+        checks.platform = pkgs.callPackage ./packaging/nix/test-platform.nix {
+          fixture = self.packages.${system}.fixture;
+        };
+
         # The hiding spike's clean-machine probes, run in a NixOS VM.
         checks.spike-hiding = pkgs.callPackage ./spikes/hiding/vm.nix {
           probe = pkgs.rustPlatform.buildRustPackage {
@@ -87,8 +96,10 @@
           packages = with pkgs; [
             actionlint
             # nixpkgs' cargo-llvm-cov fails its own test suite in the sandbox.
+            cargo-deny
             (pkgs.cargo-llvm-cov.overrideAttrs { doCheck = false; })
             cargo-nextest
+            cargo-shear
             just
             just-lsp
             # jstest and evtest-style tools for looking at pads by hand
