@@ -70,7 +70,7 @@
           pkgs.rust-bin.stable.${if parts == 2 then "${floor}.0" else floor}.minimal;
 
         # The pieces the virtual machine checks need, each one crate's
-        # binaries: the test fixture, and the hiding service.
+        # binaries: the test fixture, the hiding service, and the command.
         packages.fixture = pkgs.callPackage ./packaging/nix/crate.nix {
           crate = "ctrlassist-test";
           mainProgram = "ctrlassist-fixture";
@@ -84,6 +84,11 @@
           ];
         };
 
+        packages.cli = pkgs.callPackage ./packaging/nix/crate.nix {
+          crate = "ctrlassist-cli";
+          mainProgram = "ctrlassist";
+        };
+
         # The virtual machine checks; see docs/testing.md.
         checks.platform = pkgs.callPackage ./packaging/nix/test-platform.nix {
           fixture = self.packages.${system}.fixture;
@@ -93,6 +98,9 @@
         };
         checks.hider = pkgs.callPackage ./packaging/nix/test-hider.nix {
           inherit (self.packages.${system}) fixture hider;
+        };
+        checks.daemon = pkgs.callPackage ./packaging/nix/test-daemon.nix {
+          inherit (self.packages.${system}) fixture hider cli;
         };
 
         # Every tool a `just` recipe or prek hook calls comes from here, so

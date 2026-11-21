@@ -8,6 +8,7 @@ How the workspace is tested and where a new test goes. The approach is TisVlay's
 |---|---|---|
 | Routing and feedback | Scenarios and property tests in `ctrlassist-core`: pad states in, changes and rumble levels out, no devices | `just test`, everywhere |
 | Device code | Against fake pads from `ctrlassist-test` | `just test` where uinput and uhid are writable; the virtual machine check otherwise |
+| The daemon | Against a live daemon on a temporary socket, with fake pads and a stand-in for the hiding service; then the built command against the real service | `just test`; `just vm daemon` |
 | The platform | What a clean machine gives a seat user | `just vm platform` |
 | Hardware | What none of the above can reach | By hand, listed in the change that needs it |
 
@@ -45,6 +46,7 @@ Each `packaging/nix/test-*.nix` is a NixOS test exposed as a flake check and run
 
 | Check | Asserts |
 |---|---|
+| `daemon` | The `ctrlassist` command and its daemon as a seat user, with the hiding service as packaged: the daemon finds the service and the pads; a wrong profile is refused with where; a started setup's pads, one with a HID driver and one without, are hidden by the service while its virtual pad is the user's to read, and their input reaches it; a hidden pad that reconnects is never visible and returns to its setup; stopping restores the pads and leaves no rule; a killed daemon's pads are restored and its virtual pad removed; the next daemon starts the profile by itself, and stopping that daemon restores the pads |
 | `device` | With the packaged udev rule: a seat user reads a pad's report frames from a descriptor as pad states; the rule gives uinput and uhid to the seat user and nobody else; a virtual pad of each identity carries what the pad behind it does; the input thread merges two pads into one and is never scheduled while they are silent; a pad unplugged and plugged in again is read again; an unplugged pad is reported as gone |
 | `hider` | The hiding service as packaged, hardening included: a hidden pad is denied and its earlier reader cut off; the other pad of the same model is untouched; the passed descriptor delivers input; a reconnecting pad is never visible; restore, a killed client and a killed service each give the pad back and leave no rule; a user not in front of the machine, a keyboard and a hostile pad name get nowhere; a pad with no driver is restored exactly |
 | `platform` | A seat user can open a pad's event and js nodes, and can't open `/dev/uinput`, `/dev/uhid` or a hidraw node; both kinds of fake pad deliver what they are sent |
