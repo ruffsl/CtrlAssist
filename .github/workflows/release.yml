@@ -1,0 +1,155 @@
+# Release lifecycle, keyed off a tag.
+#
+# Push a `vX.Y.Z` tag -> build the distro packages (.deb, .rpm, .pkg) and
+# per-binary SBOMs for x86_64 and arm64, sign them (build-packages.yml),
+# verify every signature, and attach it all to a DRAFT GitHub release. Run
+# `just verify-release vX.Y.Z` on the draft and test the packages; then
+# publish the draft by hand. With immutable releases on, publishing also
+# locks the tag and the assets.
+#
+# Version bumps and CHANGELOGs come from `release-plz update`, run locally
+# (`just release-bump`) or by release-plz.yml's pull request, and merged
+# before tagging. Nothing is published to crates.io. After CtrlAssist's
+# release workflow, without its crates.io and Nix cache phases.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Nothing by default: each job grants itself what it needs.
+permissions: {}
+
+# No caches in this workflow. Its jobs ship packages, so they must not
+# restore a cache that another workflow's run could have written (cache
+# poisoning). They also never hit one: a tag
+# run reads only main's caches and its own, and nothing on main writes
+# these jobs' keys. Builds start cold, which only release time pays.
+jobs:
+  # Build, SBOM and sign the distro packages for both
+  # architectures, in the reusable workflow whose signatures name it as the
+  # signer (SLSA Build Level 3; see the note at its top). A caller grants a
+  # reusable workflow's jobs at most its own permissions, and each of those
+  # jobs takes only what it needs: the build jobs get no signing token.
+  build:
+    # zizmor asks for GitHub's newer `$/` self-repository syntax, but
+    # actionlint 1.7.12 rejects it, and for a reusable workflow `./` already
+    # resolves at this run's own commit. Switch once actionlint accepts `$/`.
+    uses: ./.github/workflows/build-packages.yml # zizmor: ignore[self-repository]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+  # Check every signature the way a user would, before
+  # any draft exists. `just verify-assets` is the same check the maintainer
+  # runs on the draft (`just verify-release`), so the two can't drift. It
+  # unpacks each package and verifies the binaries inside too, which is what
+  # an installed system has, and verifies again from the bundles alone.
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # gh reads the attestations back.
+      attestations: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # bsdtar unpacks all three package formats.
+      - name: Libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libarchive-tools
+
+      - name: Setup
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: just
+
+      - name: Download
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: build-*
+          merge-multiple: true
+          path: out
+
+      - name: Download bundles
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bundles-*
+          merge-multiple: true
+          path: out/assets
+
+      - name: Verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: just verify-assets out/assets "$GITHUB_REF"
+
+  # One draft release with both architectures' packages,
+  # SBOMs and signature bundles, and a single checksum file. One job creates
+  # it, so the build legs can't race to.
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: build-*
+          merge-multiple: true
+          path: out
+
+      - name: Download bundles
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bundles-*
+          merge-multiple: true
+          path: out/assets
+
+      - name: Checksums
+        run: |
+          cd out/assets
+          sha256sum ctrlassist_*.deb ctrlassist-*.rpm ctrlassist-*.pkg.tar.zst ctrlassist*.cdx.json ctrlassist*.sigstore.json > checksums-sha256.txt
+          cat checksums-sha256.txt
+
+      # One draft per tag. A rerun (of this job or of the tag push) refreshes
+      # that draft: it replaces the assets and deletes any the new build
+      # didn't produce, such as packages named for a version the tag no
+      # longer points at. CI never publishes; promoting the draft is the
+      # maintainer's step, and a published release fails here rather than
+      # have its assets replaced.
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          shopt -s failglob
+          cd out/assets
+          files=(ctrlassist_*.deb ctrlassist-*.rpm ctrlassist-*.pkg.tar.zst ctrlassist*.cdx.json ctrlassist*.sigstore.json checksums-sha256.txt)
+          # Start the generated notes at the latest published release, by
+          # name: GitHub's own choice of starting point isn't reliable.
+          notes=(--generate-notes)
+          start=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty')
+          if [ -n "$start" ]; then notes+=(--notes-start-tag "$start"); fi
+          if ! draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            gh release create "$TAG" --draft --verify-tag "${notes[@]}" --title "$TAG" "${files[@]}"
+          elif [ "$draft" = true ]; then
+            gh release upload "$TAG" --clobber "${files[@]}"
+            gh release view "$TAG" --json assets --jq '.assets[].name' | while read -r asset; do
+              [[ " ${files[*]} " == *" $asset "* ]] || gh release delete-asset "$TAG" "$asset" --yes
+            done
+          else
+            echo "::error::$TAG is already published; tag a new version instead."
+            exit 1
+          fi

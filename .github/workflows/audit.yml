@@ -1,0 +1,43 @@
+# RustSec advisory scan, separate from ci.yml's lint/test job. Two triggers:
+# - weekly, because a newly-disclosed advisory against an unchanged, pinned
+#   dependency never surfaces on a quiet repo otherwise;
+# - on Cargo.lock changes, so a dependency update that pulls in a vulnerable
+#   version is flagged on its own PR.
+# The deny.toml ignore-list records already-triaged advisories (each with a
+# reason) so the run stays green until a genuinely new one lands. Reproduce
+# locally with `just audit`.
+name: Audit
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  push:
+    branches:
+      - "main"
+    paths:
+      - "Cargo.lock"
+      - "packaging/licensing/deny.toml"
+  pull_request:
+    branches:
+      - "main"
+    paths:
+      - "Cargo.lock"
+      - "packaging/licensing/deny.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Advisories
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories
+          arguments: --config packaging/licensing/deny.toml

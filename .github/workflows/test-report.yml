@@ -1,0 +1,57 @@
+# Turns a CI run's JUnit results into the "Tests" check run. It's separate
+# from ci.yml because a pull request from a fork gets a read-only token there,
+# and creating a check run needs `checks: write`. `workflow_run` runs in this
+# repository's context after CI completes, with its own token, and only reads
+# the uploaded XML: it never checks out or runs the pull request's code. Like
+# every `workflow_run` workflow, only the copy on the default branch runs.
+name: Test report
+
+on:
+  # zizmor flags every workflow_run trigger. This job reads one artifact
+  # and runs no pull-request code, which is the use it accepts.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows: [CI]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # Find and download the CI run's test-results artifact.
+      actions: read
+      # Create the "Tests" check run.
+      checks: write
+      contents: read
+    steps:
+      # CI uploads no results when it skips the tests (docs-only changes,
+      # drafts) or fails before nextest runs. Skip those runs quietly instead
+      # of failing on the missing artifact.
+      - name: Find results
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          names=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[].name')
+          if grep -qx test-results <<< "$names"; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report
+        if: steps.find.outputs.found == 'true'
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
+        with:
+          artifact: test-results
+          name: Tests
+          path: "*.xml"
+          reporter: java-junit
+          fail-on-error: false
+          list-suites: failed
+          list-tests: failed
+          # Create the check run. The default (true) writes the report to
+          # this job's summary page instead, where nobody looks.
+          use-actions-summary: false

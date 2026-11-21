@@ -82,10 +82,13 @@ test:
     cargo nextest run --workspace --all-features
     cargo test --workspace --all-features --doc
 
-# Lint the GitHub workflows: syntax, expressions, and their `run:` lines
+# Its config is `.config/actionlint.yaml`; actionlint only looks under
+# .github/ by itself, so the path is passed.
+#
+# Lint the GitHub workflows: syntax, expressions, runner labels, and their `run:` lines
 [group('check')]
 actionlint:
-    actionlint
+    actionlint -config-file .config/actionlint.yaml
 
 # Without a GitHub token in GH_TOKEN it runs offline and says so.
 #
@@ -137,6 +140,7 @@ test-ci:
     export CARGO_PROFILE_DEV_DEBUG=line-tables-only
     export {{ deny_warnings }}
     export CARGO_TARGET_DIR=target/llvm-cov-target
+    export NEXTEST_PROFILE=ci
     eval "$(cargo llvm-cov show-env --sh)"
     cargo llvm-cov clean --workspace
     cargo clippy --workspace --all-targets --all-features
@@ -337,6 +341,186 @@ package-test: package-all
     try fedora:latest 'dnf install -y -q /dist/ctrlassist-*.rpm >/dev/null'
     # Arch's image does the same through pacman's NoExtract.
     try archlinux:latest "sed -i '/^NoExtract/d' /etc/pacman.conf && pacman -U --noconfirm /dist/ctrlassist-*.pkg.tar.zst >/dev/null"
+
+sbom_dir := "target/sbom"
+
+# CycloneDX 1.5 JSON, with licenses and checksums, written to target/sbom/
+# as <binary>-<version>-<arch>.cdx.json; the release attaches them. Each
+# is limited to its binary's target and default features, as the release
+# build is. cargo-cyclonedx works from cargo metadata, not the build, so
+# `just sbom-check` compares them with the built binaries. It writes one
+# file per workspace binary next to each crate's Cargo.toml, so the recipe
+# keeps the shipped two and deletes the rest. SOURCE_DATE_EPOCH (the
+# commit time) makes reruns identical, but it also makes cargo-cyclonedx
+# leave out the serial number, which actions/attest requires of a
+# CycloneDX SBOM. So each gets a name-based UUID (v5) for its commit,
+# binary and architecture: the same build reruns to the same serial, and
+# any other build gets a new one. TisVlay's recipe.
+#
+# Write one SBOM per shipped binary
+[group('package')]
+sbom:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf {{ sbom_dir }} && mkdir -p {{ sbom_dir }}
+    SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) cargo cyclonedx --quiet \
+        --describe binaries --target {{ _package_triple }} \
+        --format json --spec-version 1.5
+    commit=$(git rev-parse HEAD)
+    for shipped in ctrlassist-cli/ctrlassist ctrlassist-hider/ctrlassist-hider; do
+        crate=${shipped%/*} bin=${shipped#*/}
+        generated=crates/$crate/${bin}_bin.cdx.json
+        version=$(jq -r .metadata.component.version "$generated")
+        serial=$(uuidgen --sha1 --namespace @url \
+            --name "https://github.com/CtrlAssist/CtrlAssist/commit/$commit#$bin-{{ package_arch }}")
+        jq --arg serial "urn:uuid:$serial" '.serialNumber = $serial' "$generated" \
+            > "{{ sbom_dir }}/$bin-$version-{{ package_arch }}.cdx.json"
+    done
+    rm -f crates/*/*_bin.cdx.json
+    ls {{ sbom_dir }}
+
+# Run after `just package-all`. The root crate is the one expected
+# difference: the SBOM describes it as the binary itself, in
+# metadata.component, so it's left out of the comparison.
+#
+# Fail if an SBOM lists different crates than its release binary embeds
+[group('package')]
+sbom-check: sbom
+    #!/usr/bin/env bash
+    set -euo pipefail
+    status=0
+    for sbom in {{ sbom_dir }}/*.cdx.json; do
+        bin=$(jq -r .metadata.component.name "$sbom")
+        binary=target/nfpm-dist/$bin
+        [ -f "$binary" ] || { echo "$binary is missing: run \`just package-all\` first" >&2; exit 1; }
+        listed=$(jq -r '.components[] | "\(.name)@\(.version)"' "$sbom" | sort -u)
+        embedded=$(rust-audit-info "$binary" | jq -r '.packages[] | select(.root != true) | "\(.name)@\(.version)"' | sort -u)
+        if diff -u --label "$sbom" --label "$binary (embedded)" <(echo "$listed") <(echo "$embedded"); then
+            echo "$bin: $(wc -l <<< "$listed") crates, SBOM and binary agree"
+        else
+            status=1
+        fi
+    done
+    exit "$status"
+
+# For the tag ref that built them (refs/tags/vX.Y.Z), it checks:
+#   - the checksums, when checksums-sha256.txt is there;
+#   - provenance for every package and for the binaries unpacked from them
+#     (what an installed system has), and each binary's SBOM attestation,
+#     both looked up on GitHub and checked from the release's Sigstore
+#     bundles alone;
+#   - that each SBOM asset is the SBOM that was signed.
+# release.yml runs it before it creates the draft, and `just
+# verify-release` runs it on the draft. The signer path is also in
+# build-packages.yml's header; keep the two in step. TisVlay's recipe.
+#
+# Verify a release's assets in <dir> the way a user would
+[group('package')]
+verify-assets dir ref:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s failglob
+    signer=CtrlAssist/CtrlAssist/.github/workflows/build-packages.yml
+    identity=(--repo CtrlAssist/CtrlAssist --signer-workflow "$signer" --source-ref "{{ ref }}" --deny-self-hosted-runners)
+    sbom_type=https://cyclonedx.org/bom
+    cd "{{ dir }}"
+    if [ -f checksums-sha256.txt ]; then
+        sha256sum --quiet -c checksums-sha256.txt
+        echo "checksums-sha256.txt: OK"
+    fi
+    version=$(jq -r .metadata.component.version ctrlassist-hider-*-x86_64.cdx.json)
+    work=$(mktemp -d)
+    trap 'rm -rf "$work"' EXIT
+    # An architecture's three packages must carry identical binaries: unpack
+    # them all, and keep one copy per architecture to verify.
+    for pkg in ctrlassist_*.deb ctrlassist-*.rpm ctrlassist-*.pkg.tar.zst; do
+        case $pkg in
+            *_amd64.deb | *.x86_64.rpm | *-x86_64.pkg.tar.zst) arch=x86_64 ;;
+            *_arm64.deb | *.aarch64.rpm | *-aarch64.pkg.tar.zst) arch=aarch64 ;;
+            *) echo "$pkg: unknown architecture" >&2; exit 1 ;;
+        esac
+        root=$work/unpacked/$pkg
+        mkdir -p "$root" "$work/$arch"
+        # rpm members are absolute; bsdtar strips the leading `/` and says so.
+        case $pkg in
+            *.deb) bsdtar -xOf "$pkg" 'data.tar*' | bsdtar -xf - -C "$root" ;;
+            *) if ! err=$(bsdtar -xf "$pkg" -C "$root" 2>&1); then echo "$err" >&2; exit 1; fi ;;
+        esac
+        for bin in ctrlassist ctrlassist-hider; do
+            if [ ! -f "$work/$arch/$bin" ]; then
+                cp "$root/usr/bin/$bin" "$work/$arch/$bin"
+            elif ! cmp -s "$root/usr/bin/$bin" "$work/$arch/$bin"; then
+                echo "$pkg: its $bin differs from the other $arch packages'" >&2
+                exit 1
+            fi
+        done
+    done
+    for arch in x86_64 aarch64; do
+        deb_arch=$([ "$arch" = x86_64 ] && echo amd64 || echo arm64)
+        packages=(ctrlassist_*_"$deb_arch".deb ctrlassist-*."$arch".rpm ctrlassist-*-"$arch".pkg.tar.zst)
+        provenance=ctrlassist-$version-$arch.provenance.sigstore.json
+        for subject in "${packages[@]}" "$work/$arch/ctrlassist" "$work/$arch/ctrlassist-hider"; do
+            gh attestation verify "$subject" "${identity[@]}" > /dev/null
+            gh attestation verify "$subject" "${identity[@]}" --bundle "$provenance" > /dev/null
+            echo "${subject#"$work"/}: provenance OK"
+        done
+        for bin in ctrlassist ctrlassist-hider; do
+            sbom=$bin-$version-$arch.cdx.json
+            bundle=$bin-$version-$arch.cdx.sigstore.json
+            for subject in "$work/$arch/$bin" "${packages[@]}"; do
+                gh attestation verify "$subject" "${identity[@]}" --predicate-type "$sbom_type" > /dev/null
+                gh attestation verify "$subject" "${identity[@]}" --predicate-type "$sbom_type" --bundle "$bundle" > /dev/null
+            done
+            signed=$(gh attestation verify "$work/$arch/$bin" "${identity[@]}" --predicate-type "$sbom_type" \
+                --bundle "$bundle" --format json --jq '.[0].verificationResult.statement.predicate')
+            if ! diff -q <(jq -S . <<< "$signed") <(jq -S . "$sbom") > /dev/null; then
+                echo "$sbom differs from the SBOM signed in $bundle" >&2
+                exit 1
+            fi
+            echo "$arch/$bin: SBOM OK, for it and its packages; $sbom is the signed one"
+        done
+    done
+
+# It downloads into target/verify/<tag>/ (a draft too, with your gh
+# login), runs `just verify-assets` on that, and runs the cosign check
+# that needs no GitHub account. Once the release is published it also
+# checks GitHub's release attestation, which immutable releases only
+# create on publishing.
+#
+# Download a release's assets and verify them
+[group('package')]
+verify-release tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo=CtrlAssist/CtrlAssist
+    dir=target/verify/{{ tag }}
+    rm -rf "$dir" && mkdir -p "$dir"
+    gh release download "{{ tag }}" --repo "$repo" --dir "$dir"
+    just verify-assets "$dir" "refs/tags/{{ tag }}"
+    version=$(jq -r .metadata.component.version "$dir"/ctrlassist-hider-*-x86_64.cdx.json)
+    cosign verify-blob-attestation \
+        --bundle "$dir/ctrlassist-$version-x86_64.provenance.sigstore.json" \
+        --certificate-identity "https://github.com/$repo/.github/workflows/build-packages.yml@refs/tags/{{ tag }}" \
+        --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+        --type https://slsa.dev/provenance/v1 \
+        "$dir/ctrlassist_$version-1_amd64.deb"
+    if [ "$(gh release view "{{ tag }}" --repo "$repo" --json isDraft --jq .isDraft)" = true ]; then
+        echo "{{ tag }} is a draft: rerun once it's published, to check GitHub's release attestation too."
+    else
+        gh release verify "{{ tag }}" --repo "$repo"
+        for asset in "$dir"/*; do
+            gh release verify-asset "{{ tag }}" "$asset" --repo "$repo" > /dev/null
+        done
+        echo "release attestation: OK for every asset"
+    fi
+
+# release-plz picks the version from the commit history and writes the
+# CHANGELOGs.
+#
+# Bump the version and CHANGELOGs for a release
+[group('package')]
+release-bump:
+    release-plz update --config .config/release-plz.toml
 
 # --- Maintenance ---------------------------------------------------------
 

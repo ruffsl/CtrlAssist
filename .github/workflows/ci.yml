@@ -164,6 +164,19 @@ jobs:
           path: lcov.info
           retention-days: 14
 
+      # The JUnit results for test-report.yml, which turns them into the
+      # "Tests" check run: a fork PR's token here is read-only and can't
+      # create one. hashFiles guard: if a step before nextest failed there
+      # is no JUnit file, and test-report.yml skips a run without the
+      # artifact.
+      - name: Upload test results
+        if: ${{ !cancelled() && hashFiles('target/nextest/ci/junit.xml') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
+
   # The workspace still builds on the oldest compiler it claims to support.
   msrv:
     needs: changes

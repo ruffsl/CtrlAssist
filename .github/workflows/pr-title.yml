@@ -1,0 +1,51 @@
+# Lint the subjects that land on the default branch and feed release-plz,
+# against Conventional Commits: the PR title, and on a plan-driven PR every
+# commit too.
+# A dedicated workflow with an `edited` trigger so a title fix re-runs just
+# this lint, not the full CI build.
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  conventional:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6 # v6.1.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # A plan-driven PR keeps its commits through a merge commit, so each subject
+  # lands. A PR counts as plan-driven once one of its commits touches
+  # docs/plans/; any other PR is squashed under its title.
+  commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check commit subjects
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          range="$BASE_SHA..$HEAD_SHA"
+          if [ -z "$(git log --no-merges --format=%h "$range" -- docs/plans/)" ]; then
+            echo "No commit touches docs/plans/, so only the PR title lands."
+            exit 0
+          fi
+          types='build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test'
+          bad=$(git log --no-merges --format='%h %s' "$range" \
+            | grep -vE "^[0-9a-f]+ ($types)(\([^)]+\))?!?: ." || true)
+          if [ -n "$bad" ]; then
+            printf 'These subjects must follow Conventional Commits:\n%s\n' "$bad"
+            exit 1
+          fi

@@ -1,0 +1,8 @@
+# actionlint config (`just actionlint`). actionlint only looks for its config
+# under .github/, so the recipe passes this path.
+self-hosted-runner:
+  # GitHub-hosted labels newer than actionlint 1.7.12's built-in list. Drop
+  # them once actionlint knows them.
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm

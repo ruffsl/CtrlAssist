@@ -10,3 +10,14 @@ slow-timeout = { period = "60s" }
 # Show a failing test's output at once and again at the end.
 failure-output = "immediate-final"
 success-output = "never"
+
+[profile.ci]
+# In CI, run every test even if some fail: the whole picture.
+fail-fast = false
+# No retries: a retry hides a flaky test.
+retries = 0
+failure-output = "immediate-final"
+
+# JUnit XML, which test-report.yml turns into the "Tests" check run.
+[profile.ci.junit]
+path = "junit.xml"

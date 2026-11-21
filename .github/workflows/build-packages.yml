@@ -1,0 +1,202 @@
+# The release build and its signatures: distro packages and per-binary SBOMs
+# for x86_64 and arm64, signed through Sigstore. release.yml calls it on a
+# `v*` tag push. It's a reusable workflow so that its signatures name it, not
+# the caller, as the signer (SLSA Build Level 3). Verifiers pin it with
+#   --signer-workflow CtrlAssist/CtrlAssist/.github/workflows/build-packages.yml
+# as `just verify-assets` does; keep the two in step if this file ever moves.
+#
+# Building and signing are separate jobs. Every process in a job with
+# `id-token: write` can request that job's signing token, so the build jobs,
+# which run every dependency's build scripts and proc macros, get none. Only
+# the attest jobs, which download the build output and run actions/attest,
+# hold one.
+#
+# No caches, as in release.yml: these jobs ship packages and hold signing
+# tokens, so they must not restore a cache another workflow could have
+# written.
+name: Build packages
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  # One leg per architecture, each natively on its own runner (`just
+  # package-*` targets the host's architecture). Zig still pins the glibc
+  # baseline; building natively avoids cross sysroots for libudev and
+  # libsystemd.
+  build:
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-26.04-arm]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # libudev and libsystemd are what the binaries link. uuid-runtime is
+      # Debian's home for uuidgen, which `just sbom` uses for each SBOM's
+      # serial number.
+      - name: Libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libudev-dev libsystemd-dev pkg-config uuid-runtime
+
+      - name: Toolchain
+        run: rustup show
+
+      # Pinned to the flake's versions, so the release build matches the dev
+      # shell's; bump them together after a `nix flake update`.
+      - name: Setup
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: |
+            cargo-about@0.9.0
+            cargo-auditable@0.7.7
+            cargo-cyclonedx@0.5.10
+            cargo-nfpm@0.1.3
+            cargo-zigbuild@0.23.4
+            just
+            rust-audit-info@0.5.4
+
+      # `zig` is not in install-action's manifest, so listing it above sends
+      # it to the cargo-binstall fallback — which can only resolve crates.io
+      # crates and aborts the whole batch on `zig`. Install it from its own
+      # release channel instead, pinned to the dev shell's version so CI
+      # produces the same glibc-baselined binaries. cargo-zigbuild picks up
+      # `zig` from PATH. (cargo-nfpm stays above: it *is* a crate, so its
+      # binstall fallback builds it from source fine once zig is out of the
+      # batch.)
+      - name: Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.17.1
+          # No caches in this workflow; see the note at the top.
+          use-cache: false
+
+      - name: Package
+        run: just package-all
+
+      # One SBOM per shipped binary; the job fails if one lists different
+      # crates than the binary embeds.
+      - name: SBOMs
+        run: just sbom-check
+
+      # Everything the attest and release jobs need, in one flat artifact
+      # (upload-artifact roots a multi-path upload at the paths' common
+      # ancestor, so files from two directories would land in subfolders):
+      #   assets/         the packages and SBOMs, which become release
+      #                   assets;
+      #   attest/<arch>/  what the attest job signs, as checksum files it
+      #                   reads without needing the binaries themselves: the
+      #                   packages and binaries for provenance, and each
+      #                   binary plus the packages that ship it for that
+      #                   binary's SBOM. Binaries are named <arch>/<binary>,
+      #                   since both architectures' share a name.
+      # Every file name differs between the two legs, so the jobs that
+      # download both artifacts into one directory never see a clash.
+      - name: Stage
+        run: |
+          arch=$(uname -m)
+          out=target/release-out
+          att=$out/attest/$arch
+          rm -rf "$out" && mkdir -p "$out/assets" "$att"
+          cp target/nfpm-dist/ctrlassist_*.deb target/nfpm-dist/ctrlassist-*.rpm \
+            target/nfpm-dist/ctrlassist-*.pkg.tar.zst target/sbom/*.cdx.json "$out/assets/"
+          (cd "$out/assets" && sha256sum ctrlassist_*.deb ctrlassist-*.rpm ctrlassist-*.pkg.tar.zst) > "$att/packages.sha256"
+          # Each SBOM names its binary, so no filename glob can mistake
+          # `ctrlassist-hider-…` for `ctrlassist-…`.
+          for sbom in target/sbom/*.cdx.json; do
+            bin=$(jq -r .metadata.component.name "$sbom")
+            echo "$(sha256sum < "target/nfpm-dist/$bin" | cut -d' ' -f1)  $arch/$bin" > "$att/$bin.sha256"
+            cat "$att/$bin.sha256" "$att/packages.sha256" > "$att/$bin-sbom-subjects.sha256"
+            cp "$sbom" "$att/$bin.cdx.json"
+          done
+          cat "$att/packages.sha256" "$att/ctrlassist.sha256" "$att/ctrlassist-hider.sha256" \
+            > "$att/provenance-subjects.sha256"
+          find "$out" -type f | sort
+
+      - name: Upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-${{ runner.arch }}
+          if-no-files-found: error
+          path: target/release-out/
+
+  # Signing, one leg per architecture: one provenance attestation over that
+  # architecture's three packages and two binaries, and one SBOM attestation
+  # per binary, over the binary and the packages that ship it. Each
+  # attestation's Sigstore bundle is uploaded too, for the release to carry,
+  # named after what it signs.
+  attest:
+    needs: build
+    strategy:
+      matrix:
+        include:
+          - artifact: build-X64
+            arch: x86_64
+          - artifact: build-ARM64
+            arch: aarch64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The OIDC token the attestations are signed with.
+      id-token: write
+      # Store the attestations with the repository.
+      attestations: write
+    steps:
+      - name: Download
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: in
+
+      - name: Provenance
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: in/attest/${{ matrix.arch }}/provenance-subjects.sha256
+
+      - name: SBOM (ctrlassist)
+        id: sbom-ctrlassist
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: in/attest/${{ matrix.arch }}/ctrlassist-sbom-subjects.sha256
+          sbom-path: in/attest/${{ matrix.arch }}/ctrlassist.cdx.json
+
+      - name: SBOM (ctrlassist-hider)
+        id: sbom-ctrlassist-hider
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: in/attest/${{ matrix.arch }}/ctrlassist-hider-sbom-subjects.sha256
+          sbom-path: in/attest/${{ matrix.arch }}/ctrlassist-hider.cdx.json
+
+      # <binary>-<version>-<arch>.cdx.sigstore.json signs that SBOM asset;
+      # ctrlassist-<version>-<arch>.provenance.sigstore.json signs the build.
+      - name: Bundles
+        env:
+          PROVENANCE: ${{ steps.provenance.outputs.bundle-path }}
+          SBOM_CTRLASSIST: ${{ steps.sbom-ctrlassist.outputs.bundle-path }}
+          SBOM_CTRLASSIST_HIDER: ${{ steps.sbom-ctrlassist-hider.outputs.bundle-path }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          arch=$ARCH
+          version=$(jq -r .metadata.component.version "in/attest/$arch/ctrlassist.cdx.json")
+          mkdir -p bundles
+          cp "$PROVENANCE" "bundles/ctrlassist-$version-$arch.provenance.sigstore.json"
+          cp "$SBOM_CTRLASSIST" "bundles/ctrlassist-$version-$arch.cdx.sigstore.json"
+          cp "$SBOM_CTRLASSIST_HIDER" "bundles/ctrlassist-hider-$version-$arch.cdx.sigstore.json"
+          ls bundles
+
+      - name: Upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bundles-${{ matrix.artifact }}
+          if-no-files-found: error
+          path: bundles/

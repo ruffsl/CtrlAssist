@@ -35,3 +35,16 @@ Two files in [`licensing/`](licensing/) say what may be depended on, and two say
 - `NOTICE` is the project's own, and carries the license of the one thing bundled that isn't a crate: the controller database snapshot.
 
 The bundle is generated, not committed.
+
+## Releasing
+
+Workflows after TisVlay's, without its crates.io and Nix cache phases: nothing here is published to crates.io.
+
+1. **Bump.** `just release-bump` runs release-plz, which picks the version from the commit history and writes the CHANGELOGs; merge that as a `chore(release)` change. `release-plz.yml` opens the same change as a pull request on each push to `main`.
+2. **Tag.** Pushing `vX.Y.Z` runs `release.yml`. It calls `build-packages.yml`, which builds the three packages and one SBOM per binary for x86_64 and arm64, checks each SBOM against what its binary embeds, and signs them through Sigstore: a provenance attestation over the packages and binaries, and an SBOM attestation per binary. Building and signing are separate jobs, so the job that runs every dependency's build scripts holds no signing token.
+3. **Verify.** The workflow then checks every signature as a user would (`just verify-assets`), and only then attaches everything, with a checksum file, to a draft release.
+4. **Publish.** `just verify-release vX.Y.Z` repeats the check on the draft from your own machine. Test the packages, then publish the draft by hand.
+
+`audit.yml` checks the dependencies against the RustSec advisory database weekly and whenever the lockfile changes (`just audit`). `pr-title.yml` holds pull request titles, and the commits of a plan-driven one, to Conventional Commits, which is what release-plz reads. `test-report.yml` turns CI's test results into a check run.
+
+None of this has run: a real run needs the repository in the `CtrlAssist` organization, which the signer's identity names. The workflows pass `actionlint` and `zizmor`, and `just sbom-check` passes locally.

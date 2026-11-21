@@ -152,6 +152,44 @@
             cargo-zigbuild
             zig
             nfpm
+            # The release's supply-chain checks. cargo-cyclonedx writes one
+            # SBOM per shipped binary (`just sbom`), which `just sbom-check`
+            # compares with what cargo-auditable embedded, read back by
+            # rust-audit-info; jq and uuidgen (util-linux) shape them.
+            # CycloneDX re-published the 0.5.10 tag after nixpkgs hashed it;
+            # the trees differ only in upstream's own release tooling, so
+            # the tag's current hash is taken. Drop the override once
+            # nixpkgs carries it. TisVlay's workaround.
+            (
+              let
+                src = pkgs.fetchFromGitHub {
+                  owner = "CycloneDX";
+                  repo = "cyclonedx-rust-cargo";
+                  rev = "cargo-cyclonedx-0.5.10";
+                  hash = "sha256-Ne+oufpXfI19KwRjnBAPeSM65ja+5O26+Yl8e+DUsjM=";
+                };
+              in
+              pkgs.cargo-cyclonedx.overrideAttrs {
+                inherit src;
+                cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+                  inherit src;
+                  hash = "sha256-aUfygtpGleCpuetyJHGHzs8J5VFkrk996ZqmTYgTwEk=";
+                };
+              }
+            )
+            rust-audit-info
+            jq
+            util-linux
+            # `just verify-assets` and `just verify-release`: gh checks the
+            # attestations, bsdtar (libarchive) unpacks all three package
+            # formats, and cosign runs the check for people without a
+            # GitHub account.
+            gh
+            libarchive
+            cosign
+            # `just release-bump`: the version and the CHANGELOGs from the
+            # commit history.
+            release-plz
             just
             just-lsp
             # jstest and evtest-style tools for looking at pads by hand
