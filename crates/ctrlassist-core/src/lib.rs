@@ -14,10 +14,12 @@ mod control;
 mod demux;
 mod feedback;
 mod graph;
+mod ids;
 mod mux;
 
 pub use control::{AXES, BUTTONS, Control, Group, Kind, Layout, PadState, gamepad};
 pub use demux::{DemuxConfig, DemuxFeedback, DemuxMode};
 pub use feedback::{EFFECTS, Effect, EffectKey, FeedbackError, Level, Router};
 pub use graph::{Change, Graph, GraphError, GraphSpec, Input, NodeSpec, SourceSpec};
+pub use ids::{NodeId, SinkId, SourceId, SourceSet};
 pub use mux::{Mode, MuxConfig, MuxFeedback, Rule, Switch};

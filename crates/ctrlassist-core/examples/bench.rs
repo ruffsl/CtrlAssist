@@ -12,8 +12,8 @@ use std::time::Instant;
 
 use ctrlassist_core::gamepad::*;
 use ctrlassist_core::{
-    DemuxConfig, DemuxMode, Graph, GraphSpec, Input, Layout, Mode, MuxConfig, NodeSpec, PadState,
-    SourceSpec,
+    DemuxConfig, DemuxMode, Graph, GraphSpec, Input, Layout, Mode, MuxConfig, NodeId, NodeSpec,
+    PadState, SourceId, SourceSpec,
 };
 
 fn source() -> SourceSpec {
@@ -34,7 +34,7 @@ fn measure(name: &str, mut graph: Graph, sources: usize) {
             .with(LEFT_X, value)
             .with(RIGHT_TRIGGER, value.abs())
             .with(SOUTH, (step % 2) as f32);
-        graph.update(step % sources, state, &mut |_| changes += 1);
+        graph.update(SourceId(step % sources), state, &mut |_| changes += 1);
     }
     let nanos = started.elapsed().as_nanos() as f64 / STEPS as f64;
     println!("{name}: {nanos:.0} ns per step ({changes} changes in {STEPS} steps)");
@@ -46,10 +46,10 @@ fn main() {
         Graph::build(GraphSpec {
             sources: vec![source(), source()],
             nodes: vec![NodeSpec::Mux {
-                inputs: vec![Input::Source(0), Input::Source(1)],
+                inputs: vec![Input::Source(SourceId(0)), Input::Source(SourceId(1))],
                 config: MuxConfig::new(mode, &layout),
             }],
-            sinks: vec![Input::Node(0, 0)],
+            sinks: vec![Input::Node(NodeId(0), 0)],
         })
         .expect("the preset is a valid graph because it is written here")
     };
@@ -62,19 +62,19 @@ fn main() {
             sources: vec![source(), source(), source()],
             nodes: vec![
                 NodeSpec::Demux {
-                    input: Input::Source(2),
+                    input: Input::Source(SourceId(2)),
                     config: DemuxConfig::new(DemuxMode::Unicast, 2),
                 },
                 NodeSpec::Mux {
-                    inputs: vec![Input::Source(0), Input::Node(0, 0)],
+                    inputs: vec![Input::Source(SourceId(0)), Input::Node(NodeId(0), 0)],
                     config: MuxConfig::new(Mode::Priority, &layout),
                 },
                 NodeSpec::Mux {
-                    inputs: vec![Input::Source(1), Input::Node(0, 1)],
+                    inputs: vec![Input::Source(SourceId(1)), Input::Node(NodeId(0), 1)],
                     config: MuxConfig::new(Mode::Priority, &layout),
                 },
             ],
-            sinks: vec![Input::Node(1, 0), Input::Node(2, 0)],
+            sinks: vec![Input::Node(NodeId(1), 0), Input::Node(NodeId(2), 0)],
         })
         .expect("the preset is a valid graph because it is written here"),
         3,

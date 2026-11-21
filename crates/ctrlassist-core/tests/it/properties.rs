@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use ctrlassist_core::gamepad::*;
 use ctrlassist_core::{
-    Control, Effect, EffectKey, Graph, GraphSpec, Input, Layout, Level, Mode, MuxConfig, NodeSpec,
-    PadState, Router, SourceSpec,
+    Control, Effect, EffectKey, Graph, GraphSpec, Input, Layout, Level, Mode, MuxConfig, NodeId,
+    NodeSpec, PadState, Router, SinkId, SourceId, SourceSet, SourceSpec,
 };
 use proptest::prelude::*;
 
@@ -61,10 +61,10 @@ fn mux(mode: Mode) -> Graph {
     Graph::build(GraphSpec {
         sources: vec![source(), source()],
         nodes: vec![NodeSpec::Mux {
-            inputs: vec![Input::Source(0), Input::Source(1)],
+            inputs: vec![Input::Source(SourceId(0)), Input::Source(SourceId(1))],
             config: MuxConfig::new(mode, &Layout::gamepad()),
         }],
-        sinks: vec![Input::Node(0, 0)],
+        sinks: vec![Input::Node(NodeId(0), 0)],
     })
     .unwrap()
 }
@@ -85,9 +85,9 @@ proptest! {
         let mut shadow = PadState::NEUTRAL;
         for (source, state) in steps {
             pads[source] = state;
-            graph.update(source, state, &mut |change| shadow.set(change.control, change.value));
+            graph.update(SourceId(source), state, &mut |change| shadow.set(change.control, change.value));
             let [primary, assist] = pads;
-            let sink = *graph.sink(0);
+            let sink = *graph.sink(SinkId(0));
             prop_assert_eq!(shadow, sink, "the reported changes rebuild the virtual pad");
 
             for button in BUTTONS {
@@ -120,9 +120,9 @@ proptest! {
         let mut pads = [PadState::NEUTRAL; 2];
         for (source, state) in steps {
             pads[source] = state;
-            graph.update(source, state, &mut |_| {});
+            graph.update(SourceId(source), state, &mut |_| {});
             let [primary, assist] = pads;
-            let sink = *graph.sink(0);
+            let sink = *graph.sink(SinkId(0));
             for axis in STICKS.iter().flatten().chain(&TRIGGERS) {
                 let (low, high) = (
                     primary.get(*axis).min(assist.get(*axis)),
@@ -156,15 +156,15 @@ proptest! {
             match step {
                 Some((source, state)) => {
                     pads[source] = state;
-                    graph.update(source, state, &mut |_| {});
+                    graph.update(SourceId(source), state, &mut |_| {});
                 }
                 None => {
                     selected = 1 - selected;
-                    graph.switch(0, &mut |_| {});
+                    graph.switch(NodeId(0), &mut |_| {});
                 }
             }
-            prop_assert_eq!(*graph.sink(0), pads[selected]);
-            prop_assert_eq!(graph.feedback_targets(0), 1 << selected);
+            prop_assert_eq!(*graph.sink(SinkId(0)), pads[selected]);
+            prop_assert_eq!(graph.feedback_targets(SinkId(0)), SourceSet::from(SourceId(selected)));
         }
     }
 }
@@ -188,7 +188,10 @@ enum Op {
 }
 
 fn key() -> impl Strategy<Value = EffectKey> {
-    (0..SINKS, 0i16..3).prop_map(|(sink, id)| EffectKey { sink, id })
+    (0..SINKS, 0i16..3).prop_map(|(sink, id)| EffectKey {
+        sink: SinkId(sink),
+        id,
+    })
 }
 
 fn effect() -> impl Strategy<Value = Effect> {
@@ -256,7 +259,7 @@ impl Model {
             let (mut strong, mut weak) = (0u64, 0u64);
             for (key, (effect, play)) in &self.effects {
                 if let Some((started, count)) = play
-                    && key.sink == sink
+                    && key.sink == SinkId(sink)
                     && Self::running(*effect, *started, *count, now)
                 {
                     strong += u64::from(effect.strong) * u64::from(self.gain[sink]) / 65535;
@@ -311,26 +314,27 @@ proptest! {
                     prop_assert_eq!(router.erase(key).is_ok(), model.effects.remove(&key).is_some());
                 }
                 Op::Targets(sink, targets) => {
-                    router.set_targets(sink, targets);
+                    let set: Vec<SourceId> = (0..SOURCES).filter(|source| targets & (1 << source) != 0).map(SourceId).collect();
+                    router.set_targets(SinkId(sink), SourceSet::of(&set));
                     model.targets[sink] = targets;
                 }
                 Op::Gain(sink, gain) => {
-                    router.set_gain(sink, gain);
+                    router.set_gain(SinkId(sink), gain);
                     model.gain[sink] = gain;
                 }
                 Op::Clear(sink) => {
-                    router.clear(sink);
-                    model.effects.retain(|key, _| key.sink != sink);
+                    router.clear(SinkId(sink));
+                    model.effects.retain(|key, _| key.sink != SinkId(sink));
                 }
                 Op::Back(source) => {
-                    router.source_back(source);
+                    router.source_back(SourceId(source));
                     // The pad forgot what it was told.
                     told[source] = Level::default();
                 }
                 Op::Wait(millis) => now += millis,
             }
 
-            let next = router.poll(now, &mut |source, level| told[source] = level);
+            let next = router.poll(now, &mut |source, level| told[source.0] = level);
             for (source, told) in told.iter().enumerate() {
                 prop_assert_eq!(*told, model.level(source, now), "pad {} at {} ms", source, now);
             }
@@ -375,9 +379,9 @@ fn any_threshold() -> impl Strategy<Value = f32> {
 /// Mostly a source, sometimes a node's output, either of which may not exist.
 fn any_input() -> impl Strategy<Value = Input> {
     prop_oneof![
-        6 => (0usize..3).prop_map(Input::Source),
-        2 => (0usize..3, 0usize..2).prop_map(|(node, output)| Input::Node(node, output)),
-        1 => (0usize..40).prop_map(Input::Source),
+        6 => (0usize..3).prop_map(|pad| Input::Source(SourceId(pad))),
+        2 => (0usize..3, 0usize..2).prop_map(|(node, output)| Input::Node(NodeId(node), output)),
+        1 => (0usize..40).prop_map(|pad| Input::Source(SourceId(pad))),
     ]
 }
 
@@ -535,13 +539,15 @@ fn nothing_a_profile_or_a_pad_says_can_panic_a_step() {
         built.set(built.get() + 1);
         for poke in pokes {
             match poke {
-                Poke::Update(source, state) => graph.update(source, state, &mut |_| {}),
-                Poke::Present(source, present) => graph.set_present(source, present, &mut |_| {}),
-                Poke::Switch(node) => graph.switch(node, &mut |_| {}),
-                Poke::Select(node, index) => graph.select(node, index, &mut |_| {}),
+                Poke::Update(source, state) => graph.update(SourceId(source), state, &mut |_| {}),
+                Poke::Present(source, present) => {
+                    graph.set_present(SourceId(source), present, &mut |_| {});
+                }
+                Poke::Switch(node) => graph.switch(NodeId(node), &mut |_| {}),
+                Poke::Select(node, index) => graph.select(NodeId(node), index, &mut |_| {}),
             }
             for sink in 0..=sink_count {
-                let state = graph.sink(sink);
+                let state = graph.sink(SinkId(sink));
                 for axis in 0..16 {
                     let value = state.get(Control::Axis(axis));
                     prop_assert!(
@@ -549,7 +555,7 @@ fn nothing_a_profile_or_a_pad_says_can_panic_a_step() {
                         "axis {axis} of sink {sink} is {value}"
                     );
                 }
-                let _ = graph.feedback_targets(sink);
+                let _ = graph.feedback_targets(SinkId(sink));
             }
         }
         Ok(())

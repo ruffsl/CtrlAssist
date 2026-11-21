@@ -13,8 +13,8 @@ use std::cell::Cell;
 
 use ctrlassist_core::gamepad::*;
 use ctrlassist_core::{
-    DemuxConfig, DemuxMode, Graph, GraphSpec, Input, Layout, Mode, MuxConfig, NodeSpec, PadState,
-    SourceSpec,
+    DemuxConfig, DemuxMode, Graph, GraphSpec, Input, Layout, Mode, MuxConfig, NodeId, NodeSpec,
+    PadState, SourceId, SourceSpec,
 };
 
 thread_local! {
@@ -57,19 +57,19 @@ fn shared_helper() -> Graph {
         sources: vec![source(), source(), source()],
         nodes: vec![
             NodeSpec::Demux {
-                input: Input::Source(2),
+                input: Input::Source(SourceId(2)),
                 config: DemuxConfig::new(DemuxMode::Unicast, 2),
             },
             NodeSpec::Mux {
-                inputs: vec![Input::Source(0), Input::Node(0, 0)],
+                inputs: vec![Input::Source(SourceId(0)), Input::Node(NodeId(0), 0)],
                 config: MuxConfig::new(Mode::Priority, &layout),
             },
             NodeSpec::Mux {
-                inputs: vec![Input::Source(1), Input::Node(0, 1)],
+                inputs: vec![Input::Source(SourceId(1)), Input::Node(NodeId(0), 1)],
                 config: MuxConfig::new(Mode::Average, &layout),
             },
         ],
-        sinks: vec![Input::Node(1, 0), Input::Node(2, 0)],
+        sinks: vec![Input::Node(NodeId(1), 0), Input::Node(NodeId(2), 0)],
     })
     .unwrap()
 }
@@ -88,10 +88,10 @@ fn stepping_a_graph_allocates_nothing() {
             .with(RIGHT_TRIGGER, value.abs())
             .with(SOUTH, (step % 2) as f32)
             .with(MODE, ((step / 100) % 2) as f32);
-        graph.update(step % 3, state, &mut |_| changes += 1);
+        graph.update(SourceId(step % 3), state, &mut |_| changes += 1);
         if step % 1000 == 0 {
-            graph.set_present(1, step % 2000 == 0, &mut |_| changes += 1);
-            graph.switch(0, &mut |_| changes += 1);
+            graph.set_present(SourceId(1), step % 2000 == 0, &mut |_| changes += 1);
+            graph.switch(NodeId(0), &mut |_| changes += 1);
         }
     }
     let allocations = ALLOCATIONS.with(Cell::get) - before;

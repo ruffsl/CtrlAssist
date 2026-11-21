@@ -14,6 +14,8 @@
 //! The router holds no clock. The caller passes the time in milliseconds
 //! and is told when to ask again.
 
+use crate::ids::{SinkId, SourceId, SourceSet};
+
 /// Effects a game can hold on one virtual pad at a time, as the kernel
 /// offers for a rumble-only pad.
 pub const EFFECTS: usize = 16;
@@ -45,7 +47,7 @@ pub struct Level {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct EffectKey {
     /// The virtual pad the game uploaded it to.
-    pub sink: usize,
+    pub sink: SinkId,
     /// The game's number for it.
     pub id: i16,
 }
@@ -144,8 +146,8 @@ impl Slot {
 }
 
 struct Sink {
-    /// The pads this virtual pad's feedback goes to, as a mask.
-    targets: u32,
+    /// The pads this virtual pad's feedback goes to.
+    targets: SourceSet,
     /// The game's overall gain, where `u16::MAX` is full strength.
     gain: u16,
     slots: [Option<Slot>; EFFECTS],
@@ -168,7 +170,7 @@ impl std::fmt::Debug for Router {
 }
 
 /// The most pads a router serves: targets are a 32-bit mask.
-const MAX_SOURCES: usize = 32;
+const MAX_SOURCES: usize = SourceSet::CAPACITY;
 
 fn scale(strength: u16, gain: u16) -> u32 {
     u32::from(strength) * u32::from(gain) / u32::from(u16::MAX)
@@ -182,7 +184,7 @@ impl Router {
         Self {
             sinks: (0..sinks)
                 .map(|_| Sink {
-                    targets: 0,
+                    targets: SourceSet::EMPTY,
                     gain: u16::MAX,
                     slots: [None; EFFECTS],
                 })
@@ -191,8 +193,8 @@ impl Router {
         }
     }
 
-    fn sink(&mut self, sink: usize) -> Result<&mut Sink, FeedbackError> {
-        self.sinks.get_mut(sink).ok_or(FeedbackError::NoSuchSink)
+    fn sink(&mut self, sink: SinkId) -> Result<&mut Sink, FeedbackError> {
+        self.sinks.get_mut(sink.0).ok_or(FeedbackError::NoSuchSink)
     }
 
     fn slot(&mut self, key: EffectKey) -> Result<&mut Slot, FeedbackError> {
@@ -207,14 +209,14 @@ impl Router {
     /// Sets which pads a virtual pad's feedback goes to. Takes effect at
     /// the next [`poll`](Self::poll); a virtual pad that doesn't exist is
     /// ignored.
-    pub fn set_targets(&mut self, sink: usize, targets: u32) {
+    pub fn set_targets(&mut self, sink: SinkId, targets: SourceSet) {
         if let Ok(sink) = self.sink(sink) {
             sink.targets = targets;
         }
     }
 
     /// Sets a virtual pad's overall gain, where `u16::MAX` is full.
-    pub fn set_gain(&mut self, sink: usize, gain: u16) {
+    pub fn set_gain(&mut self, sink: SinkId, gain: u16) {
         if let Ok(sink) = self.sink(sink) {
             sink.gain = gain;
         }
@@ -293,7 +295,7 @@ impl Router {
 
     /// Stops and removes everything a virtual pad holds, as when the game
     /// closes it.
-    pub fn clear(&mut self, sink: usize) {
+    pub fn clear(&mut self, sink: SinkId) {
         if let Ok(sink) = self.sink(sink) {
             sink.slots = [None; EFFECTS];
         }
@@ -301,8 +303,8 @@ impl Router {
 
     /// A pad reconnected: whatever it was told before is lost, so it is
     /// told its level again at the next [`poll`](Self::poll).
-    pub fn source_back(&mut self, source: usize) {
-        if let Some(reported) = self.reported.get_mut(source) {
+    pub fn source_back(&mut self, source: SourceId) {
+        if let Some(reported) = self.reported.get_mut(source.0) {
             *reported = None;
         }
     }
@@ -313,7 +315,7 @@ impl Router {
     ///
     /// Within one virtual pad, playing effects add and clamp, after gain.
     /// Across virtual pads sharing a pad, the strongest wins on each motor.
-    pub fn poll(&mut self, now_ms: u64, emit: &mut impl FnMut(usize, Level)) -> Option<u64> {
+    pub fn poll(&mut self, now_ms: u64, emit: &mut impl FnMut(SourceId, Level)) -> Option<u64> {
         let mut levels = [Level::default(); MAX_SOURCES];
         let mut next: Option<u64> = None;
         let mut sooner = |at: u64| next = Some(next.map_or(at, |next| next.min(at)));
@@ -338,7 +340,7 @@ impl Router {
             let strong = strong.min(u32::from(u16::MAX)) as u16;
             let weak = weak.min(u32::from(u16::MAX)) as u16;
             for (source, level) in levels.iter_mut().enumerate() {
-                if sink.targets & (1 << source) != 0 {
+                if sink.targets.contains(SourceId(source)) {
                     level.strong = level.strong.max(strong);
                     level.weak = level.weak.max(weak);
                 }
@@ -350,7 +352,7 @@ impl Router {
             // A pad that just returned and is at rest needs no telling.
             let stale = reported.map_or(level != Level::default(), |before| before != level);
             if stale {
-                emit(source, level);
+                emit(SourceId(source), level);
             }
             *reported = Some(level);
         }
