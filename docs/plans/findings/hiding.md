@@ -2,7 +2,7 @@
 
 Measured 2026-11-21 with `spikes/hiding/`: in a clean NixOS VM (`just spike-hiding-vm`), and on the development host with a DualSense over USB, a DualShock 4 over Bluetooth, Steam (client 1794536281) and SDL2's `sdl2-jstest`. Steam's view was read from its `logs/controller.txt`, not its settings screen.
 
-**Status: verdict reached and confirmed on a real pad.** One check still needs the maintainer, identifiers across reconnects and transports, listed under [Still to run](#still-to-run).
+**Status: verdict reached and confirmed on a real pad, including against a running Steam.** One check still needs the maintainer, identifiers across reconnects and transports, listed under [Still to run](#still-to-run).
 
 ## Verdict
 
@@ -18,7 +18,7 @@ The plan's rule was that a default mechanism must reach "absent" for Steam and f
 | Node mode 000, set by root | not tested | not tested | not tested | cannot open | stays until reconnect | lost: the new node has default access |
 | Runtime udev rule, set by root | not tested | absent | absent | cannot open | stays until removed or reboot | still applies |
 
-The udev rule was run on the real DualSense by the maintainer (`just spike-hiding-root`): with its event, js and hidraw nodes denied, SDL listed one pad instead of two on both backends, still did after the pad was unplugged and replugged, and listed two again once the rule was removed and the modes put back. Steam was not run against the rule; it reads the same hidraw node SDL's default backend does, so the same result is expected but unobserved.
+The udev rule was run on the real DualSense by the maintainer (`just spike-hiding-root`): with its event, js and hidraw nodes denied, SDL listed one pad instead of two on both backends, still did after the pad was unplugged and replugged, and listed two again once the rule was removed and the modes put back. Steam was later run against the rule; see [Dislodging](#dislodging-a-program-that-already-has-the-pad-open).
 
 What the rows mean for the design:
 
@@ -27,12 +27,29 @@ What the rows mean for the design:
 - **SDL's hint works only for SDL, only by vendor and product, and only at launch.** It is an environment variable of the game's process, so a daemon can't apply it to a game that is already running, and it would also hide a virtual pad that copies those IDs.
 - **Only node permissions cover every consumer at once,** and they need root.
 
+## Dislodging a program that already has the pad open
+
+Denying a node stops new opens; it does nothing to a descriptor that is already open. Steam opens a DualSense's hidraw node when the pad is plugged in, so a rule alone would leave Steam reading the real pad beside the virtual one. The architecture review raised this; the maintainer ran `just spike-hiding-dislodge` on the DualSense with Steam running:
+
+| Stage | A reader holding hidraw open since before | Steam |
+|---|---|---|
+| Before | 250 reports a second | has the pad |
+| Rule installed, nodes at mode 000 | **still 250 reports a second**, for the eleven seconds watched | no change logged |
+| Driver re-bound with the rule in place | read fails with an I/O error and stops | "Controller device closed after hid_read failure"; the pad is not found again |
+| Rule removed, driver re-bound | (a new reader can open it) | "Local Device Found … DualSense" seven seconds later |
+
+So hiding has two parts: the rule, then re-binding the pad's HID driver (writing the device's ID to the driver's `unbind` and `bind` files in sysfs), which invalidates every open descriptor and recreates the nodes already denied. Restoring works the same way in reverse and has a useful side effect: programs see the pad arrive, so Steam picks it up again without a restart. The pad's event and hidraw nodes kept their numbers across the re-bind.
+
+The same sequence is what makes the helper's descriptors meaningful: after the re-bind the only open descriptors on the pad are the ones the helper opened and passed on.
+
+Not tested: a Bluetooth pad, whose HID device belongs to the Bluetooth daemon and may not survive an unbind the same way; and a pad whose driver isn't a HID driver (an Xbox pad on USB uses `xpad` on the USB interface, with different sysfs paths).
+
 ## The helper
 
 **It can't be a permission rule alone.** The daemon and the games are the same user, so whatever denies the games denies the daemon. The VM confirmed the way out: a reader that opened the node *before* it was set to mode 000 kept receiving (149 events over the window). So access has to arrive as an open file descriptor rather than as a permission:
 
 1. The daemon asks the helper to hide a pad.
-2. The helper installs a runtime udev rule for that pad (event, js and hidraw nodes: no access, no `uaccess` tag), opens the nodes itself, and passes the descriptors to the daemon over its socket.
+2. The helper installs a runtime udev rule for that pad (event, js and hidraw nodes: no access, no `uaccess` tag), re-binds the pad's driver so that every descriptor already open on it is cut off and its nodes come back denied, opens the new nodes itself, and passes the descriptors to the daemon over its socket.
 3. On reconnect the rule already covers the new nodes, so there is no window in which a game sees the pad; the helper passes fresh descriptors.
 4. When the daemon's connection closes, for any reason including a kill, the helper removes the rule and restores the nodes. That ties cleanup to something the kernel reports, which is the crash rule the plan asked for.
 
