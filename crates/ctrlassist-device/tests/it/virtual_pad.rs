@@ -131,19 +131,22 @@ fn what_is_written_reads_back_the_same_on_every_gamepad_control() {
 }
 
 #[test]
-fn a_virtual_pad_being_read_is_known_by_its_device_number() {
-    if !can_make_pads("a_virtual_pad_being_read_is_known_by_its_device_number") {
+fn a_virtual_pad_is_marked_as_our_own_output_and_other_pads_are_not() {
+    if !can_make_pads("a_virtual_pad_is_marked_as_our_own_output_and_other_pads_are_not") {
         return;
     }
-    let (sink, reader) = pair(Identity::Generic);
-    assert_eq!(reader.device_number(), sink.device_number());
+    let (_first, reader) = pair(Identity::Generic);
+    assert!(reader.is_own_output());
+    let (_second, other) = pair(Identity::Xbox);
+    assert!(other.is_own_output());
+    // Each carries the process and a count of its own.
+    let port = |pad: &Pad| pad.identifiers().port.clone().unwrap();
+    assert!(port(&reader).starts_with(&format!("ctrlassist/virtual/{}/", std::process::id())));
+    assert_ne!(port(&reader), port(&other));
 
     let fake = ctrlassist_test::FakePad::new("Not Ours", 0x1209, 0x5eed).unwrap();
     let fd: OwnedFd = File::open(fake.event_node()).unwrap().into();
-    assert_ne!(
-        Pad::from_fd(fd).unwrap().device_number(),
-        sink.device_number()
-    );
+    assert!(!Pad::from_fd(fd).unwrap().is_own_output());
 }
 
 #[test]

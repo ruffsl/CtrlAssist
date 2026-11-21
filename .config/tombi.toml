@@ -8,3 +8,7 @@ indent-width = 4
 
 [schema]
 enabled = false
+
+# Vendored crates are carried as upstream wrote them.
+[files]
+exclude = ["vendor/**", "target/**", "spikes/**/target/**"]

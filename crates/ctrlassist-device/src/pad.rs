@@ -94,7 +94,6 @@ pub struct Pad {
     device: Device,
     mapping: Mapping,
     identifiers: Identifiers,
-    device_number: u64,
     /// The state as of the last complete frame.
     state: PadState,
     /// The state with the events of a frame still arriving applied.
@@ -179,7 +178,6 @@ impl Pad {
             device,
             mapping,
             identifiers,
-            device_number,
             state,
             pending: state,
             can_rumble,
@@ -193,11 +191,15 @@ impl Pad {
         &self.identifiers
     }
 
-    /// The kernel's number for the event node being read; see
-    /// [`VirtualPad::device_number`](crate::VirtualPad::device_number).
+    /// Whether this is one of the daemon's own virtual pads, made by
+    /// this process or any other, which must never be read as a source:
+    /// that would feed the daemon its own output.
     #[must_use]
-    pub fn device_number(&self) -> u64 {
-        self.device_number
+    pub fn is_own_output(&self) -> bool {
+        self.identifiers
+            .port
+            .as_deref()
+            .is_some_and(|port| port.starts_with(crate::OWN_MARKER))
     }
 
     /// What the pad held as of its last complete report frame.

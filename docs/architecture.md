@@ -207,7 +207,7 @@ A change to a running setup is live if the virtual pads are untouched (a thresho
 
 **Hotplug.** When a pad in a running setup disconnects, the setup is held. When the same pad returns it is hidden again before any game can see it, re-bound to the setup, and given the current rumble level. A notification says what happened.
 
-**Not our own output.** The daemon never takes its own virtual pads as sources. It knows each virtual pad it made by the kernel's device number for its event node, and refuses a pad being read that has one of those numbers. Its virtual pads die with it, so nothing needs to recognize them from outside the process. Other software's virtual pads are sources only if a profile names them.
+**Not our own output.** The daemon never takes its own virtual pads as sources. It marks them at the start of the `phys` string, which uinput lets a pad's creator set, and refuses any pad that carries the marker, whichever process made it. A Bluetooth pad can itself be a uhid device, so "under uhid" cannot be the test; a uhid virtual pad will carry its mark in its address. Other software's virtual pads are sources only if a profile names them.
 
 ## Hiding
 
@@ -424,7 +424,7 @@ A machine with Steam's or Sunshine's udev rules installed opens more of these, w
 
 - Copying a PlayStation pad's IDs onto a uinput pad is worse than not copying them.
 - On binding, the PlayStation driver reads three feature reports: pairing information, firmware version and calibration.
-- uinput cannot set a device's `uniq`. The kernel lets it set `phys`, but the `evdev` crate's call for that (0.13.2) is refused by the kernel: it declares the request with the size of a character where the kernel expects that of a pointer.
+- uinput cannot set a device's `uniq`; it can set `phys`. The `evdev` crate's call for that (0.13.2) is refused by the kernel, because it declares the request with the size of a character where the kernel expects that of a pointer; the copy in `vendor/` carries the fix.
 - The kernel ends a report frame itself once the frame holds about as many changes as the device has axes (16 for a gamepad's eight), so one write that changes nearly every control reaches a reader as two frames.
 - Before erasing a force-feedback effect, the kernel sends a stop for it.
 - The uhid interface is a handful of fixed-layout events, written by hand here; the available binding crate needs libclang at build time.

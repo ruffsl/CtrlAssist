@@ -90,6 +90,8 @@ Recorded so nobody re-scouts. TisVlay's build notes have the measurements.
 
 Every dependency is declared once in `[workspace.dependencies]` and inherited. The core crate has none.
 
+A crate that needs a fix upstream doesn't have yet is carried under `vendor/` and wired in with `[patch.crates-io]`; [vendor/README.md](../vendor/README.md) lists each one and its fix. Vendored code keeps upstream's formatting and is outside the workspace's lints, the typos gate and the coverage figure, so its diff against upstream is the fix alone.
+
 `just deny` holds the graph to one version of each crate. When an update brings a second version of something, first try to move the crates that pin the old one; only if upstream forces the duplicate does it go in `packaging/licensing/deny.toml`'s skip-list, with its reason. A skip that no longer matches anything fails the gate, so the list can't outlive what it excuses.
 
 `just audit` checks the RustSec advisory database. It is not part of `just check`: advisories change without the lockfile changing, so they are checked on their own schedule rather than gating unrelated work.

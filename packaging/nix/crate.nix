@@ -25,6 +25,7 @@ rustPlatform.buildRustPackage {
       ../../Cargo.lock
       ../../.cargo
       ../../crates
+      ../../vendor
     ];
   };
   cargoLock.lockFile = ../../Cargo.lock;

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 # The spikes are throwaway workspaces of their own, deleted as the crates
 # that replace them land.
-exclude = ["spikes"]
+exclude = ["spikes", "vendor"]
 
 [workspace.package]
 version = "0.5.0"
@@ -98,3 +98,7 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 opt-level = "s"
+
+# Crates carried with a fix upstream doesn't have yet; see vendor/README.md.
+[patch.crates-io]
+evdev = { path = "vendor/evdev" }

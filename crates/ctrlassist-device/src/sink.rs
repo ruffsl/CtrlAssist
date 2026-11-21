@@ -1,9 +1,11 @@
 //! A virtual pad made through uinput: what a game reads in place of the
 //! pads behind it.
 
+use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use ctrlassist_core::{Control, Effect, FeedbackError, PadState, gamepad};
 use evdev::uinput::VirtualDevice;
@@ -11,7 +13,12 @@ use evdev::{
     AbsInfo, AbsoluteAxisCode, AttributeSet, BusType, EventSummary, EventType, FFEffectCode,
     FFEffectKind, InputEvent, InputId, KeyCode, UInputCode, UinputAbsSetup,
 };
-use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl, stat};
+use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+
+/// How the daemon's virtual pads are told from every other pad, by any
+/// process: the start of their `phys` string, which uinput lets its
+/// creator set and nothing else on the machine uses.
+pub const OWN_MARKER: &str = "ctrlassist/virtual/";
 
 /// The most effects a game may hold on one virtual pad.
 const EFFECTS: u32 = ctrlassist_core::EFFECTS as u32;
@@ -153,7 +160,6 @@ pub struct VirtualPad {
     device: VirtualDevice,
     identity: Identity,
     event_node: PathBuf,
-    device_number: u64,
     held: PadState,
     /// Kept between calls so that writing and serving allocate nothing.
     scratch: Vec<InputEvent>,
@@ -175,9 +181,15 @@ impl VirtualPad {
     /// Fails if uinput can't be opened or the kernel refuses the pad.
     pub fn create(identity: Identity) -> io::Result<Self> {
         let keys = AttributeSet::from_iter(BUTTONS.iter().map(|(key, _)| *key));
+        // The process and a count tell virtual pads apart in the marker.
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let number = NEXT.fetch_add(1, Ordering::Relaxed);
+        let phys = CString::new(format!("{OWN_MARKER}{}/{number}", std::process::id()))
+            .map_err(io::Error::other)?;
         let mut builder = VirtualDevice::builder()?
             .name(identity.name())
             .input_id(identity.id())
+            .with_phys(&phys)?
             .with_keys(&keys)?
             .with_ff(&AttributeSet::from_iter([FFEffectCode::FF_RUMBLE]))?
             .with_ff_effects_max(EFFECTS);
@@ -199,7 +211,6 @@ impl VirtualPad {
             .filter_map(Result::ok)
             .find(|node| node.to_string_lossy().contains("/event"))
             .ok_or_else(|| io::Error::other("the virtual pad has no event node"))?;
-        let device_number = stat(&event_node)?.st_rdev;
         // A read with no request waiting must return, not block the
         // thread every pad is served on.
         let flags = fcntl_getfl(&device)?;
@@ -208,7 +219,6 @@ impl VirtualPad {
             device,
             identity,
             event_node,
-            device_number,
             held: PadState::NEUTRAL,
             scratch: Vec::with_capacity(64),
         })
@@ -224,14 +234,6 @@ impl VirtualPad {
     #[must_use]
     pub fn event_node(&self) -> &Path {
         &self.event_node
-    }
-
-    /// The kernel's number for the pad's event node. A pad being read
-    /// that has this number is this virtual pad, and must never be taken
-    /// as a source: that would feed the daemon its own output.
-    #[must_use]
-    pub fn device_number(&self) -> u64 {
-        self.device_number
     }
 
     /// Makes the pad hold `state`, sending what differs from what it
