@@ -4,7 +4,7 @@ Things the design depends on that have not been observed, or risks accepted for 
 
 ## Open
 
-- [`hiding-untested-drivers.md`](hiding-untested-drivers.md) — hiding by re-bind is unobserved for pads without a HID driver.
+- [`hiding-untested-drivers.md`](hiding-untested-drivers.md) — hiding by re-bind is unobserved for an Xbox pad over Bluetooth.
 - [`hiding-service-unbuilt.md`](hiding-service-unbuilt.md) — the hiding service is proven as commands, not as a process.
 - [`pad-identity-across-transports.md`](pad-identity-across-transports.md) — a pad's identifier is unverified across transports.
 - [`suspend-and-reconnect.md`](suspend-and-reconnect.md) — suspend, resume and a Bluetooth drop are untested.
