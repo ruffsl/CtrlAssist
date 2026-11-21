@@ -18,8 +18,9 @@ crates/
                               # snapshot, uinput virtual pads, the input thread, hotplug
   ctrlassist-hider/           # the hiding service: its wire types and client as a library,
                               # and the root binary
-  ctrlassist-protocol/        # what the daemon and its clients agree on: so far, the
-                              # profile schema and its expansion to a graph
+  ctrlassist-protocol/        # what the daemon and its clients agree on: the profile
+                              # schema; session configuration, keys, the rpc table,
+                              # typed wire errors and the version check
   ctrlassist-test/            # fake pads made through uinput and uhid, and the
                               # ctrlassist-fixture binary the VM checks drive, and
                               # ctrlassist-bench, which times the input path

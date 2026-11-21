@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 12 are done. The maintainer has read the hiding service's root code, and it hid a real DualSense from a running Steam and restored it (2026-11-21; SDL alone was not checked separately).
-- **Next action:** build step 13, a daemon and CLI that report status. Slice B and build step 12 (the profile schema) are done.
+- **Next action:** the second half of build step 13: the SDK crate `ctrlassist` (a client with the version handshake, and a state watcher), the daemon crate (session, liveliness token, the `info` rpc, the cached `ctrlassist/daemon` state, the input thread), the CLI crate (`service daemon`, `status`), logging, and the dev recipes. The protocol half is done: `ctrlassist-protocol` has `bootstrap`, `caller`, `endpoint`, `error`, `keys`, `payload`, `rpc` and `serve`, copied from TisVlay `5ddc2c0d` and trimmed. TisVlay's SDK is `crates/tisvlay/src/{lib,handshake,lifetime,error}.rs`; its cached publishers need `zenoh-ext`.
 - **Overnight, 2026-11-21:** the maintainer asked for the marked stops at build steps 11, 12 and 16 to be built through, with each decision made there recorded under "For review" below. Also decided: the controller database is a pinned snapshot in the repository plus a user override file; the `evdev` fix is vendored and soaked here before any upstream PR; the generic identity keeps 0.4.0's numbers until the release.
 - **Hardware checks owed:** `just forward-pad <node>` and `just forward-pad <node> --xbox` (SDL and Steam list each identity); `just bench`; rumble from a game reaching a real pad through a mux, a Bluetooth drop, and a suspend and resume, which need the daemon.
 - **Hiding service decisions** (2026-11-21): who is served is TisVlay's desktop-session rule, asked of logind once per connection through its login library; a user switch leaves pads hidden; the socket and records live under `/run/ctrlassist`; the step landed in a few commits with one stop.
@@ -404,5 +404,8 @@ Decisions made while building through a marked stop, for the maintainer's QA. Ea
 - **The queues are the standard library's bounded channels,** not a lock-free queue crate (build step 9): they are only ever polled from the input thread, never block it, and add no dependency.
 - **The bench no longer times 0.4.0** (build step 9). It runs the input thread in its own process; the comparison is in the architecture. `spikes/zenoh` stays until its step, but its bench recipe went with `spikes/loop`, whose binary it drove.
 - **Panic isolation is untested** (build step 9): nothing in a setup's handling can be made to panic from outside, which is the point, so the guard is exercised only by reading it.
+- **Build step 13 lands in two commits:** the protocol half (session configuration, wire errors, the rpc table, the version check, and its wire test), then the SDK, the daemon and the CLI.
+- **The daemon listens as a zenoh peer, not a router** (build step 13), as TisVlay's daemon does. A router is needed only where clients must reach each other through the hub, which CtrlAssist's never do.
+- **Streaming rpcs and parked replies were trimmed** from what was copied out of TisVlay's protocol crate (build step 13): no CtrlAssist rpc streams, and nothing yet answers later through its own correlation. They return, from TisVlay, with the first rpc that needs them.
 
 The drafting history is in git.

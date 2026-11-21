@@ -88,7 +88,7 @@ Recorded so nobody re-scouts. TisVlay's build notes have the measurements.
 
 ## Dependencies
 
-Every dependency is declared once in `[workspace.dependencies]` and inherited. The core crate has none.
+Every dependency is declared once in `[workspace.dependencies]` and inherited. The core crate has none. zenoh, the control plane, brings most of the tree and every exception in `packaging/licensing/deny.toml`; its pin and feature set are TisVlay's, and the two move together.
 
 A crate that needs a fix upstream doesn't have yet is carried under `vendor/` and wired in with `[patch.crates-io]`; [vendor/README.md](../vendor/README.md) lists each one and its fix. The controller database snapshot in `crates/ctrlassist-device/data` is data under the zlib license, kept beside it; `just update-controller-db` refreshes it from upstream at a named commit, and its diff is reviewed like code.
 

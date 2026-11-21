@@ -283,7 +283,7 @@ A small emulator: it presents a real pad's report descriptor, answers the kernel
 
 ## Control plane
 
-zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the daemon as the router. The patterns are TisVlay's: cached publishers for state, rpcs declared once in a table, a liveliness token for presence, typed wire errors, and a `major.minor` check between client and daemon. Its [zenoh laws](https://github.com/TisVlay/TisVlay/blob/main/docs/architecture.md) apply; the ones this design leans on:
+zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the daemon listening as a peer, as TisVlay's does: its clients only ever talk to it, never to each other, so nothing needs routing between them. The patterns are TisVlay's: cached publishers for state, rpcs declared once in a table, a liveliness token for presence, typed wire errors, and a `major.minor` check between client and daemon. Its [zenoh laws](https://github.com/TisVlay/TisVlay/blob/main/docs/architecture.md) apply; the ones this design leans on:
 
 - clients gate an rpc on the querier matching, not on liveliness, because a request matching no handler returns no reply at once;
 - clients keep trying to connect, so the tray may start before the daemon;
@@ -292,7 +292,9 @@ zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the d
 
 | Key | Kind | Holds |
 |---|---|---|
+| `ctrlassist/alive/daemon` | liveliness | present while the daemon runs |
 | `ctrlassist/daemon` | state | version; whether real-time scheduling was granted; the hiding mechanism in use |
+| `ctrlassist/rpc/daemon/info` | rpc | the daemon's release, for the version check; its reply's shape is frozen |
 | `ctrlassist/identity/<id>` | state | each identity a virtual pad can take, and whether it is available now |
 | `ctrlassist/pad/<id>` | state | name, model, address, connected, hidden, which setup uses it, whether it can rumble |
 | `ctrlassist/profile/<id>` | state | the profile |

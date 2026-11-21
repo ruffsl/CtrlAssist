@@ -3,6 +3,8 @@
 
 #![expect(clippy::unwrap_used, reason = "tests fail loudly")]
 
+mod wire;
+
 use ctrlassist_core::{
     DemuxConfig, DemuxMode, Graph, GraphSpec, Input, Kind, Layout, Mode, MuxConfig, MuxFeedback,
     NodeId, NodeSpec, Rule, SourceId, SourceSpec, Switch, gamepad,

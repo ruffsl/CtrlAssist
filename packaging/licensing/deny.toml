@@ -27,9 +27,35 @@ allow = [
 ]
 confidence-threshold = 0.93
 
+# Crates whose license isn't in the allow-list, each for its own reason.
+exceptions = [
+    # zenoh-util -> shellexpand -> dirs. Weak copyleft, file-level; used
+    # unmodified. TisVlay carries the same exception.
+    { name = "option-ext", allow = ["MPL-2.0"] },
+    # Build-time only (psm's build script, under zenoh-config's json5
+    # parser); Apache-2.0 with LLVM's linking exception, which only widens
+    # what Apache-2.0 already allows.
+    { name = "ar_archive_writer", allow = ["Apache-2.0 WITH LLVM-exception"] },
+]
+
 [bans]
 multiple-versions = "deny"
-skip = []
+skip = [
+    # All of these come with zenoh 1.10, the control plane, whose pin is
+    # TisVlay's. Re-audit them together when zenoh moves.
+
+    # Whole crates: several versions each, none of them ours to choose.
+    { crate = "hashbrown", reason = "zenoh's keyed-set, petgraph and zenoh-keyexpr each pin their own; indexmap is on the newest" },
+    { crate = "foldhash", reason = "hashbrown 0.15 and 0.16 counterparts" },
+    { crate = "getrandom", reason = "zenoh's rand 0.8 and ahash keep 0.2 and 0.3; the rest of the tree is on 0.4" },
+
+    # Exact versions: each names the older one and what pins it, so the
+    # entry fails the gate as unnecessary once that catches up.
+    { crate = "rand_core@0.6.4", reason = "rand 0.8 counterpart (zenoh-keyexpr)" },
+    { crate = "socket2@0.5.10", reason = "zenoh pins socket2 0.5; tokio is on 0.6" },
+    { crate = "spin@0.9.9", reason = "flume 0.11 (zenoh's channel) pins spin 0.9; uhlc (zenoh's timestamps) is on 0.10" },
+    { crate = "syn@2.0.119", reason = "zenoh's proc-macro dependencies and tracing-attributes are still on syn 2" },
+]
 
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]

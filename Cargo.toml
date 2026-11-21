@@ -27,7 +27,19 @@ ctrlassist-test = { path = "crates/ctrlassist-test" }
 
 # Profiles on disk and payloads on the wire
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "1"
+
+# The control plane. Every link is a Unix socket, so zenoh's default
+# transports are switched off, as in TisVlay, whose pin this is.
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+zenoh = { version = "1.10", default-features = false, features = ["transport_unixsock-stream"] }
+
+# Logging
+tracing = "0.1"
+
+# Tests
+tempfile = "3"
 
 # Errors
 anyhow = "1"
