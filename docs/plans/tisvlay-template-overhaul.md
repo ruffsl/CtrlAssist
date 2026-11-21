@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding ([findings/hiding.md](findings/hiding.md)) and identity ([findings/identity.md](findings/identity.md)) spikes are done and accepted; the input loop spike has its finding, [findings/input-loop.md](findings/input-loop.md), done and accepted. Two checks still need the maintainer at the machine: identifiers across reconnects, and suspend, resume and a Bluetooth drop.
-- **Next action:** the routing graph spike, once two remaining questions about its nodes are settled with the maintainer: whether a stick is owned as a pair or per axis, and what a switch does to buttons the outgoing pad was holding.
+- **Next action:** the routing graph spike, stopping when its finding is written.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -99,6 +99,12 @@ One word per thing, here and in everything written from this plan:
 **The input thread asks for real-time scheduling and degrades quietly.** If the kernel refuses, the daemon runs normally and its status says which. Packages raise the limit where they can; rtkit is not used.
 
 **Activity is split between the source and the node.** A source has a deadzone that zeroes its rest noise before any node sees it, since a worn stick is a fact about the pad. A mux node has an engage threshold and a lower release threshold on what remains, since "is the assist touching this?" is the mode's question and two thresholds stop a hovering stick from flickering between owners. Defaults match the legacy 0.1, so most profiles set neither. No ownership is held by a timer.
+
+**Ownership is over groups, not pairs.** A group is a set of controls owned together: a stick's two axes, a yoke's three, a flight grip's axes with its trigger and hat, a lone button or throttle as a group of one. One rule replaces legacy's separate cases: per group, whoever is active on it owns every member. A gamepad's groups are derived from the well-known control names, so an ordinary profile declares none; a profile may declare or regroup them for other devices.
+
+**A mode is a merge rule per group.** Legacy priority mode already had an exception (triggers aren't owned; the larger value wins), so the routing graph spike models each mux mode as a table of rules over the same machinery (owned, largest, blended, switched) and reports whether that expresses all three without special cases.
+
+**On a switch, the virtual pad takes the incoming pad's state.** What both pads hold stays down with no blip, what only the outgoing pad held goes up, and analog values step to the incoming value. After any switch the sink equals the active source, which is an invariant the tests check.
 
 **The switch is an input to the node, not a pad event it happens to see.** In the first release it can be raised by one button named in the profile (default Mode, consumed rather than forwarded), on whichever source the profile names, or by a client through a daemon rpc. Modeling it as a signal means later triggers don't change the node.
 
