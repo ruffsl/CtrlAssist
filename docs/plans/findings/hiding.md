@@ -2,7 +2,7 @@
 
 Measured 2026-11-21 with `spikes/hiding/`: in a clean NixOS VM (`just spike-hiding-vm`), and on the development host with a DualSense over USB, a DualShock 4 over Bluetooth, Steam (client 1794536281) and SDL2's `sdl2-jstest`. Steam's view was read from its `logs/controller.txt`, not its settings screen.
 
-**Status: verdict reached; two checks need the maintainer** (root on a real pad, and identifiers across reconnects). They are listed under [Still to run](#still-to-run) and would refine the result, not reverse it.
+**Status: verdict reached and confirmed on a real pad.** One check still needs the maintainer, identifiers across reconnects and transports, listed under [Still to run](#still-to-run).
 
 ## Verdict
 
@@ -16,9 +16,9 @@ The plan's rule was that a default mechanism must reach "absent" for Steam and f
 | Steam blacklist | absent, after a Steam restart | visible | visible | visible | stays in `config.vdf` | still applies |
 | SDL ignore-devices hint | not tested | absent | absent | visible | nothing to leave (per-process environment) | still applies |
 | Node mode 000, set by root | not tested | not tested | not tested | cannot open | stays until reconnect | lost: the new node has default access |
-| Runtime udev rule, set by root | not tested | not tested | not tested | cannot open | stays until removed or reboot | still applies |
+| Runtime udev rule, set by root | not tested | absent | absent | cannot open | stays until removed or reboot | still applies |
 
-"Not tested" in the last two rows is the root check still to run; the VM shows the mechanism denies the seat user every node it covers, which is what makes a pad absent to anything running as that user.
+The udev rule was run on the real DualSense by the maintainer (`just spike-hiding-root`): with its event, js and hidraw nodes denied, SDL listed one pad instead of two on both backends, still did after the pad was unplugged and replugged, and listed two again once the rule was removed and the modes put back. Steam was not run against the rule; it reads the same hidraw node SDL's default backend does, so the same result is expected but unobserved.
 
 What the rows mean for the design:
 
@@ -92,10 +92,9 @@ Not tested: it isn't installed on the development host, and the first release is
 
 ## Still to run
 
-Both need the maintainer; results are logged under `spikes/hiding/target/`.
+Needs the maintainer; results are logged under `spikes/hiding/target/`.
 
-1. **Root, on the DualSense:** `just spike-hiding-root`. It hides the pad with the udev rule, records what the seat user and SDL (both backends) still see, asks for one replug, then restores. Expected: SDL lists one pad fewer in both modes, before and after the replug.
-2. **Identifiers:** run `just spike-hiding-ids "<label>"` in each of these states: the DualSense on USB after a replug; the DualSense over Bluetooth; an Xbox pad on USB; the Xbox pad over Bluetooth.
+**Identifiers:** run `just spike-hiding-ids "<label>"` in each of these states: the DualSense on USB after a replug; the DualSense over Bluetooth; an Xbox pad on USB; the Xbox pad over Bluetooth.
 
 ## What this changes in the plan
 

@@ -2,7 +2,7 @@
 
 ## State
 
-- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding spike has its finding, [findings/hiding.md](findings/hiding.md), awaiting maintainer review; two of its checks need the maintainer at the machine (listed in the finding).
+- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding spike has its finding, [findings/hiding.md](findings/hiding.md), awaiting maintainer review; one check still needs the maintainer at the machine (identifiers across reconnects).
 - **Next action:** after that review, the virtual pad identity spike.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
@@ -187,7 +187,7 @@ Order: the survey, then S1 and S5, then S2, then S4, then S3. S5 precedes S4 bec
 - [x] For each mechanism, record what remains after the daemon is killed without cleanup, and after the pad reconnects.
 - [x] Record Steam's behavior by start order and whether a change needs a Steam restart.
 - [x] In a clean NixOS VM with no Steam or Sunshine rules, defined as a flake check, with fake pads created through uinput and uhid: what a seat user can open among `/dev/uinput`, `/dev/uhid` and the pads' event, js and hidraw nodes.
-- [ ] The root mechanism against SDL on a real pad (needs the maintainer's `sudo`).
+- [x] The root mechanism against SDL on a real pad.
 - [ ] Record which identifiers stay stable for an Xbox pad and a DualShock or DualSense across reconnects, over USB and Bluetooth (recorded for the two pads connected; the reconnect and transport comparison needs the maintainer).
 - [x] Write the finding.
 
