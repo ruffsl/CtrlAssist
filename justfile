@@ -165,6 +165,30 @@ msrv:
 vm name:
     nix build .#checks.x86_64-linux.{{ name }} --print-build-logs
 
+# --- Dev -----------------------------------------------------------------
+#
+# Run the stack from the build tree. The socket is the installed daemon's
+# own unless CTRLASSIST_SOCKET names another, so a dev daemon and an
+# installed one don't run side by side by accident.
+
+runtime_dir := env("XDG_RUNTIME_DIR", "/tmp")
+socket := env("CTRLASSIST_SOCKET", runtime_dir / "ctrlassist/zenoh.sock")
+
+# RELEASE=true runs optimized builds.
+_dev_profile := if env("RELEASE", "false") == "true" { "release" } else { "test" }
+_daemon_log := "info,ctrlassist_daemon=debug,ctrlassist_protocol=debug,zenoh=warn"
+
+# Start the daemon
+[group('dev')]
+daemon-start:
+    RUST_LOG="{{ _daemon_log }}" \
+        cargo run --profile {{ _dev_profile }} --bin ctrlassist -- service daemon --socket "{{ socket }}"
+
+# Run the CLI against the dev daemon, such as `just cli status`
+[group('dev')]
+cli *args:
+    cargo run --quiet --profile {{ _dev_profile }} --bin ctrlassist -- --socket "{{ socket }}" {{ args }}
+
 # --- Maintenance ---------------------------------------------------------
 
 controller_db := "crates/ctrlassist-device/data"

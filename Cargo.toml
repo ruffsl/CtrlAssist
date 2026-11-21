@@ -21,8 +21,10 @@ publish = false
 [workspace.dependencies]
 # Internal crates. Unpublished ones are path-only.
 ctrlassist-core = { path = "crates/ctrlassist-core" }
+ctrlassist-daemon = { path = "crates/ctrlassist-daemon" }
 ctrlassist-device = { path = "crates/ctrlassist-device" }
 ctrlassist-hider = { path = "crates/ctrlassist-hider" }
+ctrlassist-protocol = { path = "crates/ctrlassist-protocol" }
 ctrlassist-test = { path = "crates/ctrlassist-test" }
 
 # Profiles on disk and payloads on the wire
@@ -34,9 +36,15 @@ toml = "1"
 # transports are switched off, as in TisVlay, whose pin this is.
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 zenoh = { version = "1.10", default-features = false, features = ["transport_unixsock-stream"] }
+# Tilde, not caret: `unstable` switches on zenoh's unstable and internal
+# APIs (the cached publishers and history subscribers state rides on),
+# which may break within 1.x. Bumped deliberately, with TisVlay's.
+zenoh-ext = { version = "~1.10", default-features = false, features = ["unstable"] }
 
 # Logging
 tracing = "0.1"
+tracing-journald = "0.3"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "fmt", "registry"] }
 
 # Tests
 tempfile = "3"

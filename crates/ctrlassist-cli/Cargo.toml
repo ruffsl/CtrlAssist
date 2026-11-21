@@ -1,0 +1,34 @@
+[package]
+name = "ctrlassist-cli"
+description = "The ctrlassist command: the daemon as a service verb, and the clients that talk to it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ctrlassist"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+ctrlassist-daemon = { workspace = true }
+ctrlassist-protocol = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+zenoh = { workspace = true }
+
+[dev-dependencies]
+ctrlassist-device = { workspace = true }
+tempfile = { workspace = true }
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
+[lints]
+workspace = true

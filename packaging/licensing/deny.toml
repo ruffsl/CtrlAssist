@@ -55,6 +55,9 @@ skip = [
     { crate = "socket2@0.5.10", reason = "zenoh pins socket2 0.5; tokio is on 0.6" },
     { crate = "spin@0.9.9", reason = "flume 0.11 (zenoh's channel) pins spin 0.9; uhlc (zenoh's timestamps) is on 0.10" },
     { crate = "syn@2.0.119", reason = "zenoh's proc-macro dependencies and tracing-attributes are still on syn 2" },
+    { crate = "toml@0.9.12", reason = "zenoh-config (under zenoh-ext's unstable feature) pins toml 0.9; the workspace is on 1.x" },
+    { crate = "toml_datetime@0.7.5", reason = "toml 0.9 counterpart (zenoh-config)" },
+    { crate = "winnow@0.7.15", reason = "toml 0.9 counterpart (zenoh-config)" },
 ]
 
 [advisories]

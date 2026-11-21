@@ -13,6 +13,9 @@ Cargo.toml                    # workspace root: one version, the lint table, the
 crates/
   ctrlassist-core/            # the routing model: controls, pad state, groups, mux and
                               # demux nodes, the graph, the feedback router. No dependencies.
+  ctrlassist-cli/             # the ctrlassist binary: `service daemon`, `status`
+  ctrlassist-daemon/          # the control side: the session, liveliness, the daemon's
+                              # rpcs and state, logging
   ctrlassist-device/          # the kernel side: pads read from descriptors, the kernel
                               # gamepad layout, the controller database and its pinned
                               # snapshot, uinput virtual pads, the input thread, hotplug

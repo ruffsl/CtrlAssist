@@ -33,6 +33,10 @@ A clean machine opens neither interface to an ordinary user, so a test that need
 
 `ctrlassist-fixture` is the same fakes as a command, for the virtual machine checks' scripts: it creates a pad and holds it until killed, lists pads with what the caller can open, counts what arrives on a node, reads a pad as the daemon does, forwards a pad to a virtual pad, and hides a pad through the hiding service.
 
+## Wire tests
+
+The control plane is tested on real links: a daemon, or a stand-in for one, listens on a temporary socket under `/tmp` (a path under the build tree can exceed the kernel's limit for a socket's name) and a client calls it. The CLI's tests run the built `ctrlassist` binary against such a daemon, and start and stop the daemon as its service verb.
+
 ## Virtual machine checks
 
 Each `packaging/nix/test-*.nix` is a NixOS test exposed as a flake check and run with `just vm <name>`. They need KVM. A check asserts; it doesn't just print. They start from a machine with only systemd's own udev rules, because a developer's desktop has Steam's and others' rules installed and hides what a clean machine refuses.
