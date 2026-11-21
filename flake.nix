@@ -22,7 +22,10 @@
         let
           bySystem = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] f;
         in
-        nixpkgs.lib.genAttrs [ "devShells" ] (
+        nixpkgs.lib.genAttrs [
+          "checks"
+          "devShells"
+        ] (
           output: nixpkgs.lib.mapAttrs (_: outputs: outputs.${output}) bySystem
         );
     in
@@ -35,6 +38,18 @@
         rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       in
       {
+        # The hiding spike's clean-machine probes, run in a NixOS VM.
+        checks.spike-hiding = pkgs.callPackage ./spikes/hiding/vm.nix {
+          probe = pkgs.rustPlatform.buildRustPackage {
+            pname = "spike-hiding";
+            version = "0.0.0";
+            src = ./spikes/hiding;
+            cargoLock.lockFile = ./spikes/hiding/Cargo.lock;
+            nativeBuildInputs = [ pkgs.pkg-config ];
+            buildInputs = [ pkgs.udev ];
+          };
+        };
+
         # Every tool a `just` recipe or prek hook calls comes from here, so
         # the checks run the same for everyone. A tool joins this list in
         # the commit that first uses it.

@@ -23,3 +23,11 @@ typos:
 # Run every local gate
 [group('check')]
 check: typos
+
+# --- Spikes --------------------------------------------------------------
+
+# Run the hiding spike's clean-machine probes in a NixOS VM. The observations
+# are in the build log: `nix log .#checks.x86_64-linux.spike-hiding`.
+[group('spike')]
+spike-hiding-vm:
+    nix build .#checks.x86_64-linux.spike-hiding --print-build-logs
