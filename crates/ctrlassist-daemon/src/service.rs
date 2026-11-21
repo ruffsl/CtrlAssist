@@ -62,6 +62,17 @@ async fn run(args: Args, input: InputThread, reports: Receiver<Report>) -> Resul
         config: args.config_dir.unwrap_or(defaults.config),
         hider: args.hider_socket.unwrap_or(defaults.hider),
         test_pads: args.test_pads || std::env::var_os("CTRLASSIST_TEST_PADS").is_some(),
+        steam: defaults.steam,
+    };
+    // A daemon that takes the tests' pads isn't one in use, and leaves
+    // Steam's files alone.
+    let paths = Paths {
+        steam: if paths.test_pads {
+            Vec::new()
+        } else {
+            paths.steam
+        },
+        ..paths
     };
     let daemon = Daemon::start(&paths, input, reports).await?;
 

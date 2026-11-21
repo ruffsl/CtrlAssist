@@ -228,6 +228,7 @@ mod tests {
             config: at("config"),
             hider: at("hider.sock"),
             test_pads: true,
+            steam: Vec::new(),
         };
         let daemon = start_daemon(&paths).await;
         let client = DaemonClient::connect(&paths.socket).await.unwrap();

@@ -259,7 +259,7 @@ What this defends: another user's session, and the rest of the system, against a
 In a Flatpak, or where the service isn't installed, the daemon uses what an unprivileged process can:
 
 - **A grab** on each pad's event node, which silences evdev and joydev readers and is undone by the kernel if the daemon dies.
-- **Steam's controller blacklist,** which hides a pad from Steam, by vendor and product, the next time Steam starts. It is a persistent edit to a file the daemon doesn't own, so each entry is recorded in the daemon's state directory before it is written, reconciled at startup, and removed when the setup stops.
+- **Steam's controller blacklist,** which hides a pad from Steam, by vendor and product, the next time Steam starts. As a setup starts, each of its pads that is only grabbed has its model added to `controller_blacklist` in Steam's `config.vdf`, where Steam is installed (as a distribution installs it, or as a Flatpak), and it is taken out when the setup stops and when the daemon does. A model that one of the setup's virtual pads presents itself as is left out: Steam goes by the numbers, and would leave the virtual pad alone too. The file is Steam's, so only that one line is touched and every other byte kept; only entries the daemon added are ever removed, so one the user put there stays; and what was added is recorded in the daemon's state directory before Steam's file is written, so that the next daemon cleans up after one that died. A file that isn't shaped as Steam's is left alone. The list follows the pads a setup started with: a pad swapped in by a live update isn't added. A Steam that is running doesn't see the change, and may write its own copy of the file back as it exits.
 
 The daemon looks for the service when it starts and, as long as it hasn't found it, again each time it needs it: when a setup takes its pads and when a DualSense connects. So a daemon that starts before the service does uses it from the next setup on. Its state says which mechanism is in use, and is published again when that changes. A pad's own state says `hidden` only when the service has hidden it: a grabbed pad is silenced, not absent. If the service is there but refuses a pad, that pad is grabbed instead and the setup still starts.
 
@@ -404,7 +404,7 @@ Groups appear only when a pad isn't laid out as a gamepad; the schema has no key
 | Profiles | `$XDG_CONFIG_HOME/ctrlassist/profiles/` | One file each, named for the profile, with a schema version; written durably. A file that arrived some other way is listed with what is wrong with it, and left as it is. |
 | Known pads | `$XDG_STATE_HOME/ctrlassist/pads.toml` | Id, model and name of pads seen, and whether each could rumble, for profiles that name a pad that isn't connected. Written durably; a file that can't be understood is left as it is. |
 | Identity data | `$XDG_STATE_HOME/ctrlassist/identities/dualsense.toml` | A DualSense's report descriptor and firmware report, as hex, copied from the first one seen on USB and used in place of the shipped data. A file that isn't whole is left alone and the shipped data used. |
-| Steam blacklist record | `$XDG_STATE_HOME/ctrlassist/` | Entries the daemon added, so they can be removed after a crash. |
+| Steam blacklist record | `$XDG_STATE_HOME/ctrlassist/steam-blacklist.toml` | The entries the daemon has added to Steam's controller blacklist, so that they can be taken out after a crash. |
 
 ## Permissions
 

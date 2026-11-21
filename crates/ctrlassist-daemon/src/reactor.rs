@@ -96,6 +96,8 @@ pub(crate) struct Reactor {
     pub(crate) copied: Copied,
     /// Whether a connected pad is being copied now.
     pub(crate) copying: bool,
+    /// Steam's controller blacklist, for pads that are only grabbed.
+    pub(crate) blacklist: Arc<std::sync::Mutex<crate::blacklist::Blacklist>>,
     /// Whether the tests' fake pads are taken for pads to play with.
     pub(crate) test_pads: bool,
     /// The daemon's own state, as last published.
@@ -170,6 +172,7 @@ impl Reactor {
             buzzes: JoinSet::new(),
             copied,
             copying: false,
+            blacklist: Arc::new(std::sync::Mutex::new(crate::blacklist::Blacklist::none())),
             test_pads: false,
             state: None,
             candidates: Vec::new(),

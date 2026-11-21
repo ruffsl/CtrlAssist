@@ -28,6 +28,7 @@ use ctrlassist_protocol::{keys, rpc};
 use tracing::{info, warn};
 use zenoh::query::Query;
 
+use crate::blacklist::Blacklist;
 use crate::book::Book;
 use crate::device_identity;
 use crate::reactor::Reactor;
@@ -633,6 +634,7 @@ fn make(
     database: &Database,
     hiding: &Hiding,
     dualsense: &(PathBuf, DualSenseData),
+    blacklist: &Mutex<Blacklist>,
 ) -> Result<Made, String> {
     let graph = Graph::build(plan.graph).map_err(|error| error.to_string())?;
     let mut pads = Vec::new();
@@ -666,6 +668,18 @@ fn make(
                 ));
             }
         }
+    }
+    // A pad that is only grabbed is still Steam's to read some other
+    // way, so Steam is told to leave its model alone, unless a virtual
+    // pad of the setup is of that model too: Steam goes by the numbers.
+    let made: Vec<(u16, u16)> = sinks.iter().map(|sink| sink.identity().model()).collect();
+    let grabbed = pads.iter().zip(&taken).filter_map(|(pad, (_, token))| {
+        let ids = pad.as_ref().filter(|_| token.is_none())?.identifiers();
+        let model = (ids.vendor, ids.product);
+        (!made.contains(&model)).then(|| crate::blacklist::entry(model.0, model.1))
+    });
+    if let Ok(mut blacklist) = blacklist.lock() {
+        blacklist.set(setup, grabbed.collect());
     }
     let nodes = sinks
         .iter()
@@ -706,9 +720,13 @@ impl Reactor {
         waiting: Option<Waiting>,
     ) {
         let hiding = Arc::clone(&self.hiding);
+        let blacklist = Arc::clone(&self.blacklist);
         self.work.spawn_blocking(move || {
             drop(setup);
             hiding.restore(&tokens);
+            if let Ok(mut blacklist) = blacklist.lock() {
+                blacklist.set(&name, std::collections::BTreeSet::new());
+            }
             Done::Retired { name, waiting }
         });
     }
@@ -880,8 +898,11 @@ impl Reactor {
             self.copied.path().to_path_buf(),
             self.copied.dualsense_or_shipped(),
         );
+        let blacklist = Arc::clone(&self.blacklist);
         self.work.spawn_blocking(move || Done::Started {
-            outcome: make(plan, &name, &nodes, &database, &hiding, &dualsense),
+            outcome: make(
+                plan, &name, &nodes, &database, &hiding, &dualsense, &blacklist,
+            ),
             name,
             asker,
         });
@@ -900,11 +921,16 @@ impl Reactor {
                     let reason = error.to_string();
                     if let SendError::Full(command) | SendError::Stopped(command) = error {
                         let hiding = Arc::clone(&self.hiding);
+                        let blacklist = Arc::clone(&self.blacklist);
+                        let stopped = name.clone();
                         let tokens: Vec<Token> =
                             pads.iter().filter_map(|(_, token)| *token).collect();
                         self.work.spawn_blocking(move || {
                             drop(command);
                             hiding.restore(&tokens);
+                            if let Ok(mut blacklist) = blacklist.lock() {
+                                blacklist.set(&stopped, std::collections::BTreeSet::new());
+                            }
                             Done::Dropped
                         });
                     }

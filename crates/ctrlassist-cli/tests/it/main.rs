@@ -27,6 +27,7 @@ async fn start(socket: &Path) -> Daemon {
         config: socket.with_file_name("config"),
         hider: socket.with_file_name("hider.sock"),
         test_pads: true,
+        steam: Vec::new(),
     };
     Daemon::start(&paths, input, reports).await.unwrap()
 }

@@ -72,6 +72,8 @@ pub(crate) async fn start_daemon_taking(socket: &std::path::Path, test_pads: boo
         config: socket.with_file_name("config"),
         hider: socket.with_file_name("hider.sock"),
         test_pads,
+        // Steam's, if a test puts one there; never the user's own.
+        steam: vec![socket.with_file_name("config.vdf")],
     };
     Daemon::start(&paths, input, reports).await.unwrap()
 }

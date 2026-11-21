@@ -4,6 +4,7 @@
 //! in the user's runtime directory. So far it answers the version check
 //! and publishes its own state; pads, profiles and setups follow.
 
+mod blacklist;
 mod book;
 mod copied;
 mod durable;
@@ -31,6 +32,7 @@ use tracing::{info, warn};
 use zenoh::Session;
 use zenoh::liveliness::LivelinessToken;
 
+use blacklist::Blacklist;
 use book::Book;
 use hotplug::Watch;
 use profiles::Profiles;
@@ -49,6 +51,11 @@ pub struct Paths {
     pub config: PathBuf,
     /// The hiding service's socket.
     pub hider: PathBuf,
+    /// Steam's `config.vdf` files, one per way Steam may be installed:
+    /// where the hiding service isn't there, a setup's pads are added to
+    /// the controller blacklist in each that exists. None leaves Steam's
+    /// files alone.
+    pub steam: Vec<PathBuf>,
     /// Whether to take the tests' fake pads for pads to play with. A
     /// daemon in use doesn't: a test run beside it would fill its list
     /// of pads and start its profiles.
@@ -78,6 +85,13 @@ impl Paths {
             state: user_directory("XDG_STATE_HOME", ".local/state").join("ctrlassist"),
             config: user_directory("XDG_CONFIG_HOME", ".config").join("ctrlassist"),
             hider: PathBuf::from(ctrlassist_hider::SOCKET_PATH),
+            steam: {
+                let data = user_directory("XDG_DATA_HOME", ".local/share");
+                let config = "Steam/config/config.vdf";
+                // As installed by a distribution, and as a Flatpak.
+                let flatpak = ".var/app/com.valvesoftware.Steam/.local/share";
+                vec![data.join(config), user_directory("", flatpak).join(config)]
+            },
             test_pads: false,
         }
     }
@@ -86,6 +100,9 @@ impl Paths {
 /// A running daemon.
 #[must_use = "dropping the daemon withdraws its liveliness token and stops the input thread, which removes every virtual pad"]
 pub struct Daemon {
+    /// What the daemon has in Steam's controller blacklist, taken out
+    /// as it stops.
+    blacklist: Arc<std::sync::Mutex<Blacklist>>,
     // Declared in the order they are torn down: the token first, so a
     // client sees the daemon gone before what it served goes.
     alive: LivelinessToken,
@@ -195,6 +212,12 @@ impl Daemon {
             copied::Copied::open(&paths.state),
         );
         reactor.test_pads = paths.test_pads;
+        let (steam, state) = (paths.steam.clone(), paths.state.clone());
+        let blacklist = tokio::task::spawn_blocking(move || Blacklist::open(steam, &state))
+            .await
+            .context("reading what was left in Steam's controller blacklist")?;
+        let blacklist = Arc::new(std::sync::Mutex::new(blacklist));
+        reactor.blacklist = Arc::clone(&blacklist);
 
         // The input thread's reports wait on a thread of their own, which
         // ends with the input thread.
@@ -254,6 +277,7 @@ impl Daemon {
             .map_err(|error| anyhow!("declaring the daemon's liveliness: {error}"))?;
         info!(socket = %socket.display(), state = %state_dir.display(), version = VERSION, realtime, "the daemon is up");
         Ok(Self {
+            blacklist,
             alive,
             stop,
             reactor,
@@ -273,6 +297,7 @@ impl Daemon {
     /// closes, then the input thread stops and its virtual pads go.
     pub async fn stop(self) {
         let Self {
+            blacklist,
             alive,
             stop,
             reactor,
@@ -294,6 +319,10 @@ impl Daemon {
         let _ = tokio::task::spawn_blocking(move || {
             drop(watch);
             drop(input);
+            // Nothing runs any more: Steam is left as it was found.
+            if let Ok(mut blacklist) = blacklist.lock() {
+                blacklist.clear();
+            }
         })
         .await;
         info!("the daemon has stopped");

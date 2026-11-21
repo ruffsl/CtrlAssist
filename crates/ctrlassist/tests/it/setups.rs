@@ -297,7 +297,22 @@ async fn without_the_hiding_service_a_setup_s_pads_are_grabbed() {
     let mut primary = FakePad::new("Grab Primary", VENDOR, 0x7f01).unwrap();
     let _assist = FakePad::new("Grab Assist", VENDOR, 0x7f02).unwrap();
     let (_dir, socket) = socket();
+    // A Steam of this test's own, which already leaves one model alone
+    // by the user's doing, and has one left by a daemon that died.
+    let steam = socket.with_file_name("config.vdf");
+    let listing = |list: &str| {
+        format!("\"InstallConfigStore\"\n{{\n\t\"controller_blacklist\"\t\t\"{list}\"\n}}\n")
+    };
+    std::fs::write(&steam, listing("28de/1142,1209/dead")).unwrap();
+    let state = socket.with_file_name("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let left = "schema = 1\nadded = [\"1209/dead\"]\n";
+    std::fs::write(state.join("steam-blacklist.toml"), left).unwrap();
     let daemon = start_daemon(&socket).await;
+    assert_eq!(
+        std::fs::read_to_string(&steam).unwrap(),
+        listing("28de/1142")
+    );
     let client = hydrated(&socket).await;
     assert_eq!(
         client.daemon_state().unwrap().unwrap().hiding,
@@ -313,6 +328,12 @@ async fn without_the_hiding_service_a_setup_s_pads_are_grabbed() {
     let setup = in_phase(&client, "couch", Phase::Running).await;
     // Grabbed isn't hidden: the pads' state doesn't claim it.
     assert!(client.list_pads().unwrap().iter().all(|pad| !pad.hidden));
+    // Steam reads some pads another way than a grab silences, so it is
+    // told to leave the setup's models alone, beside what it was told.
+    assert_eq!(
+        std::fs::read_to_string(&steam).unwrap(),
+        listing("28de/1142,1209/7f01,1209/7f02")
+    );
     let mut game = game(&setup).await;
     primary.south(true).unwrap();
     south_is(&mut game, true).await;
@@ -323,11 +344,26 @@ async fn without_the_hiding_service_a_setup_s_pads_are_grabbed() {
     primary.south(false).unwrap();
     south_is(&mut game, false).await;
 
-    // Stopped, the pad is everyone's again.
+    // Stopped, the pad is everyone's again, Steam's too.
     client.stop_setup("couch").await.unwrap();
     primary.south(true).unwrap();
     south_is(&mut other, true).await;
+    assert_eq!(
+        std::fs::read_to_string(&steam).unwrap(),
+        listing("28de/1142")
+    );
+    // A daemon that stops with a setup running leaves Steam as it was.
+    client.start_setup("couch").await.unwrap();
+    in_phase(&client, "couch", Phase::Running).await;
+    assert_ne!(
+        std::fs::read_to_string(&steam).unwrap(),
+        listing("28de/1142")
+    );
     daemon.stop().await;
+    assert_eq!(
+        std::fs::read_to_string(&steam).unwrap(),
+        listing("28de/1142")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

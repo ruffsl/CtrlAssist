@@ -33,6 +33,7 @@ fn paths(socket: &Path) -> Paths {
         config: socket.with_file_name("config"),
         hider: socket.with_file_name("hider.sock"),
         test_pads: true,
+        steam: Vec::new(),
     }
 }
 
