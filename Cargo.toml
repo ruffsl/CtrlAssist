@@ -25,6 +25,7 @@ publish = false
 [workspace.dependencies]
 # Internal crates. Unpublished ones are path-only.
 ctrlassist = { path = "crates/ctrlassist" }
+ctrlassist-cli = { path = "crates/ctrlassist-cli" }
 ctrlassist-core = { path = "crates/ctrlassist-core" }
 ctrlassist-daemon = { path = "crates/ctrlassist-daemon" }
 ctrlassist-device = { path = "crates/ctrlassist-device" }
@@ -67,6 +68,8 @@ anyhow = "1"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+# The book's CLI reference, written from the clap tree.
+clap-markdown = "0.1"
 # unstable-dynamic: completions that ask the running program, so a pad's
 # id or a profile's name completes from the daemon. As in TisVlay.
 clap_complete = { version = "4.6", features = ["unstable-dynamic"] }

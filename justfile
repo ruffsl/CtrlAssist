@@ -235,6 +235,44 @@ licenses-html:
         packaging/licensing/about.html.hbs \
         -o packaging/licensing/THIRD-PARTY-LICENSES.html
 
+# --- Docs ----------------------------------------------------------------
+#
+# The user guide is an mdBook under docs/book. The pages under
+# src/generated are written from the code they document.
+
+generated_docs := "docs/book/src/generated"
+
+# Build the user guide into docs/book/book/
+[group('docs')]
+docs-build:
+    mdbook build docs/book
+
+# External links are skipped, so the check needs no network and gives the
+# same answer each time.
+#
+# Check local links and heading anchors in the built guide
+[group('docs')]
+docs-links: docs-build
+    lychee --offline --include-fragments=anchor-only \
+        --root-dir "$PWD/docs/book/book" docs/book/book/
+
+# Serve the user guide with live reload at http://localhost:3000
+[group('docs')]
+docs-serve:
+    mdbook serve docs/book --open
+
+# Rewrite the guide's generated pages from the code they document
+[group('docs')]
+docs-gen:
+    cargo run -q -p ctrlassist-docgen -- {{ generated_docs }}
+    @echo "Wrote {{ generated_docs }}/: review and commit."
+
+# Fail if a generated page is stale or a new one isn't committed
+[group('docs')]
+docs-gen-check: docs-gen
+    git diff --exit-code -- {{ generated_docs }}
+    test -z "$(git ls-files --others --exclude-standard -- {{ generated_docs }})"
+
 # --- Packaging -----------------------------------------------------------
 
 # The oldest glibc the packaged binaries run on. 2.34 covers Debian 12,
@@ -515,11 +553,12 @@ verify-release tag:
     fi
 
 # release-plz picks the version from the commit history and writes the
-# CHANGELOGs.
+# CHANGELOGs; the guide's generated pages follow, the release version
+# among them.
 #
 # Bump the version and CHANGELOGs for a release
 [group('package')]
-release-bump:
+release-bump: && docs-gen
     release-plz update --config .config/release-plz.toml
 
 # --- Maintenance ---------------------------------------------------------

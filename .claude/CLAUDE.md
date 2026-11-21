@@ -26,6 +26,8 @@ crates/
   ctrlassist-device/          # the kernel side: pads read from descriptors, the kernel
                               # gamepad layout, the controller database and its pinned
                               # snapshot, uinput virtual pads, the input thread, hotplug
+  ctrlassist-docgen/          # writes the user guide's generated pages (the CLI
+                              # reference) from the code they document
   ctrlassist-hider/           # the hiding service: its wire types and client as a library,
                               # and the root binary
   ctrlassist-protocol/        # what the daemon and its clients agree on: the profile
@@ -47,6 +49,8 @@ docs/
   build.md                    # gates, toolchain, lint policy, dependency review triggers
   testing.md                  # the test layers, the fake pads, the VM checks
   conventions.md              # code conventions (imported below)
+  book/                       # the user guide, an mdBook; src/generated is written by
+                              # `just docs-gen`
   plans/                      # the plan in flight
   concerns/, ideas/           # one doc per item; each README.md is its index
 packaging/

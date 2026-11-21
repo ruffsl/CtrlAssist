@@ -210,12 +210,53 @@ jobs:
       - name: Check
         run: cargo check --workspace --all-targets --all-features --locked
 
+  # The user guide: its generated pages match the code, it builds, and its
+  # local links and anchors resolve.
+  # It runs for a docs-only change too, which is the change most likely to
+  # break it.
+  docs:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libudev-dev libsystemd-dev pkg-config
+
+      - name: Toolchain
+        run: rustup show
+
+      - name: Setup
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: |
+            lychee@0.24.2
+            mdbook
+            just
+
+      - name: Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: docs
+
+      # A stale generated page would ship a reference that no longer
+      # matches the command.
+      - name: Generated pages
+        run: just docs-gen-check
+
+      - name: Build and check links
+        run: just docs-links
+
   # The one check a branch ruleset needs to require: it passes only if
   # every job above passed or was skipped.
   ci-result:
     name: CI result
     if: ${{ always() }}
-    needs: [changes, checks, ci, msrv]
+    needs: [changes, checks, ci, msrv, docs]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

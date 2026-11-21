@@ -190,6 +190,10 @@
             # `just release-bump`: the version and the CHANGELOGs from the
             # commit history.
             release-plz
+            # The user guide (`just docs-*`): mdBook builds it, and lychee
+            # checks its local links and anchors.
+            mdbook
+            lychee
             just
             just-lsp
             # jstest and evtest-style tools for looking at pads by hand

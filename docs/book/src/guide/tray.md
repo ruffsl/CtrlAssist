@@ -1,0 +1,39 @@
+# The Tray
+
+The tray is the everyday way to use CtrlAssist. Its icon shows the state at a glance: plain when nothing runs, colored when something does, a warning when an arrangement is waiting for a controller, an error when one has failed.
+
+## The menu
+
+**Profiles** come first: each one you have kept, and anything running.
+
+- A profile that isn't running offers **Start**.
+- A running one shows its state in brackets and offers **Stop**. Under it are its controllers (and which is missing, if one is), its virtual controller, and for a toggle, **Has control**: who plays now, and a click to hand over. A controller that isn't connected can't be handed to.
+- One that has failed says why. **Stop** clears it.
+
+**Quick start** pairs two controllers without writing anything; see the [Quick Start](../getting-started/quick-start.md). It keeps one profile, `quick`, which it rewrites each time. While `quick` runs the button reads **Restart**, since applying new choices restarts it; a game sees its controller disconnect and reconnect. A controller that is unplugged, already chosen for the other part, or busy in another arrangement can't be picked.
+
+**Pads** lists every controller CtrlAssist knows, connected or remembered.
+
+- **Identify** buzzes a connected controller for a moment, so you can tell two apart. If a game is rumbling it, the buzz takes over briefly.
+- **Forget** drops a controller that isn't connected from the list.
+
+The last line says how controllers are being hidden (`service` or `grab`) and whether the daemon got real-time scheduling. [How It Works](../reference/how-it-works.md) explains both.
+
+## Notifications
+
+CtrlAssist tells you when:
+
+- an arrangement is **held** because a controller disconnected, and when it is **running again**;
+- an arrangement **failed**;
+- the **daemon stopped**, which removes every virtual controller, or came back;
+- an arrangement started with controllers that are **only grabbed, not hidden**, or with one that **can't rumble**;
+- something you asked for from the menu **couldn't be done**, with the reason.
+
+## Starting and stopping the tray
+
+The tray starts with your graphical session. **Quit tray** in the menu closes it for this session; the daemon and anything running carry on.
+
+```sh
+systemctl --user status ctrlassist-tray
+systemctl --user restart ctrlassist-tray
+```
