@@ -32,19 +32,19 @@ Why a rewrite rather than a migration:
 
 **Packaging channels:** deb, rpm, a binary tarball, and a Nix package with a NixOS module, through TisVlay's pipeline (`cargo auditable zigbuild --profile dist`, `cargo nfpm`, Sigstore attestations, draft GitHub release). Closes #9.
 
-## Proposed, pending the questions at the end
+**A user-level daemon, never a system one.** The devices belong to the seat user and Steam's config is in their home. The privileged parts are static: udev rules that the native packages install (uinput access, and whatever spike S1 finds for hiding). There is no root process.
 
-**P1. A user-level daemon, never a system one.** The devices belong to the seat user and Steam's config is in their home. The privileged parts are static: udev rules that the native packages install (uinput access, and whatever spike S1 finds for hiding). There is no root process.
+**Daemon and thin clients, as separate processes of one binary.** `ctrlassist service daemon` owns the devices and the routing graph. The CLI, tray and GUI are clients. Reasons to split rather than run one process: a GUI toolkit shouldn't share a process with the input loop; a tray or GUI crash shouldn't drop the virtual pad mid-game; Steam Deck game mode has no tray; and the engine must outlive a settings window.
 
-**P2. Daemon and thin clients, as separate processes of one binary.** `ctrlassist service daemon` owns the devices and the routing graph. The CLI, tray and GUI are clients. Reasons to split rather than run one process: a GUI toolkit shouldn't share a process with the input loop; a tray or GUI crash shouldn't drop the virtual pad mid-game; Steam Deck game mode has no tray; and the engine must outlive a settings window.
+**Flatpak is a second-tier channel.** A Flatpak can't install a system service or udev rules, but it can run the same user-level processes inside its sandbox. It gets whatever hiding works unprivileged (today: the Steam blacklist), as it does now. It exists because SteamOS and Bazzite are immutable and are where this tool is most wanted (#13).
 
-**P3. Flatpak is a second-tier channel.** A Flatpak can't install a system service or udev rules, but it can run the same user-level processes inside its sandbox. It gets whatever hiding works unprivileged (today: the Steam blacklist), as it does now. It exists because SteamOS and Bazzite are immutable and are where this tool is most wanted (#13).
+**The core abstraction is a routing graph.** Sources (physical pads), sinks (virtual pads) and transform nodes (mux and demux modes), with force feedback flowing backward along the same edges. It unifies mux, demux, the legacy cookbook's chained instances, and per-control splitting (#53), and it is what a config file describes (#6). Spike S4 settles the node API.
+
+## Proposed, pending review
 
 **P4. `ctrlassist` on crates.io becomes the client SDK;** the binary lives in `ctrlassist-cli`, as in TisVlay. `cargo install` is no longer a supported install path, because a daemon needs a unit file and udev rules cargo can't install. 0.4.0 stays as the last binary release.
 
-**P5. The core abstraction is a routing graph.** Sources (physical pads), sinks (virtual pads) and transform nodes (mux and demux modes), with force feedback flowing backward along the same edges. It unifies mux, demux, the legacy cookbook's chained instances, and per-control splitting (#53), and it is what a config file describes (#6).
-
-**P6. zenoh for the control plane,** subject to spike S3. Its per-event cost is irrelevant under ground rule 5; what matters on a machine running a game is its idle overhead.
+**P6. zenoh for the control plane,** as in TisVlay. Performance work belongs to the data path, which is internal to the daemon (ground rule 5); zenoh carries only control, state and, off the critical path, sampled pad state for visualizers. The one thing to confirm is that a zenoh session living in the same process leaves the input thread undisturbed, which S3 checks. No alternative IPC is spiked.
 
 ## Lessons from the earlier refactor
 
@@ -98,7 +98,7 @@ Each is an independent workspace under `spikes/`, measured on the maintainer's h
 
 Also record what grants `/dev/uinput` access on Bazzite, SteamOS, Fedora, Ubuntu and NixOS, natively and inside a Flatpak, since the legacy README never says and something on the tested systems already does it.
 
-*Feeds:* P1, P3, the hide and spoof rows above, the packages' udev rules.
+*Feeds:* the hide and spoof rows above, the packages' udev rules.
 
 ### S2. The input loop
 
@@ -110,15 +110,15 @@ Also record what grants `/dev/uinput` access on Bazzite, SteamOS, Fedora, Ubuntu
 
 *Feeds:* the device crate's design, #10, and whether S1's grab is usable.
 
-### S3. Control-plane overhead
+### S3. zenoh beside the input loop
 
-*Question:* is zenoh cheap enough to sit idle beside a game?
+A check, not a comparison: the data path never touches zenoh, so this only confirms that sharing a process with it is harmless.
 
-*Method:* S2's loop inside a daemon that also runs a zenoh session on a Unix socket in `$XDG_RUNTIME_DIR`, publishing state and serving a few rpcs in TisVlay's style, with one idle client attached. Measure the same three numbers as S2 plus resident memory, with the daemon idle and under load, against S2 alone. Also try a rate-limited live-input publisher (for a GUI's stick visualizer) that runs only while something subscribes.
+*Method:* S2's loop inside a daemon that also runs a zenoh session on a Unix socket in `$XDG_RUNTIME_DIR`, publishing state and serving a few rpcs in TisVlay's style, with one idle client attached. Re-run S2's measurements with the input thread isolated from zenoh's runtime threads, and record the daemon's idle wakeups and resident memory. Also prototype the visualizer feed: pad state sampled off the input thread and published only while something subscribes, so a GUI, tray or TUI can mirror a pad without sitting between hardware and game.
 
-*Verdict:* keep zenoh if the data thread's numbers are unchanged within measurement noise and the idle cost of the rest is one the maintainer accepts on a handheld. The thresholds are set once S2 gives a baseline, not guessed here.
+*Verdict:* zenoh stays if the input thread's numbers match S2's within measurement noise. If they don't, the finding says what isolates them (thread placement, a separate runtime) before any other IPC is considered.
 
-*Feeds:* P6, P2.
+*Feeds:* P6, and the daemon's threading model.
 
 ### S4. The routing graph
 
@@ -126,7 +126,7 @@ Also record what grants `/dev/uinput` access on Bazzite, SteamOS, Fedora, Ubuntu
 
 *Method:* a pure crate, no device or async dependencies. Write scenario tests first for priority, average, toggle, unicast, multicast, a chained demux-into-mux setup, and rumble routing for each, then the nodes and an executor that make them pass. Property tests cover the invariants (for example: priority never forwards a primary button while assist holds it; outputs stay in range; a toggle switch leaves the sink consistent with the newly active pad). Benchmark a step of the executor to confirm it adds nothing measurable next to S2's numbers.
 
-*Feeds:* P5, the core crate, and the profile format.
+*Feeds:* the core crate, and the profile format.
 
 S1 and S4 are independent and can run in parallel. S3 builds on S2.
 
@@ -147,4 +147,5 @@ Open legacy issues that the rewrite doesn't close are moved to `docs/ideas/` in 
 
 ## Deviations
 
+- **Third draft.** The maintainer confirmed the user daemon with thin clients, Flatpak as a second tier, and the general graph, which moved to Decided. S3 shrank from an IPC comparison to a co-existence check, since performance matters on the data path and that never leaves the daemon.
 - **Second draft.** The first draft (previous commit) was a phased, behavior-preserving migration: scaffolding around the existing crate, then a crate split, packaging, a daemon, a GUI, with CLI compatibility kept through an in-process daemon mode. The maintainer's review replaced it with a clean-slate rewrite planned architecture-first: compatibility isn't wanted, piecemeal migration invites churn, and the performance and process-layout questions need spikes before the crates are drawn.
