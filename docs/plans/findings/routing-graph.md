@@ -1,6 +1,6 @@
 # Finding: the routing graph
 
-Built 2026-11-21 as `spikes/graph/`: a crate with no dependencies, about 900 lines, plus 36 tests. The scenario tests were written and committed before any node existed. Reproduce with `just spike-graph`.
+Built 2026-11-21 as `spikes/graph/`: a crate with no dependencies, about 1,100 lines, plus 36 tests. The scenario tests were written and committed before any node existed. Reproduce with `just spike-graph`.
 
 ## Verdict
 
