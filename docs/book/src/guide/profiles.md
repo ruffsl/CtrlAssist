@@ -128,7 +128,7 @@ ctrlassist update couch --dry-run   # what would it cost?
 ctrlassist update couch
 ```
 
-An update that keeps the same controllers under the same names and the same virtual controllers is applied as the setup runs, and a game notices nothing: a mode, a threshold, a rule, a deadzone, who feels rumble, the switch button, even how the parts are wired. A toggle goes on with whoever had control. Changing which controllers take part, or a virtual controller's identity, restarts the setup, which a game sees as its controller disconnecting and a new one connecting. `update` says which it is, before and after. If the profile as kept is wrong or gone, the setup carries on as it was.
+An update that keeps the same virtual controllers, as many and of the same identities, is applied as the setup runs, and a game notices nothing: other controllers, a mode, a threshold, a rule, a deadzone, who feels rumble, the switch button, even how the parts are wired. A controller that is swapped out is given back to the system and the new one hidden; one that only changes parts stays as it is. A toggle goes on with whoever had control. Changing a virtual controller's identity, or how many there are, restarts the setup, which a game sees as its controller disconnecting and a new one connecting. `update` says which it is, before and after. If the profile as kept is wrong or gone, the setup carries on as it was.
 
 To hand over a toggle or a unicast without its button:
 

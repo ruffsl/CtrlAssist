@@ -128,23 +128,21 @@ impl Quick {
         profile.to_toml().ok()
     }
 
-    /// Whether running these in place of `kept` takes a restart: other
-    /// pads or another identity. The rest a running setup takes as it
-    /// runs.
+    /// Whether running these in place of `kept` takes a restart: only
+    /// another identity does, which is another virtual pad. The rest a
+    /// running setup takes as it runs, its pads included.
     #[must_use]
     pub fn restarts(&self, kept: &Self) -> bool {
-        self.primary != kept.primary || self.assist != kept.assist || self.identity != kept.identity
+        self.identity != kept.identity
     }
 
-    /// `kept` with the choices of these that a running setup takes as it
-    /// runs: the mode, who feels rumble, and whether it starts by itself.
+    /// These choices as a running setup can take them as it runs: all of
+    /// them, on the identity `kept` has.
     #[must_use]
-    pub fn onto(&self, kept: Self) -> Self {
+    pub fn onto(&self, kept: &Self) -> Self {
         Self {
-            mode: self.mode,
-            rumble: self.rumble,
-            auto_start: self.auto_start,
-            ..kept
+            identity: kept.identity,
+            ..self.clone()
         }
     }
 
@@ -208,27 +206,23 @@ mod tests {
     }
 
     #[test]
-    fn only_other_pads_or_another_identity_take_a_restart() {
+    fn only_another_identity_takes_a_restart() {
         let kept = chosen();
         let live = Quick {
+            primary: Some("address:other".to_string()),
             mode: MuxMode::Toggle,
             rumble: Rumble::Assist,
             auto_start: true,
             ..chosen()
         };
         assert!(!live.restarts(&kept));
-        let other_pad = Quick {
-            primary: Some("address:other".to_string()),
-            ..live.clone()
-        };
         let other_identity = Quick {
             identity: Identity::Xbox,
             ..live.clone()
         };
-        assert!(other_pad.restarts(&kept) && other_identity.restarts(&kept));
+        assert!(other_identity.restarts(&kept));
         // What is taken as it runs goes onto what is kept; the rest waits.
-        assert_eq!(other_pad.onto(kept.clone()), live);
-        assert_eq!(other_identity.onto(kept), live);
+        assert_eq!(other_identity.onto(&kept), live);
     }
 
     #[test]

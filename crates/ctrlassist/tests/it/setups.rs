@@ -709,6 +709,117 @@ async fn an_update_is_taken_as_the_setup_runs_or_restarts_it_and_says_which() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn another_pad_is_taken_as_the_setup_runs_and_the_one_given_up_is_shown_again() {
+    use ctrlassist_test::Asked;
+    const TEST: &str = "another_pad_is_taken_as_the_setup_runs_and_the_one_given_up_is_shown_again";
+    if !can_make_pads(TEST) {
+        return;
+    }
+    let mut primary = FakePad::new("Change Primary", VENDOR, 0x8901).unwrap();
+    let mut assist = FakePad::new("Change Assist", VENDOR, 0x8902).unwrap();
+    let mut third = FakePad::new("Change Third", VENDOR, 0x8903).unwrap();
+    let id = |product: u16, name: &str| format!("model:1209:{product:04x}:{name}");
+    let (_dir, socket) = socket();
+    let hider = ctrlassist_test::FakeHider::listen(&socket.with_file_name("hider.sock")).unwrap();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    client
+        .put_profile("couch", &priority(0x8901, 0x8902))
+        .await
+        .unwrap();
+    client.start_setup("couch").await.unwrap();
+    let before = in_phase(&client, "couch", Phase::Running).await;
+    let mut game = game(&before).await;
+    let user = |pad: &str| {
+        let pads = client.list_pads().unwrap();
+        let pad = pads.iter().find(|known| known.id == pad).unwrap();
+        (pad.setup.clone(), pad.hidden)
+    };
+
+    // The third pad as the assist: no restart, on the virtual pad the
+    // game has. The third is hidden, the primary is left as it is, and
+    // the old assist is shown again only once nothing of ours reads it.
+    client
+        .put_profile("couch", &priority(0x8901, 0x8903))
+        .await
+        .unwrap();
+    assert!(!client.update_setup("couch", false).await.unwrap());
+    assert!(!client.update_setup("couch", true).await.unwrap());
+    assert_eq!(
+        hider.asked()[2..],
+        [
+            Asked::Hide(id(0x8903, "Change Third")),
+            Asked::Restore(id(0x8902, "Change Assist"))
+        ]
+    );
+    let after = client.setup("couch").unwrap().unwrap();
+    assert_eq!(after.phase, Phase::Running);
+    assert_eq!(after.sinks[0].node, before.sinks[0].node);
+    let pads: Vec<Option<&str>> = after
+        .sources
+        .iter()
+        .map(|source| source.pad.as_deref())
+        .collect();
+    let (third_id, primary_id) = (id(0x8903, "Change Third"), id(0x8901, "Change Primary"));
+    assert_eq!(pads, [Some(third_id.as_str()), Some(primary_id.as_str())]);
+    eventually("the pads never said whose they are", async || {
+        user(&third_id) == (Some("couch".to_string()), true)
+            && user(&id(0x8902, "Change Assist")) == (None, false)
+    })
+    .await;
+
+    // The pad given up is no longer the game's; the other two are.
+    assist.south(true).unwrap();
+    third.south(true).unwrap();
+    south_is(&mut game, true).await;
+    third.south(false).unwrap();
+    south_is(&mut game, false).await;
+    primary.south(true).unwrap();
+    south_is(&mut game, true).await;
+    primary.south(false).unwrap();
+    south_is(&mut game, false).await;
+
+    // The two change parts: nothing is opened or shown again for that.
+    let asked = hider.asked().len();
+    client
+        .put_profile("couch", &priority(0x8903, 0x8901))
+        .await
+        .unwrap();
+    assert!(!client.update_setup("couch", true).await.unwrap());
+    assert_eq!(hider.asked().len(), asked);
+    let swapped = client.setup("couch").unwrap().unwrap();
+    let primary_now = swapped
+        .sources
+        .iter()
+        .find(|source| source.name == "primary");
+    assert_eq!(primary_now.unwrap().pad.as_deref(), Some(third_id.as_str()));
+    assert!(swapped.sources.iter().all(|source| source.present));
+
+    // A pad another setup has can't be taken, and the setup stays as it is.
+    client
+        .put_profile(
+            "solo",
+            "preset = \"multicast\"\npad = \"model:1209:8902\"\n",
+        )
+        .await
+        .unwrap();
+    client.start_setup("solo").await.unwrap();
+    in_phase(&client, "solo", Phase::Running).await;
+    let exact = format!(
+        "preset = \"priority\"\nprimary = \"{}\"\nassist = \"{third_id}\"\n",
+        id(0x8902, "Change Assist")
+    );
+    client.put_profile("couch", &exact).await.unwrap();
+    let in_use = client.update_setup("couch", true).await.unwrap_err();
+    assert_eq!(in_use.rpc_code(), Some(ErrorCode::PadInUse));
+    assert_eq!(
+        client.setup("couch").unwrap().unwrap().sources,
+        swapped.sources
+    );
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_pad_in_a_setup_is_buzzed_through_the_setup() {
     const TEST: &str = "a_pad_in_a_setup_is_buzzed_through_the_setup";
     if !can_make_pads(TEST) {

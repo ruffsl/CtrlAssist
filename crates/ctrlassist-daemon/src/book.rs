@@ -246,6 +246,14 @@ impl Book {
         }
     }
 
+    /// Notes that no setup uses the pad any more, nor hides it.
+    pub(crate) fn let_go(&mut self, id: &str) {
+        if let Some(row) = self.rows.get_mut(id) {
+            row.setup = None;
+            row.hidden = false;
+        }
+    }
+
     /// Notes that `setup` no longer uses any pad, nor hides one. Returns
     /// the pads it used.
     pub(crate) fn release(&mut self, setup: &str) -> Vec<String> {

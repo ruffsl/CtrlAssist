@@ -309,6 +309,15 @@ impl Router {
         }
     }
 
+    /// Takes `reported` as what each pad was last told, for a graph of
+    /// other pads, in place of its own, which `reported` then holds.
+    /// Each pad it has as `None` is told its level at the next
+    /// [`poll`](Self::poll). The games' effects are untouched.
+    pub fn swap_sources(&mut self, reported: &mut Vec<Option<Level>>) {
+        reported.truncate(MAX_SOURCES);
+        std::mem::swap(&mut self.reported, reported);
+    }
+
     /// Reports each pad whose level has changed, and returns when a level
     /// will next change by itself, if ever. Nothing needs to call this
     /// again before then unless a request arrives.

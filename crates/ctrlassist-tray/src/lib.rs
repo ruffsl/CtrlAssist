@@ -342,6 +342,22 @@ mod tests {
         let menu = rig.shows("Has control >").await;
         assert!(menu.contains("- Running as `quick`"), "{menu}");
         assert_eq!(node(&*rig.tray.lock().await), before);
+        // So is another pad: the two change parts, and back.
+        rig.click(Command::Quick(Edit::Primary(id("Tray Assist", 0x8702))))
+            .await;
+        assert!(
+            rig.tray.lock().await.quick.profile().is_none(),
+            "one pad as both parts is no profile, and nothing is asked"
+        );
+        rig.click(Command::Quick(Edit::Assist(id("Tray Primary", 0x8701))))
+            .await;
+        rig.shows("primary: Tray Assist").await;
+        rig.click(Command::Quick(Edit::Assist(id("Tray Assist", 0x8702))))
+            .await;
+        rig.click(Command::Quick(Edit::Primary(id("Tray Primary", 0x8701))))
+            .await;
+        rig.shows("primary: Tray Primary").await;
+        assert_eq!(node(&*rig.tray.lock().await), before);
         // Another identity is another virtual pad, which waits.
         let identity = |identity| Command::Quick(Edit::Identity(identity));
         rig.click(identity(ctrlassist_protocol::profile::Identity::Xbox))

@@ -45,9 +45,20 @@ fn token(slot: usize, kind: u64, index: usize) -> u64 {
     ((slot as u64) << 32) | (kind << 24) | (index as u64 & 0xff_ffff)
 }
 
-/// A new graph for a running setup, with what its nodes carry over from
-/// the graph it replaces. Built off the input thread and handed to it
-/// whole; the thread hands it back holding the graph it replaced.
+/// Where a source of a new graph gets its pad.
+#[derive(Debug)]
+pub enum Place {
+    /// The pad the setup has at this source of the graph it runs now,
+    /// there or missing.
+    Keep(SourceId),
+    /// A pad the setup doesn't have yet; none is one still missing.
+    Take(Option<Box<Pad>>),
+}
+
+/// A new graph for a running setup, with the pads it brings and what
+/// carries over from the graph it replaces. Built off the input thread
+/// and handed to it whole; the thread hands it back holding the graph it
+/// replaced and the pads the new one has no place for.
 #[derive(Debug)]
 pub struct NewGraph {
     graph: Graph,
@@ -58,21 +69,53 @@ pub struct NewGraph {
     /// carries on from, and where each of that node's inputs or outputs
     /// is among its own, by the old node's numbering.
     carry: Vec<Option<(NodeId, Vec<Option<usize>>)>>,
+    /// By the new graph's source number: a pad brought, and room for one
+    /// kept.
+    pads: Vec<Option<Box<Pad>>>,
+    /// By the new graph's source number: the old source whose pad it
+    /// keeps.
+    keep: Vec<Option<SourceId>>,
+    /// Room for what the thread keeps by source number.
+    wanted: Vec<Level>,
+    buzz: Vec<Option<(Level, u64)>>,
+    reported: Vec<Option<Level>>,
 }
 
 impl NewGraph {
-    /// A graph to take the place of a running setup's. `carry` says, by
-    /// the new graph's node number, which node of the old graph each
-    /// carries on from, and where each of the old node's inputs or
-    /// outputs is among the new one's: a node that selects then goes on
-    /// selecting what it had, where that still exists.
+    /// A graph to take the place of a running setup's.
+    ///
+    /// `carry` says, by the new graph's node number, which node of the
+    /// old graph each carries on from, and where each of the old node's
+    /// inputs or outputs is among the new one's: a node that selects
+    /// then goes on selecting what it had, where that still exists.
+    ///
+    /// `places` says, by the new graph's source number, where each
+    /// source's pad comes from. A pad the setup has that no source
+    /// keeps is handed back.
     #[must_use]
-    pub fn new(graph: Graph, carry: Vec<Option<(NodeId, Vec<Option<usize>>)>>) -> Self {
+    pub fn new(
+        graph: Graph,
+        carry: Vec<Option<(NodeId, Vec<Option<usize>>)>>,
+        places: Vec<Place>,
+    ) -> Self {
         let selected = vec![None; graph.nodes()];
+        let sources = places.len();
+        let (pads, keep) = places
+            .into_iter()
+            .map(|place| match place {
+                Place::Keep(old) => (None, Some(old)),
+                Place::Take(pad) => (pad, None),
+            })
+            .unzip();
         Self {
             graph,
             selected,
             carry,
+            pads,
+            keep,
+            wanted: vec![Level::default(); sources],
+            buzz: vec![None; sources],
+            reported: vec![None; sources],
         }
     }
 }
@@ -282,17 +325,29 @@ impl Setup {
         None
     }
 
-    /// Takes `new`'s graph in place of this setup's, which `new` then
-    /// holds. The pads and the virtual pads stay as they are: the new
-    /// graph is brought to what the pads hold now, each node that
-    /// carries on selects what its old one had, and the virtual pads
-    /// change only where the two graphs disagree. Returns false, with
-    /// nothing changed, for a graph of other pads or virtual pads.
-    fn take_graph(&mut self, new: &mut NewGraph) -> bool {
-        if new.graph.sources() != self.pads.len()
-            || new.graph.sinks() != self.sinks.len()
-            || new.selected.len() != new.graph.nodes()
-        {
+    /// Takes `new`'s graph and pads in place of this setup's, which
+    /// `new` then holds. The virtual pads stay as they are. A pad a
+    /// source keeps moves to that source; one no source keeps stops
+    /// rumbling and goes back in `new`. The new graph is brought to what
+    /// the pads hold now, each node that carries on selects what its old
+    /// one had, and the virtual pads change only where the two graphs
+    /// disagree. Returns false, with nothing changed, for a graph of
+    /// other virtual pads or one whose parts don't fit each other.
+    fn take_graph(&mut self, new: &mut NewGraph, epoll: &OwnedFd, slot: usize) -> bool {
+        let sources = new.graph.sources();
+        let fits = [
+            new.pads.len(),
+            new.keep.len(),
+            new.wanted.len(),
+            new.buzz.len(),
+            new.reported.len(),
+        ]
+        .iter()
+        .all(|length| *length == sources)
+            && new.graph.sinks() == self.sinks.len()
+            && new.selected.len() == new.graph.nodes()
+            && new.keep.iter().flatten().all(|old| old.0 < self.pads.len());
+        if !fits {
             return false;
         }
         // What each node goes on selecting, read before the old graph
@@ -307,6 +362,38 @@ impl Setup {
                     places.get(was).copied().flatten()
                 });
         }
+
+        // The pads: each is listened to under its source number, so all
+        // are let go of and then taken up again where they now are.
+        for pad in self.pads.iter().flatten() {
+            let _ = epoll::delete(epoll, &**pad);
+        }
+        let places = new.pads.iter_mut().zip(&mut new.wanted).zip(&mut new.buzz);
+        for (((place, wanted), buzz), old) in places.zip(&new.keep) {
+            let Some(SourceId(old)) = *old else { continue };
+            if let Some(has) = self.pads.get_mut(old) {
+                *place = has.take();
+            }
+            *wanted = self.wanted.get(old).copied().unwrap_or_default();
+            *buzz = self.buzz.get(old).copied().flatten();
+        }
+        // What is left is given up, and plays nothing more of ours.
+        for pad in self.pads.iter_mut().flatten() {
+            let _ = pad.rumble(Level::default());
+        }
+        std::mem::swap(&mut self.pads, &mut new.pads);
+        std::mem::swap(&mut self.wanted, &mut new.wanted);
+        std::mem::swap(&mut self.buzz, &mut new.buzz);
+        // Every pad is told its level again, whichever source it is now.
+        self.router.swap_sources(&mut new.reported);
+        for (index, pad) in self.pads.iter().enumerate() {
+            let Some(pad) = pad else { continue };
+            let data = EventData::new_u64(token(slot, PAD, index));
+            if epoll::add(epoll, &**pad, data, EventFlags::IN).is_err() {
+                self.failed = true;
+            }
+        }
+
         std::mem::swap(&mut self.graph, &mut new.graph);
         for (index, pad) in self.pads.iter().enumerate() {
             match pad {
@@ -482,9 +569,9 @@ pub enum Command {
         /// Which input or output.
         index: usize,
     },
-    /// Have a running setup take a new graph, its pads and virtual pads
-    /// staying as they are. The graph it replaces comes back in a
-    /// [`Report::GraphTaken`].
+    /// Have a running setup take a new graph, and with it other pads if
+    /// it says so, its virtual pads staying as they are. The graph it
+    /// replaces comes back in a [`Report::GraphTaken`].
     NewGraph {
         /// The setup.
         setup: SetupId,
@@ -525,8 +612,9 @@ pub enum Report {
         index: usize,
     },
     /// A running setup took a new graph. The one it replaced is handed
-    /// back to be dropped. Its nodes are numbered anew from here on, and
-    /// each that selects is reported after this.
+    /// back to be dropped, with the pads the new one has no place for.
+    /// Its nodes and pads are numbered by the new graph from here on,
+    /// and each node that selects is reported after this.
     GraphTaken {
         /// The setup.
         setup: SetupId,
@@ -534,7 +622,8 @@ pub enum Report {
         old: Box<NewGraph>,
     },
     /// A new graph wasn't taken: the setup isn't running, or the graph
-    /// is of other pads or virtual pads. It is handed back.
+    /// is of other virtual pads. It is handed back, with the pads it
+    /// brought.
     GraphRefused {
         /// The setup.
         setup: SetupId,
@@ -868,8 +957,8 @@ impl State {
                 Command::NewGraph { setup, mut graph } => {
                     let mut taken = false;
                     if let Some(slot) = self.slot_of(setup) {
-                        self.guarded(slot, now, |running, _| {
-                            taken = running.take_graph(&mut graph);
+                        self.guarded(slot, now, |running, epoll| {
+                            taken = running.take_graph(&mut graph, epoll, slot);
                             None
                         });
                     }

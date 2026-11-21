@@ -18,4 +18,4 @@ pub use hotplug::{Change, Found, Monitor, connected};
 pub use layout::{AxisRange, Mapping};
 pub use pad::{Identifiers, Pad, PadError, PadId};
 pub use sink::{Identity, OWN_MARKER, Request, VirtualPad};
-pub use thread::{Command, InputThread, NewGraph, Report, SendError, Setup, SetupId};
+pub use thread::{Command, InputThread, NewGraph, Place, Report, SendError, Setup, SetupId};

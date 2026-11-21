@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use ctrlassist_core::{Graph, Input, Level, NodeId, NodeSpec, SourceId};
 use ctrlassist_device::{
-    Command, Database, NewGraph, Pad, Report, SendError, Setup, SetupId, VirtualPad,
+    Command, Database, NewGraph, Pad, Place, Report, SendError, Setup, SetupId, VirtualPad,
 };
 use ctrlassist_hider::{Client, Token};
 use ctrlassist_protocol::endpoint::setup;
@@ -27,6 +27,7 @@ use ctrlassist_protocol::{keys, rpc};
 use tracing::{info, warn};
 use zenoh::query::Query;
 
+use crate::book::Book;
 use crate::device_identity;
 use crate::reactor::Reactor;
 
@@ -64,10 +65,124 @@ struct Entry {
     selected: Vec<Option<usize>>,
     /// Who is owed something once the input thread hands it back.
     stopping: Option<Waiting>,
-    /// Who is owed a reply once the input thread has taken a new graph
-    /// for it. Until then `nodes` is the new graph's and what the input
-    /// thread reports of selections is the old one's.
-    taking: Option<Responder<setup::Update>>,
+    /// A change it is taking as it runs, until the input thread has the
+    /// new graph.
+    taking: Option<Taking>,
+}
+
+/// A change a running setup is taking: what it will be once the input
+/// thread has the new graph. Until then the setup is as it was, and what
+/// the input thread reports is numbered by the old graph, so nothing
+/// that names a pad or a node by number is sent meanwhile.
+#[derive(Debug)]
+struct Taking {
+    responder: Responder<setup::Update>,
+    /// Its pads as they will be, by the new graph's source number.
+    slots: Vec<Slot>,
+    /// By the new graph's source number: which slot it has now whose pad
+    /// that source keeps.
+    keep: Vec<Option<usize>>,
+    /// Its virtual pads' names, as the profile has them now.
+    sinks: Vec<String>,
+    /// Its nodes as they will be.
+    nodes: Vec<(String, Vec<String>)>,
+    /// Whether the input thread has been sent the graph. Before that,
+    /// the pads it brings are being taken.
+    sent: bool,
+}
+
+impl Taking {
+    /// The pads this brings that the setup doesn't have.
+    fn fresh(&self) -> impl Iterator<Item = &Slot> {
+        let places = self.slots.iter().zip(&self.keep);
+        places
+            .filter(|(_, keep)| keep.is_none())
+            .map(|(slot, _)| slot)
+    }
+}
+
+/// The refusal of a profile that has one pad as two of its sources.
+fn twice(source: &str, id: &str) -> WireError {
+    WireError::refusal(
+        ErrorCode::InvalidProfile,
+        format!("source.{source}.pad: {id} is another source's pad too"),
+    )
+}
+
+/// Works out a running setup's pads for `plan`: the slots as they will
+/// be, and, by the plan's source number, which slot it has now whose pad
+/// each source keeps. A source keeps the pad of the slot of its name
+/// that wants the same pad; failing that, of a slot that wants the same
+/// pad under another name; failing that, a pad the setup has that the
+/// source could mean. So a pad stays open wherever the new profile has a
+/// use for it. Any other source is found a pad as at a start.
+fn rebind(
+    book: &Book,
+    name: &str,
+    has: &[Slot],
+    plan: &Plan,
+) -> Result<(Vec<Slot>, Vec<Option<usize>>), WireError> {
+    let mut keep: Vec<Option<usize>> = vec![None; plan.sources.len()];
+    let mut kept = vec![false; has.len()];
+    for pass in 0..3 {
+        for (place, source) in keep.iter_mut().zip(&plan.sources) {
+            if place.is_some() {
+                continue;
+            }
+            let found = has.iter().zip(&kept).position(|(slot, kept)| {
+                !kept
+                    && match pass {
+                        0 => slot.name == source.name && slot.wanted == source.pad,
+                        1 => slot.wanted == source.pad,
+                        _ => slot
+                            .pad
+                            .as_deref()
+                            .is_some_and(|pad| book.fits(pad, &source.pad)),
+                    }
+            });
+            if let Some(found) = found {
+                *place = Some(found);
+                kept[found] = true;
+            }
+        }
+    }
+    let mut slots: Vec<Slot> = Vec::new();
+    for (source, keep) in plan.sources.iter().zip(&keep) {
+        let taken = |id: &str| slots.iter().any(|slot| slot.pad.as_deref() == Some(id));
+        let kept = keep.and_then(|kept| has.get(kept));
+        let pad = match (kept, &source.pad) {
+            (Some(kept), _) => kept.pad.clone(),
+            (None, PadRef::Exact(id)) => {
+                match book.user(id) {
+                    // Its own pad, which another source keeps.
+                    Some(user) if user == name => return Err(twice(&source.name, id)),
+                    Some(user) => {
+                        return Err(WireError::refusal(
+                            ErrorCode::PadInUse,
+                            format!("{id} is part of the setup {user}"),
+                        ));
+                    }
+                    None if taken(id) => return Err(twice(&source.name, id)),
+                    None => {}
+                }
+                Some(id.clone())
+            }
+            (None, wanted) => book
+                .fitting(wanted)
+                .into_iter()
+                .find(|id| !taken(id))
+                .map(str::to_string),
+        };
+        slots.push(Slot {
+            name: source.name.clone(),
+            wanted: source.pad.clone(),
+            pad,
+            present: kept.is_some_and(|kept| kept.present),
+            returning: false,
+            token: kept.and_then(|kept| kept.token),
+        });
+    }
+    Ok((slots, keep))
 }
 
 /// Who waits for a setup the input thread was asked to stop.
@@ -138,23 +253,17 @@ fn choosers(plan: &Plan) -> Vec<(String, Vec<String>)> {
 }
 
 impl Entry {
-    /// Whether `plan` is of the pads and the virtual pads this setup
-    /// has: the same sources under the same names, and the same sinks of
-    /// the same identities. Then only the graph between them differs,
-    /// and the setup can take it as it runs.
-    fn has_the_pads_of(&self, plan: &Plan) -> bool {
-        let sources = self.slots.len() == plan.sources.len()
+    /// Whether `plan` is of the virtual pads this setup has: as many,
+    /// of the same identities in the same order. Then the setup can take
+    /// it as it runs, whatever else differs, its pads included: a
+    /// virtual pad is made anew only to be another thing to a game.
+    fn has_the_virtual_pads_of(&self, plan: &Plan) -> bool {
+        self.sinks.len() == plan.sinks.len()
             && self
-                .slots
+                .sinks
                 .iter()
-                .zip(&plan.sources)
-                .all(|(slot, source)| slot.name == source.name && slot.wanted == source.pad);
-        let sinks =
-            self.sinks.len() == plan.sinks.len()
-                && self.sinks.iter().zip(&plan.sinks).all(|(has, sink)| {
-                    has.name == sink.name && has.identity == sink.identity.as_str()
-                });
-        sources && sinks
+                .zip(&plan.sinks)
+                .all(|(has, sink)| has.identity == sink.identity.as_str())
     }
 
     /// Running with every pad there, held without one.
@@ -317,10 +426,21 @@ pub(crate) enum Done {
         outcome: Result<Made, String>,
         asker: Asker,
     },
+    /// The pads a change brings are open, each that could be, by the
+    /// new graph's source number.
+    Retaken {
+        name: String,
+        graph: Graph,
+        pads: Vec<Option<(Pad, Option<Token>)>>,
+    },
+    /// A graph the input thread replaced is gone, and the pads it had no
+    /// place for are shown again: the update is answered.
+    Taken { responder: Responder<setup::Update> },
     /// A pad that returned is open again, or couldn't be opened.
     Returned {
         name: String,
-        source: usize,
+        /// The pad, by what it is known by.
+        id: String,
         pad: Option<Box<Pad>>,
         /// The hiding service's name for it, if it hid it just now.
         token: Option<Token>,
@@ -548,13 +668,7 @@ impl Reactor {
                         ));
                     }
                     if taken(id) {
-                        return Err(WireError::refusal(
-                            ErrorCode::InvalidProfile,
-                            format!(
-                                "source.{}.pad: {id} is another source's pad too",
-                                source.name
-                            ),
-                        ));
+                        return Err(twice(&source.name, id));
                     }
                     Some(id.clone())
                 }
@@ -778,51 +892,85 @@ impl Reactor {
             }
             Some(Ok(plan)) => plan,
         };
-        let live =
-            matches!(entry.phase, Phase::Running | Phase::Held) && entry.has_the_pads_of(&plan);
+        let live = matches!(entry.phase, Phase::Running | Phase::Held)
+            && entry.has_the_virtual_pads_of(&plan);
+        // The pads it would have, which a restart finds for itself.
+        let bound = live.then(|| rebind(&self.book, &name, &entry.slots, &plan));
+        let bound = match bound.transpose() {
+            Ok(bound) => bound,
+            Err(refusal) => return responder.err(&refusal).await,
+        };
         if !request.apply {
             let cost = if live { TAKEN } else { RESTARTED };
             return responder.ok(&cost).await;
         }
         let free = entry.stopping.is_none() && entry.taking.is_none();
-        match entry.phase {
-            Phase::Failed => {
+        match (entry.phase, bound) {
+            (Phase::Failed, _) => {
                 // Nothing runs: clear it away and start afresh.
                 self.setups.entries.remove(&name);
                 self.publish_setup(&name).await;
                 self.start(name, Asker::Update(responder)).await;
             }
-            Phase::Running | Phase::Held if free && live => {
+            (Phase::Running | Phase::Held, Some((slots, keep))) if free => {
                 let nodes = choosers(&plan);
-                let sent = Graph::build(plan.graph)
-                    .map_err(|error| error.to_string())
-                    .and_then(|graph| {
-                        let graph = Box::new(NewGraph::new(graph, carry(&entry.nodes, &nodes)));
-                        let command = Command::NewGraph {
-                            setup: entry.id,
-                            graph,
-                        };
-                        self.input.send(command).map_err(|error| error.to_string())
-                    });
-                match sent {
-                    Ok(()) => {
-                        // Numbered by the new graph from here on: a
-                        // selection asked for now reaches the input
-                        // thread after the graph does.
-                        entry.selected = vec![None; nodes.len()];
-                        entry.nodes = nodes;
-                        entry.taking = Some(responder);
-                        self.publish_setup(&name).await;
-                    }
+                let sinks = plan.sinks.iter().map(|sink| sink.name.clone()).collect();
+                let graph = match Graph::build(plan.graph) {
+                    Ok(graph) => graph,
                     Err(error) => {
-                        let refusal = WireError::internal(format!(
-                            "the input thread didn't take the request: {error}"
-                        ));
-                        responder.err(&refusal).await;
+                        let refusal =
+                            WireError::internal(format!("the graph didn't build: {error}"));
+                        return responder.err(&refusal).await;
                     }
+                };
+                // The pads it brings are its own from here, so that
+                // nothing else takes them meanwhile.
+                let mut brings = Vec::new();
+                let fresh: Vec<Option<Wanted>> = slots
+                    .iter()
+                    .zip(&keep)
+                    .map(|(slot, keep)| {
+                        let pad = slot.pad.as_deref().filter(|_| keep.is_none())?;
+                        brings.push(pad.to_string());
+                        Some(Wanted {
+                            id: pad.to_string(),
+                            node: self.book.node(pad)?.to_path_buf(),
+                        })
+                    })
+                    .collect();
+                for pad in &brings {
+                    self.book.claim(pad, &name);
                 }
+                entry.taking = Some(Taking {
+                    responder,
+                    slots,
+                    keep,
+                    sinks,
+                    nodes,
+                    sent: false,
+                });
+                for pad in &brings {
+                    self.publish_pad_logged(pad).await;
+                }
+                if fresh.iter().all(Option::is_none) {
+                    let none = fresh.iter().map(|_| None).collect();
+                    return self.send_graph(name, graph, none).await;
+                }
+                let database = Arc::clone(&self.database);
+                let hiding = Arc::clone(&self.hiding);
+                self.work.spawn_blocking(move || {
+                    let pads = fresh
+                        .iter()
+                        .map(|wanted| {
+                            take(wanted.as_ref()?, &database, &hiding)
+                                .inspect_err(|error| warn!(error, "a setup changes without a pad"))
+                                .ok()
+                        })
+                        .collect();
+                    Done::Retaken { name, graph, pads }
+                });
             }
-            Phase::Running | Phase::Held if free => {
+            (Phase::Running | Phase::Held, None) if free => {
                 match self.input.send(Command::Stop(entry.id)) {
                     Ok(()) => entry.stopping = Some(Waiting::Update(responder)),
                     Err(error) => {
@@ -843,6 +991,187 @@ impl Reactor {
         }
     }
 
+    /// Hands the input thread the graph of a change a setup is taking,
+    /// with the pads it brings, now that they are open.
+    async fn send_graph(
+        &mut self,
+        name: String,
+        graph: Graph,
+        pads: Vec<Option<(Pad, Option<Token>)>>,
+    ) {
+        let ready = self.setups.entries.get_mut(&name).and_then(|entry| {
+            let Entry {
+                id,
+                phase,
+                stopping,
+                nodes,
+                taking,
+                ..
+            } = entry;
+            let taking = taking.as_mut().filter(|taking| !taking.sent)?;
+            let runs = matches!(phase, Phase::Running | Phase::Held) && stopping.is_none();
+            runs.then_some((*id, &*nodes, taking))
+        });
+        let Some((setup, nodes, taking)) = ready else {
+            // It stopped or failed while the pads were being opened.
+            let tokens = pads
+                .iter()
+                .flatten()
+                .filter_map(|(_, token)| *token)
+                .collect();
+            let refusal = WireError::refusal(
+                ErrorCode::SetupBusy,
+                format!("the setup {name} is stopping; the change wasn't made"),
+            );
+            return self.abandon(&name, pads, tokens, &refusal).await;
+        };
+        let mut places = Vec::with_capacity(pads.len());
+        for ((slot, keep), pad) in taking.slots.iter_mut().zip(&taking.keep).zip(pads) {
+            places.push(match keep {
+                Some(kept) => Place::Keep(SourceId(*kept)),
+                None => {
+                    let (pad, token) = pad.unzip();
+                    slot.present = pad.is_some();
+                    slot.token = token.flatten();
+                    Place::Take(pad.map(Box::new))
+                }
+            });
+        }
+        let graph = Box::new(NewGraph::new(graph, carry(nodes, &taking.nodes), places));
+        match self.input.send(Command::NewGraph { setup, graph }) {
+            Ok(()) => taking.sent = true,
+            Err(error) => {
+                let refusal = WireError::internal(format!(
+                    "the input thread didn't take the request: {error}"
+                ));
+                let command = match error {
+                    SendError::Full(command) | SendError::Stopped(command) => Some(command),
+                    _ => None,
+                };
+                self.abandon(&name, command, Vec::new(), &refusal).await;
+            }
+        }
+    }
+
+    /// Gives up a change a setup was taking. `brought` holds the pads it
+    /// brought, which are let go and then shown again, with any named in
+    /// `tokens`; whoever asked for the change is told why it wasn't made.
+    async fn abandon<T: Send + 'static>(
+        &mut self,
+        name: &str,
+        brought: T,
+        mut tokens: Vec<Token>,
+        refusal: &WireError,
+    ) {
+        let taking = self
+            .setups
+            .entries
+            .get_mut(name)
+            .and_then(|entry| entry.taking.take());
+        if let Some(taking) = taking {
+            let mut freed = Vec::new();
+            for slot in taking.fresh() {
+                tokens.extend(slot.token);
+                freed.extend(slot.pad.clone());
+            }
+            for pad in freed {
+                self.book.let_go(&pad);
+                self.publish_pad_logged(&pad).await;
+            }
+            taking.responder.err(refusal).await;
+        }
+        let hiding = Arc::clone(&self.hiding);
+        self.work.spawn_blocking(move || {
+            drop(brought);
+            hiding.restore(&tokens);
+            Done::Dropped
+        });
+    }
+
+    /// The input thread has a setup's new graph: the setup is now what
+    /// the change made it. The pads the new graph had no place for come
+    /// back in `old`; they are let go, then shown again, and then the
+    /// update is answered.
+    async fn took(&mut self, setup: SetupId, old: Box<NewGraph>) {
+        let taking = self.setups.name_of(setup).and_then(|name| {
+            let entry = self.setups.entries.get_mut(&name)?;
+            let taking = entry.taking.take()?;
+            Some((name, entry, taking))
+        });
+        let Some((name, entry, taking)) = taking else {
+            return self.drop_off(old);
+        };
+        let Taking {
+            responder,
+            mut slots,
+            keep,
+            sinks,
+            nodes,
+            ..
+        } = taking;
+        let mut tokens = Vec::new();
+        let mut changed = Vec::new();
+        for (index, slot) in entry.slots.iter().enumerate() {
+            if !keep.contains(&Some(index)) {
+                tokens.extend(slot.token);
+                if let Some(pad) = &slot.pad {
+                    self.book.let_go(pad);
+                    changed.push(pad.clone());
+                }
+            }
+        }
+        for (slot, keep) in slots.iter_mut().zip(&keep) {
+            if let Some(has) = keep.and_then(|kept| entry.slots.get(kept)) {
+                // What became of a kept pad since the change was asked.
+                slot.pad.clone_from(&has.pad);
+                slot.present = has.present;
+                slot.returning = has.returning;
+                slot.token = has.token;
+                continue;
+            }
+            // A source still without a pad takes one that came meanwhile.
+            if slot.pad.is_none() {
+                let came = self.book.fitting(&slot.wanted).first().copied();
+                slot.pad = came.map(str::to_string);
+                if let Some(pad) = &slot.pad {
+                    self.book.claim(pad, &name);
+                }
+            }
+            if let Some(pad) = &slot.pad {
+                self.book.set_hidden(pad, slot.token.is_some());
+                changed.push(pad.clone());
+            }
+        }
+        let sources = slots.len();
+        entry.slots = slots;
+        for (sink, name) in entry.sinks.iter_mut().zip(sinks) {
+            sink.name = name;
+        }
+        entry.selected = vec![None; nodes.len()];
+        entry.nodes = nodes;
+        entry.settle();
+        info!(
+            setup = name,
+            phase = entry.phase.as_str(),
+            "a setup took its profile as it runs"
+        );
+        for pad in changed {
+            self.publish_pad_logged(&pad).await;
+        }
+        self.publish_setup(&name).await;
+        let hiding = Arc::clone(&self.hiding);
+        self.work.spawn_blocking(move || {
+            drop(old);
+            hiding.restore(&tokens);
+            Done::Taken { responder }
+        });
+        // A pad that isn't there may have come while the pads were
+        // numbered by the old graph.
+        for source in 0..sources {
+            self.bring_back(&name, source);
+        }
+    }
+
     /// Buzzes a pad that a setup holds, through the input thread, which
     /// is the only thing that can reach it.
     pub(crate) fn buzz(
@@ -857,7 +1186,10 @@ impl Reactor {
                 .slots
                 .iter()
                 .position(|slot| slot.pad.as_deref() == Some(pad))?;
-            Some((entry.id, source, entry.slots[source].present))
+            // While it takes a change its pads are about to be numbered
+            // anew, and a pad it is giving up isn't one to buzz.
+            let there = entry.slots[source].present && entry.taking.is_none();
+            Some((entry.id, source, there))
         });
         let Some((id, source, true)) = place else {
             return Err(WireError::refusal(
@@ -887,6 +1219,16 @@ impl Reactor {
             return Err(WireError::refusal(
                 ErrorCode::SetupBusy,
                 format!("the setup {} isn't running", request.name),
+            ));
+        }
+        if entry.taking.is_some() {
+            // Its nodes are about to be numbered anew.
+            return Err(WireError::refusal(
+                ErrorCode::SetupBusy,
+                format!(
+                    "the setup {} is taking a change; ask again once it has",
+                    request.name
+                ),
             ));
         }
         let selecting = entry
@@ -1040,7 +1382,10 @@ impl Reactor {
         let Some(entry) = self.setups.entries.get_mut(name) else {
             return;
         };
-        if !matches!(entry.phase, Phase::Running | Phase::Held) || entry.stopping.is_some() {
+        // While it takes a change its pads are about to be numbered anew;
+        // each that is missing is brought back once it has.
+        let waits = entry.stopping.is_some() || entry.taking.is_some();
+        if !matches!(entry.phase, Phase::Running | Phase::Held) || waits {
             return;
         }
         let Some(slot) = entry.slots.get_mut(source) else {
@@ -1071,7 +1416,7 @@ impl Reactor {
                 pad: pad.map(Box::new),
                 token: token.flatten(),
                 name,
-                source,
+                id: wanted.id,
             }
         });
     }
@@ -1079,18 +1424,24 @@ impl Reactor {
     async fn returned(
         &mut self,
         name: String,
-        source: usize,
+        id: String,
         pad: Option<Box<Pad>>,
         token: Option<Token>,
     ) {
-        let slot = self
-            .setups
-            .entries
-            .get_mut(&name)
-            .and_then(|entry| Some((entry.id, entry.slots.get_mut(source)?)));
-        let Some((id, slot)) = slot else {
-            // The setup went while the pad was being opened: the pad is
-            // let go, and shown again if it was hidden for this.
+        // By the pad, not by where it was when it was sent for: a setup
+        // that took a change since has its pads numbered anew.
+        let place = self.setups.entries.get_mut(&name).and_then(|entry| {
+            let source = entry
+                .slots
+                .iter()
+                .position(|slot| slot.pad.as_deref() == Some(id.as_str()))?;
+            let (setup, taking) = (entry.id, entry.taking.is_some());
+            Some((setup, taking, source, entry.slots.get_mut(source)?))
+        });
+        let Some((setup, taking, source, slot)) = place else {
+            // The setup went, or gave the pad up, while the pad was
+            // being opened: the pad is let go, and shown again if it was
+            // hidden for this.
             let hiding = Arc::clone(&self.hiding);
             self.work.spawn_blocking(move || {
                 drop(pad);
@@ -1103,23 +1454,29 @@ impl Reactor {
         let Some(pad) = pad else { return };
         let newly_hidden = token.is_some() && slot.token != token;
         slot.token = token.or(slot.token);
-        let its_pad = slot.pad.clone();
+        if newly_hidden {
+            self.book.set_hidden(&id, true);
+            self.publish_pad_logged(&id).await;
+        }
+        if taking {
+            // The input thread is about to number the setup's pads anew:
+            // this one is let go, and brought back once it has.
+            return self.drop_off(pad);
+        }
         let command = Command::PadBack {
-            setup: id,
+            setup,
             source: SourceId(source),
             pad,
         };
         match self.input.send(command) {
             Ok(()) => {
-                slot.present = true;
                 if let Some(entry) = self.setups.entries.get_mut(&name) {
+                    if let Some(slot) = entry.slots.get_mut(source) {
+                        slot.present = true;
+                    }
                     entry.settle();
                 }
                 info!(setup = name, source, "a pad returned to its setup");
-                if let (true, Some(pad)) = (newly_hidden, its_pad) {
-                    self.book.set_hidden(&pad, true);
-                    self.publish_pad_logged(&pad).await;
-                }
                 self.publish_setup(&name).await;
             }
             Err(error) => {
@@ -1172,10 +1529,12 @@ impl Reactor {
             } => self.started(name, outcome, asker).await,
             Done::Returned {
                 name,
-                source,
+                id,
                 pad,
                 token,
-            } => self.returned(name, source, pad, token).await,
+            } => self.returned(name, id, pad, token).await,
+            Done::Retaken { name, graph, pads } => self.send_graph(name, graph, pads).await,
+            Done::Taken { responder } => responder.ok(&TAKEN).await,
             Done::Retired { name, waiting } => match waiting {
                 Some(Waiting::Stop(responder)) => responder.ok(&rpc::Ack {}).await,
                 // The old setup is gone, pads restored: the new one starts
@@ -1197,14 +1556,19 @@ impl Reactor {
                     return self.drop_off(setup);
                 };
                 let mut entry = self.setups.entries.remove(&name);
-                let tokens = entry
+                let mut tokens: Vec<Token> = entry
                     .iter()
                     .flat_map(|entry| entry.slots.iter().filter_map(|slot| slot.token))
                     .collect();
-                if let Some(responder) = entry.as_mut().and_then(|entry| entry.taking.take()) {
-                    // Only if the report of the graph was lost.
-                    let refusal = WireError::internal("the setup stopped");
-                    responder.err(&refusal).await;
+                if let Some(taking) = entry.as_mut().and_then(|entry| entry.taking.take()) {
+                    // Stopped before the pads a change brings were open,
+                    // or with the report of the graph lost.
+                    tokens.extend(taking.fresh().filter_map(|slot| slot.token));
+                    let refusal = WireError::refusal(
+                        ErrorCode::SetupBusy,
+                        format!("the setup {name} stopped; the change wasn't made"),
+                    );
+                    taking.responder.err(&refusal).await;
                 }
                 // The stop is answered once the virtual pads are gone.
                 self.retire(
@@ -1221,7 +1585,7 @@ impl Reactor {
                 let Some(name) = self.setups.name_of(id) else {
                     return self.drop_off(setup);
                 };
-                let tokens = self
+                let mut tokens: Vec<Token> = self
                     .setups
                     .entries
                     .get_mut(&name)
@@ -1252,12 +1616,15 @@ impl Reactor {
                     .entries
                     .get_mut(&name)
                     .and_then(|entry| entry.taking.take());
-                if let Some(responder) = taking {
+                if let Some(taking) = taking {
+                    // The pads a change brought are shown again with the
+                    // rest; the graph that holds them follows, refused.
+                    tokens.extend(taking.fresh().filter_map(|slot| slot.token));
                     let refusal = WireError::refusal(
                         ErrorCode::SetupFailed,
                         "the setup failed as it took the change",
                     );
-                    responder.err(&refusal).await;
+                    taking.responder.err(&refusal).await;
                 }
                 self.release(&name).await;
                 warn!(setup = name, "a setup failed");
@@ -1293,49 +1660,21 @@ impl Reactor {
                 let Some(name) = self.setups.name_of(setup) else {
                     return;
                 };
-                // While a new graph is on its way, what arrives is of
-                // the old one's nodes; the new one's follow its report.
                 if let Some(entry) = self.setups.entries.get_mut(&name)
-                    && entry.taking.is_none()
                     && let Some(selected) = entry.selected.get_mut(node.0)
                 {
                     *selected = Some(index);
                 }
                 self.publish_setup(&name).await;
             }
-            Report::GraphTaken { setup, old } => {
-                // A graph holds only memory: dropping it never blocks.
-                drop(old);
-                let Some(name) = self.setups.name_of(setup) else {
-                    return;
-                };
-                let taking = self
-                    .setups
-                    .entries
-                    .get_mut(&name)
-                    .and_then(|entry| entry.taking.take());
-                info!(setup = name, "a setup took its profile as it runs");
-                if let Some(responder) = taking {
-                    responder.ok(&TAKEN).await;
-                }
-            }
+            Report::GraphTaken { setup, old } => self.took(setup, old).await,
             Report::GraphRefused { setup, graph } => {
-                drop(graph);
-                let Some(name) = self.setups.name_of(setup) else {
-                    return;
-                };
                 // Only a setup the input thread no longer runs refuses
                 // one, and its own report says what became of it.
+                let name = self.setups.name_of(setup).unwrap_or_default();
                 warn!(setup = name, "the input thread refused a new graph");
-                let taking = self
-                    .setups
-                    .entries
-                    .get_mut(&name)
-                    .and_then(|entry| entry.taking.take());
-                if let Some(responder) = taking {
-                    let refusal = WireError::internal("the input thread refused the new graph");
-                    responder.err(&refusal).await;
-                }
+                let refusal = WireError::internal("the input thread refused the new graph");
+                self.abandon(&name, graph, Vec::new(), &refusal).await;
             }
             Report::PadRefused { setup, source, pad } => {
                 self.drop_off(pad);
@@ -1657,22 +1996,23 @@ mod tests {
     async fn a_pad_that_could_not_be_opened_again_is_waited_for_still() {
         let mut rig = rig().await;
         follow(&mut rig.reactor, 7, Phase::Held);
-        rig.reactor.setups.entries.get_mut("couch").unwrap().slots[0].returning = true;
+        // The sources go by name: the assist, then the primary.
+        rig.reactor.setups.entries.get_mut("couch").unwrap().slots[1].returning = true;
         rig.reactor
             .done(Done::Returned {
                 name: "couch".to_string(),
-                source: 0,
+                id: "address:0c:27:56:4f:bd:14".to_string(),
                 pad: None,
                 token: None,
             })
             .await;
-        let slot = &rig.reactor.setups.entries["couch"].slots[0];
+        let slot = &rig.reactor.setups.entries["couch"].slots[1];
         assert!(!slot.returning && !slot.present);
         // For a setup that went meanwhile, there is nothing to do.
         rig.reactor
             .done(Done::Returned {
                 name: "gone".to_string(),
-                source: 0,
+                id: "address:0c:27:56:4f:bd:14".to_string(),
                 pad: None,
                 token: None,
             })
@@ -1874,46 +2214,86 @@ mod tests {
     const TOGGLE: &str =
         "preset = \"toggle\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
 
+    /// A graph as the input thread hands one back.
+    fn graph_of(profile: &str) -> Box<NewGraph> {
+        let graph = Graph::build(Profile::check(profile).unwrap().graph).unwrap();
+        Box::new(NewGraph::new(graph, Vec::new(), Vec::new()))
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_profile_of_the_same_pads_is_taken_as_the_setup_runs() {
+    async fn a_profile_of_the_same_virtual_pads_is_taken_as_the_setup_runs() {
         let mut rig = rig().await;
         follow(&mut rig.reactor, 7, Phase::Held);
-        rig.reactor.profiles.put("couch", TOGGLE).unwrap();
+        // Another mode, and another pad as the primary.
+        let other = TOGGLE.replace("0c:27:56:4f:bd:14", "0c:27:56:4f:bd:15");
+        rig.reactor.profiles.put("couch", &other).unwrap();
         let cost = ask_update(&mut rig, false).await.await.unwrap().unwrap();
-        assert!(!cost.disruptive, "only the graph differs");
+        assert!(!cost.disruptive, "its virtual pad is the same");
+        assert!(rig.reactor.setups.entries["couch"].taking.is_none());
 
         let updating = ask_update(&mut rig, true).await;
         let entry = &rig.reactor.setups.entries["couch"];
-        assert!(entry.taking.is_some() && entry.stopping.is_none());
-        // A second update waits for the first; a stop needn't.
+        let taking = entry.taking.as_ref().unwrap();
+        assert!(taking.sent && entry.stopping.is_none());
+        // The sources go by name: the assist, then the primary.
+        assert_eq!(taking.keep, [Some(0), None], "the assist's place is kept");
+        // Until the input thread has the graph, the setup is as it was,
+        // and nothing that goes by a pad's or a node's number is asked.
+        let before = rig.reactor.setups.setup("couch").unwrap();
+        assert_eq!(
+            before.sources[1].pad.as_deref(),
+            Some("address:0c:27:56:4f:bd:14")
+        );
         let second = ask_update(&mut rig, true).await.await.unwrap();
         assert!(matches!(
             second,
             Err(RpcError::Service(refusal)) if refusal.code == ErrorCode::SetupBusy
         ));
-        // A selection still on its way is of the old graph's nodes.
-        let selected = |index| Report::Selected {
-            setup: SetupId(7),
-            node: NodeId(0),
-            index,
+        let request = rpc::SelectRequest {
+            name: "couch".to_string(),
+            node: "mux".to_string(),
+            choice: None,
         };
-        rig.reactor.reported(selected(1)).await;
-        assert!(rig.reactor.setups.setup("couch").unwrap().nodes.is_empty());
+        let busy = rig.reactor.select(&request).unwrap_err();
+        assert!(busy.message.contains("taking a change"), "{busy:?}");
+        let level = Level { strong: 1, weak: 1 };
+        let pad = "address:0c:27:56:4f:bd:14";
+        rig.reactor.setups.entries.get_mut("couch").unwrap().slots[1].present = true;
+        assert!(rig.reactor.buzz("couch", pad, level, 100).is_err());
+        rig.reactor.bring_back("couch", 0);
+        assert!(!rig.reactor.setups.entries["couch"].slots[0].returning);
+        // A pad sent for before the change, open only now, is let go.
+        rig.reactor.setups.entries.get_mut("couch").unwrap().slots[1].present = false;
+        rig.reactor
+            .done(Done::Returned {
+                name: "couch".to_string(),
+                id: pad.to_string(),
+                pad: None,
+                token: None,
+            })
+            .await;
 
-        let old = Box::new(NewGraph::new(
-            Graph::build(Profile::check(PROFILE).unwrap().graph).unwrap(),
-            Vec::new(),
-        ));
         rig.reactor
             .reported(Report::GraphTaken {
                 setup: SetupId(7),
-                old,
+                old: graph_of(PROFILE),
             })
             .await;
+        finish(&mut rig.reactor).await;
         assert!(!updating.await.unwrap().unwrap().disruptive);
-        rig.reactor.reported(selected(0)).await;
+        rig.reactor
+            .reported(Report::Selected {
+                setup: SetupId(7),
+                node: NodeId(0),
+                index: 0,
+            })
+            .await;
         let taken = rig.reactor.setups.setup("couch").unwrap();
         assert_eq!(taken.phase, Phase::Held, "it never stopped");
+        assert_eq!(
+            taken.sources[1].pad.as_deref(),
+            Some("address:0c:27:56:4f:bd:15")
+        );
         assert_eq!(taken.nodes[0].choices, ["primary", "assist"]);
         assert_eq!(taken.nodes[0].selected, 0);
         assert_eq!(
@@ -1921,17 +2301,28 @@ mod tests {
             Some("/dev/input/event99"),
             "its virtual pad is the one it had"
         );
+        // A pad it gave up that turns up open is let go.
+        rig.reactor
+            .done(Done::Returned {
+                name: "couch".to_string(),
+                id: pad.to_string(),
+                pad: None,
+                token: None,
+            })
+            .await;
+        // A report of a graph nobody waits for is only a graph to drop.
+        rig.reactor
+            .reported(Report::GraphTaken {
+                setup: SetupId(7),
+                old: graph_of(PROFILE),
+            })
+            .await;
+        finish(&mut rig.reactor).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn an_update_under_way_is_answered_whatever_becomes_of_the_setup() {
-        let graph = || {
-            Box::new(NewGraph::new(
-                Graph::build(Profile::check(TOGGLE).unwrap().graph).unwrap(),
-                Vec::new(),
-            ))
-        };
-        let internal = |outcome: Result<rpc::Updated, RpcError>, code| {
+        let refused = |outcome: Result<rpc::Updated, RpcError>, code| {
             assert!(matches!(
                 outcome,
                 Err(RpcError::Service(refusal)) if refusal.code == code
@@ -1946,17 +2337,17 @@ mod tests {
         rig.reactor
             .reported(Report::GraphRefused {
                 setup: SetupId(7),
-                graph: graph(),
+                graph: graph_of(TOGGLE),
             })
             .await;
-        internal(updating.await.unwrap(), ErrorCode::Internal);
+        refused(updating.await.unwrap(), ErrorCode::Internal);
 
         // Failed as it took it.
         let updating = ask_update(&mut rig, true).await;
         rig.reactor
             .reported(Report::Failed(SetupId(7), handed_back()))
             .await;
-        internal(updating.await.unwrap(), ErrorCode::SetupFailed);
+        refused(updating.await.unwrap(), ErrorCode::SetupFailed);
         finish(&mut rig.reactor).await;
         rig.reactor.setups.entries.remove("couch");
 
@@ -1966,23 +2357,91 @@ mod tests {
         rig.reactor
             .reported(Report::Stopped(SetupId(8), handed_back()))
             .await;
-        internal(updating.await.unwrap(), ErrorCode::Internal);
+        refused(updating.await.unwrap(), ErrorCode::SetupBusy);
         finish(&mut rig.reactor).await;
+
+        // Asked to stop while the pads a change brings were being opened:
+        // the graph isn't sent, and the pads are let go.
+        follow(&mut rig.reactor, 9, Phase::Running);
+        let updating = ask_update(&mut rig, true).await;
+        let entry = rig.reactor.setups.entries.get_mut("couch").unwrap();
+        entry.taking.as_mut().unwrap().sent = false;
+        let stopping = ask(&mut rig, true).await;
+        let graph = Graph::build(Profile::check(TOGGLE).unwrap().graph).unwrap();
+        rig.reactor
+            .done(Done::Retaken {
+                name: "couch".to_string(),
+                graph,
+                pads: vec![None, None],
+            })
+            .await;
+        refused(updating.await.unwrap(), ErrorCode::SetupBusy);
+        rig.reactor
+            .reported(Report::Stopped(SetupId(9), handed_back()))
+            .await;
+        finish(&mut rig.reactor).await;
+        stopping.await.unwrap().unwrap();
 
         // For a setup that has gone, either report is only a graph to drop.
         rig.reactor
             .reported(Report::GraphRefused {
                 setup: SetupId(99),
-                graph: graph(),
+                graph: graph_of(TOGGLE),
             })
             .await;
         rig.reactor
             .reported(Report::GraphTaken {
                 setup: SetupId(99),
-                old: graph(),
+                old: graph_of(TOGGLE),
             })
             .await;
+        finish(&mut rig.reactor).await;
         assert!(rig.reactor.setups.setup("couch").is_none());
+    }
+
+    /// A pad stays with the setup wherever the new profile has a use for
+    /// it: under its source's name, under another name, or as a pad
+    /// another source could mean.
+    #[test]
+    fn a_change_keeps_each_pad_the_new_profile_has_a_use_for() {
+        let slot = |name: &str, wanted: &str, pad: Option<&str>| Slot {
+            name: name.to_string(),
+            wanted: PadRef::parse(wanted).unwrap(),
+            pad: pad.map(str::to_string),
+            present: pad.is_some(),
+            returning: false,
+            token: None,
+        };
+        let a = "address:0c:27:56:4f:bd:14";
+        let b = "address:0c:27:56:4f:bd:15";
+        let has = [slot("primary", a, Some(a)), slot("assist", b, Some(b))];
+        let book = Book::new(Vec::new());
+        let plan = |primary: &str, assist: &str| {
+            let toml =
+                format!("preset = \"priority\"\nprimary = \"{primary}\"\nassist = \"{assist}\"\n");
+            Profile::check(&toml).unwrap()
+        };
+        let bound = |plan: &Plan| {
+            let (slots, keep) = rebind(&book, "couch", &has, plan).unwrap();
+            let pads: Vec<Option<String>> = slots.into_iter().map(|slot| slot.pad).collect();
+            (pads, keep)
+        };
+        // The preset's sources are the assist, then the primary, by name.
+        let same = bound(&plan(a, b));
+        assert_eq!(same.1, [Some(1), Some(0)]);
+        // The two change parts: each pad is kept, under the other name.
+        let swapped = bound(&plan(b, a));
+        assert_eq!(swapped.1, [Some(0), Some(1)]);
+        assert_eq!(swapped.0, [Some(a.to_string()), Some(b.to_string())]);
+        // Another pad as the assist: the primary's is kept, the assist's
+        // given up, and the new one named though it was never seen.
+        let c = "address:0c:27:56:4f:bd:16";
+        let other = bound(&plan(a, c));
+        assert_eq!(other.1, [None, Some(0)]);
+        assert_eq!(other.0, [Some(c.to_string()), Some(a.to_string())]);
+        // One pad as both is refused, as at a start.
+        let both = rebind(&book, "couch", &has, &plan(c, c)).unwrap_err();
+        assert_eq!(both.code, ErrorCode::InvalidProfile);
     }
 
     /// A node carries on from the one of its name, and what it selected

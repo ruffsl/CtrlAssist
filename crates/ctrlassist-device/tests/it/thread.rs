@@ -10,7 +10,8 @@ use ctrlassist_core::{
     SourceSpec, gamepad,
 };
 use ctrlassist_device::{
-    Command, Identity, InputThread, NewGraph, Pad, Report, Request, Setup, SetupId, VirtualPad,
+    Command, Identity, InputThread, NewGraph, Pad, Place, Report, Request, Setup, SetupId,
+    VirtualPad,
 };
 use ctrlassist_test::FakePad;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -228,6 +229,11 @@ fn a_switch_command_hands_a_toggle_to_the_other_pad() {
     ));
 }
 
+/// Each of the rig's two sources keeping the pad it has.
+fn same() -> Vec<Place> {
+    vec![Place::Keep(PRIMARY), Place::Keep(ASSIST)]
+}
+
 /// A toggle over the two pads in the order given.
 fn toggle(inputs: [SourceId; 2]) -> Graph {
     Graph::build(GraphSpec {
@@ -257,7 +263,7 @@ fn a_running_setup_takes_a_new_graph_and_the_game_keeps_its_pad() {
 
     // A toggle in the priority mux's place: the game's pad stays, and
     // changes only where the two graphs disagree about what is held.
-    let graph = Box::new(NewGraph::new(toggle([PRIMARY, ASSIST]), vec![None]));
+    let graph = Box::new(NewGraph::new(toggle([PRIMARY, ASSIST]), vec![None], same()));
     rig.thread
         .send(Command::NewGraph { setup: ID, graph })
         .unwrap();
@@ -297,7 +303,7 @@ fn a_running_setup_takes_a_new_graph_and_the_game_keeps_its_pad() {
     // which is the new node's first input, where a toggle left to itself
     // starts on its first and would here have been told nothing.
     let carry = vec![Some((NodeId(0), vec![Some(1), Some(0)]))];
-    let graph = Box::new(NewGraph::new(toggle([ASSIST, PRIMARY]), carry));
+    let graph = Box::new(NewGraph::new(toggle([ASSIST, PRIMARY]), carry, same()));
     rig.thread
         .send(Command::NewGraph { setup: ID, graph })
         .unwrap();
@@ -311,7 +317,7 @@ fn a_running_setup_takes_a_new_graph_and_the_game_keeps_its_pad() {
     ));
     // And back in the first order, the assist is its second.
     let carry = vec![Some((NodeId(0), vec![Some(1), Some(0)]))];
-    let graph = Box::new(NewGraph::new(toggle([PRIMARY, ASSIST]), carry));
+    let graph = Box::new(NewGraph::new(toggle([PRIMARY, ASSIST]), carry, same()));
     rig.thread
         .send(Command::NewGraph { setup: ID, graph })
         .unwrap();
@@ -336,6 +342,81 @@ fn a_running_setup_takes_a_new_graph_and_the_game_keeps_its_pad() {
 }
 
 #[test]
+fn a_running_setup_takes_other_pads_and_the_game_keeps_its_pad() {
+    if !can_make_pads("a_running_setup_takes_other_pads_and_the_game_keeps_its_pad") {
+        return;
+    }
+    let mut rig = rig(Mode::Priority);
+    let mut third = FakePad::new("Thread Test Third", 0x1209, 0x5eed).unwrap();
+    rig.primary.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    let south = PadState::NEUTRAL.with(gamepad::SOUTH, 1.0);
+    let frames = read_until(&mut rig.game, |frames| frames.last() == Some(&south));
+    assert_eq!(last(&frames), south);
+
+    // The assist becomes the primary, and a third pad the assist: the
+    // old primary is handed back, and what it held is let go of on the
+    // game's pad, which is the one it had.
+    let places = vec![
+        Place::Keep(ASSIST),
+        Place::Take(Some(Box::new(read(&third)))),
+    ];
+    let graph = Box::new(NewGraph::new(mux(Mode::Priority), vec![None], places));
+    rig.thread
+        .send(Command::NewGraph { setup: ID, graph })
+        .unwrap();
+    let frames = read_until(&mut rig.game, |frames| {
+        frames.last() == Some(&PadState::NEUTRAL)
+    });
+    assert_eq!(last(&frames), PadState::NEUTRAL);
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::GraphTaken { setup: ID, .. }
+    ));
+
+    // The pad given up is no longer heard; the two it has are, each as
+    // the source it now is.
+    rig.primary.frame(&[(EV_KEY, BTN_SOUTH, 0)]).unwrap();
+    rig.primary.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    third.frame(&[(EV_KEY, BTN_EAST, 1)]).unwrap();
+    let east = PadState::NEUTRAL.with(gamepad::EAST, 1.0);
+    let frames = read_until(&mut rig.game, |frames| frames.last() == Some(&east));
+    assert_eq!(last(&frames), east);
+    rig.assist.frame(&[(EV_ABS, ABS_X, 32767)]).unwrap();
+    let frames = read_until(&mut rig.game, |frames| {
+        frames
+            .last()
+            .is_some_and(|state| state.get(gamepad::LEFT_X) > 0.9)
+    });
+    assert!(last(&frames).get(gamepad::EAST) > 0.5);
+
+    // The pad that arrived going is reported as the source it is.
+    drop(third);
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::PadGone {
+            setup: ID,
+            source: ASSIST,
+            ..
+        }
+    ));
+    // A source can be left without a pad, to be given one later.
+    let places = vec![Place::Take(None), Place::Keep(PRIMARY)];
+    let graph = Box::new(NewGraph::new(mux(Mode::Priority), vec![None], places));
+    rig.thread
+        .send(Command::NewGraph { setup: ID, graph })
+        .unwrap();
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::GraphTaken { setup: ID, .. }
+    ));
+    rig.assist.frame(&[(EV_ABS, ABS_X, 0)]).unwrap();
+    let frames = read_until(&mut rig.game, |frames| {
+        frames.last() == Some(&PadState::NEUTRAL)
+    });
+    assert_eq!(last(&frames), PadState::NEUTRAL);
+}
+
+#[test]
 fn a_graph_of_other_pads_or_for_no_setup_is_handed_back() {
     if !can_make_pads("a_graph_of_other_pads_or_for_no_setup_is_handed_back") {
         return;
@@ -347,7 +428,18 @@ fn a_graph_of_other_pads_or_for_no_setup_is_handed_back() {
         sinks: vec![Input::Source(PRIMARY)],
     })
     .unwrap();
-    let graph = Box::new(NewGraph::new(one_pad, vec![]));
+    // Its parts don't fit each other: one source, two places.
+    let graph = Box::new(NewGraph::new(one_pad, vec![], same()));
+    rig.thread
+        .send(Command::NewGraph { setup: ID, graph })
+        .unwrap();
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::GraphRefused { setup: ID, .. }
+    ));
+    // It keeps a pad the setup has no source for.
+    let places = vec![Place::Keep(PRIMARY), Place::Keep(SourceId(5))];
+    let graph = Box::new(NewGraph::new(mux(Mode::Average), vec![None], places));
     rig.thread
         .send(Command::NewGraph { setup: ID, graph })
         .unwrap();
@@ -356,7 +448,7 @@ fn a_graph_of_other_pads_or_for_no_setup_is_handed_back() {
         Report::GraphRefused { setup: ID, .. }
     ));
     let nobody = SetupId(99);
-    let graph = Box::new(NewGraph::new(mux(Mode::Average), vec![None]));
+    let graph = Box::new(NewGraph::new(mux(Mode::Average), vec![None], same()));
     rig.thread
         .send(Command::NewGraph {
             setup: nobody,
