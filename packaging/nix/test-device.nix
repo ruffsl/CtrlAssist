@@ -1,5 +1,6 @@
-# The device crate against the kernel on a clean machine: a seat user reads
-# a pad as the daemon will.
+# The device crate against the kernel on a clean machine with the packaged
+# udev rule: a seat user reads a pad and makes virtual pads, as the daemon
+# will.
 {
   pkgs,
   fixture,
@@ -18,6 +19,12 @@ pkgs.testers.runNixOSTest {
       password = "alice";
     };
     services.getty.autologinUser = "alice";
+    # The packaged rule that gives the seat user uinput and uhid.
+    services.udev.packages = [
+      (pkgs.writeTextDir "lib/udev/rules.d/70-ctrlassist.rules" (
+        builtins.readFile ../udev/70-ctrlassist.rules
+      ))
+    ];
     environment.systemPackages = [ fixture ];
   };
 
@@ -42,6 +49,24 @@ pkgs.testers.runNixOSTest {
         presses = [line.split()[1] for line in frames]
         assert all(a != b for a, b in zip(presses, presses[1:])), out
         assert set(presses) == {"south=1", "south=0"}, out
+
+    with subtest("the packaged rule gives the seat user uinput and uhid, and nobody else"):
+        machine.succeed("su -l alice -c 'test -w /dev/uinput -a -w /dev/uhid'")
+        machine.fail("su -s /bin/sh nobody -c 'test -w /dev/uinput -o -w /dev/uhid'")
+
+    with subtest("a seat user's virtual pad carries what the pad behind it does"):
+        for unit, flag, name in [("generic", "", "CtrlAssist Virtual Pad"), ("xbox", " --xbox", "Microsoft Xbox Series")]:
+            machine.succeed(f"systemd-run --unit {unit} --uid alice ctrlassist-fixture forward {node}{flag}")
+            machine.wait_until_succeeds(f"journalctl -u {unit} -o cat | grep '^virtual node='")
+            virtual = machine.succeed(f"journalctl -u {unit} -o cat | grep -o 'node=.*' | cut -d= -f2").strip()
+            machine.succeed("udevadm settle")
+            out = machine.succeed(f"su -l alice -c 'ctrlassist-fixture read {virtual} --frames 4'")
+            assert name in out.splitlines()[0], out
+            presses = [line.split()[1] for line in out.splitlines() if line.startswith("frame ")]
+            assert len(presses) == 4 and all(a != b for a, b in zip(presses, presses[1:])), out
+            # A game sees it as a joystick with a js node of its own.
+            machine.succeed(f"udevadm info {virtual} | grep ID_INPUT_JOYSTICK=1")
+            machine.succeed(f"systemctl stop {unit}")
 
     with subtest("a pad that is unplugged is reported as gone"):
         machine.succeed(f"systemd-run --unit reader ctrlassist-fixture read {node} --frames 1000000")

@@ -51,7 +51,7 @@ impl From<io::Error> for PadError {
 /// What tells a pad from others, as the kernel and udev report it. Every
 /// string is the pad's own claim and is not to be trusted as more.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Identity {
+pub struct Identifiers {
     /// The pad's name.
     pub name: String,
     /// The bus it is on, as the kernel numbers them: 3 is USB, 5 Bluetooth.
@@ -77,10 +77,9 @@ fn nonempty(text: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The USB serial number udev holds for the device a descriptor is on.
-fn serial(fd: BorrowedFd<'_>) -> Option<String> {
-    let stat = fstat(fd).ok()?;
-    let device = udev::Device::from_devnum(udev::DeviceType::Character, stat.st_rdev).ok()?;
+/// The USB serial number udev holds for a device.
+fn serial(device_number: u64) -> Option<String> {
+    let device = udev::Device::from_devnum(udev::DeviceType::Character, device_number).ok()?;
     nonempty(device.property_value("ID_SERIAL_SHORT")?.to_str())
 }
 
@@ -93,7 +92,8 @@ fn serial(fd: BorrowedFd<'_>) -> Option<String> {
 pub struct Pad {
     device: Device,
     mapping: Mapping,
-    identity: Identity,
+    identifiers: Identifiers,
+    device_number: u64,
     /// The state as of the last complete frame.
     state: PadState,
     /// The state with the events of a frame still arriving applied.
@@ -108,7 +108,8 @@ impl Pad {
     ///
     /// Fails if the descriptor isn't an event device.
     pub fn from_fd(fd: OwnedFd) -> Result<Self, PadError> {
-        let serial = serial(fd.as_fd());
+        let device_number = fstat(&fd).map_err(io::Error::from)?.st_rdev;
+        let serial = serial(device_number);
         let device = Device::from_fd(fd)?;
         // A read with nothing waiting must return, not block the thread
         // that every other pad is read on.
@@ -148,7 +149,7 @@ impl Pad {
         }
 
         let id = device.input_id();
-        let identity = Identity {
+        let identifiers = Identifiers {
             name: device.name().unwrap_or_default().to_string(),
             bus: id.bus_type().0,
             vendor: id.vendor(),
@@ -161,7 +162,8 @@ impl Pad {
         Ok(Self {
             device,
             mapping,
-            identity,
+            identifiers,
+            device_number,
             state,
             pending: state,
         })
@@ -169,8 +171,15 @@ impl Pad {
 
     /// What tells this pad from others.
     #[must_use]
-    pub fn identity(&self) -> &Identity {
-        &self.identity
+    pub fn identifiers(&self) -> &Identifiers {
+        &self.identifiers
+    }
+
+    /// The kernel's number for the event node being read; see
+    /// [`VirtualPad::device_number`](crate::VirtualPad::device_number).
+    #[must_use]
+    pub fn device_number(&self) -> u64 {
+        self.device_number
     }
 
     /// What the pad held as of its last complete report frame.

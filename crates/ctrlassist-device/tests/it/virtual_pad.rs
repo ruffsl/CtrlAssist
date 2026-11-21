@@ -1,0 +1,229 @@
+//! Virtual pads, read back through the pad reader and driven by a
+//! stand-in for a game.
+
+use std::fs::File;
+use std::os::fd::OwnedFd;
+use std::path::Path;
+
+use ctrlassist_core::{Effect, FeedbackError, PadState, gamepad};
+use ctrlassist_device::{Identity, Pad, Request, VirtualPad};
+use evdev::{Device, FFEffectData, FFEffectKind, FFReplay, FFTrigger};
+use rustix::event::{PollFd, PollFlags, poll};
+
+use crate::{can_make_pads, read_until};
+
+/// A virtual pad and a reader on its event node, once udev allows it.
+fn pair(identity: Identity) -> (VirtualPad, Pad) {
+    let sink = VirtualPad::create(identity).unwrap();
+    let node = sink.event_node().to_path_buf();
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    let fd: OwnedFd = File::open(node).unwrap().into();
+    (sink, Pad::from_fd(fd).unwrap())
+}
+
+fn rumble(strong: u16, weak: u16, length: u16, delay: u16) -> FFEffectData {
+    FFEffectData {
+        direction: 0,
+        trigger: FFTrigger::default(),
+        replay: FFReplay { length, delay },
+        kind: FFEffectKind::Rumble {
+            strong_magnitude: strong,
+            weak_magnitude: weak,
+        },
+    }
+}
+
+/// Serves the virtual pad until `game` has finished, answering each
+/// request with `answer`, and returns the requests in order.
+fn serve_while<T: Send + 'static>(
+    sink: &mut VirtualPad,
+    game: impl FnOnce() -> T + Send + 'static,
+    mut answer: impl FnMut(Request) -> Result<(), FeedbackError>,
+) -> (Vec<Request>, T) {
+    let game = std::thread::spawn(game);
+    let mut requests = Vec::new();
+    while !game.is_finished() {
+        let mut fds = [PollFd::new(&*sink, PollFlags::IN)];
+        // The game's exit isn't a readable event, so look up now and then.
+        let wait = rustix::event::Timespec {
+            tv_sec: 0,
+            tv_nsec: 20_000_000,
+        };
+        let _ = poll(&mut fds, Some(&wait));
+        sink.serve(|request| {
+            requests.push(request);
+            answer(request)
+        })
+        .unwrap();
+    }
+    let outcome = game.join().unwrap();
+    sink.serve(|request| {
+        requests.push(request);
+        answer(request)
+    })
+    .unwrap();
+    (requests, outcome)
+}
+
+fn game_opens(node: &Path) -> Device {
+    // A game writes to the node to play effects.
+    Device::open(node).unwrap()
+}
+
+#[test]
+fn what_is_written_reads_back_the_same_on_every_gamepad_control() {
+    if !can_make_pads("what_is_written_reads_back_the_same_on_every_gamepad_control") {
+        return;
+    }
+    for identity in [Identity::Generic, Identity::Xbox] {
+        let (mut sink, mut reader) = pair(identity);
+        // In two writes: the kernel ends a report frame itself once it
+        // holds about as many changes as the pad has axes, so one frame
+        // can't carry every control at once.
+        let buttons = PadState::NEUTRAL
+            .with(gamepad::SOUTH, 1.0)
+            .with(gamepad::EAST, 1.0)
+            .with(gamepad::NORTH, 1.0)
+            .with(gamepad::WEST, 1.0)
+            .with(gamepad::LEFT_BUMPER, 1.0)
+            .with(gamepad::RIGHT_BUMPER, 1.0)
+            .with(gamepad::SELECT, 1.0)
+            .with(gamepad::START, 1.0)
+            .with(gamepad::MODE, 1.0)
+            .with(gamepad::LEFT_THUMB, 1.0)
+            .with(gamepad::RIGHT_THUMB, 1.0);
+        sink.write(&buttons).unwrap();
+        let frames = read_until(&mut reader, |frames| !frames.is_empty());
+        assert_eq!(frames, [buttons], "{identity:?}: one write is one frame");
+
+        let everything = buttons
+            .with(gamepad::DPAD_UP, 1.0)
+            .with(gamepad::DPAD_RIGHT, 1.0)
+            .with(gamepad::LEFT_X, 1.0)
+            .with(gamepad::LEFT_Y, -1.0)
+            .with(gamepad::RIGHT_X, -1.0)
+            .with(gamepad::RIGHT_Y, 1.0)
+            .with(gamepad::LEFT_TRIGGER, 1.0)
+            .with(gamepad::RIGHT_TRIGGER, 1.0);
+        sink.write(&everything).unwrap();
+        let frames = read_until(&mut reader, |frames| !frames.is_empty());
+        assert_eq!(frames, [everything], "{identity:?}");
+
+        // Back to rest, in the same two steps: every control returns to
+        // exactly zero.
+        sink.write(&buttons).unwrap();
+        sink.write(&PadState::NEUTRAL).unwrap();
+        let frames = read_until(&mut reader, |frames| frames.len() >= 2);
+        assert_eq!(frames, [buttons, PadState::NEUTRAL], "{identity:?}");
+
+        // Writing what it already holds sends nothing, so the next real
+        // change is the next frame.
+        sink.write(&PadState::NEUTRAL).unwrap();
+        sink.write(&PadState::NEUTRAL.with(gamepad::SOUTH, 1.0))
+            .unwrap();
+        let frames = read_until(&mut reader, |frames| !frames.is_empty());
+        assert_eq!(
+            frames,
+            [PadState::NEUTRAL.with(gamepad::SOUTH, 1.0)],
+            "{identity:?}"
+        );
+    }
+}
+
+#[test]
+fn a_virtual_pad_being_read_is_known_by_its_device_number() {
+    if !can_make_pads("a_virtual_pad_being_read_is_known_by_its_device_number") {
+        return;
+    }
+    let (sink, reader) = pair(Identity::Generic);
+    assert_eq!(reader.device_number(), sink.device_number());
+
+    let fake = ctrlassist_test::FakePad::new("Not Ours", 0x1209, 0x5eed).unwrap();
+    let fd: OwnedFd = File::open(fake.event_node()).unwrap().into();
+    assert_ne!(
+        Pad::from_fd(fd).unwrap().device_number(),
+        sink.device_number()
+    );
+}
+
+#[test]
+fn each_identity_reports_its_own_name_and_numbers() {
+    if !can_make_pads("each_identity_reports_its_own_name_and_numbers") {
+        return;
+    }
+    let (sink, reader) = pair(Identity::Xbox);
+    assert_eq!(sink.identity(), Identity::Xbox);
+    let ids = reader.identifiers();
+    assert_eq!(ids.name, "Microsoft Xbox Series S|X Controller");
+    assert_eq!((ids.bus, ids.vendor, ids.product), (3, 0x045e, 0x0b12));
+
+    let (_sink, reader) = pair(Identity::Generic);
+    let ids = reader.identifiers();
+    assert_eq!(ids.name, "CtrlAssist Virtual Pad");
+    assert_eq!((ids.vendor, ids.product), (0x1234, 0x5678));
+}
+
+#[test]
+fn a_game_s_rumble_requests_arrive_in_order_with_what_it_asked() {
+    if !can_make_pads("a_game_s_rumble_requests_arrive_in_order_with_what_it_asked") {
+        return;
+    }
+    let mut sink = VirtualPad::create(Identity::Generic).unwrap();
+    let node = sink.event_node().to_path_buf();
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+
+    let game = move || {
+        let mut pad = game_opens(&node);
+        let mut effect = pad
+            .upload_ff_effect(rumble(0x8000, 0x4000, 250, 10))
+            .unwrap();
+        let id = effect.id();
+        pad.set_ff_gain(0x7fff).unwrap();
+        effect.play(3).unwrap();
+        effect.stop().unwrap();
+        // Dropping the effect erases it.
+        drop(effect);
+        id
+    };
+    let (requests, id) = serve_while(&mut sink, game, |_| Ok(()));
+    let id = i16::try_from(id).unwrap();
+    let effect = Effect {
+        strong: 0x8000,
+        weak: 0x4000,
+        length_ms: 250,
+        delay_ms: 10,
+    };
+    assert_eq!(
+        requests,
+        [
+            Request::Upload { id, effect },
+            Request::Gain(0x7fff),
+            Request::Play { id, count: 3 },
+            Request::Play { id, count: 0 },
+            // The kernel stops an effect itself before erasing it.
+            Request::Play { id, count: 0 },
+            Request::Erase { id },
+        ]
+    );
+}
+
+#[test]
+fn an_upload_that_is_refused_fails_in_the_game_and_does_not_hang_it() {
+    if !can_make_pads("an_upload_that_is_refused_fails_in_the_game_and_does_not_hang_it") {
+        return;
+    }
+    let mut sink = VirtualPad::create(Identity::Generic).unwrap();
+    let node = sink.event_node().to_path_buf();
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+
+    let game = move || {
+        let mut pad = game_opens(&node);
+        pad.upload_ff_effect(rumble(1, 1, 0, 0))
+            .map(|_| ())
+            .map_err(|error| error.raw_os_error())
+    };
+    let (requests, outcome) = serve_while(&mut sink, game, |_| Err(FeedbackError::Full));
+    assert_eq!(requests.len(), 1);
+    // Out of space, as a real pad with no free effect answers.
+    assert_eq!(outcome, Err(Some(28)));
+}

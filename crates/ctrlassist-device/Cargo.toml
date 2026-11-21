@@ -16,6 +16,7 @@ rustix = { workspace = true, features = ["fs"] }
 udev = { workspace = true }
 
 [dev-dependencies]
+evdev = { workspace = true }
 ctrlassist-test = { workspace = true }
 rustix = { workspace = true, features = ["event"] }
 

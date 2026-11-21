@@ -5,6 +5,8 @@
 
 #![expect(clippy::unwrap_used, reason = "tests fail loudly")]
 
+mod virtual_pad;
+
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::OwnedFd;
@@ -22,10 +24,11 @@ const ABS_HAT0Y: u16 = 0x11;
 const BTN_SOUTH: u16 = 0x130;
 const BTN_EAST: u16 = 0x131;
 
-/// A fake pad, or none where this process can't make one.
-fn fake(test: &str) -> Option<FakePad> {
+/// Whether this process can make pads; says so, or fails where they are
+/// required, when it can't.
+pub(crate) fn can_make_pads(test: &str) -> bool {
     if uinput_available() {
-        return Some(FakePad::new("Device Test Pad", 0x1209, 0x5eed).unwrap());
+        return true;
     }
     assert!(
         !fake_pads_required(),
@@ -35,7 +38,12 @@ fn fake(test: &str) -> Option<FakePad> {
         std::io::stderr(),
         "SKIPPED {test}: /dev/uinput isn't writable here"
     );
-    None
+    false
+}
+
+/// A fake pad, or none where this process can't make one.
+fn fake(test: &str) -> Option<FakePad> {
+    can_make_pads(test).then(|| FakePad::new("Device Test Pad", 0x1209, 0x5eed).unwrap())
 }
 
 fn open(fake: &FakePad) -> Pad {
@@ -46,7 +54,7 @@ fn open(fake: &FakePad) -> Pad {
 /// Reads until `enough` says the frames so far are what was waited for,
 /// or gives up after a bounded number of waits so that a failing test
 /// ends.
-fn read_until(pad: &mut Pad, enough: impl Fn(&[PadState]) -> bool) -> Vec<PadState> {
+pub(crate) fn read_until(pad: &mut Pad, enough: impl Fn(&[PadState]) -> bool) -> Vec<PadState> {
     let mut frames = Vec::new();
     for _ in 0..200 {
         pad.read(|state| frames.push(*state)).unwrap();
@@ -191,7 +199,7 @@ fn a_pad_s_identity_is_what_the_kernel_reports() {
         return;
     };
     let pad = open(&fake);
-    let identity = pad.identity();
+    let identity = pad.identifiers();
     assert_eq!(identity.name, "Device Test Pad");
     assert_eq!(
         (identity.bus, identity.vendor, identity.product),

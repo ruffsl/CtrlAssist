@@ -16,7 +16,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use ctrlassist_core::gamepad;
-use ctrlassist_device::Pad;
+use ctrlassist_device::{Identity, Pad, VirtualPad};
 use ctrlassist_hider::{Client, Hidden};
 use ctrlassist_test::{FakeHidPad, FakePad, NodeKind, can_open, count_reads, pads};
 use rustix::event::{PollFd, PollFlags, poll};
@@ -79,6 +79,14 @@ enum Command {
         node: PathBuf,
         #[arg(long, default_value_t = 4)]
         frames: usize,
+    },
+    /// Read a pad and write what it holds to a new virtual pad, until
+    /// killed. Prints the virtual pad's event node first.
+    Forward {
+        node: PathBuf,
+        /// Present the virtual pad as an Xbox pad, not a generic one.
+        #[arg(long)]
+        xbox: bool,
     },
     /// Count reads on a node for a window, printing the count each second
     /// and whether the node was cut off.
@@ -232,7 +240,7 @@ fn main() -> Result<()> {
         Command::Read { node, frames } => {
             let file = File::open(&node).with_context(|| format!("opening {}", node.display()))?;
             let mut pad = Pad::from_fd(file.into()).context("reading the pad")?;
-            let identity = pad.identity();
+            let identity = pad.identifiers();
             println!(
                 "pad name={:?} id={:04x}:{:04x} address={:?} serial={:?}",
                 identity.name, identity.vendor, identity.product, identity.address, identity.serial
@@ -251,6 +259,38 @@ fn main() -> Result<()> {
                 .context("reading the pad")?;
             }
             Ok(())
+        }
+        Command::Forward { node, xbox } => {
+            let file = File::open(&node).with_context(|| format!("opening {}", node.display()))?;
+            let mut pad = Pad::from_fd(file.into()).context("reading the pad")?;
+            let identity = if xbox {
+                Identity::Xbox
+            } else {
+                Identity::Generic
+            };
+            let mut sink = VirtualPad::create(identity).context("creating the virtual pad")?;
+            println!("virtual node={}", sink.event_node().display());
+            sink.write(pad.state())?;
+            loop {
+                let (from_pad, from_game) = {
+                    let mut fds = [
+                        PollFd::new(&pad, PollFlags::IN),
+                        PollFd::new(&sink, PollFlags::IN),
+                    ];
+                    poll(&mut fds, None)?;
+                    (!fds[0].revents().is_empty(), !fds[1].revents().is_empty())
+                };
+                if from_pad {
+                    let mut written = Ok(());
+                    pad.read(|state| written = sink.write(state))
+                        .context("reading the pad")?;
+                    written.context("writing the virtual pad")?;
+                }
+                if from_game {
+                    // Every request is accepted and goes nowhere.
+                    sink.serve(|_| Ok(())).context("serving the virtual pad")?;
+                }
+            }
         }
         Command::Listen { node, millis } => {
             let reads = count_reads(

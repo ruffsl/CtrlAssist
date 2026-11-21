@@ -1,0 +1,7 @@
+# CtrlAssist creates virtual pads through uinput, and through uhid for the
+# identities that need a HID device. A stock machine gives neither to
+# users; this gives both to the user at the seat, as pads themselves are
+# given. It must sort before systemd's 73-seat-late.rules, which applies
+# the tag.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
+KERNEL=="uhid", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uhid"

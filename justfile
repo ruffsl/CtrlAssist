@@ -191,6 +191,16 @@ hide-pad node:
     cargo build --quiet --package ctrlassist-test
     target/debug/ctrlassist-fixture hide {{ node }} --socket {{ hider_dev_socket }} --control target/hide-pad
 
+# Pass the pad's event node, and `--xbox` for the Xbox identity. Needs
+# uinput, which the packaged udev rule or Steam's own gives the seat user.
+# Ctrl-C removes the virtual pad.
+#
+# Put a virtual pad in front of a real pad
+[group('hardware')]
+forward-pad node *flags:
+    cargo build --quiet --package ctrlassist-test
+    target/debug/ctrlassist-fixture forward {{ node }} {{ flags }}
+
 # --- Spikes --------------------------------------------------------------
 
 # Needs the legacy binary: `git worktree add ../legacy-0.4 legacy/0.4`, then

@@ -1,0 +1,443 @@
+//! A virtual pad made through uinput: what a game reads in place of the
+//! pads behind it.
+
+use std::io;
+use std::os::fd::{AsFd, BorrowedFd};
+use std::path::{Path, PathBuf};
+
+use ctrlassist_core::{Control, Effect, FeedbackError, PadState, gamepad};
+use evdev::uinput::VirtualDevice;
+use evdev::{
+    AbsInfo, AbsoluteAxisCode, AttributeSet, BusType, EventSummary, EventType, FFEffectCode,
+    FFEffectKind, InputEvent, InputId, KeyCode, UInputCode, UinputAbsSetup,
+};
+use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl, stat};
+
+/// The most effects a game may hold on one virtual pad.
+const EFFECTS: u32 = ctrlassist_core::EFFECTS as u32;
+
+/// What a virtual pad presents itself as.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum Identity {
+    /// A pad that claims to be nothing else. SDL and Steam adopt it with
+    /// a mapping generated from its controls.
+    Generic,
+    /// An Xbox Series pad, which SDL and Steam recognize by its numbers.
+    Xbox,
+}
+
+impl Identity {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Generic => "CtrlAssist Virtual Pad",
+            Self::Xbox => "Microsoft Xbox Series S|X Controller",
+        }
+    }
+
+    /// The bus, vendor, product and version it reports. The generic
+    /// pad's are the sample numbers 0.4.0's virtual pad carried, which
+    /// SDL and Steam are known to adopt.
+    fn id(self) -> InputId {
+        match self {
+            Self::Generic => InputId::new(BusType::BUS_USB, 0x1234, 0x5678, 0x0111),
+            Self::Xbox => InputId::new(BusType::BUS_USB, 0x045e, 0x0b12, 0x0507),
+        }
+    }
+
+    /// The highest value of a trigger, as that pad's driver reports it.
+    fn trigger_max(self) -> i32 {
+        match self {
+            Self::Generic => 255,
+            Self::Xbox => 1023,
+        }
+    }
+}
+
+/// What a game asks of a virtual pad.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Request {
+    /// Store or replace a rumble effect under the game's number for it.
+    Upload {
+        /// The game's number for the effect.
+        id: i16,
+        /// The effect.
+        effect: Effect,
+    },
+    /// Remove an effect.
+    Erase {
+        /// The game's number for the effect.
+        id: i16,
+    },
+    /// Play an effect this many times, or stop it with zero.
+    Play {
+        /// The game's number for the effect.
+        id: i16,
+        /// How many times.
+        count: u32,
+    },
+    /// Scale every effect on this pad; `0xffff` is full strength.
+    Gain(u16),
+}
+
+const BUTTONS: [(KeyCode, Control); 11] = [
+    (KeyCode::BTN_SOUTH, gamepad::SOUTH),
+    (KeyCode::BTN_EAST, gamepad::EAST),
+    (KeyCode::BTN_NORTH, gamepad::NORTH),
+    (KeyCode::BTN_WEST, gamepad::WEST),
+    (KeyCode::BTN_TL, gamepad::LEFT_BUMPER),
+    (KeyCode::BTN_TR, gamepad::RIGHT_BUMPER),
+    (KeyCode::BTN_SELECT, gamepad::SELECT),
+    (KeyCode::BTN_START, gamepad::START),
+    (KeyCode::BTN_MODE, gamepad::MODE),
+    (KeyCode::BTN_THUMBL, gamepad::LEFT_THUMB),
+    (KeyCode::BTN_THUMBR, gamepad::RIGHT_THUMB),
+];
+
+const STICKS: [(AbsoluteAxisCode, Control); 4] = [
+    (AbsoluteAxisCode::ABS_X, gamepad::LEFT_X),
+    (AbsoluteAxisCode::ABS_Y, gamepad::LEFT_Y),
+    (AbsoluteAxisCode::ABS_RX, gamepad::RIGHT_X),
+    (AbsoluteAxisCode::ABS_RY, gamepad::RIGHT_Y),
+];
+
+const TRIGGERS: [(AbsoluteAxisCode, Control); 2] = [
+    (AbsoluteAxisCode::ABS_Z, gamepad::LEFT_TRIGGER),
+    (AbsoluteAxisCode::ABS_RZ, gamepad::RIGHT_TRIGGER),
+];
+
+/// The directional pad as a hat: its axis, then the buttons that push it
+/// negative and positive.
+const HATS: [(AbsoluteAxisCode, Control, Control); 2] = [
+    (
+        AbsoluteAxisCode::ABS_HAT0X,
+        gamepad::DPAD_LEFT,
+        gamepad::DPAD_RIGHT,
+    ),
+    (
+        AbsoluteAxisCode::ABS_HAT0Y,
+        gamepad::DPAD_UP,
+        gamepad::DPAD_DOWN,
+    ),
+];
+
+const STICK_MIN: i32 = -32768;
+const STICK_MAX: i32 = 32767;
+
+/// A stick's value on the wire. Zero stays exactly zero.
+fn stick(value: f32) -> i32 {
+    let scale = if value < 0.0 {
+        -(STICK_MIN as f32)
+    } else {
+        STICK_MAX as f32
+    };
+    ((value * scale).round() as i32).clamp(STICK_MIN, STICK_MAX)
+}
+
+fn trigger(value: f32, max: i32) -> i32 {
+    ((value * max as f32).round() as i32).clamp(0, max)
+}
+
+fn hat(state: &PadState, negative: Control, positive: Control) -> i32 {
+    i32::from(state.get(positive) > 0.0) - i32::from(state.get(negative) > 0.0)
+}
+
+/// A virtual pad.
+///
+/// It is written level-based, as pads are read: [`write`](Self::write)
+/// takes the state the pad should now hold and sends the difference from
+/// what it last held as one report frame. It carries the gamepad's own
+/// controls: eleven buttons, two sticks, two triggers and a hat.
+#[must_use = "dropping a virtual pad removes it, which the game sees as a disconnect"]
+pub struct VirtualPad {
+    device: VirtualDevice,
+    identity: Identity,
+    event_node: PathBuf,
+    device_number: u64,
+    held: PadState,
+    /// Kept between calls so that writing and serving allocate nothing.
+    scratch: Vec<InputEvent>,
+}
+
+impl std::fmt::Debug for VirtualPad {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VirtualPad")
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
+impl VirtualPad {
+    /// Creates a virtual pad and waits for its event node.
+    ///
+    /// # Errors
+    ///
+    /// Fails if uinput can't be opened or the kernel refuses the pad.
+    pub fn create(identity: Identity) -> io::Result<Self> {
+        let keys = AttributeSet::from_iter(BUTTONS.iter().map(|(key, _)| *key));
+        let mut builder = VirtualDevice::builder()?
+            .name(identity.name())
+            .input_id(identity.id())
+            .with_keys(&keys)?
+            .with_ff(&AttributeSet::from_iter([FFEffectCode::FF_RUMBLE]))?
+            .with_ff_effects_max(EFFECTS);
+        let axis = |min, max| AbsInfo::new(0, min, max, 0, 0, 0);
+        for (code, _) in STICKS {
+            builder = builder
+                .with_absolute_axis(&UinputAbsSetup::new(code, axis(STICK_MIN, STICK_MAX)))?;
+        }
+        for (code, _) in TRIGGERS {
+            builder = builder
+                .with_absolute_axis(&UinputAbsSetup::new(code, axis(0, identity.trigger_max())))?;
+        }
+        for (code, _, _) in HATS {
+            builder = builder.with_absolute_axis(&UinputAbsSetup::new(code, axis(-1, 1)))?;
+        }
+        let mut device = builder.build()?;
+        let event_node = device
+            .enumerate_dev_nodes_blocking()?
+            .filter_map(Result::ok)
+            .find(|node| node.to_string_lossy().contains("/event"))
+            .ok_or_else(|| io::Error::other("the virtual pad has no event node"))?;
+        let device_number = stat(&event_node)?.st_rdev;
+        // A read with no request waiting must return, not block the
+        // thread every pad is served on.
+        let flags = fcntl_getfl(&device)?;
+        fcntl_setfl(&device, flags | OFlags::NONBLOCK)?;
+        Ok(Self {
+            device,
+            identity,
+            event_node,
+            device_number,
+            held: PadState::NEUTRAL,
+            scratch: Vec::with_capacity(64),
+        })
+    }
+
+    /// What it presents itself as.
+    #[must_use]
+    pub fn identity(&self) -> Identity {
+        self.identity
+    }
+
+    /// The pad's event node, which a game opens.
+    #[must_use]
+    pub fn event_node(&self) -> &Path {
+        &self.event_node
+    }
+
+    /// The kernel's number for the pad's event node. A pad being read
+    /// that has this number is this virtual pad, and must never be taken
+    /// as a source: that would feed the daemon its own output.
+    #[must_use]
+    pub fn device_number(&self) -> u64 {
+        self.device_number
+    }
+
+    /// Makes the pad hold `state`, sending what differs from what it
+    /// holds as one report frame, or nothing if nothing differs.
+    ///
+    /// The kernel ends a frame itself once it holds about as many
+    /// changes as the pad has axes, so a write that changes nearly every
+    /// control at once reaches the game as two frames. Both are correct
+    /// states on the way to the one written.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the kernel refuses the write; the pad's held state is
+    /// then unchanged, so the next write sends the difference again.
+    pub fn write(&mut self, state: &PadState) -> io::Result<()> {
+        self.scratch.clear();
+        for (key, control) in BUTTONS {
+            let (now, was) = (state.get(control), self.held.get(control));
+            if now != was {
+                self.scratch.push(InputEvent::new(
+                    EventType::KEY.0,
+                    key.0,
+                    i32::from(now > 0.0),
+                ));
+            }
+        }
+        for (code, control) in STICKS {
+            let (now, was) = (stick(state.get(control)), stick(self.held.get(control)));
+            if now != was {
+                self.scratch
+                    .push(InputEvent::new(EventType::ABSOLUTE.0, code.0, now));
+            }
+        }
+        let max = self.identity.trigger_max();
+        for (code, control) in TRIGGERS {
+            let (now, was) = (
+                trigger(state.get(control), max),
+                trigger(self.held.get(control), max),
+            );
+            if now != was {
+                self.scratch
+                    .push(InputEvent::new(EventType::ABSOLUTE.0, code.0, now));
+            }
+        }
+        for (code, negative, positive) in HATS {
+            let (now, was) = (
+                hat(state, negative, positive),
+                hat(&self.held, negative, positive),
+            );
+            if now != was {
+                self.scratch
+                    .push(InputEvent::new(EventType::ABSOLUTE.0, code.0, now));
+            }
+        }
+        if !self.scratch.is_empty() {
+            self.device.emit(&self.scratch)?;
+        }
+        self.held = *state;
+        Ok(())
+    }
+
+    /// Answers every request games have waiting, passing each to
+    /// `handle`. Returns when none is left.
+    ///
+    /// A game's upload blocks in the kernel until it is answered, so this
+    /// is called as soon as the pad is readable. What `handle` refuses is
+    /// refused to the game; a request that isn't understood is refused
+    /// too, never left unanswered.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the kernel refuses a read or an answer.
+    pub fn serve(
+        &mut self,
+        mut handle: impl FnMut(Request) -> Result<(), FeedbackError>,
+    ) -> io::Result<()> {
+        loop {
+            self.scratch.clear();
+            match self.device.fetch_events() {
+                Ok(events) => self.scratch.extend(events),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) => return Err(error),
+            }
+            if self.scratch.is_empty() {
+                return Ok(());
+            }
+            for index in 0..self.scratch.len() {
+                let Some(event) = self.scratch.get(index).copied() else {
+                    break;
+                };
+                match event.destructure() {
+                    EventSummary::UInput(request, UInputCode::UI_FF_UPLOAD, ..) => {
+                        let mut upload = self.device.process_ff_upload(request)?;
+                        let data = upload.effect();
+                        let outcome = match data.kind {
+                            FFEffectKind::Rumble {
+                                strong_magnitude,
+                                weak_magnitude,
+                            } => handle(Request::Upload {
+                                id: upload.effect_id(),
+                                effect: Effect {
+                                    strong: strong_magnitude,
+                                    weak: weak_magnitude,
+                                    length_ms: data.replay.length,
+                                    delay_ms: data.replay.delay,
+                                },
+                            }),
+                            // Only rumble is offered, so the kernel
+                            // shouldn't pass anything else on.
+                            _ => Err(FeedbackError::NoSuchEffect),
+                        };
+                        if let Err(refusal) = outcome {
+                            upload.set_retval(-errno(refusal));
+                        }
+                        // Dropping the upload sends the answer.
+                    }
+                    EventSummary::UInput(request, UInputCode::UI_FF_ERASE, ..) => {
+                        let mut erase = self.device.process_ff_erase(request)?;
+                        let outcome = match i16::try_from(erase.effect_id()) {
+                            Ok(id) => handle(Request::Erase { id }),
+                            Err(_) => Err(FeedbackError::NoSuchEffect),
+                        };
+                        if let Err(refusal) = outcome {
+                            erase.set_retval(-errno(refusal));
+                        }
+                    }
+                    EventSummary::ForceFeedback(_, code, value)
+                        if code == FFEffectCode::FF_GAIN =>
+                    {
+                        let gain =
+                            u16::try_from(value.clamp(0, i32::from(u16::MAX))).unwrap_or(u16::MAX);
+                        // Nothing waits on these two; a refusal has
+                        // nowhere to go.
+                        let _ = handle(Request::Gain(gain));
+                    }
+                    EventSummary::ForceFeedback(_, code, value) => {
+                        if let Ok(id) = i16::try_from(code.0) {
+                            let count = u32::try_from(value).unwrap_or(0);
+                            let _ = handle(Request::Play { id, count });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// The error number a game sees for a refusal.
+fn errno(refusal: FeedbackError) -> i32 {
+    let errno = match refusal {
+        FeedbackError::Full => rustix::io::Errno::NOSPC,
+        _ => rustix::io::Errno::INVAL,
+    };
+    errno.raw_os_error()
+}
+
+impl AsFd for VirtualPad {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.device.as_fd()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stick_keeps_its_rest_and_its_ends() {
+        assert_eq!(stick(0.0), 0);
+        assert_eq!(stick(1.0), 32767);
+        assert_eq!(stick(-1.0), -32768);
+        assert_eq!(stick(0.5), 16384);
+        assert_eq!(stick(f32::NAN), 0);
+        assert_eq!(stick(9.0), 32767);
+        assert_eq!(stick(-9.0), -32768);
+    }
+
+    #[test]
+    fn a_trigger_fills_its_pad_s_range() {
+        assert_eq!(trigger(0.0, 255), 0);
+        assert_eq!(trigger(1.0, 255), 255);
+        assert_eq!(trigger(1.0, 1023), 1023);
+        assert_eq!(trigger(0.5, 255), 128);
+        assert_eq!(trigger(-1.0, 255), 0);
+        assert_eq!(trigger(f32::NAN, 255), 0);
+    }
+
+    #[test]
+    fn opposite_directions_held_together_cancel_on_the_hat() {
+        let both = PadState::NEUTRAL
+            .with(gamepad::DPAD_LEFT, 1.0)
+            .with(gamepad::DPAD_RIGHT, 1.0);
+        assert_eq!(hat(&both, gamepad::DPAD_LEFT, gamepad::DPAD_RIGHT), 0);
+        let left = PadState::NEUTRAL.with(gamepad::DPAD_LEFT, 1.0);
+        assert_eq!(hat(&left, gamepad::DPAD_LEFT, gamepad::DPAD_RIGHT), -1);
+        assert_eq!(
+            hat(&PadState::NEUTRAL, gamepad::DPAD_UP, gamepad::DPAD_DOWN),
+            0
+        );
+    }
+
+    #[test]
+    fn a_full_pad_is_out_of_space_and_any_other_refusal_is_invalid() {
+        assert_eq!(errno(FeedbackError::Full), 28);
+        assert_eq!(errno(FeedbackError::NoSuchEffect), 22);
+        assert_eq!(errno(FeedbackError::NoSuchSink), 22);
+    }
+}

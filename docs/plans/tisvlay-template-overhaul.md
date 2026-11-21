@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 7 are done. The maintainer has read the hiding service's root code, and it hid a real DualSense from a running Steam and restored it (2026-11-21; SDL alone was not checked separately).
-- **Next action:** build step 8, uinput virtual pads, then on through slice B. Build step 7 (the pad reader) is done. The next marked stop is build step 11.
+- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 8 are done. The maintainer has read the hiding service's root code, and it hid a real DualSense from a running Steam and restored it (2026-11-21; SDL alone was not checked separately).
+- **Next action:** build step 9, the input thread, then on through slice B. Build steps 7 and 8 (the pad reader, uinput virtual pads) are done. The next marked stop is build step 11. Hardware check owed for build step 8: `just forward-pad <node>` and `just forward-pad <node> --xbox`, to see that SDL and Steam list each identity.
 - **Hiding service decisions** (2026-11-21): who is served is TisVlay's desktop-session rule, asked of logind once per connection through its login library; a user switch leaves pads hidden; the socket and records live under `/run/ctrlassist`; the step landed in a few commits with one stop.
 - **Naming:** the root helper is called the hiding service in the architecture and `ctrlassist-hider` as a crate, because "helper" also described the assisting player. Older sections of this plan still say helper.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
@@ -377,5 +377,7 @@ Each becomes a `docs/ideas/` entry at step 4, with the trigger that would bring 
 - **The Steam-driving dislodge recipe went with `spikes/hiding`** (build step 6). It ran the spike's probe. Its replacements, `just hider-dev` and `just hide-pad`, go through the real service; starting Steam and reading what it lists is by hand.
 - **`ctrlassist-hider` depends on `libc`** as well as `rustix` and `udev` (build step 6): the login library is C, and its strings are freed with `free`.
 - **CI opens uinput on its runner** (build step 7), so the pad reader's tests run there and count toward coverage; without that the floor would fail in CI. Like the rest of the workflow, this first runs after the repository move, along with the system libraries the workflow now installs.
+- **Own virtual pads are known by device number, not by a marker in `phys`** (build step 8). The `evdev` crate's call that sets `phys` is refused by the kernel (it declares the wrong request size), and the builder keeps its descriptor private, so the marker can't be set without replacing the crate's uinput setup. The daemon's virtual pads die with it, so remembering their device numbers does the same job. Worth reporting upstream.
+- **The generic identity reports 0.4.0's numbers** (build step 8), USB 1234:5678, because those are what SDL and Steam were seen to adopt. They are the `evdev` crate's sample numbers, not ours; numbers of our own are a question for the release.
 
 The drafting history is in git.

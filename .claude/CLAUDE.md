@@ -14,7 +14,7 @@ crates/
   ctrlassist-core/            # the routing model: controls, pad state, groups, mux and
                               # demux nodes, the graph, the feedback router. No dependencies.
   ctrlassist-device/          # the kernel side: pads read from descriptors, the kernel
-                              # gamepad layout
+                              # gamepad layout, uinput virtual pads
   ctrlassist-hider/           # the hiding service: its wire types and client as a library,
                               # and the root binary
   ctrlassist-test/            # fake pads made through uinput and uhid, and the
@@ -32,6 +32,7 @@ packaging/
   nix/                        # crate.nix (one crate's binaries as a package) and the
                               # VM checks (test-*.nix)
   systemd/                    # the hiding service's socket and service units
+  udev/                       # the rule that gives the seat user uinput and uhid
   licensing/                  # deny.toml: license policy and the one-version gate
 .claude/CLAUDE.md             # this file
 ```

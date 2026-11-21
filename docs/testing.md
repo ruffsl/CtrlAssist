@@ -31,7 +31,7 @@ How the workspace is tested and where a new test goes. The approach is TisVlay's
 
 A clean machine opens neither interface to an ordinary user, so a test that needs one checks `uinput_available()` or `uhid_available()` and skips where it is missing, writing a `SKIPPED` line that says why. With `CTRLASSIST_REQUIRE_FAKE_PADS` set it fails instead; CI sets it, after opening uinput and the event nodes on its runner. The virtual machine checks run as root and never skip.
 
-`ctrlassist-fixture` is the same fakes as a command, for the virtual machine checks' scripts: it creates a pad and holds it until killed, lists pads with what the caller can open, counts what arrives on a node, reads a pad as the daemon does, and hides a pad through the hiding service.
+`ctrlassist-fixture` is the same fakes as a command, for the virtual machine checks' scripts: it creates a pad and holds it until killed, lists pads with what the caller can open, counts what arrives on a node, reads a pad as the daemon does, forwards a pad to a virtual pad, and hides a pad through the hiding service.
 
 ## Virtual machine checks
 
@@ -39,10 +39,10 @@ Each `packaging/nix/test-*.nix` is a NixOS test exposed as a flake check and run
 
 | Check | Asserts |
 |---|---|
-| `device` | A seat user reads a pad's report frames from a descriptor as pad states; an unplugged pad is reported as gone |
+| `device` | With the packaged udev rule: a seat user reads a pad's report frames from a descriptor as pad states; the rule gives uinput and uhid to the seat user and nobody else; a virtual pad of each identity carries what the pad behind it does; an unplugged pad is reported as gone |
 | `hider` | The hiding service as packaged, hardening included: a hidden pad is denied and its earlier reader cut off; the other pad of the same model is untouched; the passed descriptor delivers input; a reconnecting pad is never visible; restore, a killed client and a killed service each give the pad back and leave no rule; a user not in front of the machine, a keyboard and a hostile pad name get nowhere; a pad with no driver is restored exactly |
 | `platform` | A seat user can open a pad's event and js nodes, and can't open `/dev/uinput`, `/dev/uhid` or a hidraw node; both kinds of fake pad deliver what they are sent |
 
 ## Hardware checks
 
-What no virtual machine has is checked by hand on real pads, through the real service: `just hider-dev` runs the hiding service from the build tree as root, and `just hide-pad <node>` hides a pad through it and holds it hidden until Ctrl-C. `ctrlassist-hider check <node>` prints what the service makes of a node without changing anything.
+What no virtual machine has is checked by hand on real pads, through the real service: `just hider-dev` runs the hiding service from the build tree as root, and `just hide-pad <node>` hides a pad through it and holds it hidden until Ctrl-C. `ctrlassist-hider check <node>` prints what the service makes of a node without changing anything. `just forward-pad <node>` puts a virtual pad in front of a real one, to see what Steam and SDL make of each identity.
