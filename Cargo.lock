@@ -490,6 +490,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctrlassist"
+version = "0.5.0"
+dependencies = [
+ "ctrlassist-daemon",
+ "ctrlassist-device",
+ "ctrlassist-protocol",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "zenoh",
+ "zenoh-ext",
+]
+
+[[package]]
 name = "ctrlassist-cli"
 version = "0.5.0"
 dependencies = [

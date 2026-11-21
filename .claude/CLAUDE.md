@@ -11,6 +11,8 @@ The project is being rewritten from a clean slate. [docs/architecture.md](../doc
 ```
 Cargo.toml                    # workspace root: one version, the lint table, the profiles
 crates/
+  ctrlassist/                 # the client SDK: a daemon client that checks the daemon's
+                              # release and mirrors its state, and a state watcher
   ctrlassist-core/            # the routing model: controls, pad state, groups, mux and
                               # demux nodes, the graph, the feedback router. No dependencies.
   ctrlassist-cli/             # the ctrlassist binary: `service daemon`, `status`

@@ -9,6 +9,7 @@ pub mod service;
 
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use ctrlassist_device::InputThread;
@@ -19,7 +20,12 @@ use tracing::{info, warn};
 use zenoh::Session;
 use zenoh::bytes::Encoding;
 use zenoh::liveliness::LivelinessToken;
-use zenoh_ext::{AdvancedPublisher, AdvancedPublisherBuilderExt, CacheConfig};
+use zenoh_ext::{AdvancedPublisher, AdvancedPublisherBuilderExt, CacheConfig, MissDetectionConfig};
+
+/// Heartbeat period for sample-miss recovery on cached publishers: a
+/// heartbeat goes out only in a period after a publish, so an idle key
+/// costs a subscriber nothing.
+const MISS_HEARTBEAT: Duration = Duration::from_millis(500);
 
 /// A running daemon.
 #[must_use = "dropping the daemon withdraws its liveliness token and stops the input thread, which removes every virtual pad"]
@@ -50,6 +56,7 @@ async fn serve(
             Some(((), daemon::Incoming::Info((), responder))) => {
                 let info = rpc::ServiceInfo {
                     version: VERSION.to_string(),
+                    keys: vec![keys::daemon()],
                 };
                 responder.ok(&info).await;
             }
@@ -96,6 +103,9 @@ impl Daemon {
             .declare_publisher(keys::daemon())
             .encoding(Encoding::APPLICATION_JSON)
             .cache(CacheConfig::default().max_samples(1))
+            .sample_miss_detection(
+                MissDetectionConfig::default().sporadic_heartbeat(MISS_HEARTBEAT),
+            )
             .publisher_detection()
             .await
             .map_err(|error| anyhow!("declaring the daemon's state: {error}"))?;

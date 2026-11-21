@@ -19,4 +19,10 @@ pub struct Ack {}
 pub struct ServiceInfo {
     /// The daemon's release; clients check it with [`crate::compatible`].
     pub version: String,
+    /// The keys the daemon publishes from a cache right now, so a client
+    /// knows when its history has arrived: once it holds a sample for
+    /// each one its subscriptions match. Empty from a daemon that
+    /// publishes none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
 }
