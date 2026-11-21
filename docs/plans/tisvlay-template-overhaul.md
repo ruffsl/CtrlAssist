@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 and 2 done. The survey finding, [findings/ecosystem.md](findings/ecosystem.md), awaits maintainer review.
-- **Next action:** after that review, step 3: the hiding and identity spikes, in a clean NixOS VM and on the development host.
+- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3 in progress: the hiding, permissions and identification spike.
+- **Next action:** finish that spike and stop when its finding is written.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -88,6 +88,8 @@ One word per thing, here and in everything written from this plan:
 
 **Virtual pad identity offers both** copying a pad and picking a built-in identity. How faithful an identity can be, and what a virtual pad presents by default, are S5's questions.
 
+**The legacy words stay, for users too:** primary and assist for the roles; mux with priority, average and toggle; demux with unicast and multicast. Two alternative families were tried and read worse: these are precise, already paired, already in the README and issues, and "assist" is the project's name. Clients add a one-line description beside each, since the mode names are jargon to a newcomer.
+
 **Setups start manually, with optional auto-start.** A client starts a setup. A profile may also be marked to start by itself once the daemon is up and all of its pads are connected.
 
 **Clients are built in the order CLI, tray, GUI, TUI.** The GUI is Slint, following TisVlay. The TUI uses ratatui and comes last because TisVlay has none to pattern it on; the `archive/feature/tui` tag holds an earlier draft worth reading first. Each can mirror live pad state, which the daemon publishes on change and only while something subscribes.
@@ -99,8 +101,6 @@ One word per thing, here and in everything written from this plan:
 ## Provisional, pending spikes
 
 **Whether the privileged helper is needed,** and what it does. Games run as the same user as the daemon, so a group or ACL rule can't admit the daemon while excluding the game, which leaves a grab and Steam's blacklist as the unprivileged mechanisms, both partial. InputPlumber hides pads with runtime udev rules, which needs root. S1 decides whether unprivileged mechanisms are enough and no helper ships, or the helper applies the hiding.
-
-**User-facing names.** The engine keeps the legacy words (mux, demux, and their modes) in code and profiles. What clients call the presets and the two roles is open. The maintainer wants one unifying family of nouns, each a single word rather than a compound; a first proposal (player and helper; assist, blend, take turns, switch, mirror) didn't meet that. To settle before the CLI is designed at step 4.
 
 **How to relate to InputPlumber.** CtrlAssist works alone everywhere. Where InputPlumber is running, the intent is to stay out of its way and, if it is simple, use its D-Bus API for hiding. S1 measures what cooperation takes; if it adds much complexity, CtrlAssist stays fully independent and only documents the coexistence.
 
@@ -175,7 +175,7 @@ Each entry records its source and date. The survey chooses nothing: it gives eac
 
 ## Spikes
 
-Each spike is a workspace under `spikes/<name>/`, run on the development host, with the maintainer asked only for physical actions such as pressing buttons. On that host the maintainer has allowed: grabbing and releasing pads; editing Steam's config, backed up first and restored after each test; restarting Steam; and `sudo` for temporary udev rules and node permissions, each command shown before it runs and undone afterward. Each ends in `docs/plans/findings/<name>.md` holding a results table and a verdict, and work stops there for review. At step 4 the findings are folded into `docs/architecture.md` (hardware caveats into `docs/concerns/`) and the findings directory is deleted. Spike code is deleted in the commit that lands its replacement in `crates/`, except S4, whose tests and nodes are promoted to become the core crate.
+Each spike is a workspace under `spikes/<name>/`, run on the development host, with the maintainer asked only for physical actions such as pressing buttons, batched into one checklist per session with results captured to a log. On that host the maintainer has allowed: grabbing and releasing pads; editing Steam's config, backed up first and restored after each test; restarting Steam; and `sudo` for temporary udev rules and node permissions, each command shown before it runs and undone afterward. Each ends in `docs/plans/findings/<name>.md` holding a results table and a verdict, and work stops there for review. At step 4 the findings are folded into `docs/architecture.md` (hardware caveats into `docs/concerns/`) and the findings directory is deleted. Spike code is deleted in the commit that lands its replacement in `crates/`, except S4, whose tests and nodes are promoted to become the core crate.
 
 Order: the survey, then S1 and S5, then S2, then S4, then S3. S5 precedes S4 because the sink type decides what feedback looks like; S1 precedes S2 because a grab decides who may read the pad.
 
@@ -183,7 +183,7 @@ Order: the survey, then S1 and S5, then S2, then S4, then S3. S5 precedes S4 bec
 
 *Question:* can an unprivileged daemon make a pad absent to games, and what must the packages install?
 
-- [ ] For each mechanism (evdev grab; Steam's blacklist; SDL's ignore-devices hint per launch; runtime udev rules as InputPlumber uses, applied by a privileged helper; others from the survey) and each consumer (Steam Input, a native SDL game, a Proton game, a raw evdev reader), record: absent, present but silent, or visible.
+- [ ] For each mechanism (evdev grab; Steam's blacklist; SDL's ignore-devices hint per launch; runtime udev rules as InputPlumber uses, applied by a privileged helper; others from the survey) and each consumer (Steam's controller settings, an SDL test tool run natively, and raw evdev and joydev readers; a Proton game is left to a later check), record: absent, present but silent, or visible.
 - [ ] For each mechanism, record what remains after the daemon is killed without cleanup, and after the pad reconnects.
 - [ ] Record Steam's behavior by start order (daemon first, Steam first) and whether a change needs a Steam restart.
 - [ ] In a clean NixOS VM with no Steam or Sunshine rules, defined as a flake check the way TisVlay defines its VM test, with fake pads created through uinput: what a seat user can open among `/dev/uinput`, `/dev/uhid` and the pads' event and hidraw nodes.
@@ -202,7 +202,7 @@ Order: the survey, then S1 and S5, then S2, then S4, then S3. S5 precedes S4 bec
 *Background:* SDL reads DualShock and DualSense pads through hidraw by default, and Steam is believed to as well. A uinput pad carrying Sony's IDs has no HID device behind it; a uhid pad does, and the kernel's PlayStation driver can bind to it. InputPlumber emulates a DualSense this way.
 
 - [ ] Build a uinput virtual pad with a DualSense's copied IDs, and a uhid one replaying a real DualSense's report descriptor.
-- [ ] For each, record what Steam Input, a native SDL game and a Proton game report: detected as what, button glyphs, layout correctness, rumble, and whether gyro, touchpad and LEDs pass.
+- [ ] For each, record what Steam's controller settings and an SDL test tool report: detected as what, button glyphs, layout correctness, rumble, and whether gyro, touchpad and LEDs pass.
 - [ ] Repeat for an Xbox identity.
 - [ ] Record what feedback a uhid sink delivers (output reports) and what it needs installed (`/dev/uhid` access).
 - [ ] Write the finding.
