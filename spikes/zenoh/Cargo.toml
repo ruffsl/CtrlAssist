@@ -1,0 +1,22 @@
+[package]
+name = "spike-zenoh"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[[bin]]
+name = "zspike"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+evdev = "0.13"
+libc = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
+# TisVlay's pin and feature set: only the Unix-socket transport.
+zenoh = { version = "1.10", default-features = false, features = ["transport_unixsock-stream"] }
+
+[profile.release]
+debug = "line-tables-only"

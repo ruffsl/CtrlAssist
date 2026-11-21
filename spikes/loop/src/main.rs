@@ -55,6 +55,14 @@ enum Command {
         /// Run our loop under SCHED_FIFO (ignored for legacy).
         #[arg(long)]
         rt: bool,
+        /// Another binary to run as the target, taking the same `mux`
+        /// arguments and printing the same line as ours.
+        #[arg(long)]
+        exe: Option<PathBuf>,
+        /// Commands to run beside the target once it is up, such as
+        /// clients of it. Each is split on spaces.
+        #[arg(long)]
+        with: Vec<String>,
     },
     /// Spin on this many threads until killed.
     Burn { threads: usize },
@@ -71,7 +79,19 @@ fn main() -> Result<()> {
             idle_seconds,
             load,
             rt,
-        } => bench::run(target, legacy_bin.as_deref(), rate, seconds, idle_seconds, load, rt),
+            exe,
+            with,
+        } => bench::run(
+            target,
+            legacy_bin.as_deref(),
+            rate,
+            seconds,
+            idle_seconds,
+            load,
+            rt,
+            exe.as_deref(),
+            &with,
+        ),
         Command::Burn { threads } => {
             for _ in 1..threads {
                 std::thread::spawn(|| {

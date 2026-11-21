@@ -118,3 +118,22 @@ spike-loop-bench legacy="../legacy-0.4/target/release/ctrlassist" runs="3":
 [group('spike')]
 spike-graph:
     cd spikes/graph && cargo test && cargo run --release --example bench
+
+# Time the input loop alone, inside a zenoh daemon with an idle client, and with a mirror subscriber
+[group('spike')]
+spike-zenoh-bench runs="3":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    (cd spikes/loop && cargo build --release --quiet)
+    (cd spikes/zenoh && cargo build --release --quiet)
+    bench=spikes/loop/target/release/loopspike
+    daemon=$PWD/spikes/zenoh/target/release/zspike
+    for load in 0 "$(nproc)"; do
+        for rt in "" "--rt"; do
+            for _ in $(seq {{ runs }}); do
+                "$bench" bench --target ours $rt --load "$load"
+                "$bench" bench --target ours $rt --load "$load" --exe "$daemon" --with "$daemon watch"
+                "$bench" bench --target ours $rt --load "$load" --exe "$daemon" --with "$daemon watch" --with "$daemon watch --mirror"
+            done
+        done
+    done

@@ -70,10 +70,14 @@ fn start_target(
     primary: &Path,
     assist: &Path,
     rt: bool,
+    exe: Option<&Path>,
 ) -> Result<(Child, PathBuf)> {
     let mut command = match target {
         Target::Ours => {
-            let mut command = Command::new(std::env::current_exe()?);
+            let mut command = match exe {
+                Some(exe) => Command::new(exe),
+                None => Command::new(std::env::current_exe()?),
+            };
             command.arg("mux").arg("--primary").arg(primary).arg("--assist").arg(assist);
             if rt {
                 command.arg("--rt");
@@ -128,22 +132,46 @@ fn open_when_ready(node: &Path) -> Result<Device> {
     Err(last.expect("the loop ran at least once because its bound is a nonzero constant").into())
 }
 
-/// User plus system CPU ticks, and context switches summed over every
-/// thread of `pid`.
-fn usage(pid: u32) -> Result<(u64, u64)> {
+/// What a process has used so far.
+struct Usage {
+    /// User plus system CPU ticks.
+    ticks: u64,
+    /// Context switches summed over every thread.
+    switches: u64,
+    /// Context switches of the thread named `input`, if there is one.
+    input_switches: Option<u64>,
+    /// Resident memory in kilobytes.
+    resident_kb: u64,
+}
+
+fn usage(pid: u32) -> Result<Usage> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
     let fields: Vec<&str> = stat.rsplit(") ").next().unwrap_or("").split(' ').collect();
     let ticks = fields[11].parse::<u64>()? + fields[12].parse::<u64>()?;
+    let field = |status: &str, name: &str| -> u64 {
+        status
+            .lines()
+            .filter(|line| line.starts_with(name))
+            .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .sum()
+    };
     let mut switches = 0;
+    let mut input_switches = None;
     for task in std::fs::read_dir(format!("/proc/{pid}/task"))? {
         let status = std::fs::read_to_string(task?.path().join("status"))?;
-        for line in status.lines() {
-            if line.starts_with("voluntary_ctxt_switches") || line.starts_with("nonvoluntary_ctxt_switches") {
-                switches += line.split_whitespace().last().unwrap_or("0").parse::<u64>()?;
-            }
+        let count = field(&status, "voluntary_ctxt_switches") + field(&status, "nonvoluntary_ctxt_switches");
+        switches += count;
+        if status.lines().next().is_some_and(|line| line.ends_with("\tinput")) {
+            input_switches = Some(count);
         }
     }
-    Ok((ticks, switches))
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status"))?;
+    Ok(Usage {
+        ticks,
+        switches,
+        input_switches,
+        resident_kb: field(&status, "VmRSS"),
+    })
 }
 
 fn percentile(sorted: &[u64], fraction: f64) -> u64 {
@@ -159,15 +187,27 @@ pub(crate) fn run(
     idle_seconds: u64,
     load: usize,
     rt: bool,
+    exe: Option<&Path>,
+    with: &[String],
 ) -> Result<()> {
     let (mut primary, primary_node) = fake_pad(PRIMARY_NAME, 0x10f0)?;
     let (mut assist, assist_node) = fake_pad(ASSIST_NAME, 0x10f1)?;
     // Let udev finish with the new nodes before gilrs or the loop opens them.
     thread::sleep(Duration::from_millis(500));
 
-    let (mut child, sink_node) = start_target(target, legacy_bin, &primary_node, &assist_node, rt)?;
+    let (mut child, sink_node) = start_target(target, legacy_bin, &primary_node, &assist_node, rt, exe)?;
     let pid = child.id();
     thread::sleep(Duration::from_millis(500));
+
+    let mut companions = Vec::new();
+    for command in with {
+        let mut parts = command.split(' ');
+        let program = parts.next().context("an empty --with command")?;
+        companions.push(Command::new(program).args(parts).stderr(Stdio::null()).spawn()?);
+    }
+    if !companions.is_empty() {
+        thread::sleep(Duration::from_secs(1));
+    }
 
     // The reader stamps every frame that carries the driven axis.
     let (received_tx, received_rx) = mpsc::channel::<Instant>();
@@ -198,10 +238,14 @@ pub(crate) fn run(
     });
 
     // Idle: nothing is sent; count the target's wakeups.
-    let (_, switches_before) = usage(pid)?;
+    let before = usage(pid)?;
     thread::sleep(Duration::from_secs(idle_seconds));
-    let (_, switches_after) = usage(pid)?;
-    let idle_wakeups = (switches_after - switches_before) as f64 / idle_seconds as f64;
+    let after = usage(pid)?;
+    let idle_wakeups = (after.switches - before.switches) as f64 / idle_seconds as f64;
+    let input_idle_wakeups = match (before.input_switches, after.input_switches) {
+        (Some(before), Some(after)) => format!("{:.1}", (after - before) as f64 / idle_seconds as f64),
+        _ => "n/a".to_string(),
+    };
 
     let mut burner = if load > 0 {
         Some(Command::new(std::env::current_exe()?).arg("burn").arg(load.to_string()).spawn()?)
@@ -220,7 +264,7 @@ pub(crate) fn run(
     let period = Duration::from_nanos(1_000_000_000 / rate);
     let total = rate * seconds;
     let mut sent = Vec::with_capacity(total as usize);
-    let (ticks_before, _) = usage(pid)?;
+    let ticks_before = usage(pid)?.ticks;
     let started = Instant::now();
     let mut next = started;
     for index in 0..total {
@@ -233,7 +277,12 @@ pub(crate) fn run(
     }
     let elapsed = started.elapsed();
     thread::sleep(Duration::from_millis(500));
-    let (ticks_after, _) = usage(pid)?;
+    let end = usage(pid)?;
+    let ticks_after = end.ticks;
+    for companion in &mut companions {
+        companion.kill()?;
+        companion.wait()?;
+    }
 
     if let Some(burner) = &mut burner {
         burner.kill()?;
@@ -258,13 +307,15 @@ pub(crate) fn run(
     }
     println!(
         "target={target:?} rt={rt} load={load} rate={rate} sent={} received={} \
-         p50={}us p99={}us p99.9={}us max={}us cpu={cpu:.1}% idle_wakeups_per_s={idle_wakeups:.1}",
+         p50={}us p99={}us p99.9={}us max={}us cpu={cpu:.1}% idle_wakeups_per_s={idle_wakeups:.1} \
+         input_thread_idle_wakeups_per_s={input_idle_wakeups} rss={}kB",
         sent.len(),
         received.len(),
         percentile(&latencies, 0.50),
         percentile(&latencies, 0.99),
         percentile(&latencies, 0.999),
         latencies[latencies.len() - 1],
+        end.resident_kb,
     );
     Ok(())
 }

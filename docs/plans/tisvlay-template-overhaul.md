@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding ([findings/hiding.md](findings/hiding.md)), identity ([findings/identity.md](findings/identity.md)) and input loop ([findings/input-loop.md](findings/input-loop.md)) spikes are done and accepted; the routing graph spike has its finding, [findings/routing-graph.md](findings/routing-graph.md), done and accepted, with the pad state capacity measured both ways and awaiting the maintainer's choice. Two checks still need the maintainer at the machine: identifiers across reconnects, and suspend, resume and a Bluetooth drop.
-- **Next action:** the last spike, zenoh beside the input loop; then step 4, the architecture document and its three-lens review.
+- **Status:** steps 1 to 3 done. The findings: [ecosystem](findings/ecosystem.md), [hiding](findings/hiding.md), [identity](findings/identity.md), [input loop](findings/input-loop.md), [routing graph](findings/routing-graph.md), [zenoh](findings/zenoh.md). Step 4 in progress: [docs/architecture.md](../architecture.md) is drafted and under its three-lens review. Two checks still need the maintainer at the machine: identifiers across reconnects, and suspend, resume and a Bluetooth drop.
+- **Next action:** fold the review into the architecture, write the commit-sized build steps into step 5, and stop for the maintainer's approval before building.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -264,10 +264,10 @@ Order: the survey, then S1 and S5, then S2, then S4, then S3. S5 precedes S4 bec
 
 A check, not a comparison.
 
-- [ ] Put S2's loop in a daemon that also runs a zenoh session on a Unix socket, publishing state and serving a few rpcs in TisVlay's style, with one idle client attached and the input thread kept off zenoh's runtime.
-- [ ] Re-run S2's measurements; record the daemon's idle wakeups and resident memory, and a one-shot CLI call's time from start to reply.
-- [ ] Prototype the pad-state mirror: published on change, only while subscribed.
-- [ ] Write the finding.
+- [x] Put the input loop in a daemon that also runs a zenoh session on a Unix socket, publishing state and serving an rpc in TisVlay's style, with one idle client attached and the input thread kept off zenoh's runtime.
+- [x] Re-run the loop's measurements; record the daemon's idle wakeups and resident memory, and a one-shot client call's time from start to reply.
+- [x] Prototype the pad-state mirror: published on change, only while subscribed.
+- [x] Write the finding.
 
 *Verdict:* zenoh stays if the input thread's latency and wakeup numbers fall within the run-to-run spread S2 recorded. If not, the finding says what isolates them before any other IPC is considered.
 
