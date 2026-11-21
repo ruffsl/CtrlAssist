@@ -25,6 +25,10 @@ ctrlassist-device = { path = "crates/ctrlassist-device" }
 ctrlassist-hider = { path = "crates/ctrlassist-hider" }
 ctrlassist-test = { path = "crates/ctrlassist-test" }
 
+# Profiles on disk and payloads on the wire
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+
 # Errors
 anyhow = "1"
 

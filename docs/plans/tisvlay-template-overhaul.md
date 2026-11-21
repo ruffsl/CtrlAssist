@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 11 are done. The maintainer has read the hiding service's root code, and it hid a real DualSense from a running Steam and restored it (2026-11-21; SDL alone was not checked separately).
-- **Next action:** build step 12, the profile schema, a marked stop being built through. Slice B (build steps 6 to 11) is done.
+- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 12 are done. The maintainer has read the hiding service's root code, and it hid a real DualSense from a running Steam and restored it (2026-11-21; SDL alone was not checked separately).
+- **Next action:** build step 13, a daemon and CLI that report status. Slice B and build step 12 (the profile schema) are done.
 - **Overnight, 2026-11-21:** the maintainer asked for the marked stops at build steps 11, 12 and 16 to be built through, with each decision made there recorded under "For review" below. Also decided: the controller database is a pinned snapshot in the repository plus a user override file; the `evdev` fix is vendored and soaked here before any upstream PR; the generic identity keeps 0.4.0's numbers until the release.
 - **Hardware checks owed:** `just forward-pad <node>` and `just forward-pad <node> --xbox` (SDL and Steam list each identity); `just bench`; rumble from a game reaching a real pad through a mux, a Bluetooth drop, and a suspend and resume, which need the daemon.
 - **Hiding service decisions** (2026-11-21): who is served is TisVlay's desktop-session rule, asked of logind once per connection through its login library; a user switch leaves pads hidden; the socket and records live under `/run/ctrlassist`; the step landed in a few commits with one stop.
@@ -382,6 +382,15 @@ Decisions made while building through a marked stop, for the maintainer's QA. Ea
 - **How it is updated** (build step 11). `just update-controller-db` rewrites the snapshot from upstream's default branch and names the commit in the file's header; a person reviews the diff and commits it. Nothing updates it automatically. Alternative: a scheduled workflow that opens a PR.
 - **Which pads use it** (build step 11). Not pads whose kernel driver is on a list of gamepad drivers (`xpad`, `xpadneo`, `xone-gip-gamepad`, `microsoft`, `playstation`, `sony`, `nintendo`, `hid-steam`, `steam-deck`): those are read as the driver presents them. Any other pad uses its database line if it has one, and is read as a gamepad if not. The list is my reading of which drivers follow the kernel's gamepad convention and has only been exercised for `xpad` and `playstation` on this host. Alternative: trust the database for every pad, as SDL does.
 - **What a database line can say** (build step 11). Buttons, whole and half axes, inverted axes, hats, and the two-buttons-as-one-axis form; the extra buttons (`misc1`, paddles, `touchpad`) take fixed spare positions 15 to 25. SDL's hints (`crc`, `hint`, `sdk`, `type`, `face`) are ignored.
+- **The profile format** (build step 12, a marked stop). As the architecture drew it, with these choices made on the way. All are in `crates/ctrlassist-protocol/src/profile.rs` and its fixtures, and are the user-facing format, so they are the ones most worth your eye:
+  - *Presets:* `priority`, `average`, `toggle` (keys `primary`, `assist`), `unicast`, `multicast` (keys `pad`, `outputs`, default 2), each with an optional `identity`. A preset can't be mixed with `[source]`, `[node]` or `[sink]` tables; to adjust one, write the full form. Alternative: let a preset take overrides such as `engage`.
+  - *Naming a pad:* a bare address, a full name as `ctrlassist pads` will print it, or `model:<vendor>:<product>` in hex for any pad of a model. The architecture's example said `model:dualshock4`; there is no table of model nicknames, so it is numbers for now.
+  - *Names* of sources, nodes and sinks are lowercase letters, digits and hyphens, and a node may not share a source's name.
+  - *Numbering follows name order,* not file order, so in a preset the assist is source 0 and the primary source 1. Nothing a user sees depends on it; state and rpcs will use names.
+  - *Feedback* is `"active"`, `"none"`, or for a mux a list of its inputs. *Switch* is a button name, `{ button, input }`, or `false`. Buttons are named `south`, `east`, `north`, `west`, `left-bumper`, `right-bumper`, `select`, `start`, `mode`, `left-thumb`, `right-thumb`, `dpad-up` and so on.
+  - *Rules* are overridden per kind of group (`stick`, `trigger`, `button`, `hat`), not per group. Custom groups, for pads that aren't gamepads, have no key yet.
+  - *Identity* is `generic` or `xbox`; `playstation` arrives with that identity.
+  - *Unknown keys are errors,* so a typo is caught; the cost is that an older daemon refuses a newer profile outright, which the schema version also does.
 
 ## Deviations
 

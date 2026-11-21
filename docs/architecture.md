@@ -313,7 +313,7 @@ A profile is a TOML file the daemon owns. Clients write profiles through the dae
 ```toml
 preset = "priority"          # two pads, one mux, one virtual pad
 primary = "0c:27:56:4f:bd:14"
-assist  = "model:dualshock4" # any pad of this model
+assist  = "model:054c:09cc"  # any pad of this model
 auto-start = true            # once the daemon is up and both are connected
 ```
 
@@ -356,7 +356,14 @@ input = "second"
 identity = "xbox"
 ```
 
-Groups appear only when a pad isn't laid out as a gamepad.
+Groups appear only when a pad isn't laid out as a gamepad; the schema has no key for them yet.
+
+- **The presets** are `priority`, `average` and `toggle`, which take `primary` and `assist`, and `unicast` and `multicast`, which take `pad` and `outputs`. Each is shorthand for a full-form profile and is expanded into one before anything else looks at it.
+- **A pad is named** by its address, by the name `ctrlassist pads` gives it (`address:`, `serial:`, `port:` or `model:` and what follows), or as `model:<vendor>:<product>` for any pad of a model.
+- **A reference** is a source's or node's name, or `name.N` for a demux's output N. Sources, nodes and sinks are numbered in the order of their names, so a profile means the same graph however its tables are ordered.
+- **A node's switch** is a button's name, a table naming the button and whose it is, or `false`.
+- **Every problem is reported with where it is,** in the file's own terms: `node.second.inputs[1]: no source or node named \`tow\``. Text that isn't a profile at all is reported with its line. The core has the last word: a profile that passes the schema but describes a graph the core refuses is refused with the core's reason.
+- **The file carries a schema version** only once it isn't the current one; a file for a newer schema is refused rather than half-read.
 
 ## What the daemon stores
 

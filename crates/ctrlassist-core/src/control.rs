@@ -227,6 +227,12 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// The groups and what kind each is.
+    #[must_use]
+    pub fn groups(&self) -> &[(Group, Kind)] {
+        &self.groups
+    }
+
     /// The standard gamepad: two sticks, two triggers, a d-pad, and each
     /// remaining button alone.
     #[must_use]

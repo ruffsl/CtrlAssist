@@ -1,0 +1,22 @@
+[package]
+name = "ctrlassist-protocol"
+description = "What CtrlAssist's daemon and its clients agree on: the profile schema, and the control plane's keys and payloads"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+ctrlassist-core = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
+[lints]
+workspace = true
