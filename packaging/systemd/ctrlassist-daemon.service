@@ -9,10 +9,9 @@ SyslogIdentifier=ctrlassist-daemon
 Restart=on-failure
 RestartSec=5
 # The input thread asks for real-time scheduling at priority 10 and runs
-# without it if refused. A user service can have it only if the user's
-# service manager was given as much, which the package's system
-# configuration does where it can.
-LimitRTPRIO=10
+# without it if refused. Nothing here can grant that: a user service has
+# the limit its user's service manager has, which the package raises with
+# a drop-in on user@.service.
 
 [Install]
 WantedBy=default.target

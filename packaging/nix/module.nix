@@ -88,8 +88,9 @@ in
       wantedBy = [ "graphical-session.target" ];
     };
 
-    # A user service's limits can't exceed its service manager's, so the
-    # manager is given what the daemon's unit asks for.
+    # A user service has the limits its service manager has and can't
+    # raise them itself, so the manager is given what the daemon's input
+    # thread asks for.
     systemd.services."user@".serviceConfig = lib.mkIf cfg.realtime {
       LimitRTPRIO = 10;
     };
