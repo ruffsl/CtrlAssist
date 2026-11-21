@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ctrlassist_core::Level;
-use ctrlassist_device::{Database, InputThread, Pad, Report};
+use ctrlassist_device::{Database, Found, InputThread, Pad, Report};
 use ctrlassist_protocol::endpoint::{daemon, pad, profile, setup};
 use ctrlassist_protocol::error::{ErrorCode, WireError};
 use ctrlassist_protocol::profile::Identity;
@@ -96,6 +96,9 @@ pub(crate) struct Reactor {
     pub(crate) copied: Copied,
     /// Whether a connected pad is being copied now.
     pub(crate) copying: bool,
+    /// The pads that connected while another was being copied, to try
+    /// if that one can't be: a pad another program has hidden can't.
+    pub(crate) candidates: Vec<Found>,
 }
 
 impl std::fmt::Debug for Reactor {
@@ -163,6 +166,7 @@ impl Reactor {
             buzzes: JoinSet::new(),
             copied,
             copying: false,
+            candidates: Vec::new(),
         }
     }
 
@@ -342,9 +346,15 @@ impl Reactor {
         }
         // The last is the pad that connected, if one did.
         if arrived && let Some(id) = changed.last() {
+            // A pad the hiding service has just shown again comes back
+            // by itself: nobody plugged it in, so it prompts nothing. A
+            // setup stopped by hand would otherwise start again at once.
+            let restored = self.book.was_restored(id);
             self.pad_arrived(id).await;
-            // A profile that was waiting for this pad may start now.
-            self.start_what_can(Some(id)).await;
+            if !restored {
+                // A profile that was waiting for this pad may start now.
+                self.start_what_can(Some(id)).await;
+            }
         }
     }
 

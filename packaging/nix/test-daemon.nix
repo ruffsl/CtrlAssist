@@ -284,6 +284,18 @@ pkgs.testers.runNixOSTest {
         assert known()[HID]["hidden"] and known()[PLAIN]["hidden"]
         assert not alice_can_open(HID) and not alice_can_open(PLAIN)
 
+    with subtest("a profile that starts by itself stays stopped when stopped by hand"):
+        # Showing its pads again re-binds their drivers, so they go and
+        # come back: that is not a pad plugged in, and starts nothing.
+        cli("stop", "couch")
+        machine.succeed("udevadm settle")
+        machine.wait_until_succeeds('test -z "$(ls /run/ctrlassist/hidden)"')
+        machine.succeed("udevadm settle")
+        assert setup() is None, setup()
+        assert "a profile starts by itself" not in daemon_journal().split("a setup stopped")[-1]
+        cli("start", "couch")
+        phase_is("running")
+
     with subtest("stopping the service restores the pads"):
         machine.succeed(as_alice("systemctl --user stop ctrlassist-daemon.service"))
         wait_restored()

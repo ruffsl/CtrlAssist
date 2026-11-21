@@ -673,9 +673,15 @@ impl Reactor {
         let is_one = (ids.vendor, ids.product) == ctrlassist_device::Identity::DualSense.model()
             && ids.bus == usb
             && !found.is_own_output();
-        let wanted = self.copied.dualsense().is_none() && !self.copying;
-        if !(is_one && wanted && matches!(*self.hiding, Hiding::Service(_))) {
+        let wanted = is_one
+            && self.copied.dualsense().is_none()
+            && matches!(*self.hiding, Hiding::Service(_));
+        if !wanted {
             return;
+        }
+        if self.copying {
+            // One at a time; this one is tried if that one can't be.
+            return self.candidates.push(found.clone());
         }
         self.copying = true;
         let node = found.node.clone();
@@ -1607,10 +1613,19 @@ impl Reactor {
             },
             Done::Copied(data) => {
                 self.copying = false;
-                if let Some(data) = data {
-                    self.copied.keep(data);
-                    if let Err(error) = self.publish_identities().await {
-                        warn!(%error, "publishing the identities failed");
+                match data {
+                    Some(data) => {
+                        self.candidates.clear();
+                        self.copied.keep(data);
+                        if let Err(error) = self.publish_identities().await {
+                            warn!(%error, "publishing the identities failed");
+                        }
+                    }
+                    // Another that connected meanwhile, if one did.
+                    None => {
+                        if let Some(next) = self.candidates.pop() {
+                            self.copy_from(&next);
+                        }
                     }
                 }
             }

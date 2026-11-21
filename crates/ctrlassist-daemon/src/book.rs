@@ -39,6 +39,10 @@ struct Row {
     setup: Option<String>,
     /// Whether the hiding service has it hidden.
     hidden: bool,
+    /// Whether the hiding service is showing it again: that re-binds
+    /// its driver, so the pad goes and comes back without anyone having
+    /// touched it.
+    restoring: bool,
 }
 
 impl Row {
@@ -49,6 +53,7 @@ impl Row {
             connected: 0,
             setup: None,
             hidden: false,
+            restoring: false,
         }
     }
 }
@@ -250,8 +255,19 @@ impl Book {
     pub(crate) fn let_go(&mut self, id: &str) {
         if let Some(row) = self.rows.get_mut(id) {
             row.setup = None;
+            row.restoring |= row.hidden;
             row.hidden = false;
         }
+    }
+
+    /// Whether the pad has just come back from being shown again by the
+    /// hiding service, and not from being plugged in; asked once, as it
+    /// arrives. A pad with no driver to re-bind never goes, and its
+    /// next arrival is then taken for this one.
+    pub(crate) fn was_restored(&mut self, id: &str) -> bool {
+        self.rows
+            .get_mut(id)
+            .is_some_and(|row| std::mem::take(&mut row.restoring))
     }
 
     /// Notes that `setup` no longer uses any pad, nor hides one. Returns
@@ -262,6 +278,7 @@ impl Book {
             .filter(|(_, row)| row.setup.as_deref() == Some(setup))
             .map(|(id, row)| {
                 row.setup = None;
+                row.restoring |= row.hidden;
                 row.hidden = false;
                 id.clone()
             })
@@ -555,5 +572,29 @@ mod tests {
             book.forget(ADDRESS).unwrap_err().code,
             ErrorCode::UnknownPad
         );
+    }
+
+    /// Shown again by the hiding service, a pad goes and comes back by
+    /// itself: that arrival is told from a pad plugged in, once.
+    #[test]
+    fn a_pad_shown_again_is_told_from_one_plugged_in() {
+        let mut book = Book::new(Vec::new());
+        let pad = dualsense("/dev/input/event5");
+        let id = book.arrived(&pad, None).pop().unwrap().id;
+        assert!(!book.was_restored(&id), "plugged in");
+        book.claim(&id, "couch");
+        book.set_hidden(&id, true);
+        assert_eq!(book.release("couch"), std::slice::from_ref(&id));
+        assert!(book.was_restored(&id));
+        assert!(!book.was_restored(&id), "asked once");
+        // Given up by a setup that goes on running.
+        book.claim(&id, "couch");
+        book.set_hidden(&id, true);
+        book.let_go(&id);
+        assert!(book.was_restored(&id));
+        // A pad that was only grabbed never went.
+        book.claim(&id, "couch");
+        book.release("couch");
+        assert!(!book.was_restored(&id) && !book.was_restored("address:nothing"));
     }
 }

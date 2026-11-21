@@ -959,10 +959,14 @@ async fn a_connected_dualsense_is_copied_and_virtual_ones_are_made_from_it() {
     // The pad was connected when the daemon started: it is copied, and
     // from then on a DualSense is something a virtual pad can be.
     eventually("the DualSense never was offered", async || offered(&client)).await;
-    // One pad is copied, once: this one, or a real one if the machine
-    // has one connected.
+    // One pad is copied: this one, or a real one if the machine has one
+    // connected. A real one that can't be, as when something has it
+    // hidden, is asked about first and then this one is.
     let asked = hider.asked();
-    assert!(matches!(asked.as_slice(), [Asked::Raw(_)]), "{asked:?}");
+    assert!(
+        !asked.is_empty() && asked.iter().all(|asked| matches!(asked, Asked::Raw(_))),
+        "{asked:?}"
+    );
 
     // One pad as two virtual DualSenses.
     client
