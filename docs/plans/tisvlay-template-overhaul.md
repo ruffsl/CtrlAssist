@@ -79,7 +79,7 @@ The rewrite targets similar functionality, not identical. Each row needs a keep,
 | Rumble routing | To primary, assist, both, active, or none | Keep, as feedback edges |
 | Tray | Pick pads and options, start and stop, notifications | Keep as a client |
 | Saved settings | Last-used tray choices in `config.toml` | Replace with daemon-owned profiles describing a graph |
-| Per-control split (#53) | Not implemented | Falls out of P5; scope to decide |
+| Per-control split (#53) | Not implemented | Falls out of the routing graph; scope to decide |
 
 ## Spikes
 
