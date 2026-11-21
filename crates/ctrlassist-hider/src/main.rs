@@ -27,8 +27,12 @@ use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, accept, bind, liste
 /// One client and what it has hidden.
 struct Connection {
     socket: OwnedFd,
-    /// Whether the client is the user in front of the machine, decided
-    /// once when it connected.
+    /// The client's user, from the socket.
+    user: Option<u32>,
+    /// Whether the client has been found to be the user in front of the
+    /// machine. Looked at as it connects and, until it is so, at each
+    /// request: a user's services start before their session is in
+    /// front. Once it is so it stays so.
     permitted: bool,
     hidden: Vec<hide::Entry>,
 }
@@ -57,6 +61,9 @@ fn serve(connections: &mut [Connection], index: usize, next_token: &mut u32) -> 
     };
     if length == 0 {
         return false;
+    }
+    if !connections[index].permitted {
+        connections[index].permitted = connections[index].user.is_some_and(seat::is_in_front);
     }
     if !connections[index].permitted {
         refuse(&connections[index], Refusal::NotPermitted);
@@ -202,13 +209,14 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
         }
         if ready[0] {
             let socket = accept(listener)?;
-            // The session check is made once, here: a client that later
-            // leaves the foreground keeps what it has.
-            let permitted =
-                socket_peercred(&socket).is_ok_and(|peer| seat::is_in_front(peer.uid.as_raw()));
+            // A client found to be in front stays permitted: one that
+            // later leaves the foreground keeps what it has.
+            let user = socket_peercred(&socket).ok().map(|peer| peer.uid.as_raw());
+            let permitted = user.is_some_and(seat::is_in_front);
             served_anyone = true;
             connections.push(Connection {
                 socket,
+                user,
                 permitted,
                 hidden: Vec::new(),
             });
