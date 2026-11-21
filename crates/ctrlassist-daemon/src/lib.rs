@@ -235,6 +235,9 @@ impl Daemon {
         for pad in now {
             reactor.saw(pad).await;
         }
+        // Profiles that start by themselves, now that every pad already
+        // connected is known.
+        reactor.start_what_can(None).await;
         if !realtime {
             warn!("real-time scheduling was refused; input latency under load is not dependable");
         }

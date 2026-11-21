@@ -181,7 +181,7 @@ The input thread is the whole data path, for every setup. It sleeps in `epoll_wa
 
 It is created before the async runtime and shares nothing with it but the queues. Rules that keep it dependable:
 
-- **Nothing on it waits for the control side.** Commands arrive through a bounded queue that is only ever polled, with a wake descriptor. Reports back (a pad read failed, a switch happened, a pad refused rumble) are sent without waiting and dropped if the control side is behind. No input event crosses this boundary except the mirror.
+- **Nothing on it waits for the control side.** Commands arrive through a bounded queue that is only ever polled, with a wake descriptor. Reports back (a pad has gone, a node selects another input, a setup failed) are sent without waiting and dropped if the control side is behind. No input event crosses this boundary except the mirror.
 - **It doesn't log, allocate or free.** A setup (its graph, router, pads and virtual pads) is built by the control side and handed over whole; a retired one, and a pad that has gone, are handed back to be dropped.
 - **One setup's failure is its own.** Each setup's handling is guarded, so a panic or a virtual pad that refuses a write takes that setup down and leaves the others running.
 - **It asks for real-time scheduling** at a low priority, and carries on without it if refused. It sets no CPU-time limit of its own: exceeding one kills the process, and the kernel's limit on real-time threads as a whole already protects the machine. The daemon's state says which. Real-time scheduling is what makes the latency tail dependable when the machine is saturated.
@@ -192,6 +192,10 @@ It is created before the async runtime and shares nothing with it but the queues
 A single reactor task owns the profiles, the known pads and the running setups, with commands in and state out. It is not an ECS as TisVlay's daemon is: the state is a pad list and a few setups, not many interacting state machines. Beside it run the zenoh bridge, a udev monitor for hotplug, and the hiding service's client.
 
 A setup goes by the name of the profile it runs, and moves through starting, running, held and failed. Starting covers the round trip to the hiding service and creating the virtual pads; that work blocks, so it is done off the reactor and comes back to it as a result. Held means a pad it needs is missing: the virtual pads stay, the missing pad reads as at rest, and the rest carries on. A setup may start held, and a start that fails leaves nothing behind; failed is for a setup that was running and stopped working, which stays listed until it is stopped.
+
+A profile with `auto-start` is started by the daemon when it can run, not merely be held: when the daemon starts, when the profile is put, and when a pad it names connects, if by then every pad it names is connected and free. A setup the user stopped stays stopped until one of its pads is plugged in again.
+
+A node that selects, a mux that follows its switch or a demux that sends to one output at a time, has its choices and the one selected in the setup's state. The input thread reports each change of selection, whether from the switch button or from `select`, which names a choice or asks for the next. A mux doesn't hand over to a pad that isn't there.
 
 A source that names an exact pad is that pad, there or not. One that names a model takes the first pad of that model to have connected that no setup uses, and from then on waits for that pad and no other.
 

@@ -155,3 +155,31 @@ fn a_daemon_given_no_paths_uses_the_user_s_runtime_and_state_directories() {
     assert!(paths.config.ends_with("ctrlassist"));
     assert_ne!(paths.config, paths.state);
 }
+
+/// The user's own controller database is laid over the built-in one, and
+/// one that can't be read doesn't keep the daemon from starting.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_user_s_controller_database_is_read_if_it_can_be() {
+    for readable in [true, false] {
+        let (_dir, socket) = socket();
+        let config = paths(&socket).config;
+        std::fs::create_dir_all(&config).unwrap();
+        let file = config.join("gamecontrollerdb.txt");
+        if readable {
+            std::fs::write(
+                &file,
+                "030000005e0400008e02000010010000,Own Pad,a:b0,b:b1,platform:Linux,\nnot a line\n",
+            )
+            .unwrap();
+        } else {
+            // A directory where the file would be.
+            std::fs::create_dir(&file).unwrap();
+        }
+        let daemon = start(&socket).await;
+        let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
+            .await
+            .unwrap();
+        assert!(is_alive(&client).await, "readable: {readable}");
+        daemon.stop().await;
+    }
+}

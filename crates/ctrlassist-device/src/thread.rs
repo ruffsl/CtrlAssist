@@ -29,6 +29,9 @@ use crate::{Pad, PadError, Request, VirtualPad, realtime};
 const SETUPS: usize = 8;
 /// How many commands, and how many reports, may wait unread.
 const QUEUE: usize = 64;
+/// The most selections reported after one piece of a setup's handling.
+/// A setup with more nodes that select reports the rest after its next.
+const SWITCHED: usize = 8;
 /// The real-time priority asked for: just above ordinary threads.
 const PRIORITY: i32 = 10;
 
@@ -60,6 +63,8 @@ pub struct Setup {
     sinks: Vec<VirtualPad>,
     /// When a rumble level next changes by itself.
     next_ms: Option<u64>,
+    /// Each node's selection as last reported, by node number.
+    selected: Vec<Option<usize>>,
     failed: bool,
 }
 
@@ -70,12 +75,16 @@ impl Setup {
     pub fn new(graph: Graph, pads: Vec<Option<Pad>>, sinks: Vec<VirtualPad>) -> Self {
         let router = Router::new(sinks.len(), pads.len());
         let pads = pads.into_iter().map(|pad| pad.map(Box::new)).collect();
+        // Nothing reported yet, so each node that selects is reported
+        // once as the setup starts.
+        let selected = vec![None; graph.nodes()];
         Self {
             graph,
             router,
             pads,
             sinks,
             next_ms: None,
+            selected,
             failed: false,
         }
     }
@@ -90,6 +99,22 @@ impl Setup {
     #[must_use]
     pub fn sinks(&self) -> &[VirtualPad] {
         &self.sinks
+    }
+
+    /// A node whose selection isn't what was last reported, and what it
+    /// is now; that then counts as reported.
+    fn selection_changed(&mut self) -> Option<(NodeId, usize)> {
+        let Self {
+            graph, selected, ..
+        } = self;
+        selected.iter_mut().enumerate().find_map(|(index, known)| {
+            let now = graph.selected(NodeId(index));
+            if now == *known {
+                return None;
+            }
+            *known = now;
+            now.map(|now| (NodeId(index), now))
+        })
     }
 
     fn register(&self, epoll: &OwnedFd, slot: usize) -> io::Result<()> {
@@ -338,6 +363,17 @@ pub enum Report {
         /// The pad.
         pad: Box<Pad>,
     },
+    /// A node of a running setup selects another input or output than
+    /// was last reported: its switch was pressed, it was asked to, or the
+    /// setup has just started. Only nodes that select are reported.
+    Selected {
+        /// The setup.
+        setup: SetupId,
+        /// The node.
+        node: NodeId,
+        /// Which of its inputs, for a mux, or its outputs, for a demux.
+        index: usize,
+    },
     /// A pad in a running setup has gone. The setup carries on with the
     /// pad reading as at rest. The pad is handed back to be dropped.
     PadGone {
@@ -554,14 +590,27 @@ impl State {
         let id = running.id;
         let epoll = &self.epoll;
         let setup = &mut running.setup;
+        // What changed selection, kept here until it can be reported: a
+        // step changes one node's at most, and a start each node's once.
+        let mut switched = [None; SWITCHED];
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             let gone = work(setup, epoll);
             setup.feedback(now);
+            for place in &mut switched {
+                *place = setup.selection_changed();
+            }
             gone
         }));
         match outcome {
             Ok(gone) => {
                 let failed = setup.failed;
+                for (node, index) in switched.into_iter().flatten() {
+                    self.report(Report::Selected {
+                        setup: id,
+                        node,
+                        index,
+                    });
+                }
                 if let Some((source, pad)) = gone {
                     self.report(Report::PadGone {
                         setup: id,

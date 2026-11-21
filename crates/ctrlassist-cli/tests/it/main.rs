@@ -145,6 +145,7 @@ fn the_command_explains_itself() {
         "start",
         "stop",
         "setups",
+        "select",
         "service",
         "--socket",
     ] {
@@ -385,5 +386,53 @@ async fn a_profile_is_started_listed_and_stopped() {
     assert!(text(&again.stderr).contains("unknown-setup"));
     let none = ctrlassist(&socket, &["setups", "--json"]);
     assert_eq!(text(&none.stdout), "[]\n");
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_that_selects_is_listed_and_told_what_to_select() {
+    const TEST: &str = "a_node_that_selects_is_listed_and_told_what_to_select";
+    if !ctrlassist_test::can_make_pads(TEST) {
+        return;
+    }
+    let (dir, socket) = socket();
+    let _primary = ctrlassist_test::FakePad::new("CLI Turns", 0x1209, 0x7e11).unwrap();
+    // A toggle hands over only to a pad that is there.
+    let _assist = ctrlassist_test::FakePad::new("CLI Turns Assist", 0x1209, 0x7e12).unwrap();
+    let daemon = start(&socket).await;
+    let file = dir.path().join("turns.toml");
+    std::fs::write(
+        &file,
+        "preset = \"toggle\"\nprimary = \"model:1209:7e11\"\nassist = \"model:1209:7e12\"\n",
+    )
+    .unwrap();
+    let put = ctrlassist(&socket, &["profile", "put", file.to_str().unwrap()]);
+    assert!(put.status.success(), "{}", text(&put.stderr));
+    let started = ctrlassist(&socket, &["start", "turns"]);
+    assert!(started.status.success(), "{}", text(&started.stderr));
+
+    // Which choice a node has is in brackets, once the node has said.
+    let listed = |wanted: &str| {
+        let mut said = String::new();
+        for _ in 0..200 {
+            said = text(&ctrlassist(&socket, &["setups"]).stdout);
+            if said.contains(wanted) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        unreachable!("never listed {wanted}:\n{said}");
+    };
+    listed("node mux             [primary] assist");
+    let selected = ctrlassist(&socket, &["select", "turns", "mux", "assist"]);
+    assert!(selected.status.success(), "{}", text(&selected.stderr));
+    listed("node mux             primary [assist]");
+    let next = ctrlassist(&socket, &["select", "turns", "mux"]);
+    assert!(next.status.success(), "{}", text(&next.stderr));
+    listed("node mux             [primary] assist");
+
+    let refused = ctrlassist(&socket, &["select", "turns", "mux", "nobody"]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(text(&refused.stderr).contains("isn't one of mux's choices"));
     daemon.stop().await;
 }

@@ -125,6 +125,24 @@ pub struct Setup {
     pub sources: Vec<SetupSource>,
     /// Its virtual pads, in the order of their names in the profile.
     pub sinks: Vec<SetupSink>,
+    /// Its nodes that select one input or one output, and which each has
+    /// selected. A node that blends its inputs, or sends to every output,
+    /// isn't listed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<SetupNode>,
+}
+
+/// A node of a setup that selects: a mux that follows its switch, or a
+/// demux that sends to one output at a time.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SetupNode {
+    /// Its name in the profile.
+    pub name: String,
+    /// What it selects between, in order: a mux's inputs by the names the
+    /// profile gives them, a demux's outputs by number.
+    pub choices: Vec<String>,
+    /// Which of them is selected, as a place in `choices`.
+    pub selected: usize,
 }
 
 /// Where a setup is in its life.

@@ -68,6 +68,20 @@ pub struct SetupRequest {
     pub name: String,
 }
 
+/// Asks a node of a setup to select another input or output.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SelectRequest {
+    /// The setup's name.
+    pub name: String,
+    /// The node's name in the profile.
+    pub node: String,
+    /// What to select: one of the node's choices by name, or by its
+    /// place among them, counted from 0. Absent, the node moves to its
+    /// next choice, as its switch button would move it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice: Option<String>,
+}
+
 /// Reply to the daemon's `info` rpc: the handshake a client runs before
 /// anything else.
 ///

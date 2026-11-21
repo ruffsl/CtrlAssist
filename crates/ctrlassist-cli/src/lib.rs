@@ -67,6 +67,18 @@ pub enum Command {
         /// The setup's name: the profile it runs.
         setup: String,
     },
+    /// Have a node of a setup select another input or output.
+    Select {
+        /// The setup's name.
+        setup: String,
+        /// The node's name in the profile; `setups` lists the ones that
+        /// select.
+        node: String,
+        /// What to select: one of the node's choices as `setups` lists
+        /// them, or its place among them counted from 0. Left out, the
+        /// node moves to its next choice, as its switch button would.
+        choice: Option<String>,
+    },
     /// List the setups that exist, with their pads and virtual pads.
     Setups {
         /// Print a JSON array, one object per setup.

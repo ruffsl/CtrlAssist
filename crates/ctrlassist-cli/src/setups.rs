@@ -20,6 +20,17 @@ pub(crate) async fn stop(socket: &Path, setup: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) async fn select(
+    socket: &Path,
+    setup: &str,
+    node: &str,
+    choice: Option<&str>,
+) -> Result<()> {
+    let (client, _watcher) = connect(socket).await?;
+    client.select(setup, node, choice).await?;
+    Ok(())
+}
+
 pub(crate) async fn setups(socket: &Path, json: bool) -> Result<()> {
     let setups = hydrated(socket).await?.list_setups()?;
     if json {
@@ -49,6 +60,26 @@ pub(crate) async fn setups(socket: &Path, json: bool) -> Result<()> {
                 String::new(),
                 format!("pad {}", source.name),
                 pad,
+            ]);
+        }
+        for node in &setup.nodes {
+            let choices: Vec<String> = node
+                .choices
+                .iter()
+                .enumerate()
+                .map(|(index, choice)| {
+                    if index == node.selected {
+                        format!("[{choice}]")
+                    } else {
+                        choice.clone()
+                    }
+                })
+                .collect();
+            rows.push([
+                String::new(),
+                String::new(),
+                format!("node {}", node.name),
+                choices.join(" "),
             ]);
         }
         for sink in &setup.sinks {

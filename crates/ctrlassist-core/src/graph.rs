@@ -303,6 +303,23 @@ impl Graph {
         self.evaluate(emit);
     }
 
+    /// How many nodes the graph has.
+    #[must_use]
+    pub fn nodes(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Which input a mux has selected, or which output a demux has. None
+    /// for a node that doesn't select, one that blends its inputs or
+    /// sends to every output, and for a node that doesn't exist.
+    #[must_use]
+    pub fn selected(&self, node: NodeId) -> Option<usize> {
+        match self.nodes.get(node.0)? {
+            Node::Mux(mux) => mux.selected(),
+            Node::Demux(demux) => demux.selected(),
+        }
+    }
+
     /// What a virtual pad currently holds; a pad at rest for a sink that
     /// doesn't exist.
     #[must_use]

@@ -541,6 +541,7 @@ dependencies = [
  "ctrlassist-device",
  "ctrlassist-hider",
  "ctrlassist-protocol",
+ "ctrlassist-test",
  "rustix",
  "serde",
  "serde_json",

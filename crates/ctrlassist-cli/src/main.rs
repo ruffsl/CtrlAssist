@@ -43,6 +43,11 @@ fn main() -> Result<()> {
                 Command::Start { profile } => setups::start(&socket, &profile).await,
                 Command::Stop { setup } => setups::stop(&socket, &setup).await,
                 Command::Setups { json } => setups::setups(&socket, json).await,
+                Command::Select {
+                    setup,
+                    node,
+                    choice,
+                } => setups::select(&socket, &setup, &node, choice.as_deref()).await,
                 Command::Service(_) => Ok(()),
             }
         });

@@ -170,6 +170,16 @@ fn a_switch_command_hands_a_toggle_to_the_other_pad() {
         return;
     }
     let mut rig = rig(Mode::Toggle);
+    // What a node that selects has selected is reported as it changes,
+    // from the setup's start on.
+    let selected = |rig: &Rig| match rig.reports.recv().unwrap() {
+        Report::Selected { setup, node, index } => {
+            assert_eq!((setup, node), (ID, NodeId(0)));
+            index
+        }
+        other => unreachable!("expected a selection, got {other:?}"),
+    };
+    assert_eq!(selected(&rig), 0);
     rig.primary.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
     rig.assist.frame(&[(EV_KEY, BTN_EAST, 1)]).unwrap();
     let primary_only = PadState::NEUTRAL.with(gamepad::SOUTH, 1.0);
@@ -189,6 +199,7 @@ fn a_switch_command_hands_a_toggle_to_the_other_pad() {
     let assist_only = PadState::NEUTRAL.with(gamepad::EAST, 1.0);
     let frames = read_until(&mut rig.game, |frames| frames.last() == Some(&assist_only));
     assert_eq!(last(&frames), assist_only);
+    assert_eq!(selected(&rig), 1);
 
     rig.thread
         .send(Command::Select {
@@ -199,6 +210,22 @@ fn a_switch_command_hands_a_toggle_to_the_other_pad() {
         .unwrap();
     let frames = read_until(&mut rig.game, |frames| frames.last() == Some(&primary_only));
     assert_eq!(last(&frames), primary_only);
+    assert_eq!(selected(&rig), 0);
+
+    // Selecting what is selected already is nothing to report; the next
+    // report is the setup coming back.
+    rig.thread
+        .send(Command::Select {
+            setup: ID,
+            node: NodeId(0),
+            index: 0,
+        })
+        .unwrap();
+    rig.thread.send(Command::Stop(ID)).unwrap();
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::Stopped(ID, _)
+    ));
 }
 
 #[test]

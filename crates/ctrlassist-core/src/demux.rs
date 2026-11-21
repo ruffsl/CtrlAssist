@@ -91,6 +91,12 @@ impl Demux {
         }
     }
 
+    /// The output the switch last selected, if only one output follows
+    /// the input.
+    pub(crate) fn selected(&self) -> Option<usize> {
+        (self.config.mode == DemuxMode::Unicast).then_some(self.selected)
+    }
+
     /// Whether feedback from this output is passed back to the input.
     pub(crate) fn feedback_from(&self, output: usize) -> bool {
         self.config.feedback == DemuxFeedback::Active

@@ -231,6 +231,7 @@ impl Reactor {
                             warn!(profile = request.name, %error, "publishing a profile failed");
                         }
                         responder.ok(&rpc::Ack {}).await;
+                        self.start_if_it_can(&request.name).await;
                     }
                     Err(refusal) => responder.err(&refusal).await,
                 }
@@ -299,6 +300,8 @@ impl Reactor {
         // The last is the pad that connected, if one did.
         if arrived && let Some(id) = changed.last() {
             self.pad_arrived(id).await;
+            // A profile that was waiting for this pad may start now.
+            self.start_what_can(Some(id)).await;
         }
     }
 

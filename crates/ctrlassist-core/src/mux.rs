@@ -202,6 +202,12 @@ impl Mux {
         }
     }
 
+    /// The input the switch last selected, if anything here follows the
+    /// switch.
+    pub(crate) fn selected(&self) -> Option<usize> {
+        self.uses_selection().then_some(self.selected)
+    }
+
     fn uses_selection(&self) -> bool {
         self.config.ungrouped_buttons == Rule::Switched
             || self.rules.iter().any(|(_, rule)| *rule == Rule::Switched)

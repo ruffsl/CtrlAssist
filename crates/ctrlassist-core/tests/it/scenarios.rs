@@ -301,9 +301,20 @@ fn a_client_can_switch_without_a_button() {
     let mut graph = mux(Mode::Toggle);
     step(&mut graph, PRIMARY, pad().with(SOUTH, 1.0));
     step(&mut graph, ASSIST, pad().with(EAST, 1.0));
+    assert_eq!(graph.selected(NodeId(0)), Some(0));
     graph.switch(NodeId(0), &mut |_| {});
     assert_eq!(graph.sink(SinkId(0)).get(EAST), 1.0);
     assert_eq!(graph.sink(SinkId(0)).get(SOUTH), 0.0);
+    assert_eq!(graph.selected(NodeId(0)), Some(1), "which is what it says");
+    assert_eq!(graph.nodes(), 1);
+    assert_eq!(graph.selected(NodeId(1)), None, "no such node");
+}
+
+#[test]
+fn only_a_node_that_follows_a_switch_has_a_selection() {
+    for mode in [Mode::Priority, Mode::Average] {
+        assert_eq!(mux(mode).selected(NodeId(0)), None, "{mode:?}");
+    }
 }
 
 #[test]

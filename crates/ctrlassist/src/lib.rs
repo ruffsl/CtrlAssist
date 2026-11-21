@@ -19,8 +19,8 @@ use ctrlassist_protocol::caller::Caller;
 use ctrlassist_protocol::endpoint::{Unary, daemon, pad, profile, setup};
 pub use ctrlassist_protocol::error::ErrorCode;
 pub use ctrlassist_protocol::payload::{
-    Daemon as DaemonState, Hiding, Identity, Pad, Phase, Problem, Profile, Setup, SetupSink,
-    SetupSource,
+    Daemon as DaemonState, Hiding, Identity, Pad, Phase, Problem, Profile, Setup, SetupNode,
+    SetupSink, SetupSource,
 };
 use ctrlassist_protocol::rpc;
 pub use ctrlassist_protocol::rpc::ServiceInfo;
@@ -346,6 +346,31 @@ impl DaemonClient {
             name: name.to_string(),
         };
         self.call::<setup::Stop>(&request).await.map(|_| ())
+    }
+
+    /// Have a node of the setup `setup` select another input, for a mux
+    /// that follows its switch, or another output, for a demux that
+    /// sends to one at a time: `choice` by its name among the node's
+    /// [`SetupNode::choices`] or by its place among them, or `None` to
+    /// move to the next, as the node's switch button would. Returns once
+    /// the daemon has passed the request on; the setup's state says when
+    /// the node has moved, and selecting what is selected already changes
+    /// nothing.
+    ///
+    /// # Errors
+    ///
+    /// Refused with [`ErrorCode::UnknownSetup`], with
+    /// [`ErrorCode::SetupBusy`] for a setup that isn't running, or with
+    /// [`ErrorCode::BadRequest`] for a node that isn't one of the setup's
+    /// that selects or a choice that isn't one of the node's, saying
+    /// which there are; and fails as any rpc can.
+    pub async fn select(&self, setup: &str, node: &str, choice: Option<&str>) -> Result<()> {
+        let request = rpc::SelectRequest {
+            name: setup.to_string(),
+            node: node.to_string(),
+            choice: choice.map(str::to_string),
+        };
+        self.call::<setup::Select>(&request).await.map(|_| ())
     }
 
     /// Buzz a pad for `duration`, so a person can tell which one it is.

@@ -412,3 +412,185 @@ async fn with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored
     })
     .await;
 }
+
+/// The one node of `setup` that selects: what it selects between, and
+/// which is selected.
+fn selecting(setup: &Setup) -> (Vec<&str>, usize) {
+    assert_eq!(setup.nodes.len(), 1, "{:?}", setup.nodes);
+    let node = &setup.nodes[0];
+    (
+        node.choices.iter().map(String::as_str).collect(),
+        node.selected,
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_toggle_hands_over_when_asked_and_says_who_has_it() {
+    const TEST: &str = "a_toggle_hands_over_when_asked_and_says_who_has_it";
+    if !can_make_pads(TEST) {
+        return;
+    }
+    let mut primary = FakePad::new("Toggle Primary", VENDOR, 0x8101).unwrap();
+    let mut assist = FakePad::new("Toggle Assist", VENDOR, 0x8102).unwrap();
+    let (_dir, socket) = socket();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    let toggle = priority(0x8101, 0x8102).replace("priority", "toggle");
+    client.put_profile("turns", &toggle).await.unwrap();
+    client.start_setup("turns").await.unwrap();
+    let selected = async |wanted: usize| {
+        eventually(&format!("choice {wanted} never was selected"), async || {
+            client.setup("turns").unwrap().is_some_and(|setup| {
+                setup
+                    .nodes
+                    .first()
+                    .is_some_and(|node| node.selected == wanted)
+            })
+        })
+        .await;
+    };
+
+    // It starts with the primary, and says what there is to choose from.
+    selected(0).await;
+    let setup = in_phase(&client, "turns", Phase::Running).await;
+    assert_eq!(setup.nodes[0].name, "mux");
+    assert_eq!(selecting(&setup), (vec!["primary", "assist"], 0));
+    let mut game = game(&setup).await;
+    assist.south(true).unwrap();
+    primary.left_x(i16::MAX).unwrap();
+    let primary_has_it = async |game: &mut Pad, has: bool| {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            game.read(|_| {}).unwrap();
+            let south = game.state().get(gamepad::SOUTH) > 0.5;
+            let stick = game.state().get(gamepad::LEFT_X) > 0.5;
+            if (stick, south) == (has, !has) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the virtual pad never followed the {}",
+                if has { "primary" } else { "assist" }
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    primary_has_it(&mut game, true).await;
+
+    // Asked for the assist by name: its held button arrives, and the
+    // primary's stick is let go.
+    client.select("turns", "mux", Some("assist")).await.unwrap();
+    selected(1).await;
+    primary_has_it(&mut game, false).await;
+    // Asked again, nothing changes; asked for the next, it goes round.
+    client.select("turns", "mux", Some("assist")).await.unwrap();
+    client.select("turns", "mux", None).await.unwrap();
+    selected(0).await;
+    primary_has_it(&mut game, true).await;
+    // By place, too.
+    client.select("turns", "mux", Some("1")).await.unwrap();
+    selected(1).await;
+
+    // What can't be selected is refused with what can.
+    let refused = client
+        .select("turns", "mux", Some("nobody"))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.rpc_code(), Some(ErrorCode::BadRequest));
+    assert!(refused.to_string().contains("primary, assist"), "{refused}");
+    let refused = client.select("turns", "mux", Some("2")).await.unwrap_err();
+    assert_eq!(refused.rpc_code(), Some(ErrorCode::BadRequest));
+    let refused = client.select("turns", "other", None).await.unwrap_err();
+    assert!(refused.to_string().contains("those are mux"), "{refused}");
+    let refused = client.select("nothing", "mux", None).await.unwrap_err();
+    assert_eq!(refused.rpc_code(), Some(ErrorCode::UnknownSetup));
+
+    // A setup that blends its pads has nothing to select.
+    client.stop_setup("turns").await.unwrap();
+    client
+        .put_profile("both", &priority(0x8101, 0x8102))
+        .await
+        .unwrap();
+    client.start_setup("both").await.unwrap();
+    let setup = in_phase(&client, "both", Phase::Running).await;
+    assert!(setup.nodes.is_empty());
+    let refused = client.select("both", "mux", None).await.unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("no node of the setup both selects"),
+        "{refused}"
+    );
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_profile_that_asks_to_starts_by_itself_once_its_pads_are_there() {
+    const TEST: &str = "a_profile_that_asks_to_starts_by_itself_once_its_pads_are_there";
+    if !can_make_pads(TEST) {
+        return;
+    }
+    let _primary = FakePad::new("Auto Primary", VENDOR, 0x8201).unwrap();
+    let (_dir, socket) = socket();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    let profile = format!("{}auto-start = true\n", priority(0x8201, 0x8202));
+    let absent = async |client: &DaemonClient| {
+        // Long enough for a start to have shown, had one been coming.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(client.setup("couch").unwrap(), None);
+    };
+
+    // Put with a pad missing, it waits: started by hand it would be held,
+    // but by itself it starts only when it can run.
+    client.put_profile("couch", &profile).await.unwrap();
+    absent(&client).await;
+    // A pad it doesn't name changes nothing.
+    let _bystander = FakePad::new("Auto Bystander", VENDOR, 0x8203).unwrap();
+    absent(&client).await;
+
+    // Its last pad connects: it starts, and runs.
+    let assist = FakePad::new("Auto Assist", VENDOR, 0x8202).unwrap();
+    in_phase(&client, "couch", Phase::Running).await;
+
+    // Stopped by hand, it stays stopped, whatever else connects.
+    client.stop_setup("couch").await.unwrap();
+    let _another = FakePad::new("Auto Another", VENDOR, 0x8204).unwrap();
+    absent(&client).await;
+
+    // One of its pads plugged in again is the cue to start again.
+    drop(assist);
+    eventually("the assist never left", async || {
+        client
+            .list_pads()
+            .unwrap()
+            .iter()
+            .any(|pad| pad.product == 0x8202 && !pad.connected)
+    })
+    .await;
+    let _assist = FakePad::new("Auto Assist", VENDOR, 0x8202).unwrap();
+    in_phase(&client, "couch", Phase::Running).await;
+
+    // A daemon that starts with the pads there starts it at once.
+    daemon.stop().await;
+    eventually("the setup outlived the daemon", async || {
+        client.setup("couch").unwrap().is_none()
+    })
+    .await;
+    let daemon = start_daemon(&socket).await;
+    in_phase(&client, "couch", Phase::Running).await;
+
+    // Put again while it runs, nothing starts twice; put without the
+    // asking, and stopped, it no longer starts by itself.
+    client.put_profile("couch", &profile).await.unwrap();
+    client.stop_setup("couch").await.unwrap();
+    client
+        .put_profile("couch", &priority(0x8201, 0x8202))
+        .await
+        .unwrap();
+    absent(&client).await;
+    // Put with the asking and its pads there, it starts at the put.
+    client.put_profile("couch", &profile).await.unwrap();
+    in_phase(&client, "couch", Phase::Running).await;
+    daemon.stop().await;
+}

@@ -13,7 +13,7 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use ctrlassist_core::{Graph, SourceId};
+use ctrlassist_core::{Graph, Input, NodeId, NodeSpec, SourceId};
 use ctrlassist_device::{Command, Database, Pad, Report, SendError, Setup, SetupId, VirtualPad};
 use ctrlassist_hider::{Client, Token};
 use ctrlassist_protocol::endpoint::setup;
@@ -54,8 +54,47 @@ struct Entry {
     reason: Option<String>,
     slots: Vec<Slot>,
     sinks: Vec<payload::SetupSink>,
+    /// Every node, by node number: its name, and what it would select
+    /// between if it selects.
+    nodes: Vec<(String, Vec<String>)>,
+    /// What each node has selected, by node number, as the input thread
+    /// last reported; none for a node that doesn't select.
+    selected: Vec<Option<usize>>,
     /// The reply owed once the input thread hands it back.
     stopping: Option<Responder<setup::Stop>>,
+}
+
+/// Each node of `plan`, by node number: its name, and what it selects
+/// between, in the words of the profile.
+fn choosers(plan: &Plan) -> Vec<(String, Vec<String>)> {
+    let named = |input: &Input| match *input {
+        Input::Source(SourceId(source)) => plan
+            .sources
+            .get(source)
+            .map_or_else(String::new, |source| source.name.clone()),
+        Input::Node(NodeId(node), output) => {
+            let name = plan.nodes.get(node).cloned().unwrap_or_default();
+            match plan.graph.nodes.get(node) {
+                // A demux's outputs are told apart by number.
+                Some(NodeSpec::Demux { .. }) => format!("{name}.{output}"),
+                _ => name,
+            }
+        }
+    };
+    plan.graph
+        .nodes
+        .iter()
+        .zip(&plan.nodes)
+        .map(|(spec, name)| {
+            let choices = match spec {
+                NodeSpec::Mux { inputs, .. } => inputs.iter().map(named).collect(),
+                NodeSpec::Demux { config, .. } => (0..config.outputs)
+                    .map(|output| output.to_string())
+                    .collect(),
+            };
+            (name.clone(), choices)
+        })
+        .collect()
 }
 
 impl Entry {
@@ -101,6 +140,18 @@ impl Setups {
                 })
                 .collect(),
             sinks: entry.sinks.clone(),
+            nodes: entry
+                .nodes
+                .iter()
+                .zip(&entry.selected)
+                .filter_map(|((name, choices), selected)| {
+                    Some(payload::SetupNode {
+                        name: name.clone(),
+                        choices: choices.clone(),
+                        selected: (*selected)?,
+                    })
+                })
+                .collect(),
         })
     }
 }
@@ -166,6 +217,32 @@ pub(crate) struct Made {
     pads: Vec<(bool, Option<Token>)>,
 }
 
+/// Who asked for a setup to start.
+#[derive(Debug)]
+pub(crate) enum Asker {
+    /// A client, which is owed a reply.
+    Client(Responder<setup::Start>),
+    /// The daemon itself, for a profile that starts by itself.
+    Daemon,
+}
+
+impl Asker {
+    async fn ok(self) {
+        if let Self::Client(responder) = self {
+            responder.ok(&rpc::Ack {}).await;
+        }
+    }
+
+    async fn err(self, refusal: &WireError) {
+        match self {
+            Self::Client(responder) => responder.err(refusal).await,
+            Self::Daemon => {
+                warn!(code = %refusal.code, reason = refusal.message, "a profile that starts by itself couldn't");
+            }
+        }
+    }
+}
+
 /// Work done off the reactor, come back to it.
 #[derive(Debug)]
 pub(crate) enum Done {
@@ -173,7 +250,7 @@ pub(crate) enum Done {
     Started {
         name: String,
         outcome: Result<Made, String>,
-        responder: Responder<setup::Start>,
+        asker: Asker,
     },
     /// A pad that returned is open again, or couldn't be opened.
     Returned {
@@ -402,31 +479,31 @@ impl Reactor {
         Ok(slots)
     }
 
-    async fn start(&mut self, name: String, responder: Responder<setup::Start>) {
+    async fn start(&mut self, name: String, asker: Asker) {
         if self.setups.entries.contains_key(&name) {
             let refusal = WireError::refusal(
                 ErrorCode::SetupExists,
                 format!("the setup {name} exists already; stop it first"),
             );
-            return responder.err(&refusal).await;
+            return asker.err(&refusal).await;
         }
         let Some(profile) = self.profiles.profile(&name) else {
             let refusal = WireError::refusal(
                 ErrorCode::UnknownProfile,
                 format!("no profile is called {}", name.escape_debug()),
             );
-            return responder.err(&refusal).await;
+            return asker.err(&refusal).await;
         };
         let plan = match Profile::check(&profile.toml) {
             Ok(plan) => plan,
             Err(problem) => {
                 let refusal = WireError::refusal(ErrorCode::InvalidProfile, problem.to_string());
-                return responder.err(&refusal).await;
+                return asker.err(&refusal).await;
             }
         };
         let slots = match self.bind(&name, &plan) {
             Ok(slots) => slots,
-            Err(refusal) => return responder.err(&refusal).await,
+            Err(refusal) => return asker.err(&refusal).await,
         };
         let nodes: Vec<Option<PathBuf>> = slots
             .iter()
@@ -451,6 +528,8 @@ impl Reactor {
                     node: None,
                 })
                 .collect(),
+            selected: vec![None; plan.nodes.len()],
+            nodes: choosers(&plan),
             stopping: None,
         };
         self.setups.entries.insert(name.clone(), entry);
@@ -463,21 +542,14 @@ impl Reactor {
         self.work.spawn_blocking(move || Done::Started {
             outcome: make(plan, &nodes, &database, &hiding),
             name,
-            responder,
+            asker,
         });
     }
 
-    async fn started(
-        &mut self,
-        name: String,
-        outcome: Result<Made, String>,
-        responder: Responder<setup::Start>,
-    ) {
+    async fn started(&mut self, name: String, outcome: Result<Made, String>, asker: Asker) {
         let Some(entry) = self.setups.entries.get_mut(&name) else {
             // Nothing removes a setup that is starting.
-            return responder
-                .err(&WireError::internal("the setup is gone"))
-                .await;
+            return asker.err(&WireError::internal("the setup is gone")).await;
         };
         let sent = outcome.and_then(|made| {
             let Made { setup, nodes, pads } = made;
@@ -523,7 +595,7 @@ impl Reactor {
                     self.publish_pad_logged(&pad).await;
                 }
                 self.publish_setup(&name).await;
-                responder.ok(&rpc::Ack {}).await;
+                asker.ok().await;
             }
             Err(reason) => {
                 // A start that fails leaves nothing behind.
@@ -532,7 +604,7 @@ impl Reactor {
                 self.publish_setup(&name).await;
                 warn!(setup = name, reason, "a setup couldn't start");
                 let refusal = WireError::refusal(ErrorCode::SetupFailed, reason);
-                responder.err(&refusal).await;
+                asker.err(&refusal).await;
             }
         }
     }
@@ -569,16 +641,158 @@ impl Reactor {
         }
     }
 
+    /// Asks the input thread to have a node select as `request` says.
+    fn select(&self, request: &rpc::SelectRequest) -> Result<(), WireError> {
+        let entry = self
+            .setups
+            .entries
+            .get(&request.name)
+            .ok_or_else(|| unknown(&request.name))?;
+        if !matches!(entry.phase, Phase::Running | Phase::Held) {
+            return Err(WireError::refusal(
+                ErrorCode::SetupBusy,
+                format!("the setup {} isn't running", request.name),
+            ));
+        }
+        let selecting = entry
+            .nodes
+            .iter()
+            .zip(&entry.selected)
+            .enumerate()
+            .find(|(_, ((name, _), _))| *name == request.node);
+        let Some((node, ((_, choices), Some(_)))) = selecting else {
+            let those: Vec<&str> = entry
+                .nodes
+                .iter()
+                .zip(&entry.selected)
+                .filter(|(_, selected)| selected.is_some())
+                .map(|((name, _), _)| name.as_str())
+                .collect();
+            return Err(WireError::bad_request(if those.is_empty() {
+                format!("no node of the setup {} selects", request.name)
+            } else {
+                format!(
+                    "`{}` isn't a node of the setup {} that selects; those are {}",
+                    request.node.escape_debug(),
+                    request.name,
+                    those.join(", ")
+                )
+            }));
+        };
+        let setup = entry.id;
+        let node = NodeId(node);
+        let command = match &request.choice {
+            None => Command::Switch { setup, node },
+            Some(choice) => {
+                let index = choices
+                    .iter()
+                    .position(|known| known == choice)
+                    .or_else(|| choice.parse().ok().filter(|index| *index < choices.len()))
+                    .ok_or_else(|| {
+                        WireError::bad_request(format!(
+                            "`{}` isn't one of {}'s choices, which are {}",
+                            choice.escape_debug(),
+                            request.node,
+                            choices.join(", ")
+                        ))
+                    })?;
+                Command::Select { setup, node, index }
+            }
+        };
+        self.input.send(command).map_err(|error| {
+            WireError::internal(format!("the input thread didn't take the request: {error}"))
+        })
+    }
+
     pub(crate) async fn setup_rpc(&mut self, query: Query) {
         match setup::Incoming::receive(query).await {
             Some(((), setup::Incoming::Start(request, responder))) => {
-                self.start(request.name, responder).await;
+                self.start(request.name, Asker::Client(responder)).await;
             }
             Some(((), setup::Incoming::Stop(request, responder))) => {
                 self.stop(request.name, responder).await;
             }
+            Some(((), setup::Incoming::Select(request, responder))) => {
+                responder
+                    .answer(self.select(&request).map(|()| rpc::Ack {}))
+                    .await;
+            }
             // Refused already, with a typed error.
             None => {}
+        }
+    }
+
+    /// Whether every pad `plan` names is connected and free, so that
+    /// started now it would run and not be held.
+    fn ready(&self, plan: &Plan) -> bool {
+        let mut taken: Vec<&str> = Vec::new();
+        plan.sources.iter().all(|source| {
+            let pad = match &source.pad {
+                PadRef::Exact(id) => {
+                    let free = self.book.node(id).is_some() && self.book.user(id).is_none();
+                    (free && !taken.contains(&id.as_str())).then_some(id.as_str())
+                }
+                wanted => self
+                    .book
+                    .fitting(wanted)
+                    .into_iter()
+                    .find(|id| !taken.contains(id)),
+            };
+            pad.inspect(|pad| taken.push(pad)).is_some()
+        })
+    }
+
+    /// Starts each kept profile that asks to start by itself and now
+    /// can: one with `auto-start`, nothing wrong with it, no setup of its
+    /// name, and every pad it names connected and free. `because` is the
+    /// pad whose connecting prompted this, if one did: then only profiles
+    /// that pad fits are looked at, so a setup the user stopped isn't
+    /// started again by some other pad arriving.
+    pub(crate) async fn start_what_can(&mut self, because: Option<&str>) {
+        let names: Vec<String> = self.profiles.names().map(str::to_string).collect();
+        for name in names {
+            if self.setups.entries.contains_key(&name) {
+                continue;
+            }
+            let Some(plan) = self
+                .profiles
+                .profile(&name)
+                .and_then(|profile| Profile::check(&profile.toml).ok())
+            else {
+                continue;
+            };
+            let prompted = because.is_none_or(|pad| {
+                plan.sources
+                    .iter()
+                    .any(|source| self.book.fits(pad, &source.pad))
+            });
+            if plan.auto_start && prompted && self.ready(&plan) {
+                info!(
+                    profile = name,
+                    "a profile starts by itself: its pads are connected"
+                );
+                self.start(name, Asker::Daemon).await;
+            }
+        }
+    }
+
+    /// Starts the kept profile `name` if it asks to start by itself and
+    /// can, as when it has just been put.
+    pub(crate) async fn start_if_it_can(&mut self, name: &str) {
+        let plan = self
+            .profiles
+            .profile(name)
+            .and_then(|profile| Profile::check(&profile.toml).ok());
+        if let Some(plan) = plan
+            && plan.auto_start
+            && !self.setups.entries.contains_key(name)
+            && self.ready(&plan)
+        {
+            info!(
+                profile = name,
+                "a profile starts by itself: its pads are connected"
+            );
+            self.start(name.to_string(), Asker::Daemon).await;
         }
     }
 
@@ -711,8 +925,8 @@ impl Reactor {
             Done::Started {
                 name,
                 outcome,
-                responder,
-            } => self.started(name, outcome, responder).await,
+                asker,
+            } => self.started(name, outcome, asker).await,
             Done::Returned {
                 name,
                 source,
@@ -805,6 +1019,17 @@ impl Reactor {
                 // It may be back already: its arrival can come before
                 // the input thread notices it gone.
                 self.bring_back(&name, source.0);
+            }
+            Report::Selected { setup, node, index } => {
+                let Some(name) = self.setups.name_of(setup) else {
+                    return;
+                };
+                if let Some(entry) = self.setups.entries.get_mut(&name)
+                    && let Some(selected) = entry.selected.get_mut(node.0)
+                {
+                    *selected = Some(index);
+                }
+                self.publish_setup(&name).await;
             }
             Report::PadRefused { setup, source, pad } => {
                 self.drop_off(pad);
@@ -927,6 +1152,8 @@ mod tests {
                 identity: "generic".to_string(),
                 node: Some("/dev/input/event99".to_string()),
             }],
+            selected: vec![None; plan.nodes.len()],
+            nodes: choosers(&plan),
             stopping: None,
         };
         reactor.setups.entries.insert("couch".to_string(), entry);
@@ -1054,6 +1281,29 @@ mod tests {
         let refused = refusal(stopped.await.unwrap());
         assert_eq!(refused.code, ErrorCode::SetupBusy);
         assert!(refused.message.contains("starting or stopping"));
+        // Nor does a node of it select yet.
+        let caller = Caller::new(rig.client.clone());
+        let asked = tokio::spawn(async move {
+            let request = rpc::SelectRequest {
+                name: "couch".to_string(),
+                node: "mux".to_string(),
+                choice: None,
+            };
+            caller.call::<setup::Select>(&(), &request).await
+        });
+        let query = rig.requests.recv_async().await.unwrap();
+        rig.reactor.setup_rpc(query).await;
+        let refused = refusal(asked.await.unwrap());
+        assert_eq!(refused.code, ErrorCode::SetupBusy);
+        assert!(refused.message.contains("isn't running"));
+        // A selection reported for a setup that has gone is nothing.
+        rig.reactor
+            .reported(Report::Selected {
+                setup: SetupId(99),
+                node: NodeId(0),
+                index: 1,
+            })
+            .await;
         // Nor is a pad brought into it before it runs.
         rig.reactor.bring_back("couch", 0);
         rig.reactor.bring_back("couch", 5);
@@ -1087,7 +1337,7 @@ mod tests {
             .done(Done::Started {
                 name: "couch".to_string(),
                 outcome: Err("making the virtual pad `virtual` (generic): no uinput".to_string()),
-                responder,
+                asker: Asker::Client(responder),
             })
             .await;
         let refused = refusal(asked.await.unwrap());
@@ -1124,6 +1374,76 @@ mod tests {
         assert_eq!(
             rig.reactor.setups.setup("couch").unwrap().phase,
             Phase::Held
+        );
+    }
+
+    /// A pad as the input thread hands one back, where pads can be made.
+    fn a_pad(test: &str, name: &str) -> Option<(ctrlassist_test::FakePad, Box<Pad>)> {
+        if !ctrlassist_test::can_make_pads(test) {
+            return None;
+        }
+        let fake = ctrlassist_test::FakePad::new(name, 0x1209, 0x8301).unwrap();
+        let pad = open(fake.event_node())
+            .and_then(|fd| read(fd, fake.event_node(), &Database::parse("")))
+            .unwrap();
+        Some((fake, Box::new(pad)))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_the_input_thread_hands_back_is_let_go_whatever_became_of_its_setup() {
+        const TEST: &str =
+            "a_pad_the_input_thread_hands_back_is_let_go_whatever_became_of_its_setup";
+        let mut rig = rig().await;
+        follow(&mut rig.reactor, 7, Phase::Running);
+        for slot in &mut rig.reactor.setups.entries.get_mut("couch").unwrap().slots {
+            slot.present = true;
+        }
+        let Some((_fake, pad)) = a_pad(TEST, "Daemon Gone Pad") else {
+            return;
+        };
+        // Gone from a setup the reactor follows: the setup is held.
+        rig.reactor
+            .reported(Report::PadGone {
+                setup: SetupId(7),
+                source: SourceId(0),
+                pad,
+            })
+            .await;
+        let held = rig.reactor.setups.setup("couch").unwrap();
+        assert_eq!(held.phase, Phase::Held);
+        assert!(!held.sources[0].present && held.sources[1].present);
+
+        // Refused on its way back: the input thread has a pad there
+        // still, so the place counts as filled.
+        let (_fake, pad) = a_pad(TEST, "Daemon Refused Pad").unwrap();
+        rig.reactor
+            .reported(Report::PadRefused {
+                setup: SetupId(7),
+                source: SourceId(0),
+                pad,
+            })
+            .await;
+        assert_eq!(
+            rig.reactor.setups.setup("couch").unwrap().phase,
+            Phase::Running
+        );
+
+        // From a setup that has gone, either is only a pad to let go.
+        for refused in [false, true] {
+            let (_fake, pad) = a_pad(TEST, "Daemon Late Pad").unwrap();
+            let (setup, source) = (SetupId(99), SourceId(0));
+            rig.reactor
+                .reported(if refused {
+                    Report::PadRefused { setup, source, pad }
+                } else {
+                    Report::PadGone { setup, source, pad }
+                })
+                .await;
+        }
+        finish(&mut rig.reactor).await;
+        assert_eq!(
+            rig.reactor.setups.setup("couch").unwrap().phase,
+            Phase::Running
         );
     }
 }
