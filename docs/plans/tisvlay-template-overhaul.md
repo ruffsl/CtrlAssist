@@ -40,11 +40,35 @@ Why a rewrite rather than a migration:
 
 **The core abstraction is a routing graph.** Sources (physical pads), sinks (virtual pads) and transform nodes (mux and demux modes), with force feedback flowing backward along the same edges. It unifies mux, demux, the legacy cookbook's chained instances, and per-control splitting (#53), and it is what a config file describes (#6). Spike S4 settles the node API.
 
-## Proposed, pending review
+**Crates.** `ctrlassist` on crates.io becomes the client SDK; the binary lives in `ctrlassist-cli`, as in TisVlay. `cargo install` is no longer a supported install path, because a daemon needs a unit file and udev rules cargo can't install. 0.4.0 stays as the last binary release.
 
-**P4. `ctrlassist` on crates.io becomes the client SDK;** the binary lives in `ctrlassist-cli`, as in TisVlay. `cargo install` is no longer a supported install path, because a daemon needs a unit file and udev rules cargo can't install. 0.4.0 stays as the last binary release.
+**zenoh for the control plane,** as in TisVlay. Performance work belongs to the data path, which is internal to the daemon (ground rule 5); zenoh carries only control, state and, off the critical path, sampled pad state for visualizers. The one thing to confirm is that a zenoh session living in the same process leaves the input thread undisturbed, which S3 checks. No alternative IPC is spiked.
 
-**P6. zenoh for the control plane,** as in TisVlay. Performance work belongs to the data path, which is internal to the daemon (ground rule 5); zenoh carries only control, state and, off the critical path, sampled pad state for visualizers. The one thing to confirm is that a zenoh session living in the same process leaves the input thread undisturbed, which S3 checks. No alternative IPC is spiked.
+**Setups are presets first, graphs in config.** The CLI, tray and GUI offer named setups (assist, swap, split to N), each a small graph underneath. Arbitrary graphs can be written in a profile file from the first release; no client edits them visually.
+
+**Disconnects hold and re-bind.** When a pad in a running setup drops, the virtual pad stays alive so the game never sees a disconnect, the missing pad's inputs go neutral, the other pad keeps working, and the same pad is re-bound when it returns. A notification says what happened.
+
+**Pads are identified by a stable hardware ID,** with a fallback. Prefer the unique ID the kernel exposes (Bluetooth address, USB serial), then vendor and product plus port, then name. S1 records which of these are actually stable on the maintainer's pads.
+
+**Virtual pad identity offers both** copying a connected pad and picking a built-in identity. How faithful an identity can be is S5's question: the legacy version never got PlayStation spoofing right.
+
+**Clients are built in the order CLI, tray, GUI, TUI.** The GUI is Slint, following TisVlay. The TUI uses ratatui and comes last because TisVlay has none to pattern it on. Each can mirror live pad state from the daemon's sampled feed.
+
+**The first release is daemon, CLI and tray,** which is what 0.4.0 users have today. The GUI and TUI follow as later minor releases.
+
+**The first release is verified on NixOS with KDE,** the maintainer's host. The deb, rpm and tarball are built and container-tested but not hardware-verified; the Flatpak is not a first-release gate. Other environments are verified as people who run them report in.
+
+**The event model isn't gamepad-shaped, but only gamepads are built.** See [Event model scope](#event-model-scope).
+
+## Event model scope
+
+The maintainer wants gamepads, wheels and HOTAS, and gyro, touchpad and LEDs carried by the core model, with wheels and HOTAS open to deferral if designing for them is costly. The proposal is to design for all of them and build only gamepads:
+
+- **Controls are open-ended.** A control is identified by kind and index, with the standard gamepad buttons and axes as well-known names over that space rather than a closed enum. A HOTAS with 30 buttons and 8 axes is representable without a vocabulary change. Cost: the mux modes address controls generically instead of matching on a fixed enum, which S4's nodes need anyway to do per-control routing (#53).
+- **Feedback carries the kernel's effect description,** not a rumble pair, so a wheel's constant-force and spring effects pass through unchanged even though only rumble is tested.
+- **Motion, touch and LED events have reserved kinds** in the vocabulary. Whether any source or sink can produce or consume them depends on S5, since evdev and uinput carry little of it.
+
+What is deferred is implementation and verification on real wheel or HOTAS hardware, which the maintainer doesn't have on hand, not the shape of the wire. That avoids the ossification risk at the price of some generality in S4. If S4 shows the open-ended form costs more than this, the finding says so and the decision is revisited.
 
 ## Lessons from the earlier refactor
 
@@ -61,25 +85,24 @@ What this plan takes from it:
 - The spec comes first: scenario tests in a pure crate, then nodes, then an executor that the tests run through, then devices. Nothing is hand-wired around the executor.
 - The node API is designed for the hot path from the start (no per-event allocation, no `dyn Any` state), which spike S4 settles.
 
-## Legacy features, to curate
+## Feature goals
 
-The rewrite targets similar functionality, not identical. Each row needs a keep, rework or drop from the maintainer; the third column is a proposal.
+The rewrite targets similar functionality, not identical. Curated with the maintainer:
 
-| Legacy feature | What it did | Proposal |
+| Legacy feature | What it did | In the rewrite |
 |---|---|---|
-| Mux: priority | Assist overrides primary per control when active | Keep; the reference behavior |
-| Mux: average | Blend both pads' axes, OR the buttons | Keep |
-| Mux: toggle | Assist's Mode button switches the active pad, with a resync | Keep; the Mode-button binding becomes configurable |
-| Demux: unicast | Route one pad to one of N virtual pads, cycled by Mode | Keep as a graph node |
-| Demux: multicast | Copy one pad to N virtual pads | Keep as a graph node (a fan-out edge may make it trivial) |
-| Chained instances | Shell scripts with `sleep 1` wiring demux outputs into mux inputs | Replace with one graph in one daemon |
-| Hide: steam | Edit `controller_blacklist` in Steam's `config.vdf`; needs a Steam restart | Decide after S1 |
-| Hide: system | chmod device nodes; needs root | Replace with whatever S1 finds; no `sudo` path |
-| Spoof | Virtual pad copies a physical pad's name and USB IDs | Keep; S1 checks how games and Steam treat it |
-| Rumble routing | To primary, assist, both, active, or none | Keep, as feedback edges |
-| Tray | Pick pads and options, start and stop, notifications | Keep as a client |
-| Saved settings | Last-used tray choices in `config.toml` | Replace with daemon-owned profiles describing a graph |
-| Per-control split (#53) | Not implemented | Falls out of the routing graph; scope to decide |
+| Mux: priority | Assist overrides primary per control when active | First-class preset |
+| Mux: average | Blend both pads' axes, OR the buttons | First-class preset |
+| Mux: toggle | Assist's Mode button switches the active pad, with a resync | First-class preset; the switch binding becomes configurable |
+| Demux: unicast, multicast | Route one pad to one or all of N virtual pads | First-class preset, as graph nodes |
+| Chained instances | Shell scripts with `sleep 1` wiring demux outputs into mux inputs | One graph in one daemon, written in a profile |
+| Hide: steam | Edit `controller_blacklist` in Steam's `config.vdf`; needs a Steam restart | Decided after S1 |
+| Hide: system | chmod device nodes; needs root | Whatever S1 finds; no `sudo` path |
+| Spoof | Virtual pad copies a physical pad's name and USB IDs | Copy a pad or pick a built-in identity; depth decided after S5 |
+| Rumble routing | To primary, assist, both, active, or none | Feedback edges |
+| Tray | Pick pads and options, start and stop, notifications | A client of the daemon |
+| Saved settings | Last-used tray choices in `config.toml` | Daemon-owned profiles describing a graph |
+| Per-control split (#53) | Not implemented | Expressible in a profile; no preset in the first release |
 
 ## Spikes
 
@@ -96,9 +119,9 @@ Each is an independent workspace under `spikes/`, measured on the maintainer's h
 - A udev rule plus group or ACL on the event and hidraw nodes (#19).
 - Any others the survey turns up, including how InputPlumber does it.
 
-Also record what grants `/dev/uinput` access on Bazzite, SteamOS, Fedora, Ubuntu and NixOS, natively and inside a Flatpak, since the legacy README never says and something on the tested systems already does it.
+Also record, on NixOS with KDE: what grants `/dev/uinput` access (the legacy README never says, and something on the tested systems already does it), and which identifiers stay stable for an Xbox pad and a DualShock or DualSense across reconnects over USB and Bluetooth. Other distributions and the Flatpak sandbox are surveyed from documentation only, not tested.
 
-*Feeds:* the hide and spoof rows above, the packages' udev rules.
+*Feeds:* the hide row above, pad identification, the packages' udev rules.
 
 ### S2. The input loop
 
@@ -118,17 +141,29 @@ A check, not a comparison: the data path never touches zenoh, so this only confi
 
 *Verdict:* zenoh stays if the input thread's numbers match S2's within measurement noise. If they don't, the finding says what isolates them (thread placement, a separate runtime) before any other IPC is considered.
 
-*Feeds:* P6, and the daemon's threading model.
+*Feeds:* the daemon's threading model.
 
 ### S4. The routing graph
 
 *Question:* what is the node API, and does one model express every row of the feature table?
 
-*Method:* a pure crate, no device or async dependencies. Write scenario tests first for priority, average, toggle, unicast, multicast, a chained demux-into-mux setup, and rumble routing for each, then the nodes and an executor that make them pass. Property tests cover the invariants (for example: priority never forwards a primary button while assist holds it; outputs stay in range; a toggle switch leaves the sink consistent with the newly active pad). Benchmark a step of the executor to confirm it adds nothing measurable next to S2's numbers.
+*Method:* a pure crate, no device or async dependencies. Write scenario tests first for priority, average, toggle, unicast, multicast, a chained demux-into-mux setup, rumble routing for each, a pad dropping out and returning mid-setup, and one device that isn't gamepad-shaped (many buttons, extra axes, a non-rumble effect) to prove the open-ended vocabulary, then the nodes and an executor that make them pass. Property tests cover the invariants (for example: priority never forwards a primary button while assist holds it; outputs stay in range; a toggle switch leaves the sink consistent with the newly active pad). Benchmark a step of the executor to confirm it adds nothing measurable next to S2's numbers.
 
-*Feeds:* the core crate, and the profile format.
+*Feeds:* the core crate, the profile format, and the event model scope.
 
-S1 and S4 are independent and can run in parallel. S3 builds on S2.
+### S5. Virtual pad identity
+
+*Question:* what does it take for a virtual pad to pass as a specific controller, PlayStation above all?
+
+*Background, unverified:* Steam and SDL read DualShock and DualSense pads through hidraw rather than evdev, so a uinput pad carrying Sony's IDs presents an evdev node with no HID device behind it. A convincing one would be emulated at the HID level through uhid, which is believed to be InputPlumber's approach.
+
+*Method:* build one uinput pad with copied IDs and one uhid pad replaying a real DualSense's report descriptor, and record what Steam Input, SDL, Proton and a native game make of each: detection, button glyphs, rumble, and whether gyro, touchpad and LEDs come through. Do the same for an Xbox identity, where uinput may already be enough.
+
+*Verdict:* the finding recommends uinput only, uhid for some identities, or uhid throughout, with the cost of each. The architecture keeps the sink type open until then.
+
+*Feeds:* virtual pad identity, the reserved motion, touch and LED event kinds, and #5.
+
+S1, S4 and S5 are independent and can run in parallel. S3 builds on S2.
 
 ## Steps
 
@@ -139,13 +174,14 @@ S1 and S4 are independent and can run in parallel. S3 builds on S2.
    - `ci: pipeline from the TisVlay template`: `ci.yml`, `pr-title.yml`, `audit.yml`, dependabot; SHA-pinned.
    - `docs: contributing guide, conventions, plans convention, CLAUDE.md`, with the docs skeleton (`architecture.md` as a stub, `ideas/`, `concerns/`, `bugs/`).
    - Verify: `prek run -a` and CI green on the empty workspace.
-3. **Spikes S1 to S4,** each a series of commits ending in its finding.
-4. **Architecture.** Write `docs/architecture.md` from the findings: crates, processes, data flow, key space, profile format, packaging and permissions. Revise this plan's Proposed section into decisions, and replace step 5 with commit-sized build steps. Review before building.
-5. **Build,** in the order the architecture sets. Expected shape: core, device, protocol, daemon, SDK, CLI, packaging and first release, tray, then the GUI under its own plan.
+3. **Spikes S1 to S5,** each a series of commits ending in its finding.
+4. **Architecture.** Write `docs/architecture.md` from the findings: crates, processes, data flow, key space, profile format, packaging and permissions. Replace step 5 with commit-sized build steps. Review before building.
+5. **Build,** in the order the architecture sets. Expected shape: core, device, protocol, daemon, SDK, CLI, tray, packaging and the first release; then the GUI and the TUI, each under its own plan.
 
 Open legacy issues that the rewrite doesn't close are moved to `docs/ideas/` in step 2.
 
 ## Deviations
 
+- **Fourth draft.** A round of maintainer questions settled the crate naming, zenoh, presets over a graph, disconnect handling, pad identification, the client order (adding a ratatui TUI), the first release's contents and its single verified environment. The feature table became goals. New: spike S5 on virtual pad identity, and the event model scope section answering whether to design for wheels and HOTAS now.
 - **Third draft.** The maintainer confirmed the user daemon with thin clients, Flatpak as a second tier, and the general graph, which moved to Decided. S3 shrank from an IPC comparison to a co-existence check, since performance matters on the data path and that never leaves the daemon.
 - **Second draft.** The first draft (previous commit) was a phased, behavior-preserving migration: scaffolding around the existing crate, then a crate split, packaging, a daemon, a GUI, with CLI compatibility kept through an in-process daemon mode. The maintainer's review replaced it with a clean-slate rewrite planned architecture-first: compatibility isn't wanted, piecemeal migration invites churn, and the performance and process-layout questions need spikes before the crates are drawn.
