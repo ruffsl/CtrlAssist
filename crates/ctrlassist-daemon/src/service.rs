@@ -29,6 +29,10 @@ pub struct Args {
     /// The hiding service's socket, in place of the installed one.
     #[arg(long, value_name = "SOCKET")]
     pub hider_socket: Option<PathBuf>,
+    /// Take the tests' fake pads for pads to play with, which a daemon
+    /// in use doesn't. Also asked for by setting `CTRLASSIST_TEST_PADS`.
+    #[arg(long, hide = true)]
+    pub test_pads: bool,
 }
 
 /// Runs the daemon until it is told to stop, on a runtime of its own.
@@ -57,6 +61,7 @@ async fn run(args: Args, input: InputThread, reports: Receiver<Report>) -> Resul
         state: args.state_dir.unwrap_or(defaults.state),
         config: args.config_dir.unwrap_or(defaults.config),
         hider: args.hider_socket.unwrap_or(defaults.hider),
+        test_pads: args.test_pads || std::env::var_os("CTRLASSIST_TEST_PADS").is_some(),
     };
     let daemon = Daemon::start(&paths, input, reports).await?;
 

@@ -26,6 +26,7 @@ async fn start(socket: &Path) -> Daemon {
         state: socket.with_file_name("state"),
         config: socket.with_file_name("config"),
         hider: socket.with_file_name("hider.sock"),
+        test_pads: true,
     };
     Daemon::start(&paths, input, reports).await.unwrap()
 }

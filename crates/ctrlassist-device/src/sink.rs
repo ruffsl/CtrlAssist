@@ -29,6 +29,16 @@ pub const OWN_MARKER: &str = "ctrlassist/virtual/";
 /// nothing else its creator sets.
 pub const OWN_ADDRESS: &str = "02:ca:55:";
 
+/// How the fake pads the tests make are told from every other pad: the
+/// start of their `phys` string. A daemon takes no such pad for one to
+/// play with unless it is asked to, so a test run beside a daemon in
+/// use leaves that daemon's pads alone.
+pub const TEST_MARKER: &str = "ctrlassist/test/";
+
+/// The same for a fake pad of a driver that carries no `phys` to its
+/// input devices: the start of the address it reports.
+pub const TEST_ADDRESS: &str = "02:ca:7e:";
+
 /// The address of the daemon's virtual pad numbered `number`: the
 /// [marker](OWN_ADDRESS), then the number's low three bytes.
 #[must_use]

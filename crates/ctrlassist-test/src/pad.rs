@@ -49,6 +49,7 @@ impl FakePad {
         ]);
         let stick = AbsInfo::new(0, -32768, 32767, 0, 0, 0);
         let mut builder = VirtualDevice::builder()?
+            .with_phys(&crate::marker())?
             .name(name)
             .input_id(InputId::new(BusType::BUS_USB, vendor, product, 1))
             .with_keys(&keys)?;
@@ -86,6 +87,7 @@ impl FakePad {
     ) -> io::Result<Self> {
         let keys = AttributeSet::from_iter(keys.iter().map(|code| KeyCode::new(*code)));
         let mut builder = VirtualDevice::builder()?
+            .with_phys(&crate::marker())?
             .name(name)
             .input_id(InputId::new(BusType::BUS_USB, vendor, product, version))
             .with_keys(&keys)?;

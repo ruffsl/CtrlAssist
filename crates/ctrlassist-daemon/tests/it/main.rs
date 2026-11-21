@@ -32,6 +32,7 @@ fn paths(socket: &Path) -> Paths {
         state: socket.with_file_name("state"),
         config: socket.with_file_name("config"),
         hider: socket.with_file_name("hider.sock"),
+        test_pads: true,
     }
 }
 

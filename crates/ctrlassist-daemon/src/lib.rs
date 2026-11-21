@@ -49,6 +49,10 @@ pub struct Paths {
     pub config: PathBuf,
     /// The hiding service's socket.
     pub hider: PathBuf,
+    /// Whether to take the tests' fake pads for pads to play with. A
+    /// daemon in use doesn't: a test run beside it would fill its list
+    /// of pads and start its profiles.
+    pub test_pads: bool,
 }
 
 /// The directory `variable` names, if it is set to an absolute path, or
@@ -74,6 +78,7 @@ impl Paths {
             state: user_directory("XDG_STATE_HOME", ".local/state").join("ctrlassist"),
             config: user_directory("XDG_CONFIG_HOME", ".config").join("ctrlassist"),
             hider: PathBuf::from(ctrlassist_hider::SOCKET_PATH),
+            test_pads: false,
         }
     }
 }
@@ -189,6 +194,7 @@ impl Daemon {
             hiding,
             copied::Copied::open(&paths.state),
         );
+        reactor.test_pads = paths.test_pads;
 
         // The input thread's reports wait on a thread of their own, which
         // ends with the input thread.

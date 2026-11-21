@@ -227,6 +227,7 @@ mod tests {
             state: at("state"),
             config: at("config"),
             hider: at("hider.sock"),
+            test_pads: true,
         };
         let daemon = start_daemon(&paths).await;
         let client = DaemonClient::connect(&paths.socket).await.unwrap();

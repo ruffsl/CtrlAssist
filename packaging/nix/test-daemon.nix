@@ -20,6 +20,10 @@ pkgs.testers.runNixOSTest {
       inherit package;
     };
 
+    # The check's pads are the test crate's fake ones, which a daemon
+    # takes for pads only when asked to.
+    systemd.user.services.ctrlassist-daemon.environment.CTRLASSIST_TEST_PADS = "1";
+
     # For the js nodes the checks look at; the module loads the rest.
     boot.kernelModules = [ "joydev" ];
     users.users.alice = {
@@ -241,7 +245,7 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds(f"{command} | grep -q 'dualsense .* yes$'")
         machine.succeed("su -l alice -c 'test -s ~/.local/state/ctrlassist/identities/dualsense.toml'")
         machine.succeed(
-            "printf '%s\\n' 'preset = \"multicast\"' 'pad = \"0c:27:56:00:00:01\"' "
+            "printf '%s\\n' 'preset = \"multicast\"' 'pad = \"02:ca:7e:00:00:01\"' "
             "'identity = \"dualsense\"' > /tmp/twin.toml"
         )
         cli("profile", "put", "/tmp/twin.toml")

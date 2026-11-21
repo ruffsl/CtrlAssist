@@ -117,7 +117,8 @@ impl Identifiers {
             PadId::Address(address.clone())
         } else if let Some(serial) = &self.serial {
             PadId::Serial(self.vendor, self.product, serial.clone())
-        } else if let Some(port) = &self.port {
+        } else if let Some(port) = self.port.as_ref().filter(|_| !self.is_test_pad()) {
+            // A fake pad's `phys` is its marker, not where it is plugged.
             PadId::Port(self.vendor, self.product, port.clone())
         } else {
             PadId::Model(self.vendor, self.product, self.name.clone())
@@ -135,6 +136,15 @@ impl Identifiers {
         // A uinput pad by its `phys`. The kernel's PlayStation driver
         // gives its pads none, so a uhid pad by its address.
         marked(&self.port, crate::OWN_MARKER) || marked(&self.address, crate::OWN_ADDRESS)
+    }
+
+    /// Whether this is a fake pad made by the tests.
+    #[must_use]
+    pub fn is_test_pad(&self) -> bool {
+        let marked = |text: &Option<String>, marker: &str| {
+            text.as_deref().is_some_and(|text| text.starts_with(marker))
+        };
+        marked(&self.port, crate::TEST_MARKER) || marked(&self.address, crate::TEST_ADDRESS)
     }
 }
 

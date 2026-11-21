@@ -235,7 +235,7 @@ fn main() -> Result<()> {
             pulse,
         } => {
             let address = if real {
-                [0x0c, 0x27, 0x56, 0x00, 0x00, number]
+                [0x02, 0xca, 0x7e, 0x00, 0x00, number]
             } else {
                 ctrlassist_device::own_address(u32::from(number))
             };

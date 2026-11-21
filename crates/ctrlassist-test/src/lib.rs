@@ -21,6 +21,20 @@ pub use rumble::{Motors, RumblePad};
 
 use std::path::Path;
 
+/// The `phys` a fake pad made through uinput carries, which marks it as
+/// the tests': a daemon takes no such pad unless it is asked to.
+fn marker() -> std::ffi::CString {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let number = NEXT.fetch_add(1, Ordering::Relaxed);
+    let text = format!(
+        "{}{}/{number}",
+        ctrlassist_device::TEST_MARKER,
+        std::process::id()
+    );
+    std::ffi::CString::new(text).expect("the marker and two numbers hold no zero byte")
+}
+
 /// Whether this process may create pads through uinput.
 #[must_use]
 pub fn uinput_available() -> bool {

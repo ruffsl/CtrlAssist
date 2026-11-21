@@ -96,6 +96,8 @@ pub(crate) struct Reactor {
     pub(crate) copied: Copied,
     /// Whether a connected pad is being copied now.
     pub(crate) copying: bool,
+    /// Whether the tests' fake pads are taken for pads to play with.
+    pub(crate) test_pads: bool,
     /// The daemon's own state, as last published.
     pub(crate) state: Option<payload::Daemon>,
     /// The pads that connected while another was being copied, to try
@@ -168,6 +170,7 @@ impl Reactor {
             buzzes: JoinSet::new(),
             copied,
             copying: false,
+            test_pads: false,
             state: None,
             candidates: Vec::new(),
         }
@@ -341,6 +344,12 @@ impl Reactor {
 
     /// Takes in what the hotplug watch saw.
     pub(crate) async fn saw(&mut self, seen: Seen) {
+        if let Seen::Arrived(found, _) = &seen
+            && found.identifiers.is_test_pad()
+            && !self.test_pads
+        {
+            return;
+        }
         let arrived = matches!(seen, Seen::Arrived(..));
         let (changed, remembered): (Vec<String>, bool) = match seen {
             Seen::Arrived(found, rumble) => {

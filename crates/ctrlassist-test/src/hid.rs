@@ -76,7 +76,12 @@ impl FakeHidPad {
         let mut event = Vec::with_capacity(4 + 4372);
         event.extend_from_slice(&UHID_CREATE2.to_ne_bytes());
         field(&mut event, name, 128);
-        field(&mut event, "", 64);
+        // Marked as the tests', by where it says it is plugged.
+        field(
+            &mut event,
+            &format!("{}hid", ctrlassist_device::TEST_MARKER),
+            64,
+        );
         field(&mut event, uniq, 64);
         let size = u16::try_from(DESCRIPTOR.len())
             .expect("the descriptor is a small constant, so its length fits in u16");
@@ -148,8 +153,9 @@ pub fn synthetic_dualsense(newer: bool) -> ctrlassist_device::DualSenseData {
 }
 
 /// A virtual DualSense that stands in for a connected real one: made
-/// from [`synthetic_dualsense`], with an address a real pad could have,
-/// so the daemon takes it for a pad to play with and to copy. It is
+/// from [`synthetic_dualsense`], with an address that isn't one of the
+/// daemon's own, so a daemon that takes the tests' pads takes it for a
+/// pad to play with and to copy. It is
 /// served on a thread of its own, as a real pad answers whoever reads
 /// its raw node. Dropping it disconnects it.
 pub struct FakeDualSense {
@@ -167,7 +173,8 @@ impl std::fmt::Debug for FakeDualSense {
 }
 
 impl FakeDualSense {
-    /// Creates the pad with the address `0c:27:56:00:51:<last>`.
+    /// Creates the pad with the address `02:ca:7e:00:51:<last>`, which
+    /// marks it as the tests'.
     ///
     /// # Errors
     ///
@@ -176,7 +183,7 @@ impl FakeDualSense {
     pub fn new(last: u8) -> io::Result<Self> {
         use rustix::event::{PollFd, PollFlags, Timespec, poll};
         let data = synthetic_dualsense(true);
-        let address = [0x0c, 0x27, 0x56, 0x00, 0x51, last];
+        let address = [0x02, 0xca, 0x7e, 0x00, 0x51, last];
         let mut pad = ctrlassist_device::VirtualPad::dualsense(&data, address)?;
         let node = pad.event_node().to_path_buf();
         let (states, wanted) = std::sync::mpsc::channel();

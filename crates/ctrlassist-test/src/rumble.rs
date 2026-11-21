@@ -99,6 +99,7 @@ impl RumblePad {
         let keys = AttributeSet::from_iter([KeyCode::BTN_SOUTH, KeyCode::BTN_EAST]);
         let stick = AbsInfo::new(0, -32768, 32767, 0, 0, 0);
         let mut builder = VirtualDevice::builder()?
+            .with_phys(&crate::marker())?
             .name(name)
             .input_id(InputId::new(BusType::BUS_USB, vendor, product, 1))
             .with_keys(&keys)?

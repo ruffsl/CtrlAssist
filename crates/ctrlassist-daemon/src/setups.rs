@@ -1880,6 +1880,8 @@ mod tests {
             Hiding::grab(),
             crate::copied::Copied::open(&dir.path().join("state")),
         );
+        let mut reactor = reactor;
+        reactor.test_pads = true;
         let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
             .await
             .unwrap();

@@ -975,7 +975,7 @@ async fn a_connected_dualsense_is_copied_and_virtual_ones_are_made_from_it() {
         );
         return;
     }
-    let id = "address:0c:27:56:00:51:01";
+    let id = "address:02:ca:7e:00:51:01";
     let (_dir, socket) = socket();
     let hider = ctrlassist_test::FakeHider::listen(&socket.with_file_name("hider.sock")).unwrap();
     let daemon = start_daemon(&socket).await;
@@ -1004,7 +1004,7 @@ async fn a_connected_dualsense_is_copied_and_virtual_ones_are_made_from_it() {
     client
         .put_profile(
             "twin",
-            "preset = \"multicast\"\npad = \"0c:27:56:00:51:01\"\nidentity = \"dualsense\"\n",
+            "preset = \"multicast\"\npad = \"02:ca:7e:00:51:01\"\nidentity = \"dualsense\"\n",
         )
         .await
         .unwrap();

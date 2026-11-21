@@ -21,5 +21,7 @@ pub use dualsense::DualSenseData;
 pub use hotplug::{Change, Found, Monitor, connected};
 pub use layout::{AxisRange, Mapping};
 pub use pad::{Identifiers, Pad, PadError, PadId};
-pub use sink::{Identity, OWN_ADDRESS, OWN_MARKER, Request, VirtualPad, own_address};
+pub use sink::{
+    Identity, OWN_ADDRESS, OWN_MARKER, Request, TEST_ADDRESS, TEST_MARKER, VirtualPad, own_address,
+};
 pub use thread::{Command, InputThread, NewGraph, Place, Report, SendError, Setup, SetupId};

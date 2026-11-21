@@ -112,6 +112,9 @@ impl Daemon {
             // No hiding service: the bench's pads are its own to drive.
             .arg("--hider-socket")
             .arg(directory.join("no-hider.sock"))
+            // The bench's pads are fake ones, which a daemon takes only
+            // when asked to.
+            .arg("--test-pads")
             .stderr(Stdio::null())
             .spawn()
             .with_context(|| format!("starting {}", command.display()))?;

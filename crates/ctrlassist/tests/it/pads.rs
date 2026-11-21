@@ -238,3 +238,49 @@ async fn the_identities_are_listed_with_whether_they_can_be_made() {
     next_matching(&mut watcher, |e| *e == StateEvent::IdentitiesChanged).await;
     assert!(client.list_identities().unwrap().is_empty());
 }
+
+/// A daemon in use leaves the tests' fake pads alone: a test run beside
+/// it neither fills its list of pads nor starts its profiles.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_that_was_not_asked_to_takes_no_fake_pad_for_a_pad() {
+    const TEST: &str = "a_daemon_that_was_not_asked_to_takes_no_fake_pad_for_a_pad";
+    if !can_make_pads(TEST) {
+        return;
+    }
+    let _before = FakePad::new("Unseen Before", 0x1209, 0x8c01).unwrap();
+    let (_dir, socket) = socket();
+    let daemon = crate::client::start_daemon_taking(&socket, false).await;
+    let client = hydrated(&socket).await;
+    client
+        .put_profile(
+            "solo",
+            "preset = \"multicast\"\npad = \"model:1209:8c01\"\nauto-start = true\n",
+        )
+        .await
+        .unwrap();
+    let _after = FakePad::new("Unseen After", 0x1209, 0x8c01).unwrap();
+    let _rumble = RumblePad::new("Unseen Rumble", 0x1209, 0x8c02).unwrap();
+    // Time for the pads to have been seen, had they been taken.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let unseen = |pads: Vec<Pad>| pads.iter().all(|pad| !pad.name.starts_with("Unseen"));
+    assert!(unseen(client.list_pads().unwrap()));
+    assert!(client.list_setups().unwrap().is_empty());
+    daemon.stop().await;
+
+    // One that was asked to takes them, under the names they had before
+    // they were marked: where a fake pad says it is plugged is its
+    // marker, and no part of what it is known by.
+    let other = crate::client::socket();
+    let daemon = start_daemon(&other.1).await;
+    let client = hydrated(&other.1).await;
+    eventually("the fake pads never were listed", async || {
+        let pads = client.list_pads().unwrap();
+        pads.iter()
+            .any(|pad| pad.id == "model:1209:8c01:Unseen Before")
+            && pads
+                .iter()
+                .any(|pad| pad.id == "model:1209:8c02:Unseen Rumble")
+    })
+    .await;
+    daemon.stop().await;
+}
