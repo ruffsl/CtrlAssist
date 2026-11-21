@@ -14,9 +14,27 @@ Every project command is a `just` recipe, and each prek hook runs the recipe of 
 | `just clippy` | Clippy, warnings denied |
 | `just doc` | API docs, warnings denied: a broken intra-doc link fails |
 | `just test` | nextest, then doc tests |
+| `just actionlint` | The workflows: syntax, expressions, and shellcheck over their `run:` lines |
+| `just zizmor` | The workflows and Dependabot config for security problems |
 | `just check` | All of the above |
 
 Build and clippy use the test profile, so the tests reuse what they compiled.
+
+## CI
+
+`ci.yml` runs on pushes to `main` and on pull requests, and dispatches through the same recipes, so a failure reproduces locally.
+
+| Job | Runs | Locally |
+|---|---|---|
+| `checks` | File checks, spelling and the workflow linters; on every run, drafts included | `prek run -a` |
+| `ci` | The Rust hooks, then the tests under coverage | `just test-ci` |
+| `msrv` | The workspace builds on its oldest supported compiler | `just msrv` |
+| `CI result` | Passes only if the others passed; the one check a branch ruleset requires | |
+
+- **Drafts run only `checks`;** marking a pull request ready starts the rest.
+- **Coverage has a floor,** `cov_baseline_lines` in the justfile. `just test-ci` fails below it. Raise it when coverage rises (`just cov` prints the figure); never lower it. Doc tests run outside the measurement, since measuring them needs a nightly compiler.
+- **Actions are pinned to a commit,** with the release in a comment, and Dependabot proposes updates to both after a one-week cooldown.
+- **Workflow steps have no scripts.** A step is an action or a single command, usually a `just` recipe; logic lives in the recipe or in a Rust binary.
 
 ## Toolchain
 

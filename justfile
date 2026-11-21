@@ -65,9 +65,59 @@ test:
     cargo nextest run --workspace --all-features
     cargo test --workspace --all-features --doc
 
+# Lint the GitHub workflows: syntax, expressions, and their `run:` lines
+[group('check')]
+actionlint:
+    actionlint
+
+# Without a GitHub token in GH_TOKEN it runs offline and says so.
+#
+# Audit the workflows and the Dependabot config for security problems
+[group('check')]
+zizmor:
+    zizmor .github/
+
 # Run every local gate
 [group('check')]
-check: typos fmt build clippy doc test
+check: typos actionlint zizmor fmt build clippy doc test
+
+# --- CI ------------------------------------------------------------------
+#
+# What the workflows run, so that a CI failure reproduces locally.
+
+# The line coverage the workspace must keep. Raise it with `just cov` when
+# coverage rises; never lower it.
+cov_baseline_lines := "92"
+
+# The oldest compiler the workspace supports, from Cargo.toml.
+msrv := `sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml`
+
+# Print a coverage summary
+[group('ci')]
+cov:
+    cargo llvm-cov nextest --workspace --all-features --summary-only
+
+# Doc tests run uninstrumented: measuring them needs a nightly compiler.
+#
+# Run the tests under coverage, write lcov.info, and fail below the baseline
+[group('ci')]
+test-ci:
+    {{ deny_warnings }} cargo llvm-cov nextest --workspace --all-features --lcov --output-path lcov.info --fail-under-lines {{ cov_baseline_lines }}
+    cargo test --workspace --all-features --doc
+
+# No `--ignore-rust-version`: the toolchain is the floor, so a dependency
+# that outgrows it fails here.
+#
+# Check the workspace on its oldest supported compiler, from the flake
+[group('ci')]
+msrv:
+    env PATH=(nix build --no-link --print-out-paths .#msrv-rust)/bin:(string join : $PATH) cargo check --workspace --all-targets --all-features --target-dir target/msrv
+
+# The same check where there is no Nix: rustup installs the floor
+[group('ci')]
+msrv-ci:
+    rustup toolchain install {{ msrv }} --profile minimal
+    cargo +{{ msrv }} check --workspace --all-targets --all-features --locked --target-dir target/msrv
 
 # --- Spikes --------------------------------------------------------------
 

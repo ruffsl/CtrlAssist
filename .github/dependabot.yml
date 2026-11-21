@@ -1,0 +1,39 @@
+version: 2
+updates:
+  # GitHub Actions: weekly, grouped into one PR. `prefix: "ci"` with
+  # `include: "scope"` gives Conventional Commits titles ("ci(deps): ...").
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Wait a week after a release before proposing it, so a compromised
+    # release is more likely to be caught and pulled first. Security
+    # updates aren't delayed.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+  # Cargo: weekly, minor and patch bumps grouped into one PR. A major bump
+  # matches no group, so it gets a PR of its own: it often has to wait for
+  # other crates, and waiting in the group would block the week's bumps.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      cargo:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

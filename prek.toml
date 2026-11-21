@@ -21,6 +21,8 @@ hooks = [
 repo = "local"
 hooks = [
     { id = "typos", name = "typos", language = "system", entry = "just typos", always_run = true, pass_filenames = false, priority = 0 },
+    { id = "actionlint", name = "actionlint", language = "system", entry = "just actionlint", files = '^\.github/workflows/', pass_filenames = false, priority = 0 },
+    { id = "zizmor", name = "zizmor", language = "system", entry = "just zizmor", files = '^\.github/', pass_filenames = false, priority = 0 },
     { id = "fmt", name = "fmt", language = "system", entry = "just fmt", files = '\.rs$', pass_filenames = false, priority = 1 },
     { id = "build", name = "build", language = "system", entry = "just build", always_run = true, pass_filenames = false, priority = 2 },
     { id = "clippy", name = "clippy", language = "system", entry = "just clippy", always_run = true, pass_filenames = false, priority = 3 },

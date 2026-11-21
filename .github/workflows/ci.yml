@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "main"
+    # Drafts skip the heavy jobs, so marking a PR ready starts a full run.
+    types: [opened, synchronize, reopened, ready_for_review]
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Default for every job; a job widens it only where it needs to.
+permissions:
+  contents: read
+
+# A new push to a PR cancels that PR's in-progress run. Pushes to main
+# group by commit, so none is ever cancelled or replaced.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every job dispatches through `just`, whose recipes run in fish, so a
+# failure here reproduces locally with the recipe of the same name.
+jobs:
+  # File checks, spelling and the workflow linters on every run, drafts
+  # included.
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Shell
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fish
+
+      # Pinned to the dev shell's versions, so local and CI agree.
+      - name: Setup
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: |
+            actionlint@1.7.12
+            just
+            shellcheck@0.11.0
+            typos@1.51.1
+            zizmor@1.32.0
+
+      - name: File checks
+        uses: j178/prek-action@44924fe9ef4a6f88253c4b6b1bf11c689d3ce53d # v3.1.0
+        env:
+          # zizmor's online audits (such as a pinned SHA that doesn't match
+          # its version comment) read the GitHub API.
+          GH_TOKEN: ${{ github.token }}
+        with:
+          extra-args: >-
+            --all-files
+            check-added-large-files check-merge-conflict check-toml
+            check-yaml end-of-file-fixer trailing-whitespace typos
+            actionlint zizmor
+
+  ci:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Shell
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fish
+
+      - name: Toolchain
+        run: rustup component add llvm-tools-preview && rustup show
+
+      - name: Setup
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: |
+            cargo-llvm-cov
+            cargo-nextest
+            just
+            typos@1.51.1
+
+      - name: Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-on-failure: true
+
+      # The Rust hooks except the test run, which the next step does under
+      # coverage. The workflow linters ran in the checks job.
+      - name: Lint
+        uses: j178/prek-action@44924fe9ef4a6f88253c4b6b1bf11c689d3ce53d # v3.1.0
+        with:
+          extra-args: >-
+            --all-files
+            --skip test
+            --skip actionlint
+            --skip zizmor
+
+      - name: Test
+        run: just test-ci
+
+      - name: Upload coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          retention-days: 14
+
+  # The workspace still builds on the oldest compiler it claims to support.
+  msrv:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Shell
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fish
+
+      - name: Setup
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: just
+
+      - name: Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: msrv
+
+      - name: Check
+        run: just msrv-ci
+
+  # The one check a branch ruleset needs to require: it passes only if
+  # every job above passed or was skipped for a draft.
+  ci-result:
+    name: CI result
+    if: ${{ always() }}
+    needs: [checks, ci, msrv]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Result
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1

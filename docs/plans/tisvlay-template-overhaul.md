@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 4 are done. Stopped at build step 4's review point: the core crate's API, before anything depends on it.
-- **Next action:** after that review, build step 5 (CI workflows and coverage), then slice B, starting with the hiding service and stopping there for a read of the root code.
+- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 5 (slice A) are done, and the core API is approved.
+- **Next action:** slice B, starting with build step 6, the hiding service, stopping there for a read of the root code. One question is open with the maintainer and should be settled before the device crate uses the core: whether sources, sinks and nodes become distinct index types.
 - **Naming:** the root helper is called the hiding service in the architecture and `ctrlassist-hider` as a crate, because "helper" also described the assisting player. Older sections of this plan still say helper.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
