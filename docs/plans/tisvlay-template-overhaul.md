@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding spike is done and accepted ([findings/hiding.md](findings/hiding.md)), with one check still needing the maintainer (identifiers across reconnects); the identity spike has its finding, [findings/identity.md](findings/identity.md), awaiting review.
-- **Next action:** after that review, the input loop spike.
+- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding spike is done and accepted ([findings/hiding.md](findings/hiding.md)), with one check still needing the maintainer (identifiers across reconnects); the identity spike is done and accepted ([findings/identity.md](findings/identity.md)).
+- **Next action:** the input loop spike, stopping when its finding is written.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -88,7 +88,11 @@ One word per thing, here and in everything written from this plan:
 
 **Disconnects hold and re-bind.** When a pad in a setup drops, the virtual pad stays alive so the game never sees a disconnect, the missing pad's inputs go neutral, the other pad keeps working, and the same pad is re-bound and re-hidden when it returns. A notification says what happened.
 
-**Virtual pad identity offers both** copying a pad and picking a built-in identity. How faithful an identity can be, and what a virtual pad presents by default, are S5's questions.
+**Virtual pads come in two kinds, chosen by identity** ([findings/identity.md](findings/identity.md)). A uinput pad serves the generic identity and Xbox identities. A PlayStation identity needs a uhid pad, because SDL and Steam ignore an evdev node carrying Sony's IDs. The default, when a profile names none, is the generic one: a virtual pad that claims to be real hardware is a choice. Copying a pad means its IDs on a uinput pad for Xbox-family pads and a uhid copy for PlayStation pads.
+
+**A DualSense identity is copied from a connected pad, never shipped.** Its report descriptor and feature reports are read from a real DualSense and cached per pad in the user's state directory, so the identity is offered only to someone who has had one connected, and nothing of Sony's is carried in the repository.
+
+**Feedback routes rumble everywhere and passes the rest through between like pads.** Rumble is translated between the two forms (force-feedback requests on uinput, output reports on uhid). When the sink and the source are the same kind of pad, the whole output report passes through, so LEDs and trigger effects work; between unlike pads they are dropped.
 
 **The legacy words stay, for users too:** primary and assist for the roles; mux with priority, average and toggle; demux with unicast and multicast. Two alternative families were tried and read worse: these are precise, already paired, already in the README and issues, and "assist" is the project's name. Clients add a one-line description beside each, since the mode names are jargon to a newcomer.
 
@@ -103,8 +107,6 @@ One word per thing, here and in everything written from this plan:
 ## Provisional, pending spikes
 
 **Pads are identified by a stable hardware ID,** falling back to vendor and product plus port, then name. The hiding spike found the kernel's `uniq` value to be the pad's own address on both pads tested, and Steam keys its per-pad configuration by it; whether it is the same over USB and Bluetooth, and what an Xbox pad reports, is the one check still open.
-
-**Feedback's representation.** A uinput sink receives kernel force-feedback requests; a uhid sink would receive raw HID output reports. Until S5 reports, feedback is an open set of kinds (force-feedback effect, HID output report, LED), not the kernel effect alone.
 
 ## Constraints the design must respect
 
@@ -123,8 +125,8 @@ Facts about the platform that the plan review surfaced. The spikes test the ones
 The core model carries gamepads, wheels and HOTAS, and gyro, touchpad and LEDs. All are designed for; only gamepads are built.
 
 - **Controls are open-ended.** A control is identified by kind and index, with the standard gamepad buttons and axes as well-known names over that space rather than a closed enum. A HOTAS with 30 buttons and 8 axes is representable without a vocabulary change. The mux nodes need generic control addressing anyway to route per control (#53). Well-known names are what make two different pads mergeable; controls outside them pass through unmerged.
-- **Feedback kinds are open** (see Provisional), so a wheel's constant-force and spring effects pass through even though only rumble is tested.
-- **Motion, touch and LED kinds are reserved.** Whether any source or sink can carry them depends on S5.
+- **Feedback kinds are open** (a force-feedback effect, a device's output report), so a wheel's constant-force and spring effects pass through even though only rumble is tested.
+- **Motion and touch kinds are reserved.** A uhid sink could carry them; nothing in the first release produces them.
 
 Deferred: implementation and verification on wheel or HOTAS hardware, which isn't on hand. If S4 shows the open-ended form costs more than this, its finding says so and the decision is revisited.
 
