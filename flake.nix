@@ -117,7 +117,19 @@
         # Every tool a `just` recipe or prek hook calls comes from here, so
         # the checks run the same for everyone. A tool joins this list in
         # the commit that first uses it.
-        devShells.default = pkgs.mkShell {
+        devShells.default =
+          let
+            # cargo-nfpm reads package metadata from Cargo.toml and calls
+            # nfpm for `just package-*`; its source carries its own Nix
+            # package. TisVlay's pin.
+            cargoNfpmSrc = pkgs.fetchCrate {
+              pname = "cargo-nfpm";
+              version = "0.1.3";
+              hash = "sha256-PpflbxUL6/xwqeHw2OhPLcB1fi0VLbItzhdYkLqZuP0=";
+            };
+            cargoNfpm = pkgs.callPackage (import "${cargoNfpmSrc}/nix/package.nix") { };
+          in
+          pkgs.mkShell {
           packages = with pkgs; [
             actionlint
             # fetches the controller database snapshot (`just update-controller-db`)
@@ -127,6 +139,17 @@
             (pkgs.cargo-llvm-cov.overrideAttrs { doCheck = false; })
             cargo-nextest
             cargo-shear
+            # The distro packages (`just package-*`). cargo-auditable embeds
+            # each binary's dependency list. cargo-zigbuild and zig drive
+            # the build: zig is the linker, so the binary carries an
+            # explicit oldest glibc and no Nix store path as its
+            # interpreter, as a plain build from this shell would. nfpm is
+            # the packager cargo-nfpm calls.
+            cargo-auditable
+            cargoNfpm
+            cargo-zigbuild
+            zig
+            nfpm
             just
             just-lsp
             # jstest and evtest-style tools for looking at pads by hand

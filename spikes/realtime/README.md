@@ -37,4 +37,14 @@ rtkit, asked by the process itself over D-Bus for priority 10:
 - A PAM limit for a group works on NixOS too, and is narrower in who gets it, but wider in what: everything those users run. Elsewhere it works only where the distribution's PAM setup for the user manager includes `pam_limits`, which systemd's own no longer does.
 - rtkit changes nothing system-wide and is already on most desktops, at the price of the kill-on-overrun limit and of a D-Bus client in the daemon. It is also the only one of the three available inside a Flatpak, through the desktop portal.
 
-Not tried: Debian, Fedora or Arch, where the PAM result may differ; a Flatpak; the portal.
+Not tried: Debian, Fedora or Arch; a Flatpak; the portal.
+
+## Why, from the sources
+
+Read afterwards in systemd 262 and the pinned nixpkgs, to explain two results that looked odd.
+
+**`LimitRTPRIO=` in a user unit changing nothing is a documented limitation, not a bug.** A user's service manager is unprivileged, so when it applies a unit's limits and the kernel refuses, systemd lowers the request to the hard limit the manager itself has (`setrlimit_closest` in `src/basic/rlimit-util.c`), and if that leaves nothing to change it returns without a word, not even a debug line. A unit with no such line inherits the manager's limit when it is forked. `systemd.exec(5)` says as much: in a user service these settings "cannot be used to raise the limits above those set for the user manager itself", and are "only useful to lower the limits passed in or to raise the soft limit to the maximum of the hard limit"; it points to PAM or to limits on `user@.service` for raising them. So in a user unit the line can cap a service below what the manager has, or pin it, and can never grant.
+
+**The PAM limit reaching a user service is how NixOS is built, and the note in its option is out of date.** The user manager runs under the PAM service `systemd-user`, which NixOS generates itself; every PAM service takes `security.pam.loginLimits` by default, which adds `pam_limits` to its session stack. The manager starts with that limit and its services inherit it. The note that these limits "do not apply to systemd services" was added in 2018 about system services, where it is true.
+
+**Elsewhere:** systemd's own `systemd-user` PAM fragment has not called `pam_limits` since version 232, but Debian adds it directly, and Fedora and Arch through the `system-auth` they include. So a limits file for a group should reach user services on all three. That is read from their packaging, not measured.

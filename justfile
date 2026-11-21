@@ -218,6 +218,108 @@ stop-all:
 cli *args:
     cargo run --quiet --profile {{ _dev_profile }} --bin ctrlassist -- --socket "{{ socket }}" {{ args }}
 
+# --- Packaging -----------------------------------------------------------
+
+# The oldest glibc the packaged binaries run on. 2.34 covers Debian 12,
+# Ubuntu 22.04, Fedora 35 and everything rolling. TisVlay's baseline.
+glibc_baseline := "2.34"
+
+# Architecture the packages are for: the host's by default. ARCH=aarch64
+# on an x86_64 host cross-builds, which needs that Rust target installed.
+package_arch := env("ARCH", arch())
+_package_triple := package_arch + "-unknown-linux-gnu"
+
+# Built with the `dist` profile, by zig as the linker, so the binaries
+# name the standard ELF interpreter and no glibc symbol newer than the
+# baseline. Which crates are built comes from `default-members` in the
+# root Cargo.toml. cargo-auditable embeds each binary's dependency list.
+[private]
+package-build:
+    cargo auditable zigbuild --profile dist \
+        --target {{ _package_triple }}.{{ glibc_baseline }}
+    ln -sfn {{ _package_triple }}/dist target/nfpm-dist
+
+# Built for the host on purpose: the packaged binary targets another
+# glibc and may not run here, while what it prints for registration names
+# only the shell and the command.
+#
+# Generate what registers the command's completions with each shell
+[group('package')]
+completions:
+    cargo build --package ctrlassist-cli
+    mkdir -p packaging/completions
+    COMPLETE=bash target/debug/ctrlassist > packaging/completions/ctrlassist.bash
+    COMPLETE=zsh  target/debug/ctrlassist > packaging/completions/ctrlassist.zsh
+    COMPLETE=fish target/debug/ctrlassist > packaging/completions/ctrlassist.fish
+
+# Build the .deb
+[group('package')]
+package-deb: completions package-build
+    cargo nfpm package -p ctrlassist-cli --no-build --profile dist --target {{ _package_triple }} -f deb
+
+# Build the .rpm
+[group('package')]
+package-rpm: completions package-build
+    cargo nfpm package -p ctrlassist-cli --no-build --profile dist --target {{ _package_triple }} -f rpm
+
+# Build the Arch package
+[group('package')]
+package-archlinux: completions package-build
+    cargo nfpm package -p ctrlassist-cli --no-build --profile dist --target {{ _package_triple }} -f archlinux
+
+# Build the .deb, the .rpm and the Arch package
+[group('package')]
+package-all: package-deb package-rpm package-archlinux
+
+# What each container is asked after installing its package: the command
+# runs on that distribution's glibc and finds its libraries, says there is
+# no daemon, and completes its own words; the hiding service runs and
+# refuses what isn't a pad; and everything the package ships is in place.
+_package_checks := '''
+    set -eu
+    ctrlassist --version
+    ctrlassist status --json 2>/dev/null | grep -q '"alive":false'
+    COMPLETE=fish ctrlassist -- ctrlassist pro | grep -q profile
+    ctrlassist-hider check /dev/null | grep -q refused
+    for file in \
+        /usr/lib/systemd/system/ctrlassist-hider.socket \
+        /usr/lib/systemd/system/ctrlassist-hider.service \
+        /usr/lib/systemd/user/ctrlassist-daemon.service \
+        /usr/lib/systemd/user/ctrlassist-tray.service \
+        /usr/lib/systemd/system/user@.service.d/10-ctrlassist.conf \
+        /usr/lib/udev/rules.d/70-ctrlassist.rules \
+        /usr/lib/modules-load.d/ctrlassist.conf \
+        /usr/share/bash-completion/completions/ctrlassist \
+        /usr/share/zsh/site-functions/_ctrlassist \
+        /usr/share/fish/vendor_completions.d/ctrlassist.fish
+    do test -s "$file" || { echo "missing: $file"; exit 1; }; done
+    echo "installed and working"
+'''
+
+# Needs docker. Each package is installed by its distribution's own
+# package manager, which also resolves the libraries it declares, in a
+# container that has never seen the build. Ubuntu 22.04 is the oldest
+# glibc the baseline covers. The containers have no systemd, so the units
+# are checked for being there, not for starting: the NixOS VM check starts
+# them.
+#
+# Install each package in a clean container of its distribution and try it
+[group('package')]
+package-test: package-all
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dist=target/{{ _package_triple }}/dist
+    try() {
+        local image=$1 install=$2
+        echo "--- $image"
+        docker run --rm -v "$PWD/$dist:/dist:ro" "$image" sh -c "$install && $checks"
+    }
+    checks={{ quote(_package_checks) }}
+    try debian:12 'apt-get update -qq && apt-get install -y -qq /dist/ctrlassist_*.deb >/dev/null'
+    try ubuntu:22.04 'apt-get update -qq && apt-get install -y -qq /dist/ctrlassist_*.deb >/dev/null'
+    try fedora:latest 'dnf install -y -q /dist/ctrlassist-*.rpm >/dev/null'
+    try archlinux:latest 'pacman -U --noconfirm /dist/ctrlassist-*.pkg.tar.zst >/dev/null'
+
 # --- Maintenance ---------------------------------------------------------
 
 controller_db := "crates/ctrlassist-device/data"

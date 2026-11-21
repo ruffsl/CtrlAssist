@@ -56,6 +56,8 @@ packaging/
   systemd/                    # the hiding service's socket and service units, and
                               # the daemon's and the tray's user units
   udev/                       # the rule that gives the seat user uinput and uhid
+  scripts/, modules-load/     # what the deb, rpm and Arch packages run at install and
+                              # removal, and the modules they have loaded at boot
   licensing/                  # deny.toml: license policy and the one-version gate
 .vscode/tasks.json            # editor tasks that start, stop and restart the dev stack
 .claude/CLAUDE.md             # this file
