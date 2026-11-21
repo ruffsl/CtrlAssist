@@ -62,7 +62,7 @@ Why a rewrite rather than a migration:
 
 ## Event model scope
 
-The maintainer wants gamepads, wheels and HOTAS, and gyro, touchpad and LEDs carried by the core model, with wheels and HOTAS open to deferral if designing for them is costly. The proposal is to design for all of them and build only gamepads:
+The core model carries gamepads, wheels and HOTAS, and gyro, touchpad and LEDs. All are designed for; only gamepads are built. Agreed with the maintainer:
 
 - **Controls are open-ended.** A control is identified by kind and index, with the standard gamepad buttons and axes as well-known names over that space rather than a closed enum. A HOTAS with 30 buttons and 8 axes is representable without a vocabulary change. Cost: the mux modes address controls generically instead of matching on a fixed enum, which S4's nodes need anyway to do per-control routing (#53).
 - **Feedback carries the kernel's effect description,** not a rumble pair, so a wheel's constant-force and spring effects pass through unchanged even though only rumble is tested.
@@ -116,7 +116,7 @@ Each candidate records its release date and source so the survey can be re-check
 
 ## Spikes
 
-Each is an independent workspace under `spikes/`, measured on the maintainer's hardware, and ends in `docs/` as a finding. The legacy 0.4.0 binary is the baseline where a comparison applies.
+Each is an independent workspace under `spikes/`, measured on the development host, and ends in `docs/` as a finding. The host has the pads and Steam, so hardware checks run there directly, with the maintainer asked only for physical actions such as pressing buttons. Work stops for maintainer review each time a finding is written, before anything builds on it. The legacy 0.4.0 binary is the baseline where a comparison applies.
 
 ### S1. Hiding and permissions
 
@@ -193,6 +193,7 @@ Open legacy issues that the rewrite doesn't close are moved to `docs/ideas/` in 
 
 ## Deviations
 
+- **Sixth draft.** The open-ended event vocabulary is accepted. Hardware spikes run on the development host, and work pauses at each finding.
 - **Fifth draft.** Added the ecosystem survey ahead of the spikes, since the legacy dependencies are a year stale. The repository move no longer gates anything: the maintainer does it out of band and local work runs to completion without GitHub.
 - **Fourth draft.** A round of maintainer questions settled the crate naming, zenoh, presets over a graph, disconnect handling, pad identification, the client order (adding a ratatui TUI), the first release's contents and its single verified environment. The feature table became goals. New: spike S5 on virtual pad identity, and the event model scope section answering whether to design for wheels and HOTAS now.
 - **Third draft.** The maintainer confirmed the user daemon with thin clients, Flatpak as a second tier, and the general graph, which moved to Decided. S3 shrank from an IPC comparison to a co-existence check, since performance matters on the data path and that never leaves the daemon.
