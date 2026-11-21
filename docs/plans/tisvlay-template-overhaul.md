@@ -98,9 +98,11 @@ One word per thing, here and in everything written from this plan:
 
 ## Provisional, pending spikes
 
-**Whether the privileged helper is needed,** and what it does. Games run as the same user as the daemon, so a group or ACL rule can't admit the daemon while excluding the game, which leaves a grab and Steam's blacklist as the unprivileged mechanisms, both partial. InputPlumber hides pads with runtime udev rules, which needs root. S1 decides between: unprivileged mechanisms are enough and no helper ships; the helper applies the hiding; or, where InputPlumber is present, hiding is delegated to it.
+**Whether the privileged helper is needed,** and what it does. Games run as the same user as the daemon, so a group or ACL rule can't admit the daemon while excluding the game, which leaves a grab and Steam's blacklist as the unprivileged mechanisms, both partial. InputPlumber hides pads with runtime udev rules, which needs root. S1 decides whether unprivileged mechanisms are enough and no helper ships, or the helper applies the hiding.
 
-**User-facing names.** The engine keeps the legacy words (mux, demux, and their modes) in code and profiles. What clients call the presets and the two roles is open until the CLI is designed at step 4. The proposal on the table: roles "player" and "helper" in place of primary and assist; presets "assist" (priority), "blend" (average), "take turns" (toggle), "switch" (unicast) and "mirror" (multicast).
+**User-facing names.** The engine keeps the legacy words (mux, demux, and their modes) in code and profiles. What clients call the presets and the two roles is open. The maintainer wants one unifying family of nouns, each a single word rather than a compound; a first proposal (player and helper; assist, blend, take turns, switch, mirror) didn't meet that. To settle before the CLI is designed at step 4.
+
+**How to relate to InputPlumber.** CtrlAssist works alone everywhere. Where InputPlumber is running, the intent is to stay out of its way and, if it is simple, use its D-Bus API for hiding. S1 measures what cooperation takes; if it adds much complexity, CtrlAssist stays fully independent and only documents the coexistence.
 
 **Pads are identified by a stable hardware ID,** falling back to vendor and product plus port, then name. S1 records which identifiers are actually stable.
 
@@ -173,7 +175,7 @@ Each entry records its source and date. The survey chooses nothing: it gives eac
 
 ## Spikes
 
-Each spike is a workspace under `spikes/<name>/`, run on the development host, with the maintainer asked only for physical actions such as pressing buttons. Each ends in `docs/plans/findings/<name>.md` holding a results table and a verdict, and work stops there for review. At step 4 the findings are folded into `docs/architecture.md` (hardware caveats into `docs/concerns/`) and the findings directory is deleted. Spike code is deleted in the commit that lands its replacement in `crates/`, except S4, whose tests and nodes are promoted to become the core crate.
+Each spike is a workspace under `spikes/<name>/`, run on the development host, with the maintainer asked only for physical actions such as pressing buttons. On that host the maintainer has allowed: grabbing and releasing pads; editing Steam's config, backed up first and restored after each test; restarting Steam; and `sudo` for temporary udev rules and node permissions, each command shown before it runs and undone afterward. Each ends in `docs/plans/findings/<name>.md` holding a results table and a verdict, and work stops there for review. At step 4 the findings are folded into `docs/architecture.md` (hardware caveats into `docs/concerns/`) and the findings directory is deleted. Spike code is deleted in the commit that lands its replacement in `crates/`, except S4, whose tests and nodes are promoted to become the core crate.
 
 Order: the survey, then S1 and S5, then S2, then S4, then S3. S5 precedes S4 because the sink type decides what feedback looks like; S1 precedes S2 because a grab decides who may read the pad.
 
@@ -184,7 +186,8 @@ Order: the survey, then S1 and S5, then S2, then S4, then S3. S5 precedes S4 bec
 - [ ] For each mechanism (evdev grab; Steam's blacklist; SDL's ignore-devices hint per launch; runtime udev rules as InputPlumber uses, applied by a privileged helper; others from the survey) and each consumer (Steam Input, a native SDL game, a Proton game, a raw evdev reader), record: absent, present but silent, or visible.
 - [ ] For each mechanism, record what remains after the daemon is killed without cleanup, and after the pad reconnects.
 - [ ] Record Steam's behavior by start order (daemon first, Steam first) and whether a change needs a Steam restart.
-- [ ] In a clean NixOS VM with no Steam or Sunshine rules: what a seat user can open among `/dev/uinput`, `/dev/uhid` and the pads' event and hidraw nodes.
+- [ ] In a clean NixOS VM with no Steam or Sunshine rules, defined as a flake check the way TisVlay defines its VM test, with fake pads created through uinput: what a seat user can open among `/dev/uinput`, `/dev/uhid` and the pads' event and hidraw nodes.
+- [ ] Record what cooperating with a running InputPlumber would take: what it does to a pad CtrlAssist wants, and whether its D-Bus API can hide one on request.
 - [ ] Record which identifiers stay stable for an Xbox pad and a DualShock or DualSense across reconnects, over USB and Bluetooth.
 - [ ] Write the finding.
 
