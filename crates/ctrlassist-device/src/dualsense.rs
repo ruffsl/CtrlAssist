@@ -8,10 +8,12 @@
 //! the pad's input report, and reads rumble out of the output reports it
 //! is sent.
 //!
-//! The descriptor and the firmware report are copied from a connected
-//! pad; nothing of them is in this crate. The pairing report carries the
-//! virtual pad's own address, and the calibration is synthesized as
-//! neutral: the pads behind it are calibrated by their own drivers.
+//! The report descriptor is a retail pad's, carried in this crate's data;
+//! one copied from a connected pad can be used in its place. The
+//! firmware report says only what the kernel's driver and SDL go by, the
+//! pairing report carries the virtual pad's own address, and the
+//! calibration is synthesized as neutral: the pads behind it are
+//! calibrated by their own drivers.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -77,7 +79,39 @@ pub struct DualSenseData {
     pub firmware: Vec<u8>,
 }
 
+/// The firmware update version the shipped data reports: the first at
+/// which both the kernel's driver and SDL use the pad's newer rumble.
+const SHIPPED_UPDATE: u16 = 0x0224;
+
 impl DualSenseData {
+    /// What a virtual DualSense is made from where none has been copied:
+    /// a retail pad's report descriptor, and a firmware report that says
+    /// only which rumble the pad takes.
+    ///
+    /// # Panics
+    ///
+    /// Never: the data is this crate's own, and a test reads it whole.
+    #[must_use]
+    pub fn shipped() -> Self {
+        let descriptor = include_str!("../data/dualsense-usb.hex")
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .flat_map(|line| {
+                (0..line.len() / 2).map(move |at| {
+                    u8::from_str_radix(&line[at * 2..at * 2 + 2], 16)
+                        .expect("the shipped descriptor is hex digits, which a test checks")
+                })
+            })
+            .collect();
+        let mut firmware = vec![0u8; FIRMWARE_SIZE];
+        firmware[0] = FIRMWARE;
+        firmware[44..46].copy_from_slice(&SHIPPED_UPDATE.to_le_bytes());
+        Self {
+            descriptor,
+            firmware,
+        }
+    }
+
     /// Copies what a virtual DualSense needs from a connected one's raw
     /// HID node.
     ///
@@ -529,6 +563,31 @@ impl AsFd for Emulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shipped data is whole, and declares the reports the emulator
+    /// and the kernel's driver exchange.
+    #[test]
+    fn the_shipped_data_makes_a_pad() {
+        let data = DualSenseData::shipped();
+        assert!(data.is_whole());
+        assert_eq!(data.descriptor.len(), 273);
+        // A gamepad on the generic desktop page, then report 1.
+        assert_eq!(
+            data.descriptor[..8],
+            [0x05, 0x01, 0x09, 0x05, 0xa1, 0x01, 0x85, 0x01]
+        );
+        for report in [INPUT_REPORT, OUTPUT_REPORT, CALIBRATION, PAIRING, FIRMWARE] {
+            let declared = data
+                .descriptor
+                .windows(2)
+                .any(|pair| pair == [0x85, report]);
+            assert!(declared, "report {report:#04x}");
+        }
+        assert_eq!(
+            u16::from_le_bytes([data.firmware[44], data.firmware[45]]),
+            0x0224
+        );
+    }
 
     #[test]
     fn a_pad_at_rest_is_the_report_a_dualsense_sends_untouched() {

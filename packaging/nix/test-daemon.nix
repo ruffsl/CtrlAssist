@@ -151,8 +151,7 @@ pkgs.testers.runNixOSTest {
         assert pads[HID]["id"] == "address:02:00:00:00:00:01", pads[HID]
         assert not pads[HID]["hidden"] and not pads[PLAIN]["hidden"]
         identities = {identity["id"]: identity["available"] for identity in json.loads(cli("identities", "--json"))}
-        # A DualSense is listed, and can't be made until one has been copied.
-        assert identities == {"generic": True, "xbox": True, "dualsense": False}, identities
+        assert identities == {"generic": True, "xbox": True, "dualsense": True}, identities
 
     with subtest("a profile is put, and one that is wrong is refused with where"):
         machine.succeed(
@@ -241,9 +240,10 @@ pkgs.testers.runNixOSTest {
         # A stand-in for a real one: a pad of the kernel's PlayStation
         # driver with an address a real pad could have.
         machine.succeed("systemd-run --unit pad-ds ctrlassist-fixture fake-dualsense --real --pulse 20")
-        command = "su -l alice -c " + shlex.quote(ENV + " ctrlassist identities")
-        machine.wait_until_succeeds(f"{command} | grep -q 'dualsense .* yes$'")
-        machine.succeed("su -l alice -c 'test -s ~/.local/state/ctrlassist/identities/dualsense.toml'")
+        machine.succeed("su -l alice -c 'test ! -e ~/.local/state/ctrlassist/identities'")
+        machine.wait_until_succeeds("su -l alice -c 'test -s ~/.local/state/ctrlassist/identities/dualsense.toml'")
+        # The copy is of the stand-in, whose descriptor isn't the shipped one.
+        machine.succeed("su -l alice -c 'grep -q ^descriptor.*0600ff0901a101 ~/.local/state/ctrlassist/identities/dualsense.toml'")
         machine.succeed(
             "printf '%s\\n' 'preset = \"multicast\"' 'pad = \"02:ca:7e:00:00:01\"' "
             "'identity = \"dualsense\"' > /tmp/twin.toml"
@@ -266,8 +266,6 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl stop pad-ds")
         machine.wait_until_succeeds("test $(ls /sys/bus/hid/drivers/playstation | grep -c 054C:0CE6) = 0")
         cli("profile", "delete", "twin")
-        # What was copied is kept: still offered with no DualSense there.
-        assert "yes" in machine.succeed(f"{command} | grep dualsense")
 
     with subtest("a daemon that is killed gets its pads restored and its virtual pad removed"):
         # Kept with the asking to start by itself, for the daemon after it.

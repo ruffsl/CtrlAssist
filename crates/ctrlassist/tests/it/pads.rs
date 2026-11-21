@@ -224,8 +224,13 @@ async fn the_identities_are_listed_with_whether_they_can_be_made() {
     assert_eq!(
         listed,
         [
-            // Listed, and not to be made until a DualSense is copied.
-            ("dualsense", 0x054c, 0x0ce6, false),
+            // Made through uhid, which a machine may not offer.
+            (
+                "dualsense",
+                0x054c,
+                0x0ce6,
+                ctrlassist_test::uhid_available()
+            ),
             ("generic", 0x1234, 0x5678, available),
             ("xbox", 0x045e, 0x0b12, available)
         ]

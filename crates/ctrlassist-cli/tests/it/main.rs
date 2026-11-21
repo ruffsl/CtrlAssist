@@ -234,7 +234,7 @@ async fn identities_lists_what_a_virtual_pad_can_be() {
     assert_eq!(lines.len(), 4, "{said}");
     assert!(lines[0].starts_with("ID         NAME"), "{said}");
     assert!(lines[1].starts_with("dualsense  "), "{said}");
-    assert!(lines[1].ends_with("054c:0ce6  no"), "{said}");
+    assert!(lines[1].contains("054c:0ce6  "), "{said}");
     assert!(
         lines[2].starts_with("generic    CtrlAssist Virtual Pad"),
         "{said}"

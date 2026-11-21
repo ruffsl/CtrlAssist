@@ -27,5 +27,12 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 
 
+CtrlAssist's binaries include the HID report descriptor of the Sony
+DualSense wireless controller, as read from a retail controller: the
+description of the reports the controller exchanges with a computer. It
+is what lets a virtual controller be read as a DualSense. "DualSense" and
+"PlayStation" are trademarks of Sony Interactive Entertainment Inc.;
+CtrlAssist is not affiliated with or endorsed by Sony.
+
 The licenses of the Rust crates the binaries are built from are listed in
 THIRD-PARTY-LICENSES.html, beside this file.

@@ -67,7 +67,7 @@ Once a part has taken a controller, it waits for that same controller if it disc
 
 `ctrlassist identities` lists them and whether each can be made on this machine.
 
-A `dualsense` can be made only once CtrlAssist has seen a real one: the first time you connect a DualSense by USB cable, with the hiding service installed, it copies what that controller says of itself and keeps the copy in `~/.local/state/ctrlassist/identities/`. From then on the identity is available whether or not that controller is connected. Nothing of Sony's ships with CtrlAssist. Until then `dualsense` is listed as not available, and a profile that names it says why it can't start.
+If you connect a real DualSense by USB cable, with the hiding service installed, CtrlAssist copies what that controller says of itself, keeps the copy in `~/.local/state/ctrlassist/identities/`, and makes its virtual DualSenses from that from then on; until then it uses a description of the controller that ships with it. You don't need to own one.
 
 A virtual DualSense carries the buttons, sticks, triggers and rumble. Its touchpad and motion sensors are there and report nothing, and the system shows a battery and lights for it, as it does for a real one.
 

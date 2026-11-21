@@ -2,10 +2,10 @@
 //! as one: `identities/dualsense.toml` in the daemon's state directory.
 //!
 //! A DualSense's report descriptor and firmware report are read from a
-//! real one, once, and kept here, so the identity is offered from then
-//! on whether or not that pad is connected. Nothing of them ships with
-//! CtrlAssist. A file that can't be read is left alone, and the identity
-//! isn't offered until a pad is copied again.
+//! real one, once, and kept here, and are then used in place of the
+//! descriptor CtrlAssist ships: the user's own pad may be of a later
+//! revision. A file that can't be read is left alone, and the shipped
+//! data is used until a pad is copied again.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -70,7 +70,7 @@ impl Copied {
             Ok(text) => {
                 let data = parse(&text);
                 if data.is_none() {
-                    warn!(path = %path.display(), "the copied DualSense can't be read; the identity isn't offered until one is copied again");
+                    warn!(path = %path.display(), "the copied DualSense can't be read; the shipped data is used until one is copied again");
                 }
                 data
             }
@@ -79,9 +79,18 @@ impl Copied {
         Self { path, dualsense }
     }
 
-    /// The data a virtual DualSense is made from, once one was copied.
+    /// A connected DualSense's own data, once one was copied.
     pub(crate) fn dualsense(&self) -> Option<&DualSenseData> {
         self.dualsense.as_ref()
+    }
+
+    /// The data a virtual DualSense is made from: a copied pad's, which
+    /// may be of a later revision than the shipped one, or else the
+    /// shipped.
+    pub(crate) fn dualsense_or_shipped(&self) -> DualSenseData {
+        self.dualsense
+            .clone()
+            .unwrap_or_else(DualSenseData::shipped)
     }
 
     /// Keeps a connected DualSense's data, for this run and later ones.

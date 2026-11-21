@@ -204,16 +204,15 @@ impl Reactor {
 
     /// Publishes what a virtual pad can present itself as, and whether
     /// each can be made now: through uinput, or for a DualSense through
-    /// uhid from a pad that has been copied.
+    /// uhid.
     pub(crate) async fn publish_identities(&mut self) -> zenoh::Result<()> {
         let writable = |node: &str| OpenOptions::new().write(true).open(node).is_ok();
         let uinput = writable("/dev/uinput");
-        let copied = self.copied.dualsense().is_some();
         for identity in Identity::ALL {
             let device = device_identity(identity);
             let (vendor, product) = device.model();
             let available = match identity {
-                Identity::DualSense => copied && writable("/dev/uhid"),
+                Identity::DualSense => writable("/dev/uhid"),
                 _ => uinput,
             };
             let body = payload::Identity {

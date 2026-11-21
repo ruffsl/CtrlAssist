@@ -988,9 +988,15 @@ async fn a_connected_dualsense_is_copied_and_virtual_ones_are_made_from_it() {
         dualsense.is_some_and(|identity| identity.available)
     };
 
-    // The pad was connected when the daemon started: it is copied, and
-    // from then on a DualSense is something a virtual pad can be.
-    eventually("the DualSense never was offered", async || offered(&client)).await;
+    // A DualSense is something a virtual pad can be from the start. The
+    // pad was connected when the daemon started, so it is copied, and
+    // virtual ones are made from its data in place of the shipped.
+    assert!(offered(&client));
+    let kept = socket
+        .with_file_name("state")
+        .join("identities/dualsense.toml");
+    eventually("the DualSense never was copied", async || kept.exists()).await;
+    let copied = std::fs::read_to_string(&kept).unwrap();
     // One pad is copied: this one, or a real one if the machine has one
     // connected. A real one that can't be, as when something has it
     // hidden, is asked about first and then this one is.
@@ -1048,29 +1054,33 @@ async fn a_connected_dualsense_is_copied_and_virtual_ones_are_made_from_it() {
     drop(hider);
     drop(real);
 
-    // What was copied is kept: the next daemon offers the identity with
-    // no DualSense connected, and none to ask the service about.
+    // What was copied is kept for the next daemon, which has no
+    // DualSense to ask the service about.
     let daemon = start_daemon(&socket).await;
     let client = hydrated(&socket).await;
     assert!(offered(&client));
-    // Without one ever copied, it is listed and can't be made.
+    assert_eq!(std::fs::read_to_string(&kept).unwrap(), copied);
+    // Without one ever copied, a virtual DualSense is made from the
+    // shipped data.
+    let _pad = FakePad::new("Shipped Pad", VENDOR, 0x8a01).unwrap();
     let (_other_dir, other) = crate::client::socket();
     let empty = start_daemon(&other).await;
     let fresh = hydrated(&other).await;
-    assert!(!offered(&fresh));
+    assert!(offered(&fresh));
     fresh
         .put_profile(
             "solo",
-            "preset = \"multicast\"\npad = \"model:1209:8a01\"\nidentity = \"dualsense\"\n",
+            "preset = \"multicast\"\npad = \"model:1209:8a01\"\noutputs = 1\nidentity = \"dualsense\"\n",
         )
         .await
         .unwrap();
-    let refused = fresh.start_setup("solo").await.unwrap_err();
-    assert_eq!(refused.rpc_code(), Some(ErrorCode::SetupFailed));
-    assert!(
-        refused.to_string().contains("no DualSense has been copied"),
-        "{refused}"
-    );
+    fresh.start_setup("solo").await.unwrap();
+    let solo = in_phase(&fresh, "solo", Phase::Running).await;
+    let file = File::open(solo.sinks[0].node.as_deref().unwrap()).unwrap();
+    let pad = Pad::from_fd(OwnedFd::from(file)).unwrap();
+    assert_eq!(pad.identifiers().product, 0x0ce6);
+    assert!(!other.with_file_name("state").join("identities").exists());
+    fresh.stop_setup("solo").await.unwrap();
     empty.stop().await;
     daemon.stop().await;
 }

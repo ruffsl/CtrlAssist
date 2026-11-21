@@ -590,14 +590,11 @@ fn make_sink(
     setup: &str,
     name: &str,
     identity: Identity,
-    dualsense: Option<&DualSenseData>,
+    dualsense: &DualSenseData,
 ) -> std::io::Result<VirtualPad> {
-    match (identity, dualsense) {
-        (Identity::DualSense, Some(data)) => VirtualPad::dualsense(data, address_of(setup, name)),
-        (Identity::DualSense, None) => Err(std::io::Error::other(
-            "no DualSense has been copied yet: connect one over USB, with the hiding service running",
-        )),
-        (identity, _) => VirtualPad::create(device_identity(identity)),
+    match identity {
+        Identity::DualSense => VirtualPad::dualsense(dualsense, address_of(setup, name)),
+        identity => VirtualPad::create(device_identity(identity)),
     }
 }
 
@@ -608,7 +605,7 @@ fn make(
     nodes: &[Option<Wanted>],
     database: &Database,
     hiding: &Hiding,
-    dualsense: Option<&DualSenseData>,
+    dualsense: &DualSenseData,
 ) -> Result<Made, String> {
     let graph = Graph::build(plan.graph).map_err(|error| error.to_string())?;
     let mut pads = Vec::new();
@@ -690,9 +687,9 @@ impl Reactor {
     }
 
     /// Copies a DualSense that has connected over USB, if none has been
-    /// copied yet: what a virtual one is made from. Its raw node is the
-    /// hiding service's to open, so without the service nothing is
-    /// copied.
+    /// copied yet: a virtual one is then made from the user's own pad's
+    /// data and not the shipped. Its raw node is the hiding service's to
+    /// open, so without the service nothing is copied.
     pub(crate) fn copy_from(&mut self, found: &Found) {
         let ids = &found.identifiers;
         let usb = 3;
@@ -852,9 +849,9 @@ impl Reactor {
         }
         let database = Arc::clone(&self.database);
         let hiding = Arc::clone(&self.hiding);
-        let dualsense = self.copied.dualsense().cloned();
+        let dualsense = self.copied.dualsense_or_shipped();
         self.work.spawn_blocking(move || Done::Started {
-            outcome: make(plan, &name, &nodes, &database, &hiding, dualsense.as_ref()),
+            outcome: make(plan, &name, &nodes, &database, &hiding, &dualsense),
             name,
             asker,
         });
