@@ -23,11 +23,41 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Every job dispatches through `just`, whose recipes run in fish, so a
-# failure here reproduces locally with the recipe of the same name.
+# The jobs dispatch through `just`, so a failure here reproduces locally
+# with the recipe of the same name.
 jobs:
+  # Which jobs this change needs. GitHub's `paths` filters only gate whole
+  # workflows, so the gate is a job whose outputs the others read.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify
+        id: classify
+        env:
+          # A PR checks out its merge commit, whose first parent is main.
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || github.event.before }}
+        run: |
+          # Fail open: no diff, or an empty one, runs everything.
+          if ! files=$(git diff --name-only "$BASE" HEAD) || [ -z "$files" ]; then
+            printf 'code=true\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Docs-only paths. Crate READMEs are not: they're doctests.
+          docs='^(docs/|\.claude/|README\.md$|LICENSE$)'
+          code=false; grep -qvE "$docs" <<< "$files" && code=true
+          printf 'code=%s\n' "$code" >> "$GITHUB_OUTPUT"
+
   # File checks, spelling and the workflow linters on every run, drafts
-  # included.
+  # and docs-only changes included.
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -36,9 +66,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Shell
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fish
 
       # Pinned to the dev shell's versions, so local and CI agree.
       - name: Setup
@@ -65,7 +92,8 @@ jobs:
             actionlint zizmor
 
   ci:
-    if: ${{ !github.event.pull_request.draft }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -73,9 +101,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Shell
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fish
 
       - name: Toolchain
         run: rustup component add llvm-tools-preview && rustup show
@@ -94,13 +119,15 @@ jobs:
         with:
           cache-on-failure: true
 
-      # The Rust hooks except the test run, which the next step does under
-      # coverage. The workflow linters ran in the checks job.
+      # The hooks the Test step doesn't repeat: it builds, lints and tests
+      # under coverage itself. The workflow linters ran in the checks job.
       - name: Lint
         uses: j178/prek-action@44924fe9ef4a6f88253c4b6b1bf11c689d3ce53d # v3.1.0
         with:
           extra-args: >-
             --all-files
+            --skip build
+            --skip clippy
             --skip test
             --skip actionlint
             --skip zizmor
@@ -118,7 +145,8 @@ jobs:
 
   # The workspace still builds on the oldest compiler it claims to support.
   msrv:
-    if: ${{ !github.event.pull_request.draft }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -127,13 +155,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Shell
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fish
-
-      - name: Setup
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
-        with:
-          tool: just
+      # The floor is read from Cargo.toml, padded to x.y.z for rustup.
+      - name: Toolchain
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          case "$msrv" in *.*.*) ;; *) msrv="$msrv.0" ;; esac
+          rustup toolchain install "$msrv" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
 
       - name: Cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -141,14 +169,14 @@ jobs:
           key: msrv
 
       - name: Check
-        run: just msrv-ci
+        run: cargo check --workspace --all-targets --all-features --locked
 
   # The one check a branch ruleset needs to require: it passes only if
-  # every job above passed or was skipped for a draft.
+  # every job above passed or was skipped.
   ci-result:
     name: CI result
     if: ${{ always() }}
-    needs: [checks, ci, msrv]
+    needs: [changes, checks, ci, msrv]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

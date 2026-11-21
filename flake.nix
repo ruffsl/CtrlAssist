@@ -72,8 +72,6 @@
             # nixpkgs' cargo-llvm-cov fails its own test suite in the sandbox.
             (pkgs.cargo-llvm-cov.overrideAttrs { doCheck = false; })
             cargo-nextest
-            # the shell `just` runs recipes with
-            fish
             just
             just-lsp
             # jstest and evtest-style tools for looking at pads by hand

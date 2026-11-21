@@ -4,7 +4,7 @@ How the workspace compiles, which checks gate a change, and the lint policy. The
 
 ## Gates
 
-Every project command is a `just` recipe, and each prek hook runs the recipe of the same name. Recipe lines run in fish, which the dev shell provides; there is no bash in the project's own tooling.
+Every project command is a `just` recipe, and each prek hook runs the recipe of the same name.
 
 | Recipe | Checks |
 |---|---|
@@ -27,14 +27,15 @@ Build and clippy use the test profile, so the tests reuse what they compiled.
 | Job | Runs | Locally |
 |---|---|---|
 | `checks` | File checks, spelling and the workflow linters; on every run, drafts included | `prek run -a` |
-| `ci` | The Rust hooks, then the tests under coverage | `just test-ci` |
+| `changes` | Decides whether the change touches code or only docs | |
+| `ci` | Formatting and docs hooks, then clippy and the tests under one coverage-instrumented build | `just test-ci` |
 | `msrv` | The workspace builds on its oldest supported compiler | `just msrv` |
 | `CI result` | Passes only if the others passed; the one check a branch ruleset requires | |
 
-- **Drafts run only `checks`;** marking a pull request ready starts the rest.
-- **Coverage has a floor,** `cov_baseline_lines` in the justfile. `just test-ci` fails below it. Raise it when coverage rises (`just cov` prints the figure); never lower it. Doc tests run outside the measurement, since measuring them needs a nightly compiler.
+- **Drafts and docs-only changes run only `checks`;** marking a pull request ready starts the rest.
+- **One instrumented build.** `just test-ci` routes clippy, nextest and the doc tests through cargo-llvm-cov's environment, so they share a target directory instead of compiling twice.
+- **Coverage has a floor,** `cov_baseline_lines` in the justfile. `just test-ci` fails below it. Raise it when coverage rises (`just cov` prints the figure); never lower it.
 - **Actions are pinned to a commit,** with the release in a comment, and Dependabot proposes updates to both after a one-week cooldown.
-- **Workflow steps have no scripts.** A step is an action or a single command, usually a `just` recipe; logic lives in the recipe or in a Rust binary.
 
 ## Toolchain
 

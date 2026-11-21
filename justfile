@@ -5,9 +5,7 @@
 # prek hooks, editor tasks and CI workflows all dispatch through here.
 # A recipe is added in the commit that first gives it something to check.
 
-# Recipe lines run in fish, from the dev shell. No bash: a recipe that needs
-# more than a command or two belongs in a Rust binary.
-set shell := ["fish", "-c"]
+set shell := ["bash", "-euo", "pipefail", "-c"]
 
 # Default recipe: list all available recipes, grouped.
 default:
@@ -87,37 +85,44 @@ check: typos actionlint zizmor fmt build clippy doc test
 
 # The line coverage the workspace must keep. Raise it with `just cov` when
 # coverage rises; never lower it.
-cov_baseline_lines := "92"
-
-# The oldest compiler the workspace supports, from Cargo.toml.
-msrv := `sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml`
+cov_baseline_lines := "95"
 
 # Print a coverage summary
 [group('ci')]
 cov:
     cargo llvm-cov nextest --workspace --all-features --summary-only
 
-# Doc tests run uninstrumented: measuring them needs a nightly compiler.
+# One instrumented build serves clippy, the tests and the report:
+# `show-env` routes every later cargo command through cargo-llvm-cov, so
+# the stages share a target directory instead of compiling twice.
 #
-# Run the tests under coverage, write lcov.info, and fail below the baseline
+# What CI runs: clippy, nextest and doc tests under coverage, then the floor
 [group('ci')]
 test-ci:
-    {{ deny_warnings }} cargo llvm-cov nextest --workspace --all-features --lcov --output-path lcov.info --fail-under-lines {{ cov_baseline_lines }}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export CARGO_PROFILE_DEV_DEBUG=line-tables-only
+    export {{ deny_warnings }}
+    export CARGO_TARGET_DIR=target/llvm-cov-target
+    eval "$(cargo llvm-cov show-env --sh)"
+    cargo llvm-cov clean --workspace
+    cargo clippy --workspace --all-targets --all-features
+    cargo nextest run --workspace --all-features
     cargo test --workspace --all-features --doc
+    cargo llvm-cov report --lcov --output-path lcov.info
+    cargo llvm-cov report --fail-under-lines {{ cov_baseline_lines }} --summary-only
 
-# No `--ignore-rust-version`: the toolchain is the floor, so a dependency
-# that outgrows it fails here.
+# The flake's `msrv-rust` toolchain (read from Cargo.toml's `rust-version`)
+# goes first on PATH. No `--ignore-rust-version`: the toolchain is the
+# floor, so a dependency that outgrows it fails here.
 #
-# Check the workspace on its oldest supported compiler, from the flake
+# Check the workspace on its oldest supported compiler
 [group('ci')]
 msrv:
-    env PATH=(nix build --no-link --print-out-paths .#msrv-rust)/bin:(string join : $PATH) cargo check --workspace --all-targets --all-features --target-dir target/msrv
-
-# The same check where there is no Nix: rustup installs the floor
-[group('ci')]
-msrv-ci:
-    rustup toolchain install {{ msrv }} --profile minimal
-    cargo +{{ msrv }} check --workspace --all-targets --all-features --locked --target-dir target/msrv
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tc=$(nix build --no-link --print-out-paths .#msrv-rust)
+    PATH="$tc/bin:$PATH" cargo check --workspace --all-targets --all-features --target-dir target/msrv
 
 # --- Spikes --------------------------------------------------------------
 
@@ -241,7 +246,7 @@ spike-hiding-dislodge vendor="054c" product="0ce6":
 # Append the pads' identifiers to a log under a label
 [group('spike')]
 spike-hiding-ids label:
-    cargo build --quiet --manifest-path spikes/hiding/Cargo.toml
+    (cd spikes/hiding && cargo build --quiet)
     echo "===== {{ label }} =====" >> spikes/hiding/target/ids.log
     spikes/hiding/target/debug/probe pads | tee -a spikes/hiding/target/ids.log
 

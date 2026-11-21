@@ -29,7 +29,7 @@ The crates still to come, and what each holds, are in the architecture's Crates 
 ## References
 
 - **The plan** is the source of truth for decisions and order of work. When work departs from it, record what changed and why in its Deviations section, in the same commit.
-- **TisVlay** ([github.com/TisVlay/TisVlay](https://github.com/TisVlay/TisVlay), usually checked out at `~/ws/lgtv/orlgtv`) is the template for tooling, lint policy, CI, docs layout, release flow and code conventions. Copy from it and trim, don't re-derive, and name the TisVlay commit copied from in the commit message. Its `.claude/CLAUDE.md`, `docs/conventions.md`, `docs/build.md` and `docs/testing.md` say how things are done there.
+- **TisVlay** ([github.com/TisVlay/TisVlay](https://github.com/TisVlay/TisVlay), usually checked out at `~/ws/lgtv/orlgtv`) is the template for tooling, lint policy, CI, docs layout, release flow and code conventions. Stay aligned with it wherever that makes sense, so an improvement in one project carries to the other: copy from it and trim, don't re-derive or restyle, and name the TisVlay commit copied from in the commit message. Its `.claude/CLAUDE.md`, `docs/conventions.md`, `docs/build.md` and `docs/testing.md` say how things are done there.
 - **The legacy version** (0.4.0) is at the `v0.4.0` tag and the `legacy/0.4` branch. It is a reference for what users could do, not a compatibility target and not a design to follow. Build it from a `git worktree`; it carries its own flake.
 
 ## How changes land
@@ -42,7 +42,7 @@ Anything beyond a small fix follows a plan in `docs/plans/` ([convention](../doc
 - Run `prek run -a` before committing; it runs every gate. Outside the dev shell, prefix project commands with `nix develop -c`. For a docs-only change, `prek run -a --skip build --skip clippy --skip doc --skip test`.
 - No backward compatibility with 0.4.0: no config migration, no CLI aliases, no shims.
 - No plan step or spike numbers in code comments or durable docs; they go stale.
-- No bash. `just` runs recipe lines in fish; a recipe is a command or two, and anything needing logic is a Rust binary, never a shell script. The spike recipes that are still bash scripts go when their spikes do.
+- The justfile and the workflows follow TisVlay, bash included: sharing patterns between the two projects is worth more than a different shell here. No standalone script files for tooling; logic that outgrows a recipe becomes a Rust binary. The maintainer's own shell is fish, so a command suggested for them to type should work there.
 - Ask before launching agents.
 - Stop for the maintainer's review each time a spike finding is written.
 - A new timeout or grace period is a design smell: look for the state or event that makes it unnecessary, and ask if none does.
