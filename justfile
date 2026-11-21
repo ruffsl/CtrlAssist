@@ -25,10 +25,11 @@ check_flags := "--profile test --workspace --all-targets --all-features"
 # build` and `cargo run` stay warn-only.
 deny_warnings := "CARGO_BUILD_WARNINGS=deny"
 
-# Format all Rust
+# Format all Rust (rustfmt) and TOML (tombi; config in .config/tombi.toml)
 [group('check')]
 fmt:
     cargo fmt
+    tombi format --quiet
 
 # Build the workspace (test profile, all targets, all features)
 [group('check')]

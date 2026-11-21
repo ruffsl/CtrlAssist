@@ -9,7 +9,7 @@ Every project command is a `just` recipe, and each prek hook runs the recipe of 
 | Recipe | Checks |
 |---|---|
 | `just typos` | Spelling, American English |
-| `just fmt` | rustfmt |
+| `just fmt` | rustfmt, and tombi for TOML (formatting only: it doesn't sort, since the manifests group dependencies under comments) |
 | `just build` | The workspace builds: test profile, all targets, all features |
 | `just clippy` | Clippy, warnings denied |
 | `just doc` | API docs, warnings denied: a broken intra-doc link fails |

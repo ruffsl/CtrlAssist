@@ -112,6 +112,7 @@ jobs:
             cargo-llvm-cov
             cargo-nextest
             just
+            tombi@1.7.1
             typos@1.51.1
 
       - name: Cache

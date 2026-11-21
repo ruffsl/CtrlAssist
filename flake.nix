@@ -40,6 +40,23 @@
         # llvm-cov and llvm-profdata for cargo-llvm-cov, whose LLVM major
         # must match the pinned rustc's.
         llvmPkgs = pkgs.llvmPackages_23;
+        # tombi (TOML formatter, `just fmt`) pinned to the version CI
+        # installs (`tombi@1.7.1` in ci.yml), so local and CI formatting
+        # agree. Bump the two together.
+        tombiSrc = pkgs.fetchFromGitHub {
+          owner = "tombi-toml";
+          repo = "tombi";
+          tag = "v1.7.1";
+          hash = "sha256-eeBtmMrkDWOADw7FMLLD8hYq5WYg/aFyATtYIMFYFk0=";
+        };
+        tombi = pkgs.tombi.overrideAttrs {
+          version = "1.7.1";
+          src = tombiSrc;
+          cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+            src = tombiSrc;
+            hash = "sha256-YJLhWIwB3Y8836Rq4ahRzBSnhp7bH8w2/oXfRVTOPXg=";
+          };
+        };
       in
       {
         # The oldest compiler the workspace supports, for `just msrv`: read
@@ -85,6 +102,8 @@
             shellcheck
             # sdl2-jstest: what an SDL game lists, for the hiding spike
             sdl-jstest
+            # TOML formatter (`just fmt`; config in .config/tombi.toml)
+            tombi
             typos
             udev
             zizmor

@@ -1,0 +1,10 @@
+# tombi config (`just fmt` formats every TOML file in the repo).
+#
+# Formatting only. With the schema off, tombi doesn't sort keys, tables or
+# arrays. Our manifests group dependencies under header comments that a
+# sort would scatter, and the order is part of what they say.
+[format.rules]
+indent-width = 4
+
+[schema]
+enabled = false
