@@ -6,6 +6,8 @@ use crate::mux::{Mux, MuxConfig};
 
 /// The most inputs one node may have.
 const MAX_INPUTS: usize = 8;
+/// The most pads one graph may have: feedback targets are a 32-bit mask.
+const MAX_SOURCES: usize = 32;
 
 /// Where a node or sink takes its state from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,9 +59,33 @@ pub enum GraphError {
     Cycle,
     /// An input names a source, node or output that doesn't exist.
     BadReference,
-    /// A node has no inputs or outputs, or more inputs than supported.
+    /// Too many sources, or a node with no inputs or outputs or too many.
     BadArity,
+    /// A control beyond a pad state's capacity, or a switch that isn't a
+    /// button on one of the node's inputs.
+    BadControl,
+    /// A deadzone or threshold that isn't a number, is negative, or a
+    /// release threshold above its engage threshold.
+    BadThreshold,
 }
+
+impl std::fmt::Display for GraphError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Cycle => "a node depends on its own output",
+            Self::BadReference => "an input names a source, node or output that doesn't exist",
+            Self::BadArity => "too many sources, or a node has no or too many inputs or outputs",
+            Self::BadControl => {
+                "a control is out of range, or a switch is not a button on one of its node's inputs"
+            }
+            Self::BadThreshold => {
+                "a deadzone or threshold is not a number, is negative, or release exceeds engage"
+            }
+        })
+    }
+}
+
+impl std::error::Error for GraphError {}
 
 /// One control changing on one virtual pad.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -103,17 +129,18 @@ impl std::fmt::Debug for Graph {
     }
 }
 
+/// An input's state, and whether what feeds it is connected.
 fn resolve(
     input: Input,
     states: &[PadState],
     present: &[bool],
     offsets: &[usize],
     outputs: &[PadState],
-) -> PadState {
+) -> (PadState, bool) {
     match input {
-        Input::Source(source) if present[source] => states[source],
-        Input::Source(_) => PadState::NEUTRAL,
-        Input::Node(node, output) => outputs[offsets[node] + output],
+        Input::Source(source) if present[source] => (states[source], true),
+        Input::Source(_) => (PadState::NEUTRAL, false),
+        Input::Node(node, output) => (outputs[offsets[node] + output], true),
     }
 }
 
@@ -122,8 +149,8 @@ impl Graph {
     ///
     /// # Errors
     ///
-    /// Returns why the spec can't run: a dangling reference, a node with
-    /// an unusable number of inputs or outputs, or a cycle.
+    /// Returns why the spec can't run. Everything a step relies on is
+    /// checked here, so that no spec this accepts can make a step panic.
     pub fn build(spec: GraphSpec) -> Result<Self, GraphError> {
         let output_counts: Vec<usize> = spec
             .nodes
@@ -151,12 +178,25 @@ impl Graph {
         if !inputs.iter().flatten().chain(&spec.sinks).all(valid) {
             return Err(GraphError::BadReference);
         }
-        if inputs
-            .iter()
-            .any(|inputs| inputs.is_empty() || inputs.len() > MAX_INPUTS)
-            || output_counts.contains(&0)
+        if spec.sources.len() > MAX_SOURCES
+            || inputs
+                .iter()
+                .any(|inputs| inputs.is_empty() || inputs.len() > MAX_INPUTS)
         {
             return Err(GraphError::BadArity);
+        }
+        if spec
+            .sources
+            .iter()
+            .any(|source| !(source.deadzone.is_finite() && source.deadzone >= 0.0))
+        {
+            return Err(GraphError::BadThreshold);
+        }
+        for node in &spec.nodes {
+            match node {
+                NodeSpec::Mux { inputs, config } => Mux::validate(config, inputs.len())?,
+                NodeSpec::Demux { config, .. } => Demux::validate(config)?,
+            }
         }
 
         // Dependency order: repeatedly take the nodes whose inputs are all
@@ -213,43 +253,67 @@ impl Graph {
         Ok(graph)
     }
 
-    /// Gives a pad's new state and reports what changes on the virtual pads.
+    /// Gives a pad's new state and reports what changes on the virtual
+    /// pads. A source that doesn't exist is ignored.
     pub fn update(&mut self, source: usize, mut state: PadState, emit: &mut impl FnMut(Change)) {
-        let spec = &self.sources[source];
+        let Some(spec) = self.sources.get(source) else {
+            return;
+        };
         spec.layout.apply_deadzone(&mut state, spec.deadzone);
         self.states[source] = state;
         self.evaluate(emit);
     }
 
     /// Marks a pad as gone or back. A pad that is gone reads as at rest,
-    /// so nothing it held stays held.
+    /// so nothing it held stays held. A source that doesn't exist is
+    /// ignored.
     pub fn set_present(&mut self, source: usize, present: bool, emit: &mut impl FnMut(Change)) {
-        self.present[source] = present;
+        let Some(slot) = self.present.get_mut(source) else {
+            return;
+        };
+        *slot = present;
         if !present {
             self.states[source] = PadState::NEUTRAL;
         }
         self.evaluate(emit);
     }
 
-    /// Raises a node's switch, as a client asking would.
+    /// Raises a node's switch, as its button would. A node that doesn't
+    /// exist is ignored.
     pub fn switch(&mut self, node: usize, emit: &mut impl FnMut(Change)) {
-        match &mut self.nodes[node] {
-            Node::Mux(mux) => mux.switch(),
-            Node::Demux(demux) => demux.switch(),
+        match self.nodes.get_mut(node) {
+            Some(Node::Mux(mux)) => mux.switch(),
+            Some(Node::Demux(demux)) => demux.switch(),
+            None => return,
         }
         self.evaluate(emit);
     }
 
-    /// What a virtual pad currently holds.
-    #[must_use]
-    pub fn sink(&self, sink: usize) -> &PadState {
-        &self.sink_states[sink]
+    /// Selects a mux's input or a demux's output by index, as a client
+    /// asks. A repeated request, or one out of range, changes nothing.
+    pub fn select(&mut self, node: usize, index: usize, emit: &mut impl FnMut(Change)) {
+        match self.nodes.get_mut(node) {
+            Some(Node::Mux(mux)) => mux.select(index),
+            Some(Node::Demux(demux)) => demux.select(index),
+            None => return,
+        }
+        self.evaluate(emit);
     }
 
-    /// The pads a virtual pad's feedback goes to, as a mask over sources.
+    /// What a virtual pad currently holds; a pad at rest for a sink that
+    /// doesn't exist.
+    #[must_use]
+    pub fn sink(&self, sink: usize) -> &PadState {
+        self.sink_states.get(sink).unwrap_or(&PadState::NEUTRAL)
+    }
+
+    /// The pads a virtual pad's feedback goes to, as a mask over sources;
+    /// none for a sink that doesn't exist.
     #[must_use]
     pub fn feedback_targets(&self, sink: usize) -> u32 {
-        self.targets_of(self.sinks[sink])
+        self.sinks
+            .get(sink)
+            .map_or(0, |input| self.targets_of(*input))
     }
 
     fn targets_of(&self, input: Input) -> u32 {
@@ -290,13 +354,16 @@ impl Graph {
         for &node in order.iter() {
             let mut gathered = [PadState::NEUTRAL; MAX_INPUTS];
             let count = inputs[node].len();
-            for (slot, input) in gathered.iter_mut().zip(&inputs[node]) {
-                *slot = resolve(*input, states, present, offsets, outputs);
+            let mut connected = 0u32;
+            for (index, (slot, input)) in gathered.iter_mut().zip(&inputs[node]).enumerate() {
+                let (state, is_present) = resolve(*input, states, present, offsets, outputs);
+                *slot = state;
+                connected |= u32::from(is_present) << index;
             }
             match &mut nodes[node] {
                 Node::Mux(mux) => {
                     let mut out = PadState::NEUTRAL;
-                    mux.step(&mut gathered[..count], &mut out);
+                    mux.step(&mut gathered[..count], connected, &mut out);
                     outputs[offsets[node]] = out;
                 }
                 Node::Demux(demux) => {
@@ -306,7 +373,7 @@ impl Graph {
             }
         }
         for (sink, input) in sinks.iter().enumerate() {
-            let new = resolve(*input, states, present, offsets, outputs);
+            let (new, _) = resolve(*input, states, present, offsets, outputs);
             let old = &mut sink_states[sink];
             let changed = old.buttons() ^ new.buttons();
             for index in 0..BUTTONS {

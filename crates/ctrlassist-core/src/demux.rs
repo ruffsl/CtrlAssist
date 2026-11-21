@@ -1,6 +1,7 @@
 //! The demux node: one pad in, several out.
 
-use crate::control::{Control, PadState, gamepad};
+use crate::control::{ButtonBits, Control, PadState, gamepad};
+use crate::graph::GraphError;
 
 /// How a demux spreads its input.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -53,7 +54,23 @@ pub(crate) struct Demux {
     switch_down: bool,
 }
 
+/// The most outputs one demux may have.
+const MAX_OUTPUTS: usize = 16;
+
 impl Demux {
+    /// Checks everything a profile can say about a demux.
+    pub(crate) fn validate(config: &DemuxConfig) -> Result<(), GraphError> {
+        if config.outputs == 0 || config.outputs > MAX_OUTPUTS {
+            return Err(GraphError::BadArity);
+        }
+        match config.switch {
+            Some(control) if !(matches!(control, Control::Button(_)) && control.is_valid()) => {
+                Err(GraphError::BadControl)
+            }
+            _ => Ok(()),
+        }
+    }
+
     pub(crate) fn new(config: DemuxConfig) -> Self {
         Self {
             config,
@@ -66,6 +83,14 @@ impl Demux {
         self.selected = (self.selected + 1) % self.config.outputs;
     }
 
+    /// Selects an output by index, as a client asks. Does nothing if it
+    /// is out of range.
+    pub(crate) fn select(&mut self, output: usize) {
+        if output < self.config.outputs {
+            self.selected = output;
+        }
+    }
+
     /// Whether feedback from this output is passed back to the input.
     pub(crate) fn feedback_from(&self, output: usize) -> bool {
         self.config.feedback == DemuxFeedback::Active
@@ -74,7 +99,7 @@ impl Demux {
 
     pub(crate) fn step(&mut self, mut input: PadState, outputs: &mut [PadState]) {
         if let Some(Control::Button(button)) = self.config.switch {
-            let bit = (1 as crate::control::ButtonBits) << button;
+            let bit = (1 as ButtonBits) << button;
             let down = input.buttons() & bit != 0;
             *input.buttons_mut() &= !bit;
             if down && !self.switch_down {

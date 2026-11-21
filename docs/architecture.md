@@ -434,7 +434,7 @@ Timed between two fake pads and a virtual pad, at 1,000 events a second per pad,
 | | 0.4.0 | 6–9 µs | 548–864 µs | 1.5–2.6 ms | 95–125 |
 
 - Tens of microseconds on an idle machine is the kernel round trip, not the program.
-- The comparison flatters the new loop slightly: it forwarded frames unchanged, where 0.4.0 also ran its mapping and its priority mode. A graph step adds 0.15 to 0.33 µs.
+- The comparison flatters the new loop slightly: it forwarded frames unchanged, where 0.4.0 also ran its mapping and its priority mode. A graph step adds 0.24 to 0.5 µs.
 - gilrs opens pads by path and keeps its controller-database parser private, so it can neither take a descriptor nor lend its mappings.
 
 ### zenoh beside the input thread

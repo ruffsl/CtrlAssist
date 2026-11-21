@@ -472,7 +472,9 @@ fn flight_stick() -> Layout {
         .collect();
     Layout::default()
         .group(Kind::Stick, &grip)
+        .unwrap()
         .group(Kind::Trigger, &[Control::Axis(3)])
+        .unwrap()
 }
 
 #[test]
@@ -801,4 +803,323 @@ fn a_returning_pad_gets_its_effects_back() {
             },
         ]
     );
+}
+
+// --- what a profile may not say ---------------------------------------------
+
+fn build_mux(config: MuxConfig) -> Result<Graph, GraphError> {
+    Graph::build(GraphSpec {
+        sources: vec![source(), source()],
+        nodes: vec![NodeSpec::Mux {
+            inputs: vec![Input::Source(PRIMARY), Input::Source(ASSIST)],
+            config,
+        }],
+        sinks: vec![Input::Node(0, 0)],
+    })
+}
+
+#[test]
+fn a_control_beyond_the_capacity_is_refused_not_wrapped() {
+    assert_eq!(
+        Layout::default()
+            .group(Kind::Button, &[Control::Button(64)])
+            .err(),
+        Some(GraphError::BadControl)
+    );
+    assert_eq!(
+        Layout::default()
+            .group(Kind::Stick, &[Control::Axis(16)])
+            .err(),
+        Some(GraphError::BadControl)
+    );
+    // And a pad state neither stores nor aliases one.
+    let state = pad()
+        .with(Control::Button(64), 1.0)
+        .with(Control::Axis(16), 1.0);
+    assert_eq!(state, PadState::NEUTRAL);
+    assert_eq!(pad().with(SOUTH, 1.0).get(Control::Button(64)), 0.0);
+}
+
+#[test]
+fn a_switch_must_be_a_button_on_one_of_the_inputs() {
+    let layout = Layout::gamepad();
+    for switch in [
+        Switch {
+            input: Some(1),
+            button: LEFT_X,
+        },
+        Switch {
+            input: Some(1),
+            button: Control::Button(200),
+        },
+        Switch {
+            input: Some(2),
+            button: MODE,
+        },
+    ] {
+        let mut config = MuxConfig::new(Mode::Toggle, &layout);
+        config.switch = Some(switch);
+        assert_eq!(
+            build_mux(config).err(),
+            Some(GraphError::BadControl),
+            "{switch:?}"
+        );
+    }
+    let mut config = DemuxConfig::new(DemuxMode::Unicast, 2);
+    config.switch = Some(LEFT_X);
+    let result = Graph::build(GraphSpec {
+        sources: vec![source()],
+        nodes: vec![NodeSpec::Demux {
+            input: Input::Source(0),
+            config,
+        }],
+        sinks: vec![Input::Node(0, 0)],
+    });
+    assert_eq!(result.err(), Some(GraphError::BadControl));
+}
+
+#[test]
+fn thresholds_must_be_numbers_in_order() {
+    let layout = Layout::gamepad();
+    for (engage, release) in [
+        (f32::NAN, 0.05),
+        (0.1, f32::NAN),
+        (0.1, 0.2),
+        (0.1, -0.1),
+        (f32::INFINITY, 0.0),
+    ] {
+        let mut config = MuxConfig::new(Mode::Priority, &layout);
+        config.engage = engage;
+        config.release = release;
+        assert_eq!(
+            build_mux(config).err(),
+            Some(GraphError::BadThreshold),
+            "{engage} {release}"
+        );
+    }
+    for deadzone in [f32::NAN, -0.1, f32::INFINITY] {
+        let result = Graph::build(GraphSpec {
+            sources: vec![SourceSpec {
+                deadzone,
+                layout: Layout::gamepad(),
+            }],
+            nodes: vec![],
+            sinks: vec![Input::Source(0)],
+        });
+        assert_eq!(result.err(), Some(GraphError::BadThreshold), "{deadzone}");
+    }
+}
+
+#[test]
+fn a_graph_has_limits_on_its_size() {
+    let layout = Layout::gamepad();
+    let nine = Graph::build(GraphSpec {
+        sources: (0..9).map(|_| source()).collect(),
+        nodes: vec![NodeSpec::Mux {
+            inputs: (0..9).map(Input::Source).collect(),
+            config: MuxConfig::new(Mode::Priority, &layout),
+        }],
+        sinks: vec![Input::Node(0, 0)],
+    });
+    assert_eq!(
+        nine.err(),
+        Some(GraphError::BadArity),
+        "a mux takes at most eight inputs"
+    );
+    let many = Graph::build(GraphSpec {
+        sources: (0..33).map(|_| source()).collect(),
+        nodes: vec![],
+        sinks: vec![Input::Source(0)],
+    });
+    assert_eq!(
+        many.err(),
+        Some(GraphError::BadArity),
+        "a graph takes at most 32 pads"
+    );
+    let none = Graph::build(GraphSpec {
+        sources: vec![source()],
+        nodes: vec![NodeSpec::Demux {
+            input: Input::Source(0),
+            config: DemuxConfig::new(DemuxMode::Multicast, 0),
+        }],
+        sinks: vec![],
+    });
+    assert_eq!(none.err(), Some(GraphError::BadArity));
+}
+
+#[test]
+fn a_value_that_is_not_a_number_reads_as_rest() {
+    let mut graph = mux(Mode::Priority);
+    step(
+        &mut graph,
+        PRIMARY,
+        pad()
+            .with(LEFT_X, f32::NAN)
+            .with(LEFT_Y, f32::INFINITY)
+            .with(RIGHT_X, 7.0),
+    );
+    assert_eq!(graph.sink(0).get(LEFT_X), 0.0);
+    assert_eq!(graph.sink(0).get(LEFT_Y), 0.0);
+    assert_eq!(
+        graph.sink(0).get(RIGHT_X),
+        1.0,
+        "an axis is held to its range"
+    );
+}
+
+#[test]
+fn asking_about_what_does_not_exist_is_harmless() {
+    let mut graph = mux(Mode::Toggle);
+    step(&mut graph, 9, pad().with(SOUTH, 1.0));
+    graph.set_present(9, false, &mut |_| {});
+    graph.switch(9, &mut |_| {});
+    graph.select(9, 0, &mut |_| {});
+    graph.select(0, 9, &mut |_| {});
+    assert_eq!(*graph.sink(9), PadState::NEUTRAL);
+    assert_eq!(graph.feedback_targets(9), 0);
+    assert_eq!(*graph.sink(0), PadState::NEUTRAL);
+}
+
+// --- controls in no group ---------------------------------------------------
+
+/// Controls the gamepad layout doesn't name.
+const EXTRA_BUTTON: Control = Control::Button(20);
+const EXTRA_AXIS: Control = Control::Axis(8);
+
+#[test]
+fn ungrouped_controls_follow_the_selection_in_toggle() {
+    let mut graph = mux(Mode::Toggle);
+    step(
+        &mut graph,
+        PRIMARY,
+        pad().with(EXTRA_BUTTON, 1.0).with(EXTRA_AXIS, 0.5),
+    );
+    step(
+        &mut graph,
+        ASSIST,
+        pad().with(Control::Button(21), 1.0).with(EXTRA_AXIS, -0.5),
+    );
+    assert_eq!(graph.sink(0).get(EXTRA_BUTTON), 1.0);
+    assert_eq!(graph.sink(0).get(EXTRA_AXIS), 0.5);
+    graph.switch(0, &mut |_| {});
+    assert_eq!(
+        graph.sink(0).get(EXTRA_BUTTON),
+        0.0,
+        "the primary's extra button went with it"
+    );
+    assert_eq!(graph.sink(0).get(Control::Button(21)), 1.0);
+    assert_eq!(graph.sink(0).get(EXTRA_AXIS), -0.5);
+}
+
+#[test]
+fn ungrouped_controls_obey_priority_as_groups_of_one() {
+    let mut graph = mux(Mode::Priority);
+    step(&mut graph, PRIMARY, pad().with(EXTRA_AXIS, 0.9));
+    assert_eq!(graph.sink(0).get(EXTRA_AXIS), 0.9);
+    step(
+        &mut graph,
+        ASSIST,
+        pad().with(EXTRA_AXIS, -0.4).with(EXTRA_BUTTON, 1.0),
+    );
+    assert_eq!(
+        graph.sink(0).get(EXTRA_AXIS),
+        -0.4,
+        "the assist owns an axis it moves"
+    );
+    assert_eq!(graph.sink(0).get(EXTRA_BUTTON), 1.0);
+}
+
+// --- more of the review's cases ---------------------------------------------
+
+#[test]
+fn a_deadzone_applies_to_a_group_that_also_has_buttons() {
+    let stick = SourceSpec {
+        deadzone: 0.15,
+        layout: flight_stick(),
+    };
+    let mut graph = Graph::build(GraphSpec {
+        sources: vec![stick],
+        nodes: vec![],
+        sinks: vec![Input::Source(0)],
+    })
+    .unwrap();
+    step(
+        &mut graph,
+        0,
+        pad()
+            .with(Control::Axis(0), 0.05)
+            .with(Control::Button(0), 1.0),
+    );
+    assert_eq!(
+        graph.sink(0).get(Control::Axis(0)),
+        0.0,
+        "rest noise on the grip is zeroed"
+    );
+    assert_eq!(
+        graph.sink(0).get(Control::Button(0)),
+        1.0,
+        "its buttons are untouched"
+    );
+}
+
+#[test]
+fn a_selection_never_rests_on_a_pad_that_is_gone() {
+    let mut graph = mux(Mode::Toggle);
+    step(&mut graph, PRIMARY, pad().with(SOUTH, 1.0));
+    step(&mut graph, ASSIST, pad().with(EAST, 1.0).with(MODE, 1.0));
+    assert_eq!(graph.sink(0).get(EAST), 1.0, "the assist has control");
+    // The assist's battery dies. Control must not be stranded with it,
+    // along with the only button that could hand it back.
+    graph.set_present(ASSIST, false, &mut |_| {});
+    assert_eq!(
+        graph.sink(0).get(SOUTH),
+        1.0,
+        "control returned to the pad that is there"
+    );
+    assert_eq!(graph.feedback_targets(0), bit(PRIMARY));
+    graph.set_present(ASSIST, true, &mut |_| {});
+    assert_eq!(
+        graph.sink(0).get(SOUTH),
+        1.0,
+        "and stays there until someone switches"
+    );
+}
+
+#[test]
+fn a_client_selects_an_input_by_name_so_a_repeat_is_harmless() {
+    let mut graph = mux(Mode::Toggle);
+    step(&mut graph, PRIMARY, pad().with(SOUTH, 1.0));
+    step(&mut graph, ASSIST, pad().with(EAST, 1.0));
+    graph.select(0, ASSIST, &mut |_| {});
+    graph.select(0, ASSIST, &mut |_| {});
+    assert_eq!(
+        graph.sink(0).get(EAST),
+        1.0,
+        "selecting twice is not switching twice"
+    );
+}
+
+#[test]
+fn a_mux_takes_more_than_two_pads() {
+    let layout = Layout::gamepad();
+    let mut graph = Graph::build(GraphSpec {
+        sources: vec![source(), source(), source()],
+        nodes: vec![NodeSpec::Mux {
+            inputs: vec![Input::Source(0), Input::Source(1), Input::Source(2)],
+            config: MuxConfig::new(Mode::Priority, &layout),
+        }],
+        sinks: vec![Input::Node(0, 0)],
+    })
+    .unwrap();
+    step(&mut graph, 0, pad().with(LEFT_X, 0.3));
+    step(&mut graph, 1, pad().with(LEFT_X, 0.6));
+    assert_eq!(graph.sink(0).get(LEFT_X), 0.6);
+    step(&mut graph, 2, pad().with(LEFT_X, -0.9));
+    assert_eq!(
+        graph.sink(0).get(LEFT_X),
+        -0.9,
+        "later inputs outrank earlier ones"
+    );
+    step(&mut graph, 2, pad());
+    assert_eq!(graph.sink(0).get(LEFT_X), 0.6);
 }

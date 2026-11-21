@@ -338,3 +338,216 @@ proptest! {
         }
     }
 }
+
+// --- nothing a profile or a pad can say panics --------------------------------
+
+use ctrlassist_core::{
+    DemuxConfig, DemuxFeedback, DemuxMode, Group, Kind, MuxFeedback, Rule, Switch,
+};
+
+/// Mostly controls that exist, sometimes ones that don't.
+fn any_control() -> impl Strategy<Value = Control> {
+    prop_oneof![
+        4 => (0u8..64).prop_map(Control::Button),
+        4 => (0u8..16).prop_map(Control::Axis),
+        1 => any::<u8>().prop_map(Control::Button),
+        1 => any::<u8>().prop_map(Control::Axis),
+    ]
+}
+
+/// Mostly a plausible threshold, sometimes anything a float can be.
+fn any_threshold() -> impl Strategy<Value = f32> {
+    prop_oneof![9 => 0.0f32..0.5, 1 => any::<f32>()]
+}
+
+/// Mostly a source, sometimes a node's output, either of which may not exist.
+fn any_input() -> impl Strategy<Value = Input> {
+    prop_oneof![
+        6 => (0usize..3).prop_map(Input::Source),
+        2 => (0usize..3, 0usize..2).prop_map(|(node, output)| Input::Node(node, output)),
+        1 => (0usize..40).prop_map(Input::Source),
+    ]
+}
+
+fn any_rule() -> impl Strategy<Value = Rule> {
+    prop::sample::select(vec![
+        Rule::Owned,
+        Rule::Largest,
+        Rule::Blended,
+        Rule::Switched,
+    ])
+}
+
+/// A mux configuration with nothing checked: any thresholds, any switch,
+/// any groups that can be built at all.
+fn any_mux() -> impl Strategy<Value = MuxConfig> {
+    (
+        prop::collection::vec(
+            (prop::collection::vec(any_control(), 0..5), any_rule()),
+            0..6,
+        ),
+        any_rule(),
+        any_rule(),
+        any_threshold(),
+        any_threshold(),
+        prop::option::of((prop::option::of(0usize..3), any_control())),
+        prop_oneof![
+            Just(MuxFeedback::None),
+            Just(MuxFeedback::Active),
+            any::<u32>().prop_map(MuxFeedback::Inputs),
+        ],
+    )
+        .prop_map(
+            |(groups, ungrouped_buttons, ungrouped_axes, engage, release, switch, feedback)| {
+                MuxConfig {
+                    rules: groups
+                        .into_iter()
+                        .filter_map(|(controls, rule)| Some((Group::of(&controls).ok()?, rule)))
+                        .collect(),
+                    ungrouped_buttons,
+                    ungrouped_axes,
+                    // Usually in order, as a real profile's would be.
+                    engage: if engage.is_finite() && release.is_finite() {
+                        engage.max(release)
+                    } else {
+                        engage
+                    },
+                    release: if engage.is_finite() && release.is_finite() {
+                        engage.min(release)
+                    } else {
+                        release
+                    },
+                    switch: switch.map(|(input, button)| Switch { input, button }),
+                    feedback,
+                }
+            },
+        )
+}
+
+fn any_node() -> impl Strategy<Value = NodeSpec> {
+    prop_oneof![
+        (prop::collection::vec(any_input(), 1..5), any_mux())
+            .prop_map(|(inputs, config)| NodeSpec::Mux { inputs, config }),
+        (
+            any_input(),
+            prop::sample::select(vec![DemuxMode::Unicast, DemuxMode::Multicast]),
+            prop_oneof![9 => 1usize..4, 1 => 0usize..20],
+            prop::option::of(any_control()),
+            prop::sample::select(vec![DemuxFeedback::None, DemuxFeedback::Active]),
+        )
+            .prop_map(|(input, mode, outputs, switch, feedback)| NodeSpec::Demux {
+                input,
+                config: DemuxConfig {
+                    mode,
+                    outputs,
+                    switch,
+                    feedback
+                },
+            }),
+    ]
+}
+
+fn any_source() -> impl Strategy<Value = SourceSpec> {
+    (
+        any_threshold(),
+        prop::collection::vec(prop::collection::vec(any_control(), 0..5), 0..4),
+    )
+        .prop_map(|(deadzone, groups)| {
+            let mut layout = Layout::default();
+            for controls in groups {
+                if let Ok(next) = layout.clone().group(Kind::Stick, &controls) {
+                    layout = next;
+                }
+            }
+            SourceSpec { deadzone, layout }
+        })
+}
+
+/// A pad state with nothing checked either: any control, any value.
+fn any_state() -> impl Strategy<Value = PadState> {
+    prop::collection::vec((any_control(), any::<f32>()), 0..12).prop_map(|controls| {
+        let mut state = PadState::NEUTRAL;
+        for (control, value) in controls {
+            state.set(control, value);
+        }
+        state
+    })
+}
+
+#[derive(Clone, Debug)]
+enum Poke {
+    Update(usize, PadState),
+    Present(usize, bool),
+    Switch(usize),
+    Select(usize, usize),
+}
+
+fn any_poke() -> impl Strategy<Value = Poke> {
+    prop_oneof![
+        (0usize..6, any_state()).prop_map(|(source, state)| Poke::Update(source, state)),
+        (0usize..6, any::<bool>()).prop_map(|(source, present)| Poke::Present(source, present)),
+        (0usize..6).prop_map(Poke::Switch),
+        (0usize..6, 0usize..20).prop_map(|(node, index)| Poke::Select(node, index)),
+    ]
+}
+
+/// Whatever a profile says, building it either refuses or yields a graph
+/// that no pad state, dropout or request can make panic, and whose virtual
+/// pads only ever hold values in range.
+#[test]
+fn nothing_a_profile_or_a_pad_says_can_panic_a_step() {
+    use proptest::test_runner::{Config, TestRunner};
+    use std::cell::Cell;
+
+    const CASES: u32 = 4000;
+    let built = Cell::new(0u32);
+    let strategy = (
+        prop::collection::vec(any_source(), 3..5),
+        prop::collection::vec(any_node(), 0..4),
+        prop::collection::vec(any_input(), 0..4),
+        prop::collection::vec(any_poke(), 0..40),
+    );
+    TestRunner::new(Config {
+        cases: CASES,
+        ..Config::default()
+    })
+    .run(&strategy, |(sources, nodes, sinks, pokes)| {
+        let sink_count = sinks.len();
+        let Ok(mut graph) = Graph::build(GraphSpec {
+            sources,
+            nodes,
+            sinks,
+        }) else {
+            return Ok(());
+        };
+        built.set(built.get() + 1);
+        for poke in pokes {
+            match poke {
+                Poke::Update(source, state) => graph.update(source, state, &mut |_| {}),
+                Poke::Present(source, present) => graph.set_present(source, present, &mut |_| {}),
+                Poke::Switch(node) => graph.switch(node, &mut |_| {}),
+                Poke::Select(node, index) => graph.select(node, index, &mut |_| {}),
+            }
+            for sink in 0..=sink_count {
+                let state = graph.sink(sink);
+                for axis in 0..16 {
+                    let value = state.get(Control::Axis(axis));
+                    prop_assert!(
+                        (-1.0..=1.0).contains(&value),
+                        "axis {axis} of sink {sink} is {value}"
+                    );
+                }
+                let _ = graph.feedback_targets(sink);
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    // The generators lean toward profiles that build; if they stop doing
+    // so, this property is only testing refusals.
+    assert!(
+        built.get() > CASES / 5,
+        "only {} of {CASES} generated profiles were accepted",
+        built.get()
+    );
+}

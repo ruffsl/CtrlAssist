@@ -1,6 +1,7 @@
 //! The mux node: several pads in, one out.
 
-use crate::control::{AXES, Control, Group, Kind, Layout, PadState, gamepad};
+use crate::control::{AXES, AxisBits, ButtonBits, Control, Group, Kind, Layout, PadState, gamepad};
+use crate::graph::GraphError;
 
 /// How a group's output is chosen from the inputs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -68,8 +69,12 @@ pub enum MuxFeedback {
 /// A mux node's settings.
 #[derive(Clone, PartialEq, Debug)]
 pub struct MuxConfig {
-    /// The rule for each group. Controls in no group follow the first input.
+    /// The rule for each group.
     pub rules: Vec<(Group, Rule)>,
+    /// The rule for a button in no group, as a group of one.
+    pub ungrouped_buttons: Rule,
+    /// The rule for an axis in no group, as a group of one.
+    pub ungrouped_axes: Rule,
     /// An input becomes active on a group at or above this.
     pub engage: f32,
     /// An active input stops being active on a group below this.
@@ -91,6 +96,8 @@ impl MuxConfig {
                 .iter()
                 .map(|(group, kind)| (*group, mode.rule(*kind)))
                 .collect(),
+            ungrouped_buttons: mode.rule(Kind::Button),
+            ungrouped_axes: mode.rule(Kind::Stick),
             engage: 0.1,
             release: 0.05,
             switch: (mode == Mode::Toggle).then_some(Switch {
@@ -105,9 +112,16 @@ impl MuxConfig {
 pub(crate) struct Mux {
     config: MuxConfig,
     inputs: usize,
+    /// The configured groups, then one group per axis that is in none.
+    rules: Vec<(Group, Rule)>,
+    /// Buttons in no group. As groups of one they need no activity state:
+    /// every rule but `Switched` comes to "down if any input holds it".
+    loose_buttons: ButtonBits,
     /// Per group, which inputs are active on it, as a mask.
     active: Vec<u32>,
     selected: usize,
+    /// Which inputs were present at the last step, as a mask.
+    present: u32,
     switch_down: bool,
 }
 
@@ -122,42 +136,92 @@ fn copy_group(out: &mut PadState, from: &PadState, group: &Group) {
 }
 
 impl Mux {
+    /// Checks everything a profile can say about a mux.
+    pub(crate) fn validate(config: &MuxConfig, inputs: usize) -> Result<(), GraphError> {
+        let thresholds_ok = config.engage.is_finite()
+            && config.release.is_finite()
+            && config.release >= 0.0
+            && config.release <= config.engage;
+        if !thresholds_ok {
+            return Err(GraphError::BadThreshold);
+        }
+        if let Some(switch) = config.switch {
+            let is_button = matches!(switch.button, Control::Button(_)) && switch.button.is_valid();
+            if !is_button || switch.input.is_some_and(|input| input >= inputs) {
+                return Err(GraphError::BadControl);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn new(config: MuxConfig, inputs: usize) -> Self {
+        let mut buttons: ButtonBits = 0;
+        let mut axes: AxisBits = 0;
+        for (group, _) in &config.rules {
+            buttons |= group.buttons;
+            axes |= group.axes;
+        }
+        let mut rules = config.rules.clone();
+        for axis in 0..AXES {
+            if axes & (1 << axis) == 0 {
+                let group = Group {
+                    buttons: 0,
+                    axes: 1 << axis,
+                };
+                rules.push((group, config.ungrouped_axes));
+            }
+        }
         Self {
-            active: vec![0; config.rules.len()],
+            active: vec![0; rules.len()],
+            rules,
+            loose_buttons: !buttons,
             config,
             inputs,
             selected: 0,
+            present: u32::MAX,
             switch_down: false,
         }
     }
 
-    /// Raises the switch, as a client would.
+    /// Moves the selection to the next input that is present.
     pub(crate) fn switch(&mut self) {
-        self.selected = (self.selected + 1) % self.inputs;
-    }
-
-    /// The inputs feedback goes to, as a mask.
-    pub(crate) fn feedback_inputs(&self) -> u32 {
-        match self.config.feedback {
-            MuxFeedback::None => 0,
-            MuxFeedback::Inputs(mask) => mask & ((1 << self.inputs) - 1),
-            MuxFeedback::Active => {
-                if self
-                    .config
-                    .rules
-                    .iter()
-                    .any(|(_, rule)| *rule == Rule::Switched)
-                {
-                    1 << self.selected
-                } else {
-                    (1 << self.inputs) - 1
-                }
+        for step in 1..=self.inputs {
+            let candidate = (self.selected + step) % self.inputs;
+            if self.present & (1 << candidate) != 0 {
+                self.selected = candidate;
+                return;
             }
         }
     }
 
-    pub(crate) fn step(&mut self, inputs: &mut [PadState], out: &mut PadState) {
+    /// Selects an input by index, as a client asks. Does nothing if it is
+    /// out of range, so a repeated or stale request is harmless.
+    pub(crate) fn select(&mut self, input: usize) {
+        if input < self.inputs {
+            self.selected = input;
+        }
+    }
+
+    fn uses_selection(&self) -> bool {
+        self.config.ungrouped_buttons == Rule::Switched
+            || self.rules.iter().any(|(_, rule)| *rule == Rule::Switched)
+    }
+
+    /// The inputs feedback goes to, as a mask.
+    pub(crate) fn feedback_inputs(&self) -> u32 {
+        let all = (1 << self.inputs) - 1;
+        match self.config.feedback {
+            MuxFeedback::None => 0,
+            MuxFeedback::Inputs(mask) => mask & all,
+            MuxFeedback::Active if self.uses_selection() => 1 << self.selected,
+            MuxFeedback::Active => all,
+        }
+    }
+
+    /// Computes the output from the inputs. `present` says which inputs
+    /// are connected; an absent one is expected to read as at rest.
+    pub(crate) fn step(&mut self, inputs: &mut [PadState], present: u32, out: &mut PadState) {
+        self.present = present;
         // The switch button raises the switch on its press, once, and is
         // then removed so nothing downstream sees it.
         if let Some(Switch {
@@ -165,7 +229,7 @@ impl Mux {
             button: Control::Button(button),
         }) = self.config.switch
         {
-            let bit = (1 as crate::control::ButtonBits) << button;
+            let bit = (1 as ButtonBits) << button;
             let mut down = false;
             for (index, state) in inputs.iter_mut().enumerate() {
                 if input.is_none_or(|input| input == index) {
@@ -178,9 +242,21 @@ impl Mux {
             }
             self.switch_down = down;
         }
+        // The selection never rests on an input that is gone.
+        if present & (1 << self.selected) == 0 {
+            self.switch();
+        }
 
-        *out = inputs[0];
-        for (index, (group, rule)) in self.config.rules.iter().enumerate() {
+        // Buttons in no group, all at once.
+        *out = PadState::NEUTRAL;
+        let loose = if self.config.ungrouped_buttons == Rule::Switched {
+            inputs[self.selected].buttons()
+        } else {
+            inputs.iter().fold(0, |held, state| held | state.buttons())
+        };
+        *out.buttons_mut() = loose & self.loose_buttons;
+
+        for (index, (group, rule)) in self.rules.iter().enumerate() {
             let active = &mut self.active[index];
             for (input, state) in inputs.iter().enumerate() {
                 let activity = group.activity(state);

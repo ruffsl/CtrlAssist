@@ -1,5 +1,7 @@
 //! Controls, pad state and groups.
 
+use crate::graph::GraphError;
+
 /// Axes a pad state can hold.
 pub const AXES: usize = 16;
 /// Buttons a pad state can hold.
@@ -21,6 +23,17 @@ pub enum Control {
     /// An axis. A stick axis rests at 0 and spans -1 to 1; a trigger rests
     /// at 0 and spans 0 to 1.
     Axis(u8),
+}
+
+impl Control {
+    /// Whether the index fits in a pad state.
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        match self {
+            Self::Button(index) => (index as usize) < BUTTONS,
+            Self::Axis(index) => (index as usize) < AXES,
+        }
+    }
 }
 
 /// Well-known gamepad controls.
@@ -65,18 +78,29 @@ impl PadState {
         axes: [0.0; AXES],
     };
 
-    /// Sets one control. A button is pressed by any value above zero.
+    /// Sets one control. A button is pressed by any value above zero. An
+    /// axis is held to -1 through 1, and a value that isn't a number reads
+    /// as rest. A control beyond the capacity is ignored.
     pub fn set(&mut self, control: Control, value: f32) {
+        if !control.is_valid() {
+            return;
+        }
         match control {
             Control::Button(index) => {
-                let bit = (1 as ButtonBits) << (usize::from(index) % BUTTONS);
+                let bit = (1 as ButtonBits) << index;
                 if value > 0.0 {
                     self.buttons |= bit;
                 } else {
                     self.buttons &= !bit;
                 }
             }
-            Control::Axis(index) => self.axes[usize::from(index) % AXES] = value,
+            Control::Axis(index) => {
+                self.axes[usize::from(index)] = if value.is_finite() {
+                    value.clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                };
+            }
         }
     }
 
@@ -87,18 +111,22 @@ impl PadState {
         self
     }
 
-    /// One control's value; a button reads as 1 or 0.
+    /// One control's value; a button reads as 1 or 0. A control beyond the
+    /// capacity reads as rest.
     #[must_use]
     pub fn get(&self, control: Control) -> f32 {
+        if !control.is_valid() {
+            return 0.0;
+        }
         match control {
             Control::Button(index) => {
-                if self.buttons & ((1 as ButtonBits) << (usize::from(index) % BUTTONS)) == 0 {
+                if self.buttons & ((1 as ButtonBits) << index) == 0 {
                     0.0
                 } else {
                     1.0
                 }
             }
-            Control::Axis(index) => self.axes[usize::from(index) % AXES],
+            Control::Axis(index) => self.axes[usize::from(index)],
         }
     }
 
@@ -129,30 +157,35 @@ pub struct Group {
 
 impl Group {
     /// A group of the given controls.
-    #[must_use]
-    pub fn of(controls: &[Control]) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphError::BadControl`] if a control is beyond the
+    /// capacity of a pad state.
+    pub fn of(controls: &[Control]) -> Result<Self, GraphError> {
+        if controls.iter().all(|control| control.is_valid()) {
+            Ok(Self::of_valid(controls))
+        } else {
+            Err(GraphError::BadControl)
+        }
+    }
+
+    /// A group of controls already known to be within capacity.
+    fn of_valid(controls: &[Control]) -> Self {
         let mut group = Self::default();
         for control in controls {
             match *control {
-                Control::Button(index) => {
-                    group.buttons |= (1 as ButtonBits) << (usize::from(index) % BUTTONS);
-                }
-                Control::Axis(index) => {
-                    group.axes |= (1 as AxisBits) << (usize::from(index) % AXES);
-                }
+                Control::Button(index) => group.buttons |= (1 as ButtonBits) << index,
+                Control::Axis(index) => group.axes |= (1 as AxisBits) << index,
             }
         }
         group
     }
 
-    /// How far the group is from rest: 1 if any of its buttons is pressed,
-    /// otherwise the distance of its axes from zero taken together, so a
-    /// stick is judged by a circle rather than per axis.
+    /// How far the group's axes are from rest, taken together, so a stick
+    /// is judged by a circle rather than per axis.
     #[must_use]
-    pub fn activity(&self, state: &PadState) -> f32 {
-        if state.buttons & self.buttons != 0 {
-            return 1.0;
-        }
+    pub fn deflection(&self, state: &PadState) -> f32 {
         let mut sum = 0.0;
         for (index, value) in state.axes.iter().enumerate() {
             if self.axes & (1 << index) != 0 {
@@ -160,6 +193,17 @@ impl Group {
             }
         }
         sum.sqrt()
+    }
+
+    /// How far the group is from rest: 1 if any of its buttons is pressed,
+    /// otherwise its axes' [`deflection`](Self::deflection).
+    #[must_use]
+    pub fn activity(&self, state: &PadState) -> f32 {
+        if state.buttons & self.buttons != 0 {
+            1.0
+        } else {
+            self.deflection(state)
+        }
     }
 }
 
@@ -188,12 +232,16 @@ impl Layout {
     #[must_use]
     pub fn gamepad() -> Self {
         use gamepad::*;
-        let mut layout = Self::default()
-            .group(Kind::Stick, &[LEFT_X, LEFT_Y])
-            .group(Kind::Stick, &[RIGHT_X, RIGHT_Y])
-            .group(Kind::Trigger, &[LEFT_TRIGGER])
-            .group(Kind::Trigger, &[RIGHT_TRIGGER])
-            .group(Kind::Hat, &[DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT]);
+        let mut groups = vec![
+            (Group::of_valid(&[LEFT_X, LEFT_Y]), Kind::Stick),
+            (Group::of_valid(&[RIGHT_X, RIGHT_Y]), Kind::Stick),
+            (Group::of_valid(&[LEFT_TRIGGER]), Kind::Trigger),
+            (Group::of_valid(&[RIGHT_TRIGGER]), Kind::Trigger),
+            (
+                Group::of_valid(&[DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT]),
+                Kind::Hat,
+            ),
+        ];
         for button in [
             SOUTH,
             EAST,
@@ -207,23 +255,27 @@ impl Layout {
             LEFT_THUMB,
             RIGHT_THUMB,
         ] {
-            layout = layout.group(Kind::Button, &[button]);
+            groups.push((Group::of_valid(&[button]), Kind::Button));
         }
-        layout
+        Self { groups }
     }
 
     /// Adds a group.
-    #[must_use]
-    pub fn group(mut self, kind: Kind, controls: &[Control]) -> Self {
-        self.groups.push((Group::of(controls), kind));
-        self
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphError::BadControl`] if a control is beyond the
+    /// capacity of a pad state.
+    pub fn group(mut self, kind: Kind, controls: &[Control]) -> Result<Self, GraphError> {
+        self.groups.push((Group::of(controls)?, kind));
+        Ok(self)
     }
 
-    /// Zeroes each stick-like group that sits inside `deadzone`, as a
-    /// whole, so rest noise on a worn stick never reaches a node.
+    /// Zeroes the axes of each group while they rest inside `deadzone`,
+    /// as a whole, so rest noise on a worn stick never reaches a node.
     pub(crate) fn apply_deadzone(&self, state: &mut PadState, deadzone: f32) {
         for (group, _) in &self.groups {
-            if group.axes != 0 && group.buttons == 0 && group.activity(state) < deadzone {
+            if group.axes != 0 && group.deflection(state) < deadzone {
                 for (index, axis) in state.axes.iter_mut().enumerate() {
                     if group.axes & (1 << index) != 0 {
                         *axis = 0.0;
