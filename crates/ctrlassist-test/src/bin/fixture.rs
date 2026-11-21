@@ -178,7 +178,7 @@ fn hide(node: &Path, socket: &Path, control: &Path) -> Result<()> {
         format!("ok token={} dislodged={}", hidden.token.0, hidden.dislodged),
     )?;
     loop {
-        for order in ["reopen", "restore", "count"] {
+        for order in ["reopen", "restore", "raw", "count"] {
             let trigger = control.join(order);
             if !trigger.exists() {
                 continue;
@@ -194,6 +194,10 @@ fn hide(node: &Path, socket: &Path, control: &Path) -> Result<()> {
                 },
                 "restore" => match client.restore(hidden.token) {
                     Ok(()) => "ok".to_string(),
+                    Err(error) => format!("refused: {error}"),
+                },
+                "raw" => match client.raw_of(hidden.token) {
+                    Ok(_) => "ok".to_string(),
                     Err(error) => format!("refused: {error}"),
                 },
                 _ => format!("reads={}", count_from(&hidden)?),

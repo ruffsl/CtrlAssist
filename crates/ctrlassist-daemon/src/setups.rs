@@ -508,6 +508,26 @@ pub(crate) struct Wanted {
     node: PathBuf,
 }
 
+/// Gives a hidden DualSense on USB its raw node, which only the hiding
+/// service can open: what a game sends a virtual DualSense beyond
+/// rumble, its lights and trigger effects, is written there. Any other
+/// pad, and one whose raw node isn't to be had, is left to rumble
+/// through the kernel and is sent nothing else.
+fn give_raw(pad: &mut Pad, token: Token, hiding: &Hiding) {
+    let ids = pad.identifiers();
+    let usb = 3;
+    let is_one = (ids.vendor, ids.product) == ctrlassist_device::Identity::DualSense.model()
+        && ids.bus == usb;
+    if !is_one {
+        return;
+    }
+    if let Some(raw) = hiding.ask(|client| client.raw_of(token))
+        && let Err(error) = pad.set_raw(raw)
+    {
+        warn!(%error, "a DualSense's raw node can't be written to; it gets rumble and nothing else");
+    }
+}
+
 /// Takes a pad for a setup, keeping it from games: hidden by the hiding
 /// service, which hands back the only descriptor left open on it, or
 /// else grabbed. Returns the service's name for the pad if it hid it.
@@ -536,7 +556,10 @@ fn take(
         drop(opened);
         drop(fd);
         return match read(hidden.event, node, database) {
-            Ok(pad) => Ok((pad, Some(hidden.token))),
+            Ok(mut pad) => {
+                give_raw(&mut pad, hidden.token, hiding);
+                Ok((pad, Some(hidden.token)))
+            }
             Err(error) => {
                 hiding.restore(&[hidden.token]);
                 Err(error)
@@ -563,7 +586,10 @@ fn retake(
         && let Some(hidden) = hiding.ask(|client| client.reopen(token))
     {
         // The service knows the pad by what it is, not by its node.
-        return read(hidden.event, &wanted.node, database).map(|pad| (pad, Some(token)));
+        return read(hidden.event, &wanted.node, database).map(|mut pad| {
+            give_raw(&mut pad, token, hiding);
+            (pad, Some(token))
+        });
     }
     let taken = take(wanted, database, hiding)?;
     // Hidden afresh, under a new name: the old one is given up, so that
@@ -578,9 +604,12 @@ fn retake(
 
 /// The address of the virtual pad `sink` of the setup `setup`: the same
 /// each time that setup runs, since Steam keeps what it knows of a pad
-/// by its address, and another for every other sink.
-fn address_of(setup: &str, sink: &str) -> [u8; 6] {
-    let hash = keys::pad_id(&format!("{setup}/{sink}"));
+/// by its address, and another for every other sink. `home` is where
+/// this daemon keeps its state, so that two daemons on one machine, as
+/// two users', don't give a pad the same address: the kernel's driver
+/// refuses the second.
+fn address_of(home: &Path, setup: &str, sink: &str) -> [u8; 6] {
+    let hash = keys::pad_id(&format!("{}/{setup}/{sink}", home.display()));
     let number = u64::from_str_radix(&hash, 16).unwrap_or(0);
     own_address((number & 0x00ff_ffff) as u32)
 }
@@ -590,10 +619,11 @@ fn make_sink(
     setup: &str,
     name: &str,
     identity: Identity,
-    dualsense: &DualSenseData,
+    dualsense: &(PathBuf, DualSenseData),
 ) -> std::io::Result<VirtualPad> {
+    let (home, data) = dualsense;
     match identity {
-        Identity::DualSense => VirtualPad::dualsense(dualsense, address_of(setup, name)),
+        Identity::DualSense => VirtualPad::dualsense(data, address_of(home, setup, name)),
         identity => VirtualPad::create(device_identity(identity)),
     }
 }
@@ -605,7 +635,7 @@ fn make(
     nodes: &[Option<Wanted>],
     database: &Database,
     hiding: &Hiding,
-    dualsense: &DualSenseData,
+    dualsense: &(PathBuf, DualSenseData),
 ) -> Result<Made, String> {
     let graph = Graph::build(plan.graph).map_err(|error| error.to_string())?;
     let mut pads = Vec::new();
@@ -849,7 +879,10 @@ impl Reactor {
         }
         let database = Arc::clone(&self.database);
         let hiding = Arc::clone(&self.hiding);
-        let dualsense = self.copied.dualsense_or_shipped();
+        let dualsense = (
+            self.copied.path().to_path_buf(),
+            self.copied.dualsense_or_shipped(),
+        );
         self.work.spawn_blocking(move || Done::Started {
             outcome: make(plan, &name, &nodes, &database, &hiding, &dualsense),
             name,

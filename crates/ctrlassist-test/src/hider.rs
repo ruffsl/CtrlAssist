@@ -26,6 +26,8 @@ pub enum Asked {
     Restore(String),
     /// For a pad's raw HID node.
     Raw(String),
+    /// For the raw HID node of a pad it has hidden.
+    RawOf(String),
     /// Nothing more: the client's connection closed, which restores
     /// whatever it still had hidden.
     Closed,
@@ -161,6 +163,30 @@ fn serve(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>) {
                     }
                 }
                 None => Reply::refused(Refusal::NotAPad),
+            },
+            Some(Request::RawOf(token)) => match hidden.get(&token.0) {
+                Some(id) => {
+                    note(Asked::RawOf(id.to_string()));
+                    let node = ctrlassist_device::connected()
+                        .ok()
+                        .and_then(|pads| {
+                            pads.into_iter().find(|found| found.identifiers.id() == *id)
+                        })
+                        .map(|found| found.node);
+                    pass = node
+                        .as_deref()
+                        .and_then(raw_node_of)
+                        .and_then(|raw| open(&raw));
+                    match pass {
+                        Some(_) => Reply {
+                            refusal: None,
+                            token,
+                            dislodged: false,
+                        },
+                        None => Reply::refused(Refusal::Unsupported),
+                    }
+                }
+                None => Reply::refused(Refusal::UnknownToken),
             },
             None => Reply::refused(Refusal::BadRequest),
         };

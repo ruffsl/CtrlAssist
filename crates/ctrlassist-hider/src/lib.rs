@@ -176,6 +176,19 @@ impl Client {
         fds.into_iter().next().ok_or(Error::Protocol)
     }
 
+    /// Opens the raw HID node of a pad hidden through this connection,
+    /// for reading and writing: what a game sends a virtual pad beyond
+    /// rumble is written there.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the token is unknown, the pad isn't of a kind whose raw
+    /// node the service opens, or the connection breaks.
+    pub fn raw_of(&self, token: Token) -> Result<OwnedFd, Error> {
+        let (_, fds) = self.ask(Request::RawOf(token), None)?;
+        fds.into_iter().next().ok_or(Error::Protocol)
+    }
+
     /// Restores a hidden pad.
     ///
     /// # Errors

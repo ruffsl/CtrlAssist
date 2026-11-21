@@ -505,6 +505,28 @@ impl VirtualPad {
     }
 }
 
+impl VirtualPad {
+    /// The last output report a game sent a virtual DualSense, if one
+    /// came since this was last asked: its lights and trigger effects,
+    /// for the pads behind it. No other kind of virtual pad has any.
+    pub fn take_output(&mut self) -> Option<&[u8]> {
+        match &mut self.kind {
+            Kind::Uinput(_) => None,
+            Kind::DualSense(pad) => pad.take_output(),
+        }
+    }
+
+    /// The last output report a game sent a virtual DualSense, if any
+    /// ever came.
+    #[must_use]
+    pub fn last_output(&self) -> Option<&[u8]> {
+        match &self.kind {
+            Kind::Uinput(_) => None,
+            Kind::DualSense(pad) => pad.last_output(),
+        }
+    }
+}
+
 impl AsFd for VirtualPad {
     fn as_fd(&self) -> BorrowedFd<'_> {
         match &self.kind {

@@ -1084,3 +1084,85 @@ async fn a_connected_dualsense_is_copied_and_virtual_ones_are_made_from_it() {
     empty.stop().await;
     daemon.stop().await;
 }
+
+/// What a game sends a virtual DualSense beyond rumble reaches a real
+/// DualSense behind it, with the rumble that pad should be at.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_game_s_lights_reach_a_dualsense_behind_a_virtual_one() {
+    use std::io::Write as _;
+    const TEST: &str = "a_game_s_lights_reach_a_dualsense_behind_a_virtual_one";
+    if !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    let real = ctrlassist_test::FakeDualSense::new(0x02).unwrap();
+    let raw = ctrlassist_test::raw_node_of(real.event_node());
+    if !raw.is_some_and(|raw| ctrlassist_test::can_open(&raw, true)) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED {TEST}: a DualSense's raw node isn't this user's to open here"
+        );
+        return;
+    }
+    let (_dir, socket) = socket();
+    let hider = ctrlassist_test::FakeHider::listen(&socket.with_file_name("hider.sock")).unwrap();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    client
+        .put_profile(
+            "solo",
+            "preset = \"multicast\"\npad = \"02:ca:7e:00:51:02\"\noutputs = 1\nidentity = \"dualsense\"\n",
+        )
+        .await
+        .unwrap();
+    client.start_setup("solo").await.unwrap();
+    let setup = in_phase(&client, "solo", Phase::Running).await;
+    let id = "address:02:ca:7e:00:51:02".to_string();
+    assert!(
+        hider.asked().contains(&ctrlassist_test::Asked::RawOf(id)),
+        "{:?}",
+        hider.asked()
+    );
+
+    // A game sets the lightbar and rumbles, through the virtual pad's
+    // raw node, as SDL does.
+    let node = setup.sinks[0].node.as_deref().unwrap();
+    let virtual_raw = ctrlassist_test::raw_node_of(Path::new(node)).unwrap();
+    let mut game = std::fs::OpenOptions::new()
+        .write(true)
+        .open(virtual_raw)
+        .unwrap();
+    let mut report = [0u8; 48];
+    report[0] = 0x02;
+    // First a rumble, in the older marking. It reaches the pad marked
+    // the way that pad's firmware takes it, which is the newer one.
+    (report[1], report[3], report[4]) = (0x03, 0x40, 0x80);
+    game.write_all(&report).unwrap();
+    let rumbling =
+        |sent: &[u8]| sent[39] & 0x04 != 0 && sent[1] & 0x01 == 0 && sent[3..5] == [0x40, 0x80];
+    eventually("the real pad never got the rumble", async || {
+        real.outputs().last().is_some_and(|sent| rumbling(sent))
+    })
+    .await;
+    // Then the lightbar's color, with the flag that says to take it and
+    // the rumble as it was: the pad gets the color, still rumbling.
+    report[2] = 0x04;
+    (report[45], report[46], report[47]) = (0xff, 0x80, 0x10);
+    game.write_all(&report).unwrap();
+    eventually("the real pad never got the lightbar", async || {
+        real.outputs().last().is_some_and(|sent| {
+            sent[2] & 0x04 != 0 && sent[45..48] == [0xff, 0x80, 0x10] && rumbling(sent)
+        })
+    })
+    .await;
+    // And the rumble ends when the game's does: a report that marks none.
+    report[1] = 0;
+    game.write_all(&report).unwrap();
+    eventually("the real pad's rumble never ended", async || {
+        real.outputs()
+            .last()
+            .is_some_and(|sent| sent[39] & 0x04 == 0 && sent[1] & 0x01 == 0 && sent[3..5] == [0, 0])
+    })
+    .await;
+    client.stop_setup("solo").await.unwrap();
+    daemon.stop().await;
+}

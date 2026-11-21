@@ -269,6 +269,88 @@ fn rumble_of(report: &[u8]) -> Option<Level> {
     })
 }
 
+/// The size of the output report a DualSense takes over USB.
+const OUTPUT_SIZE: usize = 48;
+/// The update version at which the kernel's driver takes the pad to use
+/// its newer rumble: 2.21.
+const NEWER_RUMBLE: u16 = 0x0215;
+
+/// An output report with its rumble set to `level`, marked the way a pad
+/// of that firmware takes it, whatever rumble it carried: or with rumble
+/// marked nowhere for none, which is how a pad is told to stop.
+fn with_rumble(mut report: [u8; OUTPUT_SIZE], level: Level, newer: bool) -> [u8; OUTPUT_SIZE] {
+    report[0] = OUTPUT_REPORT;
+    report[1] &= !0x03;
+    report[39] &= !0x04;
+    (report[3], report[4]) = (0, 0);
+    if level != Level::default() {
+        // The haptics are switched to rumble, and rumble marked.
+        report[1] |= if newer { 0x02 } else { 0x03 };
+        report[39] |= if newer { 0x04 } else { 0 };
+        report[3] = (level.weak >> 8) as u8;
+        report[4] = (level.strong >> 8) as u8;
+    }
+    report
+}
+
+/// A real DualSense's raw HID node, as somewhere to write: the pad is
+/// sent whole output reports, so that what a game sends a virtual
+/// DualSense beyond rumble, its lights and trigger effects, reaches the
+/// pad behind it. Rumble then goes this way too, and not through the
+/// kernel's own effects: a report that doesn't carry the rumble ends it,
+/// so every report written carries the level the pad should be at.
+pub(crate) struct RawOutput {
+    raw: File,
+    /// Whether the pad's firmware takes the newer rumble.
+    newer: bool,
+    level: Level,
+}
+
+impl RawOutput {
+    /// Takes a pad's raw node, if it is a DualSense's over USB: over
+    /// Bluetooth the report is another one, with a checksum.
+    pub(crate) fn open(raw: std::os::fd::OwnedFd) -> io::Result<Self> {
+        let (bus, vendor, product) = hidraw::info(raw.as_fd())?;
+        if (bus, vendor, product) != (BUS_USB, VENDOR, PRODUCT) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "not a DualSense connected over USB",
+            ));
+        }
+        let firmware = hidraw::feature(raw.as_fd(), FIRMWARE, FIRMWARE_SIZE)?;
+        let update = u16::from_le_bytes([
+            firmware.get(44).copied().unwrap_or(0),
+            firmware.get(45).copied().unwrap_or(0),
+        ]);
+        Ok(Self {
+            raw: File::from(raw),
+            newer: update >= NEWER_RUMBLE,
+            level: Level::default(),
+        })
+    }
+
+    /// Makes the pad's motors run at `level`, with nothing else changed.
+    pub(crate) fn rumble(&mut self, level: Level) -> io::Result<()> {
+        if level == self.level {
+            return Ok(());
+        }
+        self.level = level;
+        self.raw
+            .write_all(&with_rumble([0; OUTPUT_SIZE], level, self.newer))
+    }
+
+    /// Sends the pad an output report a game sent a virtual DualSense,
+    /// with the rumble the pad should be at in place of the report's.
+    pub(crate) fn pass(&mut self, report: &[u8]) -> io::Result<()> {
+        let mut whole = [0u8; OUTPUT_SIZE];
+        for (place, byte) in whole.iter_mut().zip(report) {
+            *place = *byte;
+        }
+        self.raw
+            .write_all(&with_rumble(whole, self.level, self.newer))
+    }
+}
+
 /// Appends `text` as a fixed-width, zero-terminated field.
 fn field(event: &mut Vec<u8>, text: &str, width: usize) {
     let mut bytes = text.as_bytes().to_vec();
@@ -359,6 +441,11 @@ pub(crate) struct Emulator {
     level: Level,
     /// Whether the driver has let the pad go since this was last asked.
     stopped: bool,
+    /// The last output report a game sent, and whether anything has
+    /// taken it yet.
+    output: [u8; OUTPUT_SIZE],
+    sent: bool,
+    fresh: bool,
     /// Kept between calls so that serving allocates nothing.
     event: Box<[u8; UHID_EVENT]>,
 }
@@ -413,6 +500,9 @@ impl Emulator {
             calibration: calibration(),
             level: Level::default(),
             stopped: false,
+            output: [0; OUTPUT_SIZE],
+            sent: false,
+            fresh: false,
             event: Box::new([0; UHID_EVENT]),
         };
         let uniq = address_text(address);
@@ -490,6 +580,35 @@ impl Emulator {
         Ok(())
     }
 
+    /// Keeps the event just read if it is an output report: what the
+    /// pads behind this one are sent.
+    fn keep_output(&mut self) {
+        let event = self.event.as_slice();
+        if u32_at(event, 0) != UHID_OUTPUT || event.get(4) != Some(&OUTPUT_REPORT) {
+            return;
+        }
+        let size = usize::from(u16_at(event, 4 + UHID_DATA)).min(OUTPUT_SIZE);
+        let mut output = [0u8; OUTPUT_SIZE];
+        if let Some(report) = event.get(4..4 + size) {
+            for (place, byte) in output.iter_mut().zip(report) {
+                *place = *byte;
+            }
+        }
+        self.output = output;
+        (self.sent, self.fresh) = (true, true);
+    }
+
+    /// The last output report a game sent, if one came since this was
+    /// last asked.
+    pub(crate) fn take_output(&mut self) -> Option<&[u8]> {
+        std::mem::take(&mut self.fresh).then_some(self.output.as_slice())
+    }
+
+    /// The last output report a game sent, if any ever came.
+    pub(crate) fn last_output(&self) -> Option<&[u8]> {
+        self.sent.then_some(self.output.as_slice())
+    }
+
     fn feature(&self, number: u8) -> Option<&[u8]> {
         match number {
             PAIRING => Some(&self.pairing),
@@ -512,6 +631,7 @@ impl Emulator {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) => return Err(error),
             }
+            self.keep_output();
             match asked(self.event.as_slice()) {
                 // The driver let the pad go. That is the pad's end only
                 // while it is being made; later it is a driver bound
@@ -700,6 +820,47 @@ mod tests {
             rumble_of(&[OUTPUT_REPORT, 0x01, 0, 9, 9]).unwrap().strong,
             9 * 257
         );
+    }
+
+    #[test]
+    fn a_report_for_a_real_pad_carries_the_rumble_it_should_be_at() {
+        // A game's report that sets a light and its own rumble.
+        let mut game = [0u8; OUTPUT_SIZE];
+        game[0] = OUTPUT_REPORT;
+        (game[1], game[2], game[3], game[4]) = (0x03, 0x04, 0x11, 0x22);
+        (game[39], game[45]) = (0x06, 0xff);
+        let level = Level {
+            strong: 0x8000,
+            weak: 0x4000,
+        };
+        let newer = with_rumble(game, level, true);
+        assert_eq!(newer[1..5], [0x02, 0x04, 0x40, 0x80]);
+        assert_eq!((newer[39], newer[45]), (0x06, 0xff), "the light is kept");
+        assert_eq!(rumble_of(&newer), Some(level_of(0x80, 0x40)));
+        let older = with_rumble(game, level, false);
+        assert_eq!(older[1..5], [0x03, 0x04, 0x40, 0x80]);
+        assert_eq!(older[39], 0x02, "rumble is marked in the older place alone");
+        // At no rumble, it is marked nowhere, which stops the pad.
+        let none = with_rumble(game, Level::default(), true);
+        assert_eq!(none[1..5], [0x00, 0x04, 0, 0]);
+        assert_eq!((none[39], none[45]), (0x02, 0xff));
+        assert_eq!(rumble_of(&none), Some(Level::default()));
+        // Rumble alone is a report that changes nothing else.
+        let alone = with_rumble([0; OUTPUT_SIZE], level, true);
+        assert_eq!(alone[1], 0x02);
+        assert!(
+            alone[5..39]
+                .iter()
+                .chain(&alone[40..])
+                .all(|byte| *byte == 0)
+        );
+    }
+
+    fn level_of(strong: u8, weak: u8) -> Level {
+        Level {
+            strong: u16::from(strong) * 257,
+            weak: u16::from(weak) * 257,
+        }
     }
 
     #[test]

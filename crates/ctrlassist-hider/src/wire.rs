@@ -96,6 +96,8 @@ pub enum Request {
     /// Open the raw HID node of the pad whose event node the
     /// accompanying descriptor is on.
     Raw,
+    /// Open the raw HID node of a pad this connection has hidden.
+    RawOf(Token),
 }
 
 impl Request {
@@ -110,6 +112,7 @@ impl Request {
             Self::Reopen(token) => (2, token.0),
             Self::Restore(token) => (3, token.0),
             Self::Raw => (4, 0),
+            Self::RawOf(token) => (5, token.0),
         };
         let token = token.to_le_bytes();
         [opcode, token[0], token[1], token[2], token[3]]
@@ -127,6 +130,7 @@ impl Request {
             2 => Some(Self::Reopen(token)),
             3 => Some(Self::Restore(token)),
             4 => Some(Self::Raw),
+            5 => Some(Self::RawOf(token)),
             _ => None,
         }
     }

@@ -421,3 +421,77 @@ fn a_virtual_dualsense_is_a_dualsense_to_the_kernel_s_driver() {
         );
     }
 }
+
+/// A DualSense given its raw node is sent whole output reports: what is
+/// passed to it arrives with the rumble it is at, and its rumble alone
+/// arrives marked the way its firmware takes it.
+#[test]
+fn a_dualsense_with_its_raw_node_is_sent_whole_output_reports() {
+    const TEST: &str = "a_dualsense_with_its_raw_node_is_sent_whole_output_reports";
+    if !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    let real = ctrlassist_test::FakeDualSense::new(0x31).unwrap();
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    let raw = ctrlassist_test::raw_node_of(real.event_node()).unwrap();
+    if !ctrlassist_test::can_open(&raw, true) {
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED {TEST}: a DualSense's raw node isn't this user's to open here"
+        );
+        return;
+    }
+    let event: OwnedFd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(real.event_node())
+        .unwrap()
+        .into();
+    let mut pad = Pad::from_fd(event).unwrap();
+    assert!(!pad.takes_output());
+    // Something that is no raw node leaves the pad as it was.
+    let not_raw: OwnedFd = File::open("/dev/null").unwrap().into();
+    assert!(pad.set_raw(not_raw).is_err());
+    assert!(!pad.takes_output());
+    let raw: OwnedFd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(raw)
+        .unwrap()
+        .into();
+    pad.set_raw(raw).unwrap();
+    assert!(pad.takes_output());
+
+    let arrived = |wanted: &dyn Fn(&[u8]) -> bool| {
+        for _ in 0..400 {
+            if real.outputs().iter().any(|sent| wanted(sent)) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    };
+    let level = Level {
+        strong: 0x8000,
+        weak: 0x4000,
+    };
+    pad.rumble(level).unwrap();
+    // The stand-in's firmware takes the newer rumble.
+    assert!(arrived(&|sent| sent[1] == 0x02
+        && sent[39] == 0x04
+        && sent[3..5] == [0x40, 0x80]));
+    let mut lights = [0u8; 48];
+    lights[0] = 0x02;
+    (lights[2], lights[45]) = (0x04, 0xee);
+    pad.pass(&lights).unwrap();
+    assert!(
+        arrived(&|sent| sent[45] == 0xee && sent[39] == 0x04 && sent[3..5] == [0x40, 0x80]),
+        "the lights arrive with the rumble kept: {:?}",
+        real.outputs()
+    );
+    pad.rumble(Level::default()).unwrap();
+    assert!(arrived(&|sent| sent[1] == 0
+        && sent[39] == 0
+        && sent[45] == 0));
+}

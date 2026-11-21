@@ -132,6 +132,19 @@ pkgs.testers.runNixOSTest {
         raw = f"ctrlassist-fixture raw {dualsense['event'][0]} --socket {SOCKET}"
         assert "raw: ok" in machine.succeed(f"su -l alice -c '{raw}'")
         assert "isn't the user in front" in machine.succeed(raw)
+        # Hidden, its raw node is still to be had, by whoever hid it; a
+        # hidden pad of another driver's isn't.
+        control, told = hide("hide-ds", dualsense["event"][0])
+        assert told.startswith("ok"), told
+        assert order(control, "raw") == "ok", "the raw node of a hidden pad of the PlayStation driver"
+        assert order(control, "restore") == "ok"
+        machine.succeed("systemctl stop hide-ds")
+        control, told = hide("hide-plain", pads()[A]["event"][0])
+        assert told.startswith("ok"), told
+        assert "doesn't open that kind of pad's raw node" in order(control, "raw")
+        assert order(control, "restore") == "ok"
+        machine.succeed("systemctl stop hide-plain")
+        wait_restored()
         machine.succeed("systemctl stop pad-ds")
         machine.wait_until_fails("ctrlassist-fixture pads | grep -c 02:ca:7e:00:00:01")
 

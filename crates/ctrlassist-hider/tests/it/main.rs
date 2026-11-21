@@ -78,6 +78,7 @@ fn every_request_and_reply_survives_the_wire() {
         Request::Reopen(Token(7)),
         Request::Restore(Token(u32::MAX)),
         Request::Raw,
+        Request::RawOf(Token(9)),
     ] {
         assert_eq!(Request::decode(&request.encode()), Some(request));
     }

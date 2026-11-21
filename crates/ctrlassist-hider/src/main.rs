@@ -167,6 +167,27 @@ fn serve(connections: &mut [Connection], index: usize, next_token: &mut u32) -> 
                 Err(refusal) => refuse(connection, refusal),
             }
         }
+        Some(Request::RawOf(Token(token))) => {
+            let connection = &connections[index];
+            let raw = connection
+                .hidden
+                .iter()
+                .find(|entry| entry.token == token)
+                .ok_or(Refusal::UnknownToken)
+                .and_then(|entry| pad::hidden_raw_node(&entry.identity))
+                .and_then(|node| hide::open(&node));
+            match raw {
+                Ok(raw) => {
+                    let answer = Reply {
+                        refusal: None,
+                        token: Token(token),
+                        dislodged: false,
+                    };
+                    reply(connection, answer, Some(&raw));
+                }
+                Err(refusal) => refuse(connection, refusal),
+            }
+        }
         None => refuse(&connections[index], Refusal::BadRequest),
     }
     true

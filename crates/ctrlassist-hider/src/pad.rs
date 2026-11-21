@@ -231,14 +231,22 @@ const RAW_DRIVERS: [&str; 1] = ["playstation"];
 /// The raw HID node of the pad the descriptor is open on.
 pub(crate) fn raw_node(fd: BorrowedFd<'_>) -> Result<PathBuf, Refusal> {
     let pad = identify(fd)?;
-    let offered = pad
-        .rebind
-        .as_ref()
+    raw_node_of(&pad.identity, pad.rebind.as_ref())
+}
+
+/// The raw HID node of the connected pad with this identity, which a
+/// client has hidden, as its driver is now.
+pub(crate) fn hidden_raw_node(identity: &Identity) -> Result<PathBuf, Refusal> {
+    raw_node_of(identity, rebind(identity).as_ref())
+}
+
+fn raw_node_of(identity: &Identity, driver: Option<&Rebind>) -> Result<PathBuf, Refusal> {
+    let offered = driver
         .is_some_and(|rebind| rebind.bus == "hid" && RAW_DRIVERS.contains(&rebind.driver.as_str()));
     if !offered {
         return Err(Refusal::Unsupported);
     }
-    family(&pad.identity)
+    family(identity)
         .into_iter()
         .find_map(|(raw, node)| raw.then_some(node))
         .ok_or(Refusal::Absent)

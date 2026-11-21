@@ -79,6 +79,11 @@ impl Copied {
         Self { path, dualsense }
     }
 
+    /// Where this is kept, which is this daemon's alone.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// A connected DualSense's own data, once one was copied.
     pub(crate) fn dualsense(&self) -> Option<&DualSenseData> {
         self.dualsense.as_ref()

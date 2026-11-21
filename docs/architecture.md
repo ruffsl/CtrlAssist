@@ -237,6 +237,7 @@ The service listens on a system Unix socket, `/run/ctrlassist/hider.sock`, that 
 | reopen | a token | After the pad has reconnected: returns a fresh descriptor. The rule already covered the new nodes. |
 | restore | a token | Removes the rule, re-binds the driver. |
 | raw | an open descriptor on the pad's event node | Checks the pad and its driver, opens the pad's hidraw node, returns its descriptor. Nothing is hidden and nothing is remembered. |
+| raw of | a token | The same for a pad this connection has hidden, which its event node no longer names to the service: the driver is checked as it is now. |
 | (connection closes) | | Restores everything that connection hid. |
 
 - **A pad is named by a descriptor the caller already holds, never a path or a name.** The service takes the device number from the descriptor and finds the pad from that. Possession proves the caller could already read that pad, so for event nodes the service grants nothing new.
@@ -294,7 +295,9 @@ A small emulator: it presents a real pad's report descriptor, answers the kernel
 - **The copy is made when a DualSense connects,** if none has been copied and the hiding service is there: the daemon opens the pad's event node, asks the service for its raw node, reads the two things off it and keeps them. It happens once and says nothing. Without the service nothing is copied, even where a machine's own rules would let the user open the raw node, and the shipped data is used.
 - **The driver has to be loaded before the pad is made,** or the generic HID driver takes it. The packages load it at boot; making a pad without it is refused with why.
 
-**Feedback on a virtual pad** comes in two forms: force-feedback requests on uinput, and the pad's raw output report on uhid, which carries rumble as two levels beside LEDs and trigger effects. Rumble from either feeds the router. Between a sink and a source of the same kind the rest of the output report passes through; the last one is kept per sink so that a pad joining gets it and a pad leaving gets a reset. Between unlike pads everything but rumble is dropped.
+**Feedback on a virtual pad** comes in two forms: force-feedback requests on uinput, and the pad's raw output report on uhid, which carries rumble as two levels beside lights and trigger effects. Rumble from either feeds the router.
+
+**Between a virtual DualSense and a real one behind it, the whole output report passes through.** A hidden DualSense on USB is given its raw node by the hiding service, and from then on everything it is sent is written there as whole output reports: a game's report, with its rumble replaced by the level the router has for that pad, or a report of that level alone when only the level changes. Rumble goes that way too, and not through the kernel's effects, because the pad takes a report without the rumble mark as the end of the rumble: a light changing would otherwise stop it. A sink's last report is kept, so a pad that joins its feedback, by a switch or by returning, is sent it. A pad that leaves is told to stop rumbling and keeps the lights it had until its driver is bound again, as when it is shown again. Over Bluetooth the output report is another one with a checksum, so such a pad, and any pad without the hiding service, rumbles through the kernel and is sent nothing else. Between unlike pads everything but rumble is dropped.
 
 ## The tray
 

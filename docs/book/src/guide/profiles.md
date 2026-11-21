@@ -69,7 +69,7 @@ Once a part has taken a controller, it waits for that same controller if it disc
 
 If you connect a real DualSense by USB cable, with the hiding service installed, CtrlAssist copies what that controller says of itself, keeps the copy in `~/.local/state/ctrlassist/identities/`, and makes its virtual DualSenses from that from then on; until then it uses a description of the controller that ships with it. You don't need to own one.
 
-A virtual DualSense carries the buttons, sticks, triggers and rumble. Its touchpad and motion sensors are there and report nothing, and the system shows a battery and lights for it, as it does for a real one.
+A virtual DualSense carries the buttons, sticks, triggers and rumble. When the controller behind it is a real DualSense on a USB cable, with the hiding service installed, the game's lightbar, player lights and adaptive trigger effects reach it too. Its touchpad and motion sensors are there and report nothing, and the system shows a battery and lights for it, as it does for a real one.
 
 ## Starting by itself
 

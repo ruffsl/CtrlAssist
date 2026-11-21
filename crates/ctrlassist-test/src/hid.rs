@@ -159,6 +159,7 @@ pub fn synthetic_dualsense(newer: bool) -> ctrlassist_device::DualSenseData {
 /// served on a thread of its own, as a real pad answers whoever reads
 /// its raw node. Dropping it disconnects it.
 pub struct FakeDualSense {
+    outputs: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
     states: Option<std::sync::mpsc::Sender<ctrlassist_core::PadState>>,
     serving: Option<std::thread::JoinHandle<()>>,
     node: std::path::PathBuf,
@@ -187,6 +188,8 @@ impl FakeDualSense {
         let mut pad = ctrlassist_device::VirtualPad::dualsense(&data, address)?;
         let node = pad.event_node().to_path_buf();
         let (states, wanted) = std::sync::mpsc::channel();
+        let outputs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let noted = std::sync::Arc::clone(&outputs);
         let serving = std::thread::Builder::new()
             .name("fake-dualsense".into())
             .spawn(move || {
@@ -201,6 +204,12 @@ impl FakeDualSense {
                     if pad.serve(|_| Ok(())).is_err() {
                         return;
                     }
+                    if let Some(report) = pad.take_output() {
+                        noted
+                            .lock()
+                            .expect("nothing panics while the log is held")
+                            .push(report.to_vec());
+                    }
                     loop {
                         match wanted.try_recv() {
                             Ok(state) => {
@@ -214,6 +223,7 @@ impl FakeDualSense {
                 }
             })?;
         Ok(Self {
+            outputs,
             states: Some(states),
             serving: Some(serving),
             node,
@@ -224,6 +234,21 @@ impl FakeDualSense {
     #[must_use]
     pub fn event_node(&self) -> &std::path::Path {
         &self.node
+    }
+
+    /// The output reports the pad was sent, in order, each as a real
+    /// pad would have got it. Reports that arrive before the pad is
+    /// looked at again are kept as the last of them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the serving thread panicked while noting one.
+    #[must_use]
+    pub fn outputs(&self) -> Vec<Vec<u8>> {
+        self.outputs
+            .lock()
+            .expect("nothing panics while the log is held")
+            .clone()
     }
 
     /// Presses or releases the south button.

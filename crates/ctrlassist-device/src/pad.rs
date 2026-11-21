@@ -1,5 +1,6 @@
 //! A pad, read from an open descriptor on its event node.
 
+use crate::dualsense::RawOutput;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
@@ -199,6 +200,8 @@ pub struct Pad {
     can_rumble: bool,
     /// The one effect kept on the pad while it rumbles, and its level.
     rumble: Option<(FFEffect, Level)>,
+    /// The pad's raw node, for a pad that is sent whole output reports.
+    raw: Option<RawOutput>,
 }
 
 impl std::fmt::Debug for Pad {
@@ -304,6 +307,7 @@ impl Pad {
             pending: state,
             can_rumble,
             rumble: None,
+            raw: None,
         })
     }
 
@@ -383,6 +387,42 @@ impl Pad {
         self.can_rumble
     }
 
+    /// Gives the pad its raw HID node, where it has one this is able to
+    /// write to: a DualSense's over USB. From then on the pad's rumble is
+    /// written there, and so is what [`pass`](Self::pass) is given.
+    ///
+    /// # Errors
+    ///
+    /// Fails, leaving the pad as it was, if the node isn't such a pad's
+    /// or can't be read.
+    pub fn set_raw(&mut self, raw: OwnedFd) -> io::Result<()> {
+        let raw = RawOutput::open(raw)?;
+        // The kernel's own effect, if one runs, ends here.
+        self.rumble = None;
+        self.raw = Some(raw);
+        Ok(())
+    }
+
+    /// Whether the pad is sent whole output reports.
+    #[must_use]
+    pub fn takes_output(&self) -> bool {
+        self.raw.is_some()
+    }
+
+    /// Sends the pad an output report a game sent a virtual pad of its
+    /// own kind, keeping the rumble the pad is at. A pad that isn't sent
+    /// whole output reports ignores this.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the pad's raw node refuses the write.
+    pub fn pass(&mut self, report: &[u8]) -> Result<(), PadError> {
+        match &mut self.raw {
+            Some(raw) => Ok(raw.pass(report)?),
+            None => Ok(()),
+        }
+    }
+
     /// Makes the pad's motors run at `level` until told otherwise; a
     /// level of zero stops them. A pad that can't rumble ignores this.
     ///
@@ -395,6 +435,9 @@ impl Pad {
     /// Fails if the pad has gone, the descriptor isn't open for writing,
     /// or the pad refuses the effect; the motors then stay as they were.
     pub fn rumble(&mut self, level: Level) -> Result<(), PadError> {
+        if let Some(raw) = &mut self.raw {
+            return Ok(raw.rumble(level)?);
+        }
         if !self.can_rumble || self.rumble.as_ref().is_some_and(|(_, held)| *held == level) {
             return Ok(());
         }

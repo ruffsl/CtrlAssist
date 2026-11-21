@@ -15,7 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 
-use ctrlassist_core::{Effect, EffectKey, Graph, Level, NodeId, Router, SinkId, SourceId};
+use ctrlassist_core::{
+    Effect, EffectKey, Graph, Level, NodeId, Router, SinkId, SourceId, SourceSet,
+};
 use rustix::event::epoll::{self, EventData, EventFlags};
 use rustix::event::{EventfdFlags, eventfd};
 use rustix::time::{
@@ -148,6 +150,9 @@ pub struct Setup {
     /// A buzz under way on a pad, by source number: its level, and when
     /// it ends. While it lasts it is what the pad plays.
     buzz: Vec<Option<(Level, u64)>>,
+    /// The pads that have each virtual pad's last output report, by sink
+    /// number.
+    passed: Vec<SourceSet>,
     failed: bool,
 }
 
@@ -163,6 +168,7 @@ impl Setup {
         let selected = vec![None; graph.nodes()];
         let wanted = vec![Level::default(); pads.len()];
         let buzz = vec![None; pads.len()];
+        let passed = vec![SourceSet::EMPTY; sinks.len()];
         Self {
             graph,
             router,
@@ -172,6 +178,7 @@ impl Setup {
             selected,
             wanted,
             buzz,
+            passed,
             failed: false,
         }
     }
@@ -321,6 +328,8 @@ impl Setup {
         self.graph
             .update(SourceId(index), *pad.state(), &mut |_| {});
         self.router.source_back(SourceId(index));
+        // And what the games last sent beyond rumble, which it missed.
+        self.passed.fill(SourceSet::EMPTY);
         if let Some(place) = self.pads.get_mut(index) {
             *place = Some(pad);
         }
@@ -387,8 +396,10 @@ impl Setup {
         std::mem::swap(&mut self.pads, &mut new.pads);
         std::mem::swap(&mut self.wanted, &mut new.wanted);
         std::mem::swap(&mut self.buzz, &mut new.buzz);
-        // Every pad is told its level again, whichever source it is now.
+        // Every pad is told its level again, whichever source it is now,
+        // and sent what the games last sent beyond rumble.
         self.router.swap_sources(&mut new.reported);
+        self.passed.fill(SourceSet::EMPTY);
         for (index, pad) in self.pads.iter().enumerate() {
             let Some(pad) = pad else { continue };
             let data = EventData::new_u64(token(slot, PAD, index));
@@ -502,10 +513,29 @@ impl Setup {
             next_ms,
             wanted,
             buzz,
+            passed,
             ..
         } = self;
-        for index in 0..sinks.len() {
-            router.set_targets(SinkId(index), graph.feedback_targets(SinkId(index)));
+        for (index, sink) in sinks.iter_mut().enumerate() {
+            let targets = graph.feedback_targets(SinkId(index));
+            router.set_targets(SinkId(index), targets);
+            // What a game sent this virtual pad beyond rumble goes to
+            // the pads its feedback goes to: to all of them when it is
+            // new, and to one that has just become one of them.
+            let fresh = sink.take_output().is_some();
+            let had = passed.get(index).copied().unwrap_or(SourceSet::EMPTY);
+            if let Some(report) = sink.last_output() {
+                for source in targets.iter() {
+                    if (fresh || !had.contains(source))
+                        && let Some(Some(pad)) = pads.get_mut(source.0)
+                    {
+                        let _ = pad.pass(report);
+                    }
+                }
+            }
+            if let Some(had) = passed.get_mut(index) {
+                *had = targets;
+            }
         }
         *next_ms = router.poll(now_ms, &mut |source, level| {
             if let Some(want) = wanted.get_mut(source.0) {
