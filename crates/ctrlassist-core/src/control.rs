@@ -1,26 +1,13 @@
 //! Controls, pad state and groups.
 
 /// Axes a pad state can hold.
-#[cfg(not(feature = "wide"))]
 pub const AXES: usize = 16;
 /// Buttons a pad state can hold.
-#[cfg(not(feature = "wide"))]
 pub const BUTTONS: usize = 64;
-#[cfg(not(feature = "wide"))]
+/// One bit per button.
 pub(crate) type ButtonBits = u64;
-#[cfg(not(feature = "wide"))]
+/// One bit per axis.
 pub(crate) type AxisBits = u16;
-
-/// Axes a pad state can hold.
-#[cfg(feature = "wide")]
-pub const AXES: usize = 32;
-/// Buttons a pad state can hold.
-#[cfg(feature = "wide")]
-pub const BUTTONS: usize = 128;
-#[cfg(feature = "wide")]
-pub(crate) type ButtonBits = u128;
-#[cfg(feature = "wide")]
-pub(crate) type AxisBits = u32;
 
 /// One control on a pad, by kind and index.
 ///
@@ -147,8 +134,12 @@ impl Group {
         let mut group = Self::default();
         for control in controls {
             match *control {
-                Control::Button(index) => group.buttons |= (1 as ButtonBits) << (usize::from(index) % BUTTONS),
-                Control::Axis(index) => group.axes |= (1 as AxisBits) << (usize::from(index) % AXES),
+                Control::Button(index) => {
+                    group.buttons |= (1 as ButtonBits) << (usize::from(index) % BUTTONS);
+                }
+                Control::Axis(index) => {
+                    group.axes |= (1 as AxisBits) << (usize::from(index) % AXES);
+                }
             }
         }
         group
@@ -204,7 +195,16 @@ impl Layout {
             .group(Kind::Trigger, &[RIGHT_TRIGGER])
             .group(Kind::Hat, &[DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT]);
         for button in [
-            SOUTH, EAST, NORTH, WEST, LEFT_BUMPER, RIGHT_BUMPER, SELECT, START, MODE, LEFT_THUMB,
+            SOUTH,
+            EAST,
+            NORTH,
+            WEST,
+            LEFT_BUMPER,
+            RIGHT_BUMPER,
+            SELECT,
+            START,
+            MODE,
+            LEFT_THUMB,
             RIGHT_THUMB,
         ] {
             layout = layout.group(Kind::Button, &[button]);
@@ -224,9 +224,9 @@ impl Layout {
     pub(crate) fn apply_deadzone(&self, state: &mut PadState, deadzone: f32) {
         for (group, _) in &self.groups {
             if group.axes != 0 && group.buttons == 0 && group.activity(state) < deadzone {
-                for index in 0..AXES {
+                for (index, axis) in state.axes.iter_mut().enumerate() {
                     if group.axes & (1 << index) != 0 {
-                        state.axes[index] = 0.0;
+                        *axis = 0.0;
                     }
                 }
             }

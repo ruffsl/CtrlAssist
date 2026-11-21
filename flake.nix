@@ -55,6 +55,7 @@
         # the commit that first uses it.
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
+            cargo-nextest
             just
             just-lsp
             # jstest and evtest-style tools for looking at pads by hand

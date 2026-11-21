@@ -143,7 +143,12 @@ impl Mux {
             MuxFeedback::None => 0,
             MuxFeedback::Inputs(mask) => mask & ((1 << self.inputs) - 1),
             MuxFeedback::Active => {
-                if self.config.rules.iter().any(|(_, rule)| *rule == Rule::Switched) {
+                if self
+                    .config
+                    .rules
+                    .iter()
+                    .any(|(_, rule)| *rule == Rule::Switched)
+                {
                     1 << self.selected
                 } else {
                     (1 << self.inputs) - 1
@@ -187,7 +192,11 @@ impl Mux {
             }
             match rule {
                 Rule::Owned => {
-                    let owner = if *active == 0 { 0 } else { (31 - active.leading_zeros()) as usize };
+                    let owner = if *active == 0 {
+                        0
+                    } else {
+                        (31 - active.leading_zeros()) as usize
+                    };
                     copy_group(out, &inputs[owner], group);
                 }
                 Rule::Switched => copy_group(out, &inputs[self.selected], group),
@@ -202,10 +211,16 @@ impl Mux {
                             continue;
                         }
                         out.axes_mut()[axis] = if *rule == Rule::Largest {
-                            inputs
-                                .iter()
-                                .map(|state| state.axes()[axis])
-                                .fold(0.0, |best: f32, value| if value.abs() > best.abs() { value } else { best })
+                            inputs.iter().map(|state| state.axes()[axis]).fold(
+                                0.0,
+                                |best: f32, value| {
+                                    if value.abs() > best.abs() {
+                                        value
+                                    } else {
+                                        best
+                                    }
+                                },
+                            )
                         } else if *active == 0 {
                             inputs[0].axes()[axis]
                         } else {

@@ -30,7 +30,10 @@ pub struct SourceSpec {
 #[derive(Clone, PartialEq, Debug)]
 pub enum NodeSpec {
     /// Several inputs to one output. Later inputs outrank earlier ones.
-    Mux { inputs: Vec<Input>, config: MuxConfig },
+    Mux {
+        inputs: Vec<Input>,
+        config: MuxConfig,
+    },
     /// One input to several outputs.
     Demux { input: Input, config: DemuxConfig },
 }
@@ -100,7 +103,13 @@ impl std::fmt::Debug for Graph {
     }
 }
 
-fn resolve(input: Input, states: &[PadState], present: &[bool], offsets: &[usize], outputs: &[PadState]) -> PadState {
+fn resolve(
+    input: Input,
+    states: &[PadState],
+    present: &[bool],
+    offsets: &[usize],
+    outputs: &[PadState],
+) -> PadState {
     match input {
         Input::Source(source) if present[source] => states[source],
         Input::Source(_) => PadState::NEUTRAL,
@@ -135,12 +144,16 @@ impl Graph {
 
         let valid = |input: &Input| match *input {
             Input::Source(source) => source < spec.sources.len(),
-            Input::Node(node, output) => output_counts.get(node).is_some_and(|count| output < *count),
+            Input::Node(node, output) => {
+                output_counts.get(node).is_some_and(|count| output < *count)
+            }
         };
         if !inputs.iter().flatten().chain(&spec.sinks).all(valid) {
             return Err(GraphError::BadReference);
         }
-        if inputs.iter().any(|inputs| inputs.is_empty() || inputs.len() > MAX_INPUTS)
+        if inputs
+            .iter()
+            .any(|inputs| inputs.is_empty() || inputs.len() > MAX_INPUTS)
             || output_counts.contains(&0)
         {
             return Err(GraphError::BadArity);
@@ -253,7 +266,9 @@ impl Graph {
                     }
                     targets
                 }
-                Node::Demux(demux) if demux.feedback_from(output) => self.targets_of(self.inputs[node][0]),
+                Node::Demux(demux) if demux.feedback_from(output) => {
+                    self.targets_of(self.inputs[node][0])
+                }
                 Node::Demux(_) => 0,
             },
         }

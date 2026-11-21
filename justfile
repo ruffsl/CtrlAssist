@@ -13,6 +13,41 @@ default:
 
 # --- Quality checks (prek hooks) ----------------------------------------
 
+# Shared build + clippy scope, kept in one place so the two recipes can't
+# drift: test profile, whole workspace, all targets + all features.
+check_flags := "--profile test --workspace --all-targets --all-features"
+
+# The gates deny warnings through cargo's `build.warnings` rather than
+# `-- -D warnings`: it covers clippy, test and rustdoc builds alike, fails
+# replayed (cached) warnings too, and toggling it doesn't invalidate the
+# build cache. It is set per gate recipe, never in `.cargo/config.toml`,
+# which the Nix package build reads with nixpkgs' compiler. Local `cargo
+# build` and `cargo run` stay warn-only.
+deny_warnings := "CARGO_BUILD_WARNINGS=deny"
+
+# Format all Rust
+[group('check')]
+fmt:
+    cargo fmt
+
+# Build the workspace (test profile, all targets, all features)
+[group('check')]
+build:
+    cargo build {{ check_flags }}
+
+# Run clippy with warnings denied
+[group('check')]
+clippy:
+    {{ deny_warnings }} cargo clippy {{ check_flags }}
+
+# `--no-deps`: only the workspace's own docs are checked. `--profile test`
+# reuses the dependency metadata `just clippy` built.
+#
+# Build the API docs with warnings denied
+[group('check')]
+doc:
+    {{ deny_warnings }} cargo doc --profile test --workspace --no-deps --all-features
+
 # typos doesn't search `.config/` yet, so the config path is explicit.
 #
 # Spell-check code, docs and identifiers, enforcing American English
@@ -20,9 +55,17 @@ default:
 typos:
     typos --config .config/typos.toml
 
+# nextest runs each test in its own process; doc tests need cargo itself.
+#
+# Run the tests (nextest, then doc tests)
+[group('check')]
+test:
+    cargo nextest run --workspace --all-features
+    cargo test --workspace --all-features --doc
+
 # Run every local gate
 [group('check')]
-check: typos
+check: typos fmt build clippy doc test
 
 # --- Spikes --------------------------------------------------------------
 
@@ -219,11 +262,6 @@ spike-loop-bench legacy="../legacy-0.4/target/release/ctrlassist" runs="3":
             "$bench" bench --target legacy --legacy-bin {{ legacy }} --load "$load"
         done
     done
-
-# Run the routing graph spike's tests and its step benchmark
-[group('spike')]
-spike-graph:
-    cd spikes/graph && cargo test && cargo run --release --example bench
 
 # Time the input loop alone, inside a zenoh daemon with an idle client, and with a mirror subscriber
 [group('spike')]

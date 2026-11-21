@@ -102,6 +102,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctrlassist-core"
+version = "0.5.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -333,13 +340,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "spike-graph"
-version = "0.0.0"
-dependencies = [
- "proptest",
 ]
 
 [[package]]

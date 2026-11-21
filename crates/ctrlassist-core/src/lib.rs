@@ -19,5 +19,5 @@ mod mux;
 pub use control::{AXES, BUTTONS, Control, Group, Kind, Layout, PadState, gamepad};
 pub use demux::{DemuxConfig, DemuxFeedback, DemuxMode};
 pub use feedback::{Command, Effect, EffectKey, Reply, Router};
-pub use graph::{Change, Graph, GraphError, Input, NodeSpec, GraphSpec, SourceSpec};
-pub use mux::{MuxConfig, MuxFeedback, Mode, Rule, Switch};
+pub use graph::{Change, Graph, GraphError, GraphSpec, Input, NodeSpec, SourceSpec};
+pub use mux::{Mode, MuxConfig, MuxFeedback, Rule, Switch};

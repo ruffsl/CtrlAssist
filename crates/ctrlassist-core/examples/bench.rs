@@ -1,36 +1,20 @@
-//! Times one step of the graph and checks that stepping allocates nothing.
+//! Times one step of the graph. That a step allocates nothing is a test;
+//! this only reports how long one takes.
+//!
+//! `cargo run --release -p ctrlassist-core --example bench`
 
-use std::alloc::{GlobalAlloc, Layout as AllocLayout, System};
-use std::sync::atomic::{AtomicU64, Ordering};
+#![expect(
+    clippy::print_stdout,
+    reason = "an example's job is to print its result"
+)]
+
 use std::time::Instant;
 
-use spike_graph::gamepad::*;
-use spike_graph::{
+use ctrlassist_core::gamepad::*;
+use ctrlassist_core::{
     DemuxConfig, DemuxMode, Graph, GraphSpec, Input, Layout, Mode, MuxConfig, NodeSpec, PadState,
     SourceSpec,
 };
-
-struct Counting;
-
-static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
-
-// SAFETY: every call is forwarded unchanged to the system allocator, which
-// upholds the GlobalAlloc contract; the counter has no effect on memory.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: AllocLayout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: the caller's obligations are passed straight through.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: AllocLayout) {
-        // SAFETY: the caller's obligations are passed straight through.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-}
-
-#[global_allocator]
-static ALLOCATOR: Counting = Counting;
 
 fn source() -> SourceSpec {
     SourceSpec {
@@ -40,26 +24,20 @@ fn source() -> SourceSpec {
 }
 
 fn measure(name: &str, mut graph: Graph, sources: usize) {
-    const STEPS: u64 = 2_000_000;
+    const STEPS: usize = 2_000_000;
     let values = [0.25f32, 0.5, 0.75, 1.0, -0.25, -0.5, -0.75, -1.0];
     let mut changes = 0u64;
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
     let started = Instant::now();
     for step in 0..STEPS {
-        let value = values[(step % 8) as usize];
+        let value = values[step % 8];
         let state = PadState::NEUTRAL
             .with(LEFT_X, value)
             .with(RIGHT_TRIGGER, value.abs())
             .with(SOUTH, (step % 2) as f32);
-        graph.update((step as usize) % sources, state, &mut |_| changes += 1);
+        graph.update(step % sources, state, &mut |_| changes += 1);
     }
-    let elapsed = started.elapsed();
-    let allocations = ALLOCATIONS.load(Ordering::Relaxed) - before;
-    println!(
-        "{name}: {:.0} ns per step, {allocations} allocations in {STEPS} steps, {changes} changes",
-        elapsed.as_nanos() as f64 / STEPS as f64,
-    );
-    assert_eq!(allocations, 0, "stepping the graph must not allocate");
+    let nanos = started.elapsed().as_nanos() as f64 / STEPS as f64;
+    println!("{name}: {nanos:.0} ns per step ({changes} changes in {STEPS} steps)");
 }
 
 fn main() {

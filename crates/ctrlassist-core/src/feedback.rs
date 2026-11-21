@@ -29,7 +29,11 @@ pub struct EffectKey {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
     /// Give the pad this effect, replacing any it has under the key.
-    Upload { target: usize, key: EffectKey, effect: Effect },
+    Upload {
+        target: usize,
+        key: EffectKey,
+        effect: Effect,
+    },
     /// Remove the effect from the pad.
     Erase { target: usize, key: EffectKey },
     /// Start the effect.
@@ -132,7 +136,13 @@ impl Router {
     /// [`confirm`](Self::confirm) with the pads that did.
     pub fn upload(&mut self, key: EffectKey, effect: Effect, out: &mut Vec<Command>) -> u32 {
         let asked = self.targets[key.sink] & self.present;
-        each(asked, |target| out.push(Command::Upload { target, key, effect }));
+        each(asked, |target| {
+            out.push(Command::Upload {
+                target,
+                key,
+                effect,
+            });
+        });
         if let Some(slot) = self.slot(key) {
             slot.effect = effect;
             slot.asked = asked;
@@ -164,7 +174,9 @@ impl Router {
             return Reply::Rejected;
         }
         if slot.playing {
-            each(slot.on & !before, |target| out.push(Command::Play { target, key }));
+            each(slot.on & !before, |target| {
+                out.push(Command::Play { target, key });
+            });
         }
         Reply::Accepted
     }
@@ -188,7 +200,9 @@ impl Router {
     pub fn erase(&mut self, key: EffectKey, out: &mut Vec<Command>) {
         if let Some(index) = self.effects.iter().position(|slot| slot.key == key) {
             let slot = self.effects.swap_remove(index);
-            each(slot.on & self.present, |target| out.push(Command::Erase { target, key }));
+            each(slot.on & self.present, |target| {
+                out.push(Command::Erase { target, key });
+            });
         }
     }
 

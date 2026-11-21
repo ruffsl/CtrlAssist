@@ -1,18 +1,25 @@
 //! Invariants that must hold after any sequence of events.
 
-#![expect(clippy::unwrap_used, reason = "tests fail loudly")]
-
 use std::collections::HashMap;
 
-use proptest::prelude::*;
-use spike_graph::gamepad::*;
-use spike_graph::{
+use ctrlassist_core::gamepad::*;
+use ctrlassist_core::{
     Command, Control, Effect, EffectKey, Graph, GraphSpec, Input, Layout, Mode, MuxConfig,
     NodeSpec, PadState, Reply, Router, SourceSpec,
 };
+use proptest::prelude::*;
 
 const BUTTONS: [Control; 11] = [
-    SOUTH, EAST, NORTH, WEST, LEFT_BUMPER, RIGHT_BUMPER, SELECT, START, LEFT_THUMB, RIGHT_THUMB,
+    SOUTH,
+    EAST,
+    NORTH,
+    WEST,
+    LEFT_BUMPER,
+    RIGHT_BUMPER,
+    SELECT,
+    START,
+    LEFT_THUMB,
+    RIGHT_THUMB,
     MODE,
 ];
 const DPAD: [Control; 4] = [DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT];
@@ -169,12 +176,28 @@ const SINKS: usize = 2;
 
 #[derive(Clone, Debug)]
 enum Op {
-    Upload { key: EffectKey, effect: Effect, accept: u32 },
-    Play { key: EffectKey, playing: bool },
-    Erase { key: EffectKey },
-    Retarget { sink: usize, targets: u32 },
-    Gone { source: usize },
-    Back { source: usize },
+    Upload {
+        key: EffectKey,
+        effect: Effect,
+        accept: u32,
+    },
+    Play {
+        key: EffectKey,
+        playing: bool,
+    },
+    Erase {
+        key: EffectKey,
+    },
+    Retarget {
+        sink: usize,
+        targets: u32,
+    },
+    Gone {
+        source: usize,
+    },
+    Back {
+        source: usize,
+    },
 }
 
 fn key() -> impl Strategy<Value = EffectKey> {
@@ -184,8 +207,11 @@ fn key() -> impl Strategy<Value = EffectKey> {
 fn op() -> impl Strategy<Value = Op> {
     let mask = 0u32..(1 << SOURCES);
     prop_oneof![
-        (key(), 1u16..4, mask.clone())
-            .prop_map(|(key, strong, accept)| Op::Upload { key, effect: Effect { strong, weak: 0 }, accept }),
+        (key(), 1u16..4, mask.clone()).prop_map(|(key, strong, accept)| Op::Upload {
+            key,
+            effect: Effect { strong, weak: 0 },
+            accept
+        }),
         (key(), any::<bool>()).prop_map(|(key, playing)| Op::Play { key, playing }),
         key().prop_map(|key| Op::Erase { key }),
         (0..SINKS, mask).prop_map(|(sink, targets)| Op::Retarget { sink, targets }),

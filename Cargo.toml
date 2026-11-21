@@ -1,0 +1,78 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# The spikes are throwaway workspaces of their own, deleted as the crates
+# that replace them land.
+exclude = ["spikes"]
+
+[workspace.package]
+version = "0.5.0"
+edition = "2024"
+# The oldest compiler the workspace supports. Never above the rustc that
+# nixpkgs ships: the Nix package builds with the consumer's compiler. The
+# pinned toolchain in rust-toolchain.toml may run ahead of it.
+rust-version = "1.95"
+authors = ["ruffsl <roxfoxpox@gmail.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/CtrlAssist/CtrlAssist"
+publish = false
+
+# Every dependency is declared once here and inherited by the crates.
+[workspace.dependencies]
+# Tests
+proptest = "1"
+
+# The lint policy and its reasons are in docs/build.md. Everything is at
+# `warn`; the gate recipes turn warnings into errors.
+[workspace.lints.rust]
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+# deny, not forbid: a file opts out with a reasoned #![expect(unsafe_code)].
+unsafe_code = "deny"
+unused_qualifications = "warn"
+non_ascii_idents = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+allow_attributes_without_reason = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+exit = "warn"
+get_unwrap = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+unwrap_used = "warn"
+panic = "warn"
+cast_lossless = "warn"
+borrow_as_ptr = "warn"
+ignored_unit_patterns = "warn"
+manual_let_else = "warn"
+ptr_as_ptr = "warn"
+redundant_clone = "warn"
+redundant_closure_for_method_calls = "warn"
+return_self_not_must_use = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+use_self = "warn"
+
+[profile.dev]
+split-debuginfo = "unpacked"
+
+# Build and clippy use the test profile so `cargo test` reuses their work.
+[profile.test]
+split-debuginfo = "unpacked"
+debug = "line-tables-only"
+
+# No LTO or single codegen unit: this is the profile people compile locally.
+[profile.release]
+strip = "symbols"
+
+# What the packages are built with.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+opt-level = "s"

@@ -1,0 +1,6 @@
+# Environment for every cargo invocation in the workspace. Warnings are not
+# denied here: the Nix package build reads this file with nixpkgs' compiler,
+# and a newer compiler's new warning must not break a rebuild. The gate
+# recipes in the justfile deny them.
+[env]
+CLIPPY_CONF_DIR = { value = ".config", relative = true }

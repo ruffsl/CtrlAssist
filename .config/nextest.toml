@@ -1,0 +1,12 @@
+# nextest configuration
+# https://nexte.st/book/configuration.html
+
+[profile.default]
+# No retries: a failure is reported the first time it happens. A flaky test
+# is quarantined with `#[ignore = "flaky: ..."]`, never retried.
+retries = 0
+# Print a warning if a test exceeds 60 seconds (but don't kill it).
+slow-timeout = { period = "60s" }
+# Show a failing test's output at once and again at the end.
+failure-output = "immediate-final"
+success-output = "never"

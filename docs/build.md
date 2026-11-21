@@ -1,0 +1,82 @@
+# Build system
+
+How the workspace compiles, which checks gate a change, and the lint policy. The policy and most of the reasoning are TisVlay's, where they were arrived at by measurement; what is recorded here is what applies to this workspace so far. A check, tool or workflow is described here from the change that adds it.
+
+## Gates
+
+Every project command is a `just` recipe, and each prek hook runs the recipe of the same name.
+
+| Recipe | Checks |
+|---|---|
+| `just typos` | Spelling, American English |
+| `just fmt` | rustfmt |
+| `just build` | The workspace builds: test profile, all targets, all features |
+| `just clippy` | Clippy, warnings denied |
+| `just doc` | API docs, warnings denied: a broken intra-doc link fails |
+| `just test` | nextest, then doc tests |
+| `just check` | All of the above |
+
+Build and clippy use the test profile, so the tests reuse what they compiled.
+
+## Toolchain
+
+`rust-toolchain.toml` pins an exact stable release, so a build reproduces from a commit alone; one file drives rustup and the Nix dev shell. `rust-version` in `Cargo.toml` is the oldest compiler the workspace supports and may trail the pin. It is raised only when an update needs it, and never past the rustc that nixpkgs ships, because the Nix package builds with the consumer's compiler.
+
+## Profiles
+
+| Profile | For | Notable settings |
+|---|---|---|
+| `dev`, `test` | Local work and the gates | Split debug info; `test` keeps line tables only |
+| `release` | People compiling locally | Stripped; no LTO, so it stays quick |
+| `dist` | The packages | Thin LTO, one codegen unit, abort on panic, optimized for size |
+
+## Lint policy
+
+### Warnings are errors in the gates
+
+Every gate recipe denies warnings by exporting `CARGO_BUILD_WARNINGS=deny` (cargo's `build.warnings`). So a lint at `warn` in `[workspace.lints]` blocks a commit just as `deny` would.
+
+- **Why `build.warnings` and not `-- -D warnings`:** it covers clippy, test and rustdoc builds with one setting, fails on warnings replayed from the cache, and toggling it doesn't invalidate the build cache.
+- **Why per recipe and not `.cargo/config.toml`:** the Nix package build reads that file with nixpkgs' rustc, and a warning a newer compiler adds would then break a rebuild. Local `cargo build` and `cargo run` stay warn-only, so a half-edited file still runs.
+
+### Adding a lint
+
+1. **Pick lints, never enable groups.** No `pedantic`, `nursery`, `restriction` or `clippy::cargo` group is enabled; lints enter the `[workspace.lints]` table one at a time, on their merits.
+2. **Strict by default, exceptions opt out.** A lint goes in the shared table, so every crate inherits it. A crate or file that legitimately differs opts out with one reasoned attribute.
+3. **Every allowance states its reason.** `#[expect(lint, reason = "…")]` where the lint fires unconditionally, so a stale allowance fails the build. `#[allow(lint, reason = "…")]` only where it depends on features or tests.
+4. **A new lint lands at zero sites.** Its change fixes or expects every site; there is no "fix later" marker.
+5. **Prove it red.** Before review, a deliberate violation must fail `just clippy`.
+6. **`unsafe` is confined.** `unsafe_code` is `deny`, not `forbid`, so a file that needs it opts out with a reasoned file-level `#![expect(unsafe_code)]`. Every block gets a `// SAFETY:` comment and does one unsafe operation.
+7. **Test code may unwrap, panic, index and print.** `.config/clippy.toml` sets the matching keys. They cover `#[test]` functions and `#[cfg(test)]` modules, not helper functions under `tests/`, so an integration-test root carries a reasoned `#![expect]`.
+8. **A tool that joins `just check`** comes from the flake dev shell and gets a prek hook whose id matches its recipe name.
+
+### Parsers of outside input
+
+Code that handles bytes or text from outside the process (a controller database, a HID report, a profile file, a line of sysfs) carries a module-level profile: `#![warn]` of `indexing_slicing`, `arithmetic_side_effects`, `string_slice` and `cast_possible_truncation`. Each site is then a checked access, a typed refusal, or a reasoned `#[expect]` stating the bound. An entry point that parses raw input also gets a "never panics on arbitrary input" property test.
+
+This matters more here than in most programs: a panic on the input thread takes every virtual pad with it.
+
+### Never adopted
+
+Recorded so nobody re-scouts. TisVlay's build notes have the measurements.
+
+- `nursery`, `restriction` and `clippy::cargo` as groups.
+- `expect_used` (an `expect` stating its invariant is the idiom here), and `indexing_slicing`, `arithmetic_side_effects` and `as_conversions` workspace-wide.
+- `allow_attributes` (it flags reasoned allows), `redundant_pub_crate` (it contradicts `unreachable_pub`), `missing_docs_in_private_items`.
+- A nightly toolchain or nightly-only rustfmt options.
+
+## Dependencies
+
+Every dependency is declared once in `[workspace.dependencies]` and inherited. The core crate has none.
+
+### Review triggers
+
+Things to look at again when the stated condition changes.
+
+| Watch | Because | Revisit when |
+|---|---|---|
+| `evdev` | The crate chosen for reading pads and creating uinput pads had gone over a year without a release when it was picked, though its repository was active. `evdevil` is a newer alternative with force feedback, hotplug and async built in. | A needed fix sits unreleased. |
+| `gilrs` | Not used: it opens pads by path, owns its own polling, and keeps its controller-database parser private. | It gains a way to take a descriptor and lend its mappings. |
+| uhid bindings | The uhid events are laid out by hand, because `uhid-virt`'s FFI layer runs bindgen and needs libclang at build time. | A binding without that cost appears. |
+| `zbus` | `ksni` holds the tray at zbus 5. | `ksni` moves to a newer zbus. |
+| InputPlumber | GPL-3.0-or-later. It can be studied and spoken to, never copied from, in an Apache-2.0 project. | Never; this is a standing rule. |

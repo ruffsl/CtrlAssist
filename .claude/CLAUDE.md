@@ -4,7 +4,27 @@
 
 CtrlAssist lets several physical game controllers act as one virtual controller, or one as several, so a second person can help someone play. It reads pads through the Linux input subsystem, routes their events through a graph, and writes the result to virtual pads that games read instead.
 
-The project is being rewritten from a clean slate. There is no shipped code on this branch yet: the plan, [docs/plans/tisvlay-template-overhaul.md](../docs/plans/tisvlay-template-overhaul.md), holds the decisions, the spikes and what comes next. Read its State section first.
+The project is being rewritten from a clean slate. [docs/architecture.md](../docs/architecture.md) is the design; [the plan](../docs/plans/tisvlay-template-overhaul.md) holds the decisions and the numbered build steps. Read the plan's State section first: it says which build step is next.
+
+## Current structure
+
+```
+Cargo.toml                    # workspace root: one version, the lint table, the profiles
+crates/
+  ctrlassist-core/            # the routing model: controls, pad state, groups, mux and
+                              # demux nodes, the graph, the feedback router. No dependencies.
+spikes/                       # throwaway workspaces, each deleted by the build step that
+                              # replaces it; excluded from the workspace
+docs/
+  architecture.md             # the design, and what the platform was observed to do
+  build.md                    # gates, toolchain, lint policy, dependency review triggers
+  conventions.md              # code conventions (imported below)
+  plans/                      # the plan in flight
+  concerns/, ideas/           # one doc per item; each README.md is its index
+.claude/CLAUDE.md             # this file
+```
+
+The crates still to come, and what each holds, are in the architecture's Crates table.
 
 ## References
 
@@ -19,7 +39,7 @@ Anything beyond a small fix follows a plan in `docs/plans/` ([convention](../doc
 ## Working rules
 
 - Commit coherent checkpoints with [Conventional Commits](https://www.conventionalcommits.org/) subjects. No `Co-Authored-By` trailer. Never amend or force-push; fixes are new commits.
-- Run `prek run -a` before committing. Outside the dev shell, prefix project commands with `nix develop -c`.
+- Run `prek run -a` before committing; it runs every gate. Outside the dev shell, prefix project commands with `nix develop -c`. For a docs-only change, `prek run -a --skip build --skip clippy --skip doc --skip test`.
 - No backward compatibility with 0.4.0: no config migration, no CLI aliases, no shims.
 - No plan step or spike numbers in code comments or durable docs; they go stale.
 - No standalone shell scripts for tooling or test harnesses: `just` recipes or Rust binaries.
@@ -30,21 +50,9 @@ Anything beyond a small fix follows a plan in `docs/plans/` ([convention](../doc
 
 ## Terms
 
-One word per thing, in code, docs and messages:
+One word per thing, in code, docs and messages. The table is in [the architecture](../docs/architecture.md#terms). The ones most often got wrong: a physical controller is a *pad*, never a "controller" or "device" outside crate names; the root process is the *hiding service*, and *assist* is the helping player's pad.
 
-| Term | Meaning |
-|---|---|
-| pad | A physical controller. Not "controller" or "device", except in crate names. |
-| virtual pad | A controller the daemon creates for games to read. |
-| source, sink | A pad, or a virtual pad, as it appears in a graph. Input flows source to sink; feedback originates at a sink and flows to sources. |
-| node | A transform between sources and sinks. |
-| graph | Sources, nodes, sinks and the edges between them. |
-| profile | A saved graph with its settings, in a file the daemon owns. |
-| preset | A built-in profile shape a client offers by name. |
-| setup | A profile that is currently running. |
-| hide | Keep games from seeing a pad. A grab is one mechanism for it. |
-| identity | The name, IDs and, where emulated, the HID personality a virtual pad presents. |
-| feedback | Anything flowing from game to pad: force feedback (rumble is one kind), LEDs, trigger effects. |
+@../docs/conventions.md
 
 ## Tasks and commands (`just`)
 

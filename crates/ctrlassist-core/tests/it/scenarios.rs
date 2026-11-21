@@ -3,10 +3,8 @@
 //! Each test builds a graph the way a profile would, steps it with pad
 //! states, and checks what the virtual pads hold.
 
-#![expect(clippy::unwrap_used, reason = "tests fail loudly")]
-
-use spike_graph::gamepad::*;
-use spike_graph::{
+use ctrlassist_core::gamepad::*;
+use ctrlassist_core::{
     Command, Control, DemuxConfig, DemuxFeedback, DemuxMode, Effect, EffectKey, Graph, GraphError,
     GraphSpec, Input, Kind, Layout, Mode, MuxConfig, MuxFeedback, NodeSpec, PadState, Reply,
     Router, SourceSpec, Switch,
@@ -65,7 +63,11 @@ fn pad() -> PadState {
 #[test]
 fn priority_passes_the_primary_through_while_the_assist_rests() {
     let mut graph = mux(Mode::Priority);
-    step(&mut graph, PRIMARY, pad().with(SOUTH, 1.0).with(LEFT_X, 0.8));
+    step(
+        &mut graph,
+        PRIMARY,
+        pad().with(SOUTH, 1.0).with(LEFT_X, 0.8),
+    );
     assert_eq!(graph.sink(0).get(SOUTH), 1.0);
     assert_eq!(graph.sink(0).get(LEFT_X), 0.8);
 }
@@ -73,14 +75,22 @@ fn priority_passes_the_primary_through_while_the_assist_rests() {
 #[test]
 fn priority_gives_a_stick_to_the_assist_as_a_whole() {
     let mut graph = mux(Mode::Priority);
-    step(&mut graph, PRIMARY, pad().with(LEFT_X, 0.9).with(LEFT_Y, 0.9));
+    step(
+        &mut graph,
+        PRIMARY,
+        pad().with(LEFT_X, 0.9).with(LEFT_Y, 0.9),
+    );
     // The assist nudges only X; it takes Y too, so the output is the
     // assist's direction, not a blend of two people's.
     step(&mut graph, ASSIST, pad().with(LEFT_X, -0.5));
     assert_eq!(graph.sink(0).get(LEFT_X), -0.5);
     assert_eq!(graph.sink(0).get(LEFT_Y), 0.0);
     // The other stick is untouched by the assist and stays the primary's.
-    step(&mut graph, PRIMARY, pad().with(LEFT_X, 0.9).with(LEFT_Y, 0.9).with(RIGHT_X, 0.4));
+    step(
+        &mut graph,
+        PRIMARY,
+        pad().with(LEFT_X, 0.9).with(LEFT_Y, 0.9).with(RIGHT_X, 0.4),
+    );
     assert_eq!(graph.sink(0).get(RIGHT_X), 0.4);
     assert_eq!(graph.sink(0).get(LEFT_X), -0.5);
 }
@@ -100,7 +110,11 @@ fn priority_holds_a_button_for_the_assist_whatever_the_primary_does() {
     step(&mut graph, ASSIST, pad().with(SOUTH, 1.0));
     step(&mut graph, PRIMARY, pad().with(SOUTH, 1.0));
     step(&mut graph, PRIMARY, pad());
-    assert_eq!(graph.sink(0).get(SOUTH), 1.0, "the primary's release must not reach the game");
+    assert_eq!(
+        graph.sink(0).get(SOUTH),
+        1.0,
+        "the primary's release must not reach the game"
+    );
     step(&mut graph, ASSIST, pad());
     assert_eq!(graph.sink(0).get(SOUTH), 0.0);
 }
@@ -143,9 +157,17 @@ fn an_owner_does_not_flicker_at_the_threshold() {
     assert_eq!(graph.sink(0).get(LEFT_X), 0.9, "0.07 is below engage");
     step(&mut graph, ASSIST, pad().with(LEFT_Y, 0.2));
     step(&mut graph, ASSIST, pad().with(LEFT_Y, 0.07));
-    assert_eq!(graph.sink(0).get(LEFT_Y), 0.07, "0.07 is above release, so the assist keeps it");
+    assert_eq!(
+        graph.sink(0).get(LEFT_Y),
+        0.07,
+        "0.07 is above release, so the assist keeps it"
+    );
     step(&mut graph, ASSIST, pad().with(LEFT_Y, 0.02));
-    assert_eq!(graph.sink(0).get(LEFT_X), 0.9, "below release the primary has it back");
+    assert_eq!(
+        graph.sink(0).get(LEFT_X),
+        0.9,
+        "below release the primary has it back"
+    );
 }
 
 #[test]
@@ -154,7 +176,11 @@ fn a_source_deadzone_hides_rest_noise_from_the_node() {
     step(&mut graph, PRIMARY, pad().with(LEFT_X, 0.9));
     // A worn assist stick resting at 0.08 must not count as a touch, and
     // must not leak into the output either.
-    step(&mut graph, ASSIST, pad().with(LEFT_X, 0.06).with(LEFT_Y, 0.05));
+    step(
+        &mut graph,
+        ASSIST,
+        pad().with(LEFT_X, 0.06).with(LEFT_Y, 0.05),
+    );
     assert_eq!(graph.sink(0).get(LEFT_X), 0.9);
     assert_eq!(graph.sink(0).get(LEFT_Y), 0.0);
 }
@@ -165,7 +191,11 @@ fn a_source_deadzone_hides_rest_noise_from_the_node() {
 fn average_blends_sticks_both_are_using() {
     let mut graph = mux(Mode::Average);
     step(&mut graph, PRIMARY, pad().with(LEFT_X, 1.0));
-    assert_eq!(graph.sink(0).get(LEFT_X), 1.0, "alone, the primary is not halved");
+    assert_eq!(
+        graph.sink(0).get(LEFT_X),
+        1.0,
+        "alone, the primary is not halved"
+    );
     step(&mut graph, ASSIST, pad().with(LEFT_X, -0.5));
     assert_eq!(graph.sink(0).get(LEFT_X), 0.25);
 }
@@ -198,7 +228,10 @@ fn a_switch_takes_the_incoming_pads_state() {
     step(
         &mut graph,
         PRIMARY,
-        pad().with(RIGHT_TRIGGER, 0.8).with(LEFT_X, 0.7).with(SOUTH, 1.0),
+        pad()
+            .with(RIGHT_TRIGGER, 0.8)
+            .with(LEFT_X, 0.7)
+            .with(SOUTH, 1.0),
     );
     let assist = pad().with(RIGHT_TRIGGER, 0.3).with(EAST, 1.0);
     step(&mut graph, ASSIST, assist);
@@ -210,11 +243,27 @@ fn a_switch_takes_the_incoming_pads_state() {
         }
     });
 
-    assert_eq!(trigger_values, [0.3], "the trigger steps to the assist's value, never through zero");
-    assert_eq!(graph.sink(0).get(SOUTH), 0.0, "held only by the outgoing pad: released");
-    assert_eq!(graph.sink(0).get(EAST), 1.0, "held only by the incoming pad: pressed");
+    assert_eq!(
+        trigger_values,
+        [0.3],
+        "the trigger steps to the assist's value, never through zero"
+    );
+    assert_eq!(
+        graph.sink(0).get(SOUTH),
+        0.0,
+        "held only by the outgoing pad: released"
+    );
+    assert_eq!(
+        graph.sink(0).get(EAST),
+        1.0,
+        "held only by the incoming pad: pressed"
+    );
     assert_eq!(graph.sink(0).get(LEFT_X), 0.0);
-    assert_eq!(graph.sink(0).get(MODE), 0.0, "the switch button is consumed");
+    assert_eq!(
+        graph.sink(0).get(MODE),
+        0.0,
+        "the switch button is consumed"
+    );
 }
 
 #[test]
@@ -223,7 +272,11 @@ fn a_switch_happens_once_per_press() {
     step(&mut graph, PRIMARY, pad().with(SOUTH, 1.0));
     step(&mut graph, ASSIST, pad().with(MODE, 1.0));
     step(&mut graph, ASSIST, pad().with(MODE, 1.0).with(EAST, 1.0));
-    assert_eq!(graph.sink(0).get(EAST), 1.0, "holding the switch must not switch back");
+    assert_eq!(
+        graph.sink(0).get(EAST),
+        1.0,
+        "holding the switch must not switch back"
+    );
     step(&mut graph, ASSIST, pad());
     step(&mut graph, ASSIST, pad().with(MODE, 1.0));
     assert_eq!(graph.sink(0).get(SOUTH), 1.0, "a second press hands back");
@@ -248,10 +301,18 @@ fn the_switch_can_be_another_button_on_another_pad() {
     });
     let mut graph = mux_graph(config);
     step(&mut graph, ASSIST, pad().with(EAST, 1.0).with(MODE, 1.0));
-    assert_eq!(graph.sink(0).get(EAST), 0.0, "Mode on the assist no longer switches");
+    assert_eq!(
+        graph.sink(0).get(EAST),
+        0.0,
+        "Mode on the assist no longer switches"
+    );
     step(&mut graph, PRIMARY, pad().with(SELECT, 1.0));
     assert_eq!(graph.sink(0).get(EAST), 1.0);
-    assert_eq!(graph.sink(0).get(MODE), 1.0, "Mode is an ordinary button again");
+    assert_eq!(
+        graph.sink(0).get(MODE),
+        1.0,
+        "Mode is an ordinary button again"
+    );
 }
 
 // --- demux ------------------------------------------------------------------
@@ -273,10 +334,18 @@ fn unicast_cycles_on_the_switch_and_neutralizes_the_pad_it_leaves() {
     step(&mut graph, 0, held.with(MODE, 1.0));
     assert_eq!(*graph.sink(0), PadState::NEUTRAL);
     assert_eq!(graph.sink(1).get(SOUTH), 1.0);
-    assert_eq!(graph.sink(1).get(MODE), 0.0, "the switch button is consumed");
+    assert_eq!(
+        graph.sink(1).get(MODE),
+        0.0,
+        "the switch button is consumed"
+    );
     step(&mut graph, 0, held);
     step(&mut graph, 0, held.with(MODE, 1.0));
-    assert_eq!(graph.sink(0).get(SOUTH), 1.0, "past the last pad it wraps to the first");
+    assert_eq!(
+        graph.sink(0).get(SOUTH),
+        1.0,
+        "past the last pad it wraps to the first"
+    );
 }
 
 #[test]
@@ -285,14 +354,17 @@ fn multicast_copies_the_pad_to_every_virtual_pad() {
     step(&mut graph, 0, pad().with(SOUTH, 1.0).with(MODE, 1.0));
     for sink in 0..2 {
         assert_eq!(graph.sink(sink).get(SOUTH), 1.0);
-        assert_eq!(graph.sink(sink).get(MODE), 1.0, "nothing is reserved in multicast");
+        assert_eq!(
+            graph.sink(sink).get(MODE),
+            1.0,
+            "nothing is reserved in multicast"
+        );
     }
 }
 
 // --- chained ----------------------------------------------------------------
 
-/// The legacy cookbook's "double agent": one helper assists two players,
-/// switching between them. Three pads, one demux, two muxes, two virtual pads.
+/// One helper assists two players, switching between them. Three pads, one demux, two muxes, two virtual pads.
 fn double_agent() -> Graph {
     let layout = Layout::gamepad();
     Graph::build(GraphSpec {
@@ -322,11 +394,23 @@ fn one_helper_assists_two_players_in_one_graph() {
     step(&mut graph, 0, pad().with(LEFT_X, 0.9));
     step(&mut graph, 1, pad().with(LEFT_X, 0.8));
     step(&mut graph, 2, pad().with(LEFT_X, -0.5));
-    assert_eq!(graph.sink(0).get(LEFT_X), -0.5, "the helper starts on player one");
+    assert_eq!(
+        graph.sink(0).get(LEFT_X),
+        -0.5,
+        "the helper starts on player one"
+    );
     assert_eq!(graph.sink(1).get(LEFT_X), 0.8);
     step(&mut graph, 2, pad().with(LEFT_X, -0.5).with(MODE, 1.0));
-    assert_eq!(graph.sink(0).get(LEFT_X), 0.9, "player one has the stick back");
-    assert_eq!(graph.sink(1).get(LEFT_X), -0.5, "the helper moved to player two");
+    assert_eq!(
+        graph.sink(0).get(LEFT_X),
+        0.9,
+        "player one has the stick back"
+    );
+    assert_eq!(
+        graph.sink(1).get(LEFT_X),
+        -0.5,
+        "the helper moved to player two"
+    );
 }
 
 #[test]
@@ -355,13 +439,25 @@ fn a_graph_with_a_cycle_is_refused() {
 fn a_pad_that_drops_out_goes_neutral_and_the_other_carries_on() {
     let mut graph = mux(Mode::Priority);
     step(&mut graph, PRIMARY, pad().with(LEFT_X, 0.9));
-    step(&mut graph, ASSIST, pad().with(LEFT_X, -0.5).with(SOUTH, 1.0));
+    step(
+        &mut graph,
+        ASSIST,
+        pad().with(LEFT_X, -0.5).with(SOUTH, 1.0),
+    );
     graph.set_present(ASSIST, false, &mut |_| {});
-    assert_eq!(graph.sink(0).get(SOUTH), 0.0, "nothing stays held by a pad that is gone");
+    assert_eq!(
+        graph.sink(0).get(SOUTH),
+        0.0,
+        "nothing stays held by a pad that is gone"
+    );
     assert_eq!(graph.sink(0).get(LEFT_X), 0.9);
     graph.set_present(ASSIST, true, &mut |_| {});
     step(&mut graph, ASSIST, pad().with(LEFT_X, -0.7));
-    assert_eq!(graph.sink(0).get(LEFT_X), -0.7, "it is the assist again when it returns");
+    assert_eq!(
+        graph.sink(0).get(LEFT_X),
+        -0.7,
+        "it is the assist again when it returns"
+    );
 }
 
 // --- a pad that is not gamepad-shaped ---------------------------------------
@@ -397,7 +493,11 @@ fn whoever_flies_the_stick_owns_its_trigger() {
     .unwrap();
     let fire = Control::Button(0);
     let twist = Control::Axis(2);
-    step(&mut graph, PRIMARY, pad().with(fire, 1.0).with(Control::Axis(0), 0.6));
+    step(
+        &mut graph,
+        PRIMARY,
+        pad().with(fire, 1.0).with(Control::Axis(0), 0.6),
+    );
     assert_eq!(graph.sink(0).get(fire), 1.0);
     // The instructor takes the stick by twisting it: the student's trigger
     // goes with it, so nobody fires while someone else aims.
@@ -409,7 +509,10 @@ fn whoever_flies_the_stick_owns_its_trigger() {
     step(
         &mut graph,
         PRIMARY,
-        pad().with(fire, 1.0).with(Control::Axis(0), 0.6).with(Control::Axis(3), 0.9),
+        pad()
+            .with(fire, 1.0)
+            .with(Control::Axis(0), 0.6)
+            .with(Control::Axis(3), 0.9),
     );
     assert_eq!(graph.sink(0).get(Control::Axis(3)), 0.9);
 }
@@ -454,12 +557,30 @@ fn rumble_reaches_both_pads_of_a_priority_mux() {
         [
             upload(PRIMARY),
             upload(ASSIST),
-            Command::Play { target: PRIMARY, key: KEY },
-            Command::Play { target: ASSIST, key: KEY },
-            Command::Stop { target: PRIMARY, key: KEY },
-            Command::Stop { target: ASSIST, key: KEY },
-            Command::Erase { target: PRIMARY, key: KEY },
-            Command::Erase { target: ASSIST, key: KEY },
+            Command::Play {
+                target: PRIMARY,
+                key: KEY
+            },
+            Command::Play {
+                target: ASSIST,
+                key: KEY
+            },
+            Command::Stop {
+                target: PRIMARY,
+                key: KEY
+            },
+            Command::Stop {
+                target: ASSIST,
+                key: KEY
+            },
+            Command::Erase {
+                target: PRIMARY,
+                key: KEY
+            },
+            Command::Erase {
+                target: ASSIST,
+                key: KEY
+            },
         ]
     );
 }
@@ -486,9 +607,18 @@ fn toggle_rumbles_only_the_active_pad_and_moves_with_the_switch() {
                 key: KEY,
                 effect: RUMBLE
             },
-            Command::Play { target: ASSIST, key: KEY },
-            Command::Stop { target: PRIMARY, key: KEY },
-            Command::Erase { target: PRIMARY, key: KEY },
+            Command::Play {
+                target: ASSIST,
+                key: KEY
+            },
+            Command::Stop {
+                target: PRIMARY,
+                key: KEY
+            },
+            Command::Erase {
+                target: PRIMARY,
+                key: KEY
+            },
         ]
     );
 }
@@ -498,7 +628,11 @@ fn rumble_can_go_to_the_pad_that_is_not_providing_input() {
     let mut config = MuxConfig::new(Mode::Toggle, &Layout::gamepad());
     config.feedback = MuxFeedback::Inputs(bit(ASSIST));
     let graph = mux_graph(config);
-    assert_eq!(graph.feedback_targets(0), bit(ASSIST), "the primary drives, the assist feels it");
+    assert_eq!(
+        graph.feedback_targets(0),
+        bit(ASSIST),
+        "the primary drives, the assist feels it"
+    );
 }
 
 #[test]
@@ -509,7 +643,11 @@ fn rumble_can_be_off() {
     let (mut router, mut commands) = router_for(&graph);
     let asked = router.upload(KEY, RUMBLE, &mut commands);
     assert_eq!(asked, 0);
-    assert_eq!(router.confirm(KEY, asked, &mut commands), Reply::Accepted, "the game is not told its rumble goes nowhere");
+    assert_eq!(
+        router.confirm(KEY, asked, &mut commands),
+        Reply::Accepted,
+        "the game is not told its rumble goes nowhere"
+    );
     router.play(KEY, true, &mut commands);
     assert!(commands.is_empty());
 }
@@ -519,10 +657,20 @@ fn an_upload_is_accepted_if_any_pad_takes_it() {
     let graph = mux(Mode::Priority);
     let (mut router, mut commands) = router_for(&graph);
     let asked = router.upload(KEY, RUMBLE, &mut commands);
-    assert_eq!(router.confirm(KEY, asked & !bit(ASSIST), &mut commands), Reply::Accepted);
+    assert_eq!(
+        router.confirm(KEY, asked & !bit(ASSIST), &mut commands),
+        Reply::Accepted
+    );
     commands.clear();
     router.play(KEY, true, &mut commands);
-    assert_eq!(commands, [Command::Play { target: PRIMARY, key: KEY }], "the pad that refused is left alone");
+    assert_eq!(
+        commands,
+        [Command::Play {
+            target: PRIMARY,
+            key: KEY
+        }],
+        "the pad that refused is left alone"
+    );
 }
 
 #[test]
@@ -583,8 +731,14 @@ fn two_virtual_pads_can_rumble_one_pad_without_colliding() {
     assert_eq!(
         commands,
         [
-            Command::Erase { target: 0, key: first },
-            Command::Play { target: 0, key: second },
+            Command::Erase {
+                target: 0,
+                key: first
+            },
+            Command::Play {
+                target: 0,
+                key: second
+            },
         ],
         "one game erasing its effect leaves the other's alone"
     );
@@ -617,8 +771,14 @@ fn a_returning_pad_gets_its_effects_back() {
     assert_eq!(
         commands,
         [
-            Command::Stop { target: PRIMARY, key: KEY },
-            Command::Play { target: PRIMARY, key: KEY },
+            Command::Stop {
+                target: PRIMARY,
+                key: KEY
+            },
+            Command::Play {
+                target: PRIMARY,
+                key: KEY
+            },
         ],
         "nothing is sent to a pad that is gone"
     );
@@ -635,7 +795,10 @@ fn a_returning_pad_gets_its_effects_back() {
                 key: KEY,
                 effect: RUMBLE
             },
-            Command::Play { target: ASSIST, key: KEY },
+            Command::Play {
+                target: ASSIST,
+                key: KEY
+            },
         ]
     );
 }
