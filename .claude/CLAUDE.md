@@ -42,7 +42,7 @@ Anything beyond a small fix follows a plan in `docs/plans/` ([convention](../doc
 - Run `prek run -a` before committing; it runs every gate. Outside the dev shell, prefix project commands with `nix develop -c`. For a docs-only change, `prek run -a --skip build --skip clippy --skip doc --skip test`.
 - No backward compatibility with 0.4.0: no config migration, no CLI aliases, no shims.
 - No plan step or spike numbers in code comments or durable docs; they go stale.
-- No standalone shell scripts for tooling or test harnesses: `just` recipes or Rust binaries.
+- No bash. `just` runs recipe lines in fish; a recipe is a command or two, and anything needing logic is a Rust binary, never a shell script. The spike recipes that are still bash scripts go when their spikes do.
 - Ask before launching agents.
 - Stop for the maintainer's review each time a spike finding is written.
 - A new timeout or grace period is a design smell: look for the state or event that makes it unnecessary, and ask if none does.

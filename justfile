@@ -5,7 +5,9 @@
 # prek hooks, editor tasks and CI workflows all dispatch through here.
 # A recipe is added in the commit that first gives it something to check.
 
-set shell := ["bash", "-euo", "pipefail", "-c"]
+# Recipe lines run in fish, from the dev shell. No bash: a recipe that needs
+# more than a command or two belongs in a Rust binary.
+set shell := ["fish", "-c"]
 
 # Default recipe: list all available recipes, grouped.
 default:
@@ -76,58 +78,6 @@ check: typos fmt build clippy doc test
 [group('spike')]
 spike-hiding-vm:
     nix build .#checks.x86_64-linux.spike-hiding --print-build-logs
-
-# Hides the pad with a runtime udev rule, records what the seat user and SDL
-# still see, asks for a replug, then removes the rule and puts the nodes'
-# modes back. vendor/product are the pad's USB IDs in hex.
-#
-# Root half of the hiding spike on a real pad (asks for the sudo password)
-[group('spike')]
-spike-hiding-root vendor="054c" product="0ce6":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    probe=spikes/hiding/target/debug/probe
-    log=spikes/hiding/target/root-udev.log
-    rule=/run/udev/rules.d/72-ctrlassist-spike.rules
-    (cd spikes/hiding && cargo build --quiet)
-    observe() {
-        echo "===== $1 =====" | tee -a "$log"
-        { "$probe" access; echo "-- SDL, HIDAPI on:"; sdl2-jstest --list | grep -E "^Found|Joystick Name" || true
-          echo "-- SDL, HIDAPI off:"; SDL_JOYSTICK_HIDAPI=0 sdl2-jstest --list | grep -E "^Found|Joystick Name" || true; } 2>&1 | tee -a "$log"
-    }
-    # Removing the rule doesn't reset a node's mode or group, so put back
-    # what was recorded before hiding.
-    saved=$("$probe" pads | awk '$1 == "node" { print $3 }' | xargs -r stat -c '%a %U:%G %n')
-    restore() {
-        sudo rm -f "$rule"
-        sudo udevadm control --reload
-        sudo udevadm trigger --action=add --subsystem-match=input --subsystem-match=hidraw
-        sudo udevadm settle
-        while read -r mode owner node; do
-            [ -e "$node" ] && sudo chmod "$mode" "$node" && sudo chown "$owner" "$node"
-        done <<< "$saved"
-        sudo udevadm trigger --action=change --subsystem-match=input --subsystem-match=hidraw
-        sudo udevadm settle
-    }
-    : > "$log"
-    observe "before"
-    trap restore EXIT
-    sudo mkdir -p /run/udev/rules.d
-    printf '%s\n' \
-        'SUBSYSTEM=="input", ATTRS{id/vendor}=="{{ vendor }}", ATTRS{id/product}=="{{ product }}", MODE="0000", GROUP="root", TAG-="uaccess"' \
-        'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="{{ vendor }}", ATTRS{idProduct}=="{{ product }}", MODE="0000", GROUP="root", TAG-="uaccess"' \
-        | sudo tee "$rule" > /dev/null
-    sudo udevadm control --reload
-    sudo udevadm trigger --action=add --subsystem-match=input --subsystem-match=hidraw
-    sudo udevadm settle
-    observe "hidden by the udev rule"
-    read -r -p "Unplug the pad, plug it back in, then press Enter: "
-    sudo udevadm settle
-    observe "hidden, after a reconnect"
-    restore
-    trap - EXIT
-    observe "after the rule is removed"
-    echo "Wrote $log"
 
 # Starts Steam if it isn't running, holds the pad open as a game would,
 # hides the pad with the udev rule, re-binds its driver, then restores,
@@ -241,7 +191,7 @@ spike-hiding-dislodge vendor="054c" product="0ce6":
 # Append the pads' identifiers to a log under a label
 [group('spike')]
 spike-hiding-ids label:
-    (cd spikes/hiding && cargo build --quiet)
+    cargo build --quiet --manifest-path spikes/hiding/Cargo.toml
     echo "===== {{ label }} =====" >> spikes/hiding/target/ids.log
     spikes/hiding/target/debug/probe pads | tee -a spikes/hiding/target/ids.log
 

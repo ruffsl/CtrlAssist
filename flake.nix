@@ -56,6 +56,8 @@
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             cargo-nextest
+            # the shell `just` runs recipes with
+            fish
             just
             just-lsp
             # jstest and evtest-style tools for looking at pads by hand

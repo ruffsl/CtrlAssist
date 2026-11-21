@@ -4,7 +4,7 @@ How the workspace compiles, which checks gate a change, and the lint policy. The
 
 ## Gates
 
-Every project command is a `just` recipe, and each prek hook runs the recipe of the same name.
+Every project command is a `just` recipe, and each prek hook runs the recipe of the same name. Recipe lines run in fish, which the dev shell provides; there is no bash in the project's own tooling.
 
 | Recipe | Checks |
 |---|---|
