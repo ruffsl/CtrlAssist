@@ -199,6 +199,20 @@ daemon-start:
 tray-start:
     cargo run --profile {{ _dev_profile }} --bin ctrlassist -- service tray --socket "{{ socket }}"
 
+# The hiding service from `just hider-dev` runs as root and is left
+# alone: Ctrl-C in its own terminal stops it.
+#
+# Kill the dev daemon and tray
+[group('dev')]
+stop-all:
+    # Matched on the dev build's path, so an installed daemon keeps running.
+    -pkill -f 'target/(debug|release)/ctrlassist service (daemon|tray)'
+    # SIGTERM returns at once; wait until the processes are gone so a
+    # start that follows can't race the exit. The daemon stops its setups
+    # and restores their pads on the way out. Five seconds at most, so a
+    # stuck process can't wedge the recipe.
+    @timeout 5 sh -c 'while pgrep -f "target/(debug|release)/ctrlassist service (daemon|tray)" > /dev/null; do sleep 0.1; done' || true
+
 # Run the CLI against the dev daemon, such as `just cli status`
 [group('dev')]
 cli *args:

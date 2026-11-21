@@ -1,0 +1,64 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "daemon: start",
+            "type": "shell",
+            "command": "just daemon-start",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "ctrlassist"
+            }
+        },
+        {
+            "label": "tray: start",
+            "type": "shell",
+            "command": "just tray-start",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "ctrlassist"
+            }
+        },
+        {
+            "label": "hider: start (asks for sudo)",
+            "type": "shell",
+            "command": "just hider-dev",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "ctrlassist",
+                "focus": true
+            }
+        },
+        {
+            "label": "all: start",
+            "dependsOn": ["daemon: start", "tray: start"],
+            "dependsOrder": "parallel",
+            "problemMatcher": []
+        },
+        {
+            "label": "all: stop",
+            "type": "shell",
+            "command": "just stop-all",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "all: restart",
+            "dependsOn": ["all: stop", "all: start"],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
+        }
+    ]
+}

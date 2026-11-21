@@ -55,6 +55,7 @@ packaging/
   systemd/                    # the hiding service's socket and service units
   udev/                       # the rule that gives the seat user uinput and uhid
   licensing/                  # deny.toml: license policy and the one-version gate
+.vscode/tasks.json            # editor tasks that start, stop and restart the dev stack
 .claude/CLAUDE.md             # this file
 ```
 
