@@ -20,6 +20,8 @@ pub(crate) struct DaemonMirror {
     pub pads: BTreeMap<String, payload::Pad>,
     /// What a virtual pad can present itself as, by name.
     pub identities: BTreeMap<String, payload::Identity>,
+    /// The profiles the daemon keeps, by name.
+    pub profiles: BTreeMap<String, payload::Profile>,
 }
 
 /// Apply a sample to the row it is for; whether anything changed.
@@ -42,7 +44,12 @@ fn assign<T: serde::de::DeserializeOwned>(
 
 impl Mirror for DaemonMirror {
     fn keys() -> Vec<String> {
-        vec![keys::daemon(), keys::pad_wild(), keys::identity_wild()]
+        vec![
+            keys::daemon(),
+            keys::pad_wild(),
+            keys::identity_wild(),
+            keys::profile_wild(),
+        ]
     }
 
     fn clear(&mut self) -> Vec<StateEvent> {
@@ -60,6 +67,11 @@ impl Mirror for DaemonMirror {
         if !std::mem::take(&mut self.identities).is_empty() {
             removed.push(StateEvent::IdentitiesChanged);
         }
+        removed.extend(
+            std::mem::take(&mut self.profiles)
+                .into_keys()
+                .map(|profile| StateEvent::ProfileChanged { profile }),
+        );
         removed
     }
 
@@ -76,6 +88,11 @@ impl Mirror for DaemonMirror {
         if let Some(id) = keys::parse_identity(key) {
             return assign(&mut self.identities, id, sample)
                 .then_some(StateEvent::IdentitiesChanged);
+        }
+        if let Some(name) = keys::parse_profile(key) {
+            return assign(&mut self.profiles, name, sample).then(|| StateEvent::ProfileChanged {
+                profile: name.to_string(),
+            });
         }
         if key != keys::daemon() {
             return None;
@@ -174,6 +191,26 @@ mod tests {
             None
         );
 
+        let couch = payload::Profile {
+            name: "couch".to_string(),
+            toml: "preset = \"priority\"".to_string(),
+            problem: None,
+        };
+        let profile_changed = Some(StateEvent::ProfileChanged {
+            profile: "couch".to_string(),
+        });
+        assert_eq!(
+            mirror.apply(&put_on(keys::profile("couch"), &couch)),
+            profile_changed
+        );
+        assert_eq!(mirror.profiles["couch"], couch);
+        assert_eq!(
+            mirror.apply(&delete_on(keys::profile("couch"))),
+            profile_changed
+        );
+        assert_eq!(mirror.apply(&delete_on(keys::profile("couch"))), None);
+        mirror.apply(&put_on(keys::profile("couch"), &couch));
+
         mirror.apply(&put_on(key, &pad("address:aa", true)));
         assert_eq!(
             mirror.clear(),
@@ -181,10 +218,14 @@ mod tests {
                 StateEvent::PadChanged {
                     pad: "address:aa".to_string()
                 },
-                StateEvent::IdentitiesChanged
+                StateEvent::IdentitiesChanged,
+                StateEvent::ProfileChanged {
+                    profile: "couch".to_string()
+                },
             ]
         );
         assert!(mirror.pads.is_empty() && mirror.identities.is_empty());
+        assert!(mirror.profiles.is_empty());
     }
 
     #[test]

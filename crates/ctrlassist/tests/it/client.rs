@@ -63,6 +63,7 @@ pub(crate) async fn start_daemon(socket: &std::path::Path) -> Daemon {
     let paths = Paths {
         socket: socket.to_path_buf(),
         state: socket.with_file_name("state"),
+        config: socket.with_file_name("config"),
     };
     Daemon::start(&paths, input).await.unwrap()
 }

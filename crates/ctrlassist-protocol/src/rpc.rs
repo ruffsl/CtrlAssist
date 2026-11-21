@@ -28,6 +28,39 @@ pub struct IdentifyRequest {
 /// The longest buzz `identify` accepts, in milliseconds.
 pub const IDENTIFY_MAX_MS: u32 = 5_000;
 
+/// A profile's text, to be checked.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ValidateRequest {
+    /// The profile, as TOML.
+    pub toml: String,
+}
+
+/// Reply to `validate`: what is wrong with the profile, or nothing.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Validation {
+    /// What is wrong, and where; absent for a profile the daemon would
+    /// keep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<crate::payload::Problem>,
+}
+
+/// A profile to keep, under a name: a new one, or in place of the one
+/// that has the name.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PutProfileRequest {
+    /// The profile's name: lowercase letters, digits and hyphens.
+    pub name: String,
+    /// The profile, as TOML.
+    pub toml: String,
+}
+
+/// Names a profile.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ProfileRequest {
+    /// The profile's name.
+    pub name: String,
+}
+
 /// Reply to the daemon's `info` rpc: the handshake a client runs before
 /// anything else.
 ///

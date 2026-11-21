@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use ctrlassist_core::Level;
 use ctrlassist_device::Pad;
-use ctrlassist_protocol::endpoint::{daemon, pad};
+use ctrlassist_protocol::endpoint::{daemon, pad, profile};
 use ctrlassist_protocol::error::{ErrorCode, WireError};
 use ctrlassist_protocol::serve::Responder;
 use ctrlassist_protocol::{VERSION, keys, rpc};
@@ -30,6 +30,7 @@ use zenoh_ext::{AdvancedPublisher, AdvancedPublisherBuilderExt, CacheConfig, Mis
 
 use crate::book::Book;
 use crate::hotplug::Seen;
+use crate::profiles::Profiles;
 use crate::store::Store;
 
 /// Heartbeat period for sample-miss recovery on cached publishers: a
@@ -43,13 +44,32 @@ const BUZZ: Level = Level {
     weak: 0xa000,
 };
 
-type Rpcs = Queryable<FifoChannelHandler<Query>>;
+type Rpc = Queryable<FifoChannelHandler<Query>>;
+
+/// The rpc families the reactor answers, one queryable each.
+pub(crate) struct Rpcs {
+    pub(crate) daemon: Rpc,
+    pub(crate) pad: Rpc,
+    pub(crate) profile: Rpc,
+}
+
+impl Rpcs {
+    /// Declares every family on `session`.
+    pub(crate) async fn declare(session: &Session) -> zenoh::Result<Self> {
+        Ok(Self {
+            daemon: session.declare_queryable(daemon::Incoming::wild()).await?,
+            pad: session.declare_queryable(pad::Incoming::wild()).await?,
+            profile: session.declare_queryable(profile::Incoming::wild()).await?,
+        })
+    }
+}
 
 /// What the reactor owns.
 pub(crate) struct Reactor {
     session: Session,
     book: Book,
     store: Store,
+    profiles: Profiles,
     /// One cached publisher per key published now.
     publishers: BTreeMap<String, AdvancedPublisher<'static>>,
     /// The buzzes under way; each ends itself.
@@ -78,7 +98,7 @@ async fn buzz(node: PathBuf, millis: u32, responder: Responder<pad::Identify>) {
         Ok(Ok(pad)) => pad,
         Ok(Err(error)) => {
             let refusal =
-                WireError::pad(ErrorCode::PadRefused, format!("the pad refused: {error}"));
+                WireError::refusal(ErrorCode::PadRefused, format!("the pad refused: {error}"));
             return responder.err(&refusal).await;
         }
         Err(error) => {
@@ -93,11 +113,12 @@ async fn buzz(node: PathBuf, millis: u32, responder: Responder<pad::Identify>) {
 }
 
 impl Reactor {
-    pub(crate) fn new(session: Session, book: Book, store: Store) -> Self {
+    pub(crate) fn new(session: Session, book: Book, store: Store, profiles: Profiles) -> Self {
         Self {
             session,
             book,
             store,
+            profiles,
             publishers: BTreeMap::new(),
             buzzes: JoinSet::new(),
         }
@@ -148,6 +169,57 @@ impl Reactor {
         match self.book.pad(id) {
             Some(pad) => self.publish(keys::pad(&keys::pad_id(id)), &pad).await,
             None => Ok(()),
+        }
+    }
+
+    /// Publishes every profile kept.
+    pub(crate) async fn publish_profiles(&mut self) -> zenoh::Result<()> {
+        let names: Vec<String> = self.profiles.names().map(str::to_string).collect();
+        for name in names {
+            self.publish_profile(&name).await?;
+        }
+        Ok(())
+    }
+
+    async fn publish_profile(&mut self, name: &str) -> zenoh::Result<()> {
+        match self.profiles.profile(name) {
+            Some(profile) => self.publish(keys::profile(name), &profile).await,
+            None => Ok(()),
+        }
+    }
+
+    async fn profile_rpc(&mut self, query: Query) {
+        match profile::Incoming::receive(query).await {
+            Some(((), profile::Incoming::Validate(request, responder))) => {
+                let validation = rpc::Validation {
+                    problem: Profiles::problem(&request.toml),
+                };
+                responder.ok(&validation).await;
+            }
+            Some(((), profile::Incoming::Put(request, responder))) => {
+                match self.profiles.put(&request.name, &request.toml) {
+                    Ok(()) => {
+                        info!(profile = request.name, "a profile was put");
+                        if let Err(error) = self.publish_profile(&request.name).await {
+                            warn!(profile = request.name, %error, "publishing a profile failed");
+                        }
+                        responder.ok(&rpc::Ack {}).await;
+                    }
+                    Err(refusal) => responder.err(&refusal).await,
+                }
+            }
+            Some(((), profile::Incoming::Delete(request, responder))) => {
+                match self.profiles.delete(&request.name) {
+                    Ok(()) => {
+                        info!(profile = request.name, "a profile was deleted");
+                        self.unpublish(&keys::profile(&request.name)).await;
+                        responder.ok(&rpc::Ack {}).await;
+                    }
+                    Err(refusal) => responder.err(&refusal).await,
+                }
+            }
+            // Refused already, with a typed error.
+            None => {}
         }
     }
 
@@ -218,10 +290,10 @@ impl Reactor {
         }
         let id = self.book.resolve(&request.pad)?;
         let node = self.book.node(id).ok_or_else(|| {
-            WireError::pad(ErrorCode::PadDisconnected, format!("{id} isn't connected"))
+            WireError::refusal(ErrorCode::PadDisconnected, format!("{id} isn't connected"))
         })?;
         if self.book.rumble(id) == Some(false) {
-            return Err(WireError::pad(
+            return Err(WireError::refusal(
                 ErrorCode::PadWithoutRumble,
                 format!("{id} has no rumble to buzz with"),
             ));
@@ -258,16 +330,16 @@ impl Reactor {
     /// Runs until told to stop. What it published goes with it.
     pub(crate) async fn run(
         mut self,
-        daemon_rpcs: Rpcs,
-        pad_rpcs: Rpcs,
+        rpcs: Rpcs,
         mut seen: UnboundedReceiver<Seen>,
         mut stop: oneshot::Receiver<()>,
     ) {
         loop {
             tokio::select! {
                 _ = &mut stop => break,
-                Ok(query) = daemon_rpcs.recv_async() => self.daemon_rpc(query).await,
-                Ok(query) = pad_rpcs.recv_async() => self.pad_rpc(query).await,
+                Ok(query) = rpcs.daemon.recv_async() => self.daemon_rpc(query).await,
+                Ok(query) = rpcs.pad.recv_async() => self.pad_rpc(query).await,
+                Ok(query) = rpcs.profile.recv_async() => self.profile_rpc(query).await,
                 Some(seen) = seen.recv() => self.saw(seen).await,
                 // A finished buzz has nothing to say.
                 Some(_) = self.buzzes.join_next() => {}

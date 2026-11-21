@@ -197,6 +197,27 @@ pub mod daemon {
     }
 }
 
+/// The profile rpcs: `ctrlassist/rpc/profile/<verb>`.
+pub mod profile {
+    use super::{keys, rpc};
+
+    family! {
+        /// A decoded profile rpc.
+        target: (),
+        key: |_target, verb| keys::profile_rpc(verb),
+        parse: keys::parse_profile_rpc,
+        wild: keys::profile_rpc_wild,
+        rpcs: {
+            /// Check a profile and say where it is wrong. Nothing is kept.
+            Validate = "validate" (rpc::ValidateRequest) -> rpc::Validation, read;
+            /// Keep a profile, durably, once it is found to be right.
+            Put = "put" (rpc::PutProfileRequest) -> rpc::Ack, write;
+            /// Stop keeping a profile.
+            Delete = "delete" (rpc::ProfileRequest) -> rpc::Ack, write;
+        }
+    }
+}
+
 /// The pad rpcs: `ctrlassist/rpc/pad/<verb>`.
 pub mod pad {
     use super::{keys, rpc};

@@ -30,6 +30,7 @@ fn paths(socket: &Path) -> Paths {
     Paths {
         socket: socket.to_path_buf(),
         state: socket.with_file_name("state"),
+        config: socket.with_file_name("config"),
     }
 }
 
@@ -146,4 +147,6 @@ fn a_daemon_given_no_paths_uses_the_user_s_runtime_and_state_directories() {
     assert!(paths.socket.ends_with("ctrlassist/zenoh.sock"));
     assert!(paths.state.ends_with("ctrlassist"));
     assert_ne!(paths.socket.parent(), Some(paths.state.as_path()));
+    assert!(paths.config.ends_with("ctrlassist"));
+    assert_ne!(paths.config, paths.state);
 }

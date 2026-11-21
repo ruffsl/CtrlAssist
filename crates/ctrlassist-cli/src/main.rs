@@ -5,6 +5,7 @@
 //! `main` ends a run whose reader has gone quietly.
 
 mod pads;
+mod profiles;
 mod status;
 
 use std::io;
@@ -37,6 +38,7 @@ fn main() -> Result<()> {
                 Command::Identities { json } => pads::identities(&socket, json).await,
                 Command::Identify { pad, millis } => pads::identify(&socket, &pad, millis).await,
                 Command::Forget { pad } => pads::forget(&socket, &pad).await,
+                Command::Profile(command) => profiles::run(&socket, command).await,
                 Command::Service(_) => Ok(()),
             }
         });

@@ -20,6 +20,10 @@ pub struct Args {
     /// of the one in the user's state directory.
     #[arg(long, value_name = "DIRECTORY")]
     pub state_dir: Option<PathBuf>,
+    /// The directory the profiles are kept under, in place of the one in
+    /// the user's configuration directory.
+    #[arg(long, value_name = "DIRECTORY")]
+    pub config_dir: Option<PathBuf>,
 }
 
 /// Runs the daemon until it is told to stop, on a runtime of its own.
@@ -49,6 +53,7 @@ async fn run(args: Args, input: InputThread) -> Result<()> {
     let paths = Paths {
         socket: args.socket.unwrap_or(defaults.socket),
         state: args.state_dir.unwrap_or(defaults.state),
+        config: args.config_dir.unwrap_or(defaults.config),
     };
     let daemon = Daemon::start(&paths, input).await?;
 

@@ -5,8 +5,10 @@
 //! and publishes its own state; pads, profiles and setups follow.
 
 mod book;
+mod durable;
 mod hotplug;
 pub mod logging;
+mod profiles;
 mod reactor;
 pub mod service;
 mod store;
@@ -17,7 +19,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use ctrlassist_device::InputThread;
-use ctrlassist_protocol::endpoint::{daemon, pad};
 use ctrlassist_protocol::profile::Identity;
 use ctrlassist_protocol::{VERSION, bootstrap, keys, payload};
 use tokio::sync::{mpsc, oneshot};
@@ -28,7 +29,8 @@ use zenoh::liveliness::LivelinessToken;
 
 use book::Book;
 use hotplug::Watch;
-use reactor::Reactor;
+use profiles::Profiles;
+use reactor::{Reactor, Rpcs};
 use store::Store;
 
 /// Where a daemon keeps what it needs.
@@ -38,24 +40,31 @@ pub struct Paths {
     pub socket: PathBuf,
     /// The directory for what it remembers between runs.
     pub state: PathBuf,
+    /// The directory for what the user had it keep: the profiles.
+    pub config: PathBuf,
+}
+
+/// The directory `variable` names, if it is set to an absolute path, or
+/// `fallback` under the user's home.
+fn user_directory(variable: &str, fallback: &str) -> PathBuf {
+    std::env::var_os(variable)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(fallback)))
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 impl Paths {
     /// The paths a daemon uses when it isn't given any: the socket in the
-    /// user's runtime directory, and `$XDG_STATE_HOME/ctrlassist`, or
-    /// `~/.local/state/ctrlassist` where that isn't set.
+    /// user's runtime directory; `$XDG_STATE_HOME/ctrlassist`, or
+    /// `~/.local/state/ctrlassist` where that isn't set; and
+    /// `$XDG_CONFIG_HOME/ctrlassist`, or `~/.config/ctrlassist`.
     #[must_use]
     pub fn default_for_user() -> Self {
-        let state = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
-            })
-            .unwrap_or_else(std::env::temp_dir);
         Self {
             socket: bootstrap::default_socket_path(),
-            state: state.join("ctrlassist"),
+            state: user_directory("XDG_STATE_HOME", ".local/state").join("ctrlassist"),
+            config: user_directory("XDG_CONFIG_HOME", ".config").join("ctrlassist"),
         }
     }
 }
@@ -116,14 +125,9 @@ impl Daemon {
                 anyhow!("opening the control plane on {}: {error}", socket.display())
             })?;
 
-        let daemon_rpcs = session
-            .declare_queryable(daemon::Incoming::wild())
+        let rpcs = Rpcs::declare(&session)
             .await
             .map_err(|error| anyhow!("declaring the daemon's rpcs: {error}"))?;
-        let pad_rpcs = session
-            .declare_queryable(pad::Incoming::wild())
-            .await
-            .map_err(|error| anyhow!("declaring the pad rpcs: {error}"))?;
 
         // The pads remembered, then the pads connected now.
         let (store, known) = Store::open(&paths.state);
@@ -133,7 +137,8 @@ impl Daemon {
             .await
             .context("starting the hotplug watch")?
             .context("watching udev for pads")?;
-        let mut reactor = Reactor::new(session.clone(), Book::new(known), store);
+        let profiles = Profiles::open(&paths.config.join("profiles"));
+        let mut reactor = Reactor::new(session.clone(), Book::new(known), store, profiles);
 
         let realtime = input.is_realtime();
         let state = payload::Daemon {
@@ -159,7 +164,8 @@ impl Daemon {
                     .publish(keys::identity(identity.as_str()), &body)
                     .await?;
             }
-            reactor.publish_pads().await
+            reactor.publish_pads().await?;
+            reactor.publish_profiles().await
         };
         published
             .await
@@ -175,7 +181,7 @@ impl Daemon {
         }
 
         let (stop, stopped) = oneshot::channel();
-        let reactor = tokio::spawn(reactor.run(daemon_rpcs, pad_rpcs, seen, stopped));
+        let reactor = tokio::spawn(reactor.run(rpcs, seen, stopped));
 
         // The token is what clients take as "the daemon is there", so it
         // comes last: everything it serves is declared by the time a

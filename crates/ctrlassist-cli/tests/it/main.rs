@@ -24,6 +24,7 @@ async fn start(socket: &Path) -> Daemon {
     let paths = Paths {
         socket: socket.to_path_buf(),
         state: socket.with_file_name("state"),
+        config: socket.with_file_name("config"),
     };
     Daemon::start(&paths, input).await.unwrap()
 }
@@ -139,6 +140,7 @@ fn the_command_explains_itself() {
         "identities",
         "identify",
         "forget",
+        "profile",
         "service",
         "--socket",
     ] {
@@ -245,6 +247,8 @@ fn a_command_that_needs_the_daemon_says_when_there_is_none() {
         &["identities"],
         &["identify", "x"],
         &["forget", "x"],
+        &["profile", "list"],
+        &["profile", "delete", "x"],
     ] {
         let output = ctrlassist(&socket, arguments);
         assert_eq!(output.status.code(), Some(1), "{arguments:?}");
@@ -255,4 +259,63 @@ fn a_command_that_needs_the_daemon_says_when_there_is_none() {
         );
         assert!(output.stdout.is_empty());
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_profile_file_is_checked_put_shown_listed_and_deleted() {
+    let (dir, socket) = socket();
+    let daemon = start(&socket).await;
+    let right =
+        "preset = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
+    let file = dir.path().join("couch.toml");
+    std::fs::write(&file, right).unwrap();
+    let wrong = dir.path().join("wrong.toml");
+    std::fs::write(&wrong, "preset = \"priority\"\n").unwrap();
+    let path = |file: &Path| file.to_str().unwrap().to_string();
+
+    let empty = ctrlassist(&socket, &["profile", "list"]);
+    assert_eq!(text(&empty.stdout), "no profiles are kept\n");
+
+    // Checking says where a profile is wrong, as a failure, and keeps
+    // nothing either way.
+    let checked = ctrlassist(&socket, &["profile", "validate", &path(&file)]);
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
+    assert!(checked.stdout.is_empty());
+    let refused = ctrlassist(&socket, &["profile", "validate", &path(&wrong)]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        text(&refused.stderr).contains(&format!("{}: preset: ", wrong.display())),
+        "{}",
+        text(&refused.stderr)
+    );
+    let refused = ctrlassist(&socket, &["profile", "put", &path(&wrong)]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(text(&refused.stderr).contains("invalid-profile"));
+    let missing = ctrlassist(&socket, &["profile", "put", "/nowhere/x.toml"]);
+    assert!(text(&missing.stderr).contains("reading /nowhere/x.toml"));
+    let empty = ctrlassist(&socket, &["profile", "list", "--json"]);
+    assert_eq!(text(&empty.stdout), "[]\n");
+
+    // Put under the file's name, and under one given.
+    let put = ctrlassist(&socket, &["profile", "put", &path(&file)]);
+    assert!(put.status.success(), "{}", text(&put.stderr));
+    let put = ctrlassist(&socket, &["profile", "put", &path(&file), "--name", "desk"]);
+    assert!(put.status.success(), "{}", text(&put.stderr));
+    let shown = ctrlassist(&socket, &["profile", "show", "couch"]);
+    assert_eq!(text(&shown.stdout), right);
+    let listed = ctrlassist(&socket, &["profile", "list"]);
+    assert_eq!(text(&listed.stdout), "NAME   PROBLEM\ncouch\ndesk\n");
+    let json = ctrlassist(&socket, &["profile", "list", "--json"]);
+    let profiles: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(profiles[1]["name"], "desk");
+    assert_eq!(profiles[1]["toml"], right);
+
+    let deleted = ctrlassist(&socket, &["profile", "delete", "desk"]);
+    assert!(deleted.status.success(), "{}", text(&deleted.stderr));
+    let again = ctrlassist(&socket, &["profile", "delete", "desk"]);
+    assert!(text(&again.stderr).contains("unknown-profile"));
+    let gone = ctrlassist(&socket, &["profile", "show", "desk"]);
+    assert_eq!(gone.status.code(), Some(1));
+    assert!(text(&gone.stderr).contains("no profile is called desk"));
+    daemon.stop().await;
 }

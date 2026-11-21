@@ -57,9 +57,48 @@ pub enum Command {
         /// The pad, named as for `identify`.
         pad: String,
     },
+    /// List, show, check, keep and delete profiles.
+    #[command(subcommand)]
+    Profile(Profile),
     /// Become one of CtrlAssist's long-running processes.
     #[command(subcommand)]
     Service(Service),
+}
+
+/// What to do with profiles.
+#[derive(Subcommand, Debug)]
+pub enum Profile {
+    /// List the profiles the daemon keeps.
+    List {
+        /// Print a JSON array, one object per profile.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a profile as the TOML it was written as.
+    Show {
+        /// The profile's name.
+        name: String,
+    },
+    /// Check a profile file, and say where it is wrong. Nothing is kept.
+    Validate {
+        /// The profile, as a TOML file.
+        file: PathBuf,
+    },
+    /// Have the daemon keep a profile file: a new profile, or in place
+    /// of the one that has the name.
+    Put {
+        /// The profile, as a TOML file.
+        file: PathBuf,
+        /// The profile's name, in place of the file's name without its
+        /// `.toml`: lowercase letters, digits and hyphens.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Have the daemon stop keeping a profile.
+    Delete {
+        /// The profile's name.
+        name: String,
+    },
 }
 
 /// The long-running processes.

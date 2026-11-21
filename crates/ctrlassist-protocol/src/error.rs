@@ -47,6 +47,10 @@ error_codes! {
     PadWithoutRumble = "pad-without-rumble",
     /// The pad couldn't be opened, or refused what was asked of it.
     PadRefused = "pad-refused",
+    /// The profile is wrong; the message says where and what.
+    InvalidProfile = "invalid-profile",
+    /// No profile is kept under the name given.
+    UnknownProfile = "unknown-profile",
     /// The daemon stopped before it could answer.
     DaemonShuttingDown = "daemon-shutting-down",
     /// The daemon failed on its side; the request itself may be fine.
@@ -88,8 +92,8 @@ impl WireError {
         }
     }
 
-    /// A pad-related refusal, with its own code.
-    pub fn pad(code: ErrorCode, message: impl Into<String>) -> Self {
+    /// A refusal with a code of its own.
+    pub fn refusal(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -137,7 +141,7 @@ mod tests {
             ErrorCode::DaemonShuttingDown
         );
         assert_eq!(WireError::internal("x").code, ErrorCode::Internal);
-        let refusal = WireError::pad(ErrorCode::UnknownPad, "no pad is called x");
+        let refusal = WireError::refusal(ErrorCode::UnknownPad, "no pad is called x");
         assert_eq!(refusal.code.as_str(), "unknown-pad");
         assert_eq!(refusal.message, "no pad is called x");
     }

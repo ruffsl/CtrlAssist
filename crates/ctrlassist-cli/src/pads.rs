@@ -10,10 +10,16 @@ use anyhow::{Context, Result, bail};
 use ctrlassist::{DaemonClient, Error, StateEvent, StateWatcher, StateWatcherConfig};
 
 /// Connects to the daemon on `socket` and checks it can be talked to.
-async fn connect(socket: &Path) -> Result<(DaemonClient, StateWatcher)> {
-    let client = DaemonClient::connect(socket)
+pub(crate) async fn connect(socket: &Path) -> Result<(DaemonClient, StateWatcher)> {
+    // A session that doesn't keep dialing: a command that runs once says
+    // at once when nothing is listening.
+    let config = ctrlassist_protocol::bootstrap::client_config(socket)?;
+    let Ok(session) = zenoh::open(config).await else {
+        bail!("no daemon is running on {}", socket.display());
+    };
+    let client = DaemonClient::with_session(session)
         .await
-        .context("opening a session on the daemon's socket")?;
+        .context("following the daemon's state")?;
     // The watcher before the first call, so the daemon going away after
     // that call can't be missed.
     let mut config = StateWatcherConfig::default();
@@ -28,7 +34,7 @@ async fn connect(socket: &Path) -> Result<(DaemonClient, StateWatcher)> {
 
 /// As [`connect`], then waits until the daemon's published state has
 /// arrived, so that what is read next is all of it.
-async fn hydrated(socket: &Path) -> Result<DaemonClient> {
+pub(crate) async fn hydrated(socket: &Path) -> Result<DaemonClient> {
     let (client, mut watcher) = connect(socket).await?;
     while !client.is_hydrated() {
         match watcher.next().await {
@@ -43,7 +49,7 @@ async fn hydrated(socket: &Path) -> Result<DaemonClient> {
 
 /// A pad's own text, made safe to print: it is whatever the pad claims,
 /// and a terminal obeys control characters.
-fn printable(text: &str) -> String {
+pub(crate) fn printable(text: &str) -> String {
     text.chars()
         .map(|character| {
             if character.is_control() {
@@ -60,7 +66,7 @@ fn yes_no(value: bool) -> &'static str {
 }
 
 /// Writes rows as columns, each as wide as its widest cell.
-fn table<const N: usize>(headings: [&str; N], rows: &[[String; N]]) -> io::Result<()> {
+pub(crate) fn table<const N: usize>(headings: [&str; N], rows: &[[String; N]]) -> io::Result<()> {
     let mut widths = headings.map(|heading| heading.chars().count());
     for row in rows {
         for (width, cell) in widths.iter_mut().zip(row) {

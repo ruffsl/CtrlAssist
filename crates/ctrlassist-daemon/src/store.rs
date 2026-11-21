@@ -5,14 +5,15 @@
 //! release) is left alone: the daemon starts with no remembered pads and
 //! doesn't write, so nothing is lost by running an older release once.
 
-use std::fs::{self, File};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::book::Known;
+use crate::durable;
 
 /// The schema this release writes and reads.
 const SCHEMA: u32 = 1;
@@ -133,18 +134,7 @@ impl Store {
                 .collect(),
         };
         let text = toml::to_string(&stored).map_err(io::Error::other)?;
-        let directory = self
-            .path
-            .parent()
-            .ok_or_else(|| io::Error::other("the store has no directory"))?;
-        fs::create_dir_all(directory)?;
-        let partial = self.path.with_extension("toml.partial");
-        let mut file = File::create(&partial)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        fs::rename(&partial, &self.path)?;
-        // The rename is durable once the directory is.
-        File::open(directory)?.sync_all()
+        durable::write(&self.path, &text)
     }
 }
 

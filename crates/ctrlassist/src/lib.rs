@@ -16,9 +16,9 @@ use ctrlassist_protocol::bootstrap;
 /// in the user's runtime directory.
 pub use ctrlassist_protocol::bootstrap::default_socket_path;
 use ctrlassist_protocol::caller::Caller;
-use ctrlassist_protocol::endpoint::{Unary, daemon, pad};
+use ctrlassist_protocol::endpoint::{Unary, daemon, pad, profile};
 pub use ctrlassist_protocol::error::ErrorCode;
-pub use ctrlassist_protocol::payload::{Daemon as DaemonState, Identity, Pad};
+pub use ctrlassist_protocol::payload::{Daemon as DaemonState, Identity, Pad, Problem, Profile};
 use ctrlassist_protocol::rpc;
 pub use ctrlassist_protocol::rpc::ServiceInfo;
 pub use error::{BoxError, Error, Result};
@@ -43,6 +43,13 @@ pub enum StateEvent {
     PadChanged {
         /// The pad, by the id it is known by across reconnects.
         pad: String,
+    },
+    /// A profile's state changed in the mirror: it was put or deleted, or
+    /// it left the mirror because the daemon went away. Re-read
+    /// [`DaemonClient::list_profiles`].
+    ProfileChanged {
+        /// The profile's name.
+        profile: String,
     },
     /// What a virtual pad can present itself as changed, or left the
     /// mirror because the daemon went away. Re-read
@@ -112,6 +119,20 @@ impl DaemonClient {
         )
         .await
         .map_err(|e| Error::transport("connect to the daemon socket", e))?;
+        Self::with_session(session).await
+    }
+
+    /// Start mirroring over a zenoh `session` the caller already holds on
+    /// the daemon's socket, rather than opening one. [`Self::connect`]
+    /// opens a session that keeps dialing for as long as the client
+    /// lives; a command that runs once and wants to fail at once when no
+    /// daemon is listening opens its own, with
+    /// `ctrlassist_protocol::bootstrap::client_config`, and hands it over.
+    ///
+    /// # Errors
+    ///
+    /// Fails only with [`Error::Transport`].
+    pub async fn with_session(session: zenoh::Session) -> Result<Self> {
         let caller = Arc::new(Caller::new(session.clone()));
         let mirror = LifetimeMirror::<DaemonMirror>::start(&session, &caller).await?;
         Ok(Self {
@@ -187,6 +208,77 @@ impl DaemonClient {
         Ok(self
             .mirror
             .read(|mirror| mirror.identities.values().cloned().collect()))
+    }
+
+    /// The profiles the daemon keeps, in the order of their names: a
+    /// mirror read, no rpc. One with a [`Profile::problem`] is kept but
+    /// can't be run until it is put right.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::VersionMismatch`] when the daemon is known to
+    /// run another release.
+    pub fn list_profiles(&self) -> Result<Vec<Profile>> {
+        self.refuse_known_mismatch()?;
+        Ok(self
+            .mirror
+            .read(|mirror| mirror.profiles.values().cloned().collect()))
+    }
+
+    /// The profile kept under `name`, if one is: a mirror read, no rpc.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::VersionMismatch`] when the daemon is known to
+    /// run another release.
+    pub fn profile(&self, name: &str) -> Result<Option<Profile>> {
+        self.refuse_known_mismatch()?;
+        Ok(self
+            .mirror
+            .read(|mirror| mirror.profiles.get(name).cloned()))
+    }
+
+    /// Have the daemon check a profile's TOML without keeping it: what is
+    /// wrong with it and where, or `None` for one it would keep.
+    ///
+    /// # Errors
+    ///
+    /// Fails as any rpc can.
+    pub async fn validate_profile(&self, toml: &str) -> Result<Option<Problem>> {
+        let request = rpc::ValidateRequest {
+            toml: toml.to_string(),
+        };
+        Ok(self.call::<profile::Validate>(&request).await?.problem)
+    }
+
+    /// Keep `toml` as the profile `name`: a new one, or in place of the
+    /// one that has the name.
+    ///
+    /// # Errors
+    ///
+    /// Refused with [`ErrorCode::InvalidProfile`], whose message says
+    /// where the profile is wrong and what, or with
+    /// [`ErrorCode::BadRequest`] for a name that isn't 1 to 32 lowercase
+    /// letters, digits and hyphens; and fails as any rpc can.
+    pub async fn put_profile(&self, name: &str, toml: &str) -> Result<()> {
+        let request = rpc::PutProfileRequest {
+            name: name.to_string(),
+            toml: toml.to_string(),
+        };
+        self.call::<profile::Put>(&request).await.map(|_| ())
+    }
+
+    /// Stop keeping the profile `name`.
+    ///
+    /// # Errors
+    ///
+    /// Refused with [`ErrorCode::UnknownProfile`]; and fails as any rpc
+    /// can.
+    pub async fn delete_profile(&self, name: &str) -> Result<()> {
+        let request = rpc::ProfileRequest {
+            name: name.to_string(),
+        };
+        self.call::<profile::Delete>(&request).await.map(|_| ())
     }
 
     /// Buzz a pad for `duration`, so a person can tell which one it is.

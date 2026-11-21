@@ -463,3 +463,34 @@ fn an_identity_goes_by_the_name_a_profile_writes() {
         );
     }
 }
+
+#[test]
+fn a_profile_s_name_is_letters_digits_and_hyphens() {
+    use ctrlassist_protocol::profile::is_name;
+    for name in ["couch", "player-2", "a", &"x".repeat(32)] {
+        assert!(is_name(name), "{name}");
+    }
+    for name in [
+        "",
+        "Couch",
+        "two words",
+        "a/b",
+        "../x",
+        "a.toml",
+        "*",
+        &"x".repeat(33),
+    ] {
+        assert!(!is_name(name), "{name}");
+    }
+}
+
+#[test]
+fn checking_a_profile_reads_it_and_works_it_out() {
+    let preset = include_str!("fixtures/preset.toml");
+    assert_eq!(Profile::check(preset).unwrap().sinks.len(), 1);
+    assert_eq!(
+        Profile::check("preset = \"priority\"").unwrap_err().at,
+        "preset"
+    );
+    assert_eq!(Profile::check("preset =").unwrap_err().at, "line 1");
+}

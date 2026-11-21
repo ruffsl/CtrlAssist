@@ -150,11 +150,11 @@ impl Book {
         });
         match (fits.next(), fits.next()) {
             (Some((id, _)), None) => Ok(id),
-            (None, _) => Err(WireError::pad(
+            (None, _) => Err(WireError::refusal(
                 ErrorCode::UnknownPad,
                 format!("no known pad is called {reference}"),
             )),
-            (Some(_), Some(_)) => Err(WireError::pad(
+            (Some(_), Some(_)) => Err(WireError::refusal(
                 ErrorCode::AmbiguousPad,
                 format!("more than one known pad is {reference}; name one by its id"),
             )),
@@ -166,7 +166,7 @@ impl Book {
     pub(crate) fn forget(&mut self, reference: &str) -> Result<String, WireError> {
         let id = self.resolve(reference)?.to_string();
         if self.node(&id).is_some() {
-            return Err(WireError::pad(
+            return Err(WireError::refusal(
                 ErrorCode::PadConnected,
                 format!("{id} is connected; unplug it to forget it"),
             ));

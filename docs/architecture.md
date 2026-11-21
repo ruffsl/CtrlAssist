@@ -297,7 +297,7 @@ zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the d
 | `ctrlassist/rpc/daemon/info` | rpc | the daemon's release, for the version check; its reply's shape is frozen |
 | `ctrlassist/identity/<id>` | state | each identity a virtual pad can take, and whether it is available now |
 | `ctrlassist/pad/<id>` | state | the id it is known by across reconnects, name, model, connected, hidden, which setup uses it, whether it can rumble |
-| `ctrlassist/profile/<id>` | state | the profile |
+| `ctrlassist/profile/<name>` | state | the profile as its TOML, and what is wrong with it if anything is |
 | `ctrlassist/setup/<id>` | state | starting, running, held or failed with a reason; each node's selected input |
 | `ctrlassist/mirror/<pad>` | stream | the pad's current state |
 | `ctrlassist/rpc/profile/{validate,put,delete}` | rpc | check a profile and say where it is wrong; write one |
@@ -312,7 +312,7 @@ Key segments marked `<id>` are derived by the daemon, never taken raw from a pad
 
 ## Profiles
 
-A profile is a TOML file the daemon owns. Clients write profiles through the daemon, never the files. A preset is a profile whose graph is implied by its name:
+A profile is a TOML file the daemon owns, kept under a name of lowercase letters, digits and hyphens, which is also its key. Clients write profiles through the daemon, never the files: `put` checks a profile before it is kept, so what the daemon wrote is right, and keeps the text as it was given, comments included. A preset is a profile whose graph is implied by its name:
 
 ```toml
 preset = "priority"          # two pads, one mux, one virtual pad
@@ -373,7 +373,7 @@ Groups appear only when a pad isn't laid out as a gamepad; the schema has no key
 
 | What | Where | Notes |
 |---|---|---|
-| Profiles | `$XDG_CONFIG_HOME/ctrlassist/profiles/` | One file each, with a schema version; written durably. |
+| Profiles | `$XDG_CONFIG_HOME/ctrlassist/profiles/` | One file each, named for the profile, with a schema version; written durably. A file that arrived some other way is listed with what is wrong with it, and left as it is. |
 | Known pads | `$XDG_STATE_HOME/ctrlassist/pads.toml` | Id, model and name of pads seen, and whether each could rumble, for profiles that name a pad that isn't connected. Written durably; a file that can't be understood is left as it is. |
 | Identity data | `$XDG_STATE_HOME/ctrlassist/identities/` | What a PlayStation identity was copied from, per model and transport. |
 | Steam blacklist record | `$XDG_STATE_HOME/ctrlassist/` | Entries the daemon added, so they can be removed after a crash. |

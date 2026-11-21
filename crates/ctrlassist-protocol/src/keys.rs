@@ -89,6 +89,37 @@ pub(crate) fn parse_pad_rpc(key: &str) -> Option<&str> {
     key.strip_prefix("ctrlassist/rpc/pad/")
 }
 
+/// A profile's state, a [`Profile`](crate::payload::Profile): a cached
+/// publish. `name` is the profile's name, which is key-safe by rule.
+pub fn profile(name: &str) -> String {
+    format!("ctrlassist/profile/{name}")
+}
+
+/// Wildcard over every profile's state.
+pub fn profile_wild() -> String {
+    "ctrlassist/profile/*".to_string()
+}
+
+/// Parse a [`profile`] key into the profile's name.
+pub fn parse_profile(key: &str) -> Option<&str> {
+    segment(key.strip_prefix("ctrlassist/profile/")?)
+}
+
+/// A profile rpc's key.
+pub(crate) fn profile_rpc(verb: &str) -> String {
+    format!("ctrlassist/rpc/profile/{verb}")
+}
+
+/// Wildcard the profile rpcs' queryable is declared on.
+pub fn profile_rpc_wild() -> String {
+    "ctrlassist/rpc/profile/*".to_string()
+}
+
+/// Parse a [`profile_rpc`] key into its verb.
+pub(crate) fn parse_profile_rpc(key: &str) -> Option<&str> {
+    key.strip_prefix("ctrlassist/rpc/profile/")
+}
+
 /// `rest` if it is exactly one key segment.
 fn segment(rest: &str) -> Option<&str> {
     (!rest.is_empty() && !rest.contains('/')).then_some(rest)
@@ -111,6 +142,11 @@ mod tests {
         assert_eq!(parse_pad_rpc(&key), Some("identify"));
         assert_eq!(parse_pad_rpc(&daemon_rpc("info")), None);
         assert!(pad_rpc_wild().starts_with("ctrlassist/rpc/pad/"));
+
+        let key = profile_rpc("put");
+        assert_eq!(parse_profile_rpc(&key), Some("put"));
+        assert_eq!(parse_profile_rpc(&pad_rpc("forget")), None);
+        assert!(profile_rpc_wild().starts_with("ctrlassist/rpc/profile/"));
     }
 
     #[test]
@@ -123,6 +159,9 @@ mod tests {
         assert_eq!(parse_identity(&identity("xbox")), Some("xbox"));
         assert_eq!(parse_identity(&pad(&id)), None);
         assert!(pad(&id).starts_with(pad_wild().trim_end_matches('*')));
+        assert_eq!(parse_profile(&profile("couch")), Some("couch"));
+        assert_eq!(parse_profile(&identity("xbox")), None);
+        assert!(profile("couch").starts_with(profile_wild().trim_end_matches('*')));
         assert!(identity("xbox").starts_with(identity_wild().trim_end_matches('*')));
     }
 

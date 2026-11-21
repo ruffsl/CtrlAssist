@@ -461,7 +461,26 @@ fn check_name(at: &str, name: &str) -> Result<(), ProfileError> {
     }
 }
 
+/// Whether `name` can name a profile: what a source, node or sink may be
+/// called, so 1 to 32 lowercase letters, digits and hyphens. A profile's
+/// name is its file's and its key's, so nothing else is let through.
+#[must_use]
+pub fn is_name(name: &str) -> bool {
+    check_name("", name).is_ok()
+}
+
 impl Profile {
+    /// Reads a profile from TOML and works it out, as a daemon does
+    /// before it keeps one.
+    ///
+    /// # Errors
+    ///
+    /// Fails as [`from_toml`](Self::from_toml) and [`plan`](Self::plan)
+    /// do.
+    pub fn check(text: &str) -> Result<Plan, ProfileError> {
+        Self::from_toml(text)?.plan()
+    }
+
     /// Reads a profile from TOML.
     ///
     /// # Errors
