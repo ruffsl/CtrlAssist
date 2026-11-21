@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 5 (slice A) are done and the core API is approved; build step 6, the hiding service, is built and passes its virtual machine check.
-- **Next action:** the maintainer reads the root code (`crates/ctrlassist-hider/src`, about 1,600 lines with its tests, and `packaging/systemd`) and runs the hardware check: `just hider-dev`, then `just hide-pad <node>` for a DualSense with Steam running and with an SDL game listing pads. Then build step 7.
+- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 6 are done. The maintainer has read the hiding service's root code, and it hid a real DualSense from a running Steam and restored it (2026-11-21; SDL alone was not checked separately).
+- **Next action:** build step 7, reading a pad from a descriptor, then on through slice B. The next marked stop is build step 11.
 - **Hiding service decisions** (2026-11-21): who is served is TisVlay's desktop-session rule, asked of logind once per connection through its login library; a user switch leaves pads hidden; the socket and records live under `/run/ctrlassist`; the step landed in a few commits with one stop.
 - **Naming:** the root helper is called the hiding service in the architecture and `ctrlassist-hider` as a crate, because "helper" also described the assisting player. Older sections of this plan still say helper.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
