@@ -90,7 +90,9 @@ Recorded so nobody re-scouts. TisVlay's build notes have the measurements.
 
 Every dependency is declared once in `[workspace.dependencies]` and inherited. The core crate has none.
 
-A crate that needs a fix upstream doesn't have yet is carried under `vendor/` and wired in with `[patch.crates-io]`; [vendor/README.md](../vendor/README.md) lists each one and its fix. Vendored code keeps upstream's formatting and is outside the workspace's lints, the typos gate and the coverage figure, so its diff against upstream is the fix alone.
+A crate that needs a fix upstream doesn't have yet is carried under `vendor/` and wired in with `[patch.crates-io]`; [vendor/README.md](../vendor/README.md) lists each one and its fix. The controller database snapshot in `crates/ctrlassist-device/data` is data under the zlib license, kept beside it; `just update-controller-db` refreshes it from upstream at a named commit, and its diff is reviewed like code.
+
+Vendored code keeps upstream's formatting and is outside the workspace's lints, the typos gate and the coverage figure, so its diff against upstream is the fix alone.
 
 `just deny` holds the graph to one version of each crate. When an update brings a second version of something, first try to move the crates that pin the old one; only if upstream forces the duplicate does it go in `packaging/licensing/deny.toml`'s skip-list, with its reason. A skip that no longer matches anything fails the gate, so the list can't outlive what it excuses.
 

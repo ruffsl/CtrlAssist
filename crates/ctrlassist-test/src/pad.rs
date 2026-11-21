@@ -68,7 +68,36 @@ impl FakePad {
         for axis in [AbsoluteAxisCode::ABS_HAT0X, AbsoluteAxisCode::ABS_HAT0Y] {
             builder = builder.with_absolute_axis(&UinputAbsSetup::new(axis, hat))?;
         }
-        let mut device = builder.build()?;
+        Self::built(builder.build()?)
+    }
+
+    /// Creates a pad with exactly these key codes and absolute axes
+    /// (each a code, its lowest and its highest value), for standing in
+    /// for a pad that doesn't follow the gamepad layout.
+    ///
+    /// # Errors
+    ///
+    /// Fails if uinput can't be opened or the kernel refuses the pad.
+    pub fn with_controls(
+        name: &str,
+        (vendor, product, version): (u16, u16, u16),
+        keys: &[u16],
+        axes: &[(u16, i32, i32)],
+    ) -> io::Result<Self> {
+        let keys = AttributeSet::from_iter(keys.iter().map(|code| KeyCode::new(*code)));
+        let mut builder = VirtualDevice::builder()?
+            .name(name)
+            .input_id(InputId::new(BusType::BUS_USB, vendor, product, version))
+            .with_keys(&keys)?;
+        for (code, min, max) in axes {
+            let info = AbsInfo::new((min + max + 1).div_euclid(2), *min, *max, 0, 0, 0);
+            builder =
+                builder.with_absolute_axis(&UinputAbsSetup::new(AbsoluteAxisCode(*code), info))?;
+        }
+        Self::built(builder.build()?)
+    }
+
+    fn built(mut device: VirtualDevice) -> io::Result<Self> {
         let event_node = device
             .enumerate_dev_nodes_blocking()?
             .filter_map(Result::ok)

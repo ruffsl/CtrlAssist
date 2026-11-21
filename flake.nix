@@ -101,6 +101,8 @@
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             actionlint
+            # fetches the controller database snapshot (`just update-controller-db`)
+            curl
             # nixpkgs' cargo-llvm-cov fails its own test suite in the sandbox.
             cargo-deny
             (pkgs.cargo-llvm-cov.overrideAttrs { doCheck = false; })

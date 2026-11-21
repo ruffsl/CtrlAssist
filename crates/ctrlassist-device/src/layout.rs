@@ -95,33 +95,71 @@ impl AxisRange {
     }
 }
 
-/// What a key code does.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Key {
-    Unmapped,
+/// Where a value lands in a pad state.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Out {
+    /// A button: pressed when the value is past halfway.
     Button(u8),
-    /// A trigger that only clicks: it drives the trigger's axis fully.
+    /// A whole axis that rests in the middle.
+    Axis(u8),
+    /// An axis that rests at zero: a trigger.
     Trigger(u8),
+    /// One side of an axis that rests in the middle: the value pushes it
+    /// toward this sign, and letting go returns it to rest only if it is
+    /// on this side, so the control for the other side isn't undone.
+    Side(u8, f32),
+}
+
+impl Out {
+    /// Writes an amount from 0 through 1.
+    fn amount(self, state: &mut PadState, amount: f32) {
+        match self {
+            Self::Button(index) => {
+                state.set(Control::Button(index), if amount > 0.5 { 1.0 } else { 0.0 });
+            }
+            Self::Axis(index) | Self::Trigger(index) => state.set(Control::Axis(index), amount),
+            Self::Side(index, sign) => {
+                let control = Control::Axis(index);
+                if amount > 0.0 {
+                    state.set(control, sign * amount);
+                } else if state.get(control) * sign > 0.0 {
+                    state.set(control, 0.0);
+                }
+            }
+        }
+    }
+}
+
+/// What a key code does.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Key {
+    Unmapped,
+    To(Out),
 }
 
 /// What an absolute axis code does.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Absolute {
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Absolute {
     Unmapped,
-    Centered(u8, AxisRange),
-    FromRest(u8, AxisRange),
-    /// The directional pad as an axis: negative is left or up.
-    Hat {
-        negative: u8,
-        positive: u8,
+    /// The whole axis to one place.
+    Whole {
+        range: AxisRange,
+        inverted: bool,
+        out: Out,
+    },
+    /// Each side of the middle to its own place, as a hat's directions.
+    Split {
+        range: AxisRange,
+        negative: Option<Out>,
+        positive: Option<Out>,
     },
 }
 
 /// Where each of one pad's event codes lands in a pad state.
 #[derive(Clone, Debug)]
 pub struct Mapping {
-    keys: Box<[Key; KEYS]>,
-    absolutes: [Absolute; ABSOLUTES],
+    pub(crate) keys: Box<[Key; KEYS]>,
+    pub(crate) absolutes: [Absolute; ABSOLUTES],
 }
 
 fn index(control: Control) -> u8 {
@@ -131,6 +169,14 @@ fn index(control: Control) -> u8 {
 }
 
 impl Mapping {
+    /// A mapping with no place for anything.
+    pub(crate) fn empty() -> Self {
+        Self {
+            keys: Box::new([Key::Unmapped; KEYS]),
+            absolutes: [Absolute::Unmapped; ABSOLUTES],
+        }
+    }
+
     /// The mapping for a pad with these key codes and absolute axes,
     /// under the kernel's gamepad layout. Codes beyond the gamepad's own
     /// take the spare positions in code order until those run out; the
@@ -144,10 +190,7 @@ impl Mapping {
         let analog_triggers =
             (z_is_trigger && (has(ABS_Z) || has(ABS_RZ))) || has(ABS_GAS) || has(ABS_BRAKE);
 
-        let mut mapping = Self {
-            keys: Box::new([Key::Unmapped; KEYS]),
-            absolutes: [Absolute::Unmapped; ABSOLUTES],
-        };
+        let mut mapping = Self::empty();
 
         let mut spare = FIRST_SPARE_BUTTON;
         let mut sorted: Vec<u16> = keys.to_vec();
@@ -157,7 +200,7 @@ impl Mapping {
             let Some(slot) = mapping.keys.get_mut(usize::from(code)) else {
                 continue;
             };
-            let button = |control: Control| Key::Button(index(control));
+            let button = |control: Control| Key::To(Out::Button(index(control)));
             *slot = match code {
                 BTN_SOUTH => button(gamepad::SOUTH),
                 BTN_EAST => button(gamepad::EAST),
@@ -177,11 +220,11 @@ impl Mapping {
                 // A pad with analog triggers reports these clicks as
                 // well; the axis already says everything they do.
                 BTN_TL2 | BTN_TR2 if analog_triggers => Key::Unmapped,
-                BTN_TL2 => Key::Trigger(index(gamepad::LEFT_TRIGGER)),
-                BTN_TR2 => Key::Trigger(index(gamepad::RIGHT_TRIGGER)),
+                BTN_TL2 => Key::To(Out::Trigger(index(gamepad::LEFT_TRIGGER))),
+                BTN_TR2 => Key::To(Out::Trigger(index(gamepad::RIGHT_TRIGGER))),
                 _ if usize::from(spare) < BUTTONS => {
                     spare += 1;
-                    Key::Button(spare - 1)
+                    Key::To(Out::Button(spare - 1))
                 }
                 _ => Key::Unmapped,
             };
@@ -195,8 +238,18 @@ impl Mapping {
             let Some(slot) = mapping.absolutes.get_mut(usize::from(code)) else {
                 continue;
             };
-            let centered = |control: Control| Absolute::Centered(index(control), range);
-            let rested = |control: Control| Absolute::FromRest(index(control), range);
+            let whole = |out: Out| Absolute::Whole {
+                range,
+                inverted: false,
+                out,
+            };
+            let centered = |control: Control| whole(Out::Axis(index(control)));
+            let rested = |control: Control| whole(Out::Trigger(index(control)));
+            let hat = |negative: Control, positive: Control| Absolute::Split {
+                range,
+                negative: Some(Out::Button(index(negative))),
+                positive: Some(Out::Button(index(positive))),
+            };
             *slot = match code {
                 ABS_X => centered(gamepad::LEFT_X),
                 ABS_Y => centered(gamepad::LEFT_Y),
@@ -208,17 +261,11 @@ impl Mapping {
                 ABS_RZ => centered(gamepad::RIGHT_Y),
                 ABS_BRAKE => rested(gamepad::LEFT_TRIGGER),
                 ABS_GAS => rested(gamepad::RIGHT_TRIGGER),
-                ABS_HAT0X => Absolute::Hat {
-                    negative: index(gamepad::DPAD_LEFT),
-                    positive: index(gamepad::DPAD_RIGHT),
-                },
-                ABS_HAT0Y => Absolute::Hat {
-                    negative: index(gamepad::DPAD_UP),
-                    positive: index(gamepad::DPAD_DOWN),
-                },
+                ABS_HAT0X => hat(gamepad::DPAD_LEFT, gamepad::DPAD_RIGHT),
+                ABS_HAT0Y => hat(gamepad::DPAD_UP, gamepad::DPAD_DOWN),
                 _ if usize::from(spare) < AXES => {
                     spare += 1;
-                    Absolute::Centered(spare - 1, range)
+                    whole(Out::Axis(spare - 1))
                 }
                 _ => Absolute::Unmapped,
             };
@@ -230,31 +277,41 @@ impl Mapping {
     /// place for changes nothing.
     pub fn apply(&self, state: &mut PadState, kind: u16, code: u16, value: i32) {
         match kind {
-            EV_KEY => match self.keys.get(usize::from(code)) {
-                Some(Key::Button(index)) => {
-                    state.set(Control::Button(*index), if value == 0 { 0.0 } else { 1.0 });
+            EV_KEY => {
+                if let Some(Key::To(out)) = self.keys.get(usize::from(code)) {
+                    out.amount(state, if value == 0 { 0.0 } else { 1.0 });
                 }
-                Some(Key::Trigger(index)) => {
-                    state.set(Control::Axis(*index), if value == 0 { 0.0 } else { 1.0 });
-                }
-                Some(Key::Unmapped) | None => {}
-            },
+            }
             EV_ABS => match self.absolutes.get(usize::from(code)) {
-                Some(Absolute::Centered(index, range)) => {
-                    state.set(Control::Axis(*index), range.centered(value));
-                }
-                Some(Absolute::FromRest(index, range)) => {
-                    state.set(Control::Axis(*index), range.rested(value));
-                }
-                Some(Absolute::Hat { negative, positive }) => {
-                    state.set(
-                        Control::Button(*negative),
-                        if value < 0 { 1.0 } else { 0.0 },
-                    );
-                    state.set(
-                        Control::Button(*positive),
-                        if value > 0 { 1.0 } else { 0.0 },
-                    );
+                Some(Absolute::Whole {
+                    range,
+                    inverted,
+                    out,
+                }) => match out {
+                    Out::Axis(index) => {
+                        let value = range.centered(value);
+                        state.set(
+                            Control::Axis(*index),
+                            if *inverted { -value } else { value },
+                        );
+                    }
+                    out => {
+                        let amount = range.rested(value);
+                        out.amount(state, if *inverted { 1.0 - amount } else { amount });
+                    }
+                },
+                Some(Absolute::Split {
+                    range,
+                    negative,
+                    positive,
+                }) => {
+                    let value = range.centered(value);
+                    if let Some(out) = negative {
+                        out.amount(state, (-value).max(0.0));
+                    }
+                    if let Some(out) = positive {
+                        out.amount(state, value.max(0.0));
+                    }
                 }
                 Some(Absolute::Unmapped) | None => {}
             },

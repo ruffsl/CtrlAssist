@@ -165,6 +165,32 @@ msrv:
 vm name:
     nix build .#checks.x86_64-linux.{{ name }} --print-build-logs
 
+# --- Maintenance ---------------------------------------------------------
+
+controller_db := "crates/ctrlassist-device/data"
+controller_db_repo := "https://github.com/mdqinc/SDL_GameControllerDB"
+
+# Only the Linux entries are kept, under a header naming the commit. Review
+# the diff before committing: every line is input to the daemon.
+#
+# Refresh the pinned controller database snapshot from upstream
+[group('maintain')]
+update-controller-db:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sha=$(git ls-remote {{ controller_db_repo }} HEAD | cut -f1)
+    raw="https://raw.githubusercontent.com/mdqinc/SDL_GameControllerDB/$sha"
+    curl -fsS "$raw/LICENSE" -o {{ controller_db }}/LICENSE-gamecontrollerdb
+    {
+        echo "# SDL_GameControllerDB, Linux entries only."
+        echo "# Source: {{ controller_db_repo }}"
+        echo "# Commit: $sha"
+        echo "# License: zlib; see LICENSE-gamecontrollerdb beside this file."
+        echo "# Refreshed by \`just update-controller-db\`; not edited by hand."
+        curl -fsS "$raw/gamecontrollerdb.txt" | grep "platform:Linux"
+    } > {{ controller_db }}/gamecontrollerdb.txt
+    git diff --stat -- {{ controller_db }}
+
 # --- Hardware -----------------------------------------------------------
 
 # Checks on real pads, which no virtual machine has. The service runs from

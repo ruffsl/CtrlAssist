@@ -9,6 +9,7 @@ use evdev::{
 };
 use rustix::fs::fstat;
 
+use crate::database::Database;
 use crate::layout::{AxisRange, Mapping};
 
 /// Why a pad couldn't be opened or read.
@@ -140,6 +141,29 @@ fn nonempty(text: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Kernel drivers that present the gamepad layout themselves: the Xbox
+/// and PlayStation families, and the others written to the kernel's
+/// gamepad convention. A database line for one of their pads describes
+/// some other driver's view of it, and is not used.
+const GAMEPAD_DRIVERS: [&str; 9] = [
+    "xpad",
+    "xpadneo",
+    "xone-gip-gamepad",
+    "microsoft",
+    "playstation",
+    "sony",
+    "nintendo",
+    "hid-steam",
+    "steam-deck",
+];
+
+/// The kernel driver behind a device: the nearest one up its parents.
+fn driver(device_number: u64) -> Option<String> {
+    let device = udev::Device::from_devnum(udev::DeviceType::Character, device_number).ok()?;
+    std::iter::successors(Some(device), udev::Device::parent)
+        .find_map(|device| Some(device.driver()?.to_str()?.to_string()))
+}
+
 /// The USB serial number udev holds for a device.
 fn serial(device_number: u64) -> Option<String> {
     let device = udev::Device::from_devnum(udev::DeviceType::Character, device_number).ok()?;
@@ -181,12 +205,38 @@ impl Pad {
     ///
     /// Fails if the descriptor isn't an event device.
     pub fn from_fd(fd: OwnedFd) -> Result<Self, PadError> {
+        Self::open(fd, None)
+    }
+
+    /// As [`from_fd`](Self::from_fd), with layouts from a controller
+    /// database for pads whose drivers don't present the gamepad layout.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the descriptor isn't an event device.
+    pub fn with_database(fd: OwnedFd, database: &Database) -> Result<Self, PadError> {
+        Self::open(fd, Some(database))
+    }
+
+    fn open(fd: OwnedFd, database: Option<&Database>) -> Result<Self, PadError> {
         let device_number = fstat(&fd).map_err(io::Error::from)?.st_rdev;
         let serial = serial(device_number);
         let device = Device::from_fd(fd)?;
         // A read with nothing waiting must return, not block the thread
         // that every other pad is read on.
         device.set_nonblocking(true)?;
+
+        let id = device.input_id();
+        let identifiers = Identifiers {
+            name: device.name().unwrap_or_default().to_string(),
+            bus: id.bus_type().0,
+            vendor: id.vendor(),
+            product: id.product(),
+            version: id.version(),
+            address: nonempty(device.unique_name()),
+            serial,
+            port: nonempty(device.physical_path()),
+        };
 
         let keys: Vec<u16> = device
             .supported_keys()
@@ -208,7 +258,16 @@ impl Pad {
                     .collect()
             })
             .unwrap_or_default();
-        let mapping = Mapping::kernel(&keys, &absolutes);
+        // A pad whose driver presents the gamepad layout is read as the
+        // driver presents it. Any other pad takes its layout from the
+        // database if it is there, and is read as a gamepad if it isn't.
+        let mapping = database
+            .filter(|_| {
+                !driver(device_number)
+                    .is_some_and(|driver| GAMEPAD_DRIVERS.contains(&driver.as_str()))
+            })
+            .and_then(|database| database.mapping(&identifiers, &keys, &absolutes))
+            .unwrap_or_else(|| Mapping::kernel(&keys, &absolutes));
 
         // What is held at this moment: a pad can be opened mid-press.
         let mut state = PadState::NEUTRAL;
@@ -224,17 +283,6 @@ impl Pad {
         let can_rumble = device
             .supported_ff()
             .is_some_and(|ff| ff.contains(FFEffectCode::FF_RUMBLE));
-        let id = device.input_id();
-        let identifiers = Identifiers {
-            name: device.name().unwrap_or_default().to_string(),
-            bus: id.bus_type().0,
-            vendor: id.vendor(),
-            product: id.product(),
-            version: id.version(),
-            address: nonempty(device.unique_name()),
-            serial,
-            port: nonempty(device.physical_path()),
-        };
         Ok(Self {
             device,
             mapping,

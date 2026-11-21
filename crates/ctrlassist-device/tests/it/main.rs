@@ -220,3 +220,69 @@ fn a_descriptor_that_is_not_an_event_device_is_refused() {
     assert!(std::error::Error::source(&error).is_some());
     assert!(error.to_string().contains("couldn't be read"));
 }
+
+/// A pad that doesn't follow the gamepad layout: twelve plain joystick
+/// buttons, four axes of which the last two aren't where a stick's are,
+/// and a hat.
+fn odd_pad(test: &str) -> Option<FakePad> {
+    let keys: Vec<u16> = (0x120..0x12c).collect();
+    let axes = [
+        (0, 0, 255),
+        (1, 0, 255),
+        (2, 0, 255),
+        (5, 0, 255),
+        (0x10, -1, 1),
+        (0x11, -1, 1),
+    ];
+    can_make_pads(test).then(|| {
+        FakePad::with_controls("Odd Layout Pad", (0x1209, 0x0dd0, 0x0111), &keys, &axes).unwrap()
+    })
+}
+
+/// A database line for the odd pad, as a user's own file would hold.
+const ODD_LAYOUT: &str = "03000000091200000d0d000011010000,Odd Layout Pad,a:b2,b:b1,x:b3,y:b0,leftshoulder:b4,\
+    rightshoulder:b5,lefttrigger:b6,righttrigger:b7,back:b8,start:b9,leftx:a0,lefty:a1,rightx:a2,righty:a3,\
+    dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8,platform:Linux,";
+
+#[test]
+fn a_pad_with_an_odd_layout_is_read_through_its_database_line() {
+    let Some(mut fake) = odd_pad("a_pad_with_an_odd_layout_is_read_through_its_database_line")
+    else {
+        return;
+    };
+    // The identifier's product is little-endian: 0x0dd0 is `d00d`.
+    let database = ctrlassist_device::Database::parse(&ODD_LAYOUT.replace("0d0d0000", "d00d0000"));
+    assert_eq!((database.len(), database.skipped()), (1, 0));
+    let node: OwnedFd = File::open(fake.event_node()).unwrap().into();
+    let mut pad = Pad::with_database(node, &database).unwrap();
+
+    // Its third button is the south one; its fourth axis, code 5, is the
+    // right stick's Y; its seventh button is a trigger that only clicks.
+    fake.frame(&[
+        (EV_KEY, 0x122, 1),
+        (EV_ABS, 5, 255),
+        (EV_KEY, 0x126, 1),
+        (EV_ABS, 0x11, -1),
+    ])
+    .unwrap();
+    let frames = read_until(&mut pad, |frames| !frames.is_empty());
+    let expected = PadState::NEUTRAL
+        .with(gamepad::SOUTH, 1.0)
+        .with(gamepad::RIGHT_Y, 1.0)
+        .with(gamepad::LEFT_TRIGGER, 1.0)
+        .with(gamepad::DPAD_UP, 1.0);
+    assert_eq!(frames, [expected]);
+}
+
+#[test]
+fn a_pad_the_database_does_not_know_is_read_as_a_gamepad() {
+    let Some(mut fake) = fake("a_pad_the_database_does_not_know_is_read_as_a_gamepad") else {
+        return;
+    };
+    let database = ctrlassist_device::Database::bundled();
+    let node: OwnedFd = File::open(fake.event_node()).unwrap().into();
+    let mut pad = Pad::with_database(node, &database).unwrap();
+    fake.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    let frames = read_until(&mut pad, |frames| !frames.is_empty());
+    assert_eq!(frames, [PadState::NEUTRAL.with(gamepad::SOUTH, 1.0)]);
+}
