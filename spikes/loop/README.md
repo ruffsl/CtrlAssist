@@ -10,4 +10,4 @@ Throwaway code for the plan's input loop spike. It answers: what does the data p
 
 `just spike-loop-bench` runs the matrix. The legacy binary is built from a `git worktree` of `legacy/0.4`.
 
-The results and verdict are in `docs/plans/findings/input-loop.md`. This directory is deleted when the device crate replaces it.
+The results are in `docs/architecture.md`, under "What the platform does". This directory is deleted when the device crate replaces it.

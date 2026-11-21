@@ -5,4 +5,4 @@ Throwaway code for the plan's hiding spike. It answers: can an unprivileged daem
 - `src/main.rs` builds `probe`, one subcommand per observation or fixture: `access`, `pads`, `fake-pad`, `fake-hid`, `grab`, `listen`.
 - `vm.nix` runs the probes in a clean NixOS VM (`just spike-hiding-vm`) and prints what it sees.
 
-The results and verdict are in `docs/plans/findings/hiding.md`. This directory is deleted when the device crate replaces it.
+The results are in `docs/architecture.md`, under "What the platform does". This directory is deleted when the device crate replaces it.

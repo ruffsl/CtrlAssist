@@ -8,4 +8,4 @@ Throwaway code for the plan's identity spike. It answers: what does it take for 
 - `uinput-pad` creates an evdev-level pad with any name and IDs and logs the force feedback it is sent.
 - `uhid-dualsense <hidraw>` creates a HID-level DualSense from a connected one's report descriptor and feature reports, and logs the output reports it is sent.
 
-The results and verdict are in `docs/plans/findings/identity.md`. This directory is deleted when the device crate replaces it.
+The results are in `docs/architecture.md`, under "What the platform does". This directory is deleted when the device crate replaces it.

@@ -8,4 +8,4 @@ Throwaway code for the plan's last spike. It answers one question: does a zenoh 
 - `ping` makes one rpc and exits, as a CLI verb would.
 - `watch` subscribes to the status, or with `--mirror` to the mirror.
 
-`just spike-zenoh-bench` runs the comparison. The results and verdict are in `docs/plans/findings/zenoh.md`.
+`just spike-zenoh-bench` runs the comparison. The results are in `docs/architecture.md`, under "What the platform does".

@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 to 4 done, pending the maintainer's approval of [docs/architecture.md](../architecture.md) and of the build steps under step 5. The architecture has had its three-lens review and stands without the findings, which are deleted by build step 1. Unverified items are in [docs/concerns/](../concerns/README.md); deferred work is in [docs/ideas/](../ideas/README.md).
-- **Next action:** on approval, build step 1. The re-bind half of hiding is now observed for a DualSense on USB, a DualShock 4 over Bluetooth and an Xbox One pad on USB; the remaining hardware checks are listed in the concerns and attached to the build steps that need them.
+- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way; build step 1 is done.
+- **Next action:** build step 2, stopping at its review point. Work proceeds to each step marked **stop**, with the hardware checks reached so far gathered into one batch for the maintainer.
 - **Naming:** the root helper is called the hiding service in the architecture and `ctrlassist-hider` as a crate, because "helper" also described the assisting player. Older sections of this plan still say helper.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
@@ -71,7 +71,7 @@ One word per thing, here and in everything written from this plan:
 
 **A user-level daemon,** unlike TisVlay's system daemon: the pads belong to the seat user and Steam's config is in their home. The packages install static udev rules for what the daemon needs (uinput access, and uhid if S5 calls for it).
 
-**Privilege is confined to a minimal helper.** The daemon never runs as root. The hiding spike found no unprivileged way to make a pad absent to games ([findings/hiding.md](findings/hiding.md)), so the native packages install a small root helper that does one thing: on request it installs a runtime udev rule denying a pad's event, js and hidraw nodes to everyone, opens them itself and passes the open descriptors to the daemon, and removes the rule and restores the nodes when the daemon's connection closes, crash included. It hands over descriptors rather than permissions because the daemon and the games are the same user. Hiding is the rule followed by re-binding the pad's driver, which cuts off programs that already had the pad open, as Steam does from plug-in; restoring re-binds again, so they see the pad return. The daemon names a pad to the helper by passing an open descriptor it already holds, never a path or a name: possession proves it could already read that pad, and no attacker-chosen string reaches a rule. The helper refuses anything that isn't a joystick the seat user could open, builds rule text only from parsed numbers, and opens hidraw only for an allowlisted driver. The active seat user may connect to it, enforced on its socket the way TisVlay enforces its own; no prompt. Channels that can't install it, the Flatpak above all, fall back to a grab plus Steam's blacklist, with the gaps the finding lists.
+**Privilege is confined to a minimal helper.** The daemon never runs as root. The hiding spike found no unprivileged way to make a pad absent to games ([architecture](../architecture.md#hiding)), so the native packages install a small root helper that does one thing: on request it installs a runtime udev rule denying a pad's event, js and hidraw nodes to everyone, opens them itself and passes the open descriptors to the daemon, and removes the rule and restores the nodes when the daemon's connection closes, crash included. It hands over descriptors rather than permissions because the daemon and the games are the same user. Hiding is the rule followed by re-binding the pad's driver, which cuts off programs that already had the pad open, as Steam does from plug-in; restoring re-binds again, so they see the pad return. The daemon names a pad to the helper by passing an open descriptor it already holds, never a path or a name: possession proves it could already read that pad, and no attacker-chosen string reaches a rule. The helper refuses anything that isn't a joystick the seat user could open, builds rule text only from parsed numbers, and opens hidraw only for an allowlisted driver. The active seat user may connect to it, enforced on its socket the way TisVlay enforces its own; no prompt. Channels that can't install it, the Flatpak above all, fall back to a grab plus Steam's blacklist, with the gaps the finding lists.
 
 **InputPlumber is out of scope for the first release.** CtrlAssist works independently and documents that the two shouldn't manage the same pad. Cooperation could not be tested on the development host and would be a second, unexercised code path.
 
@@ -89,7 +89,7 @@ One word per thing, here and in everything written from this plan:
 
 **Disconnects hold and re-bind.** When a pad in a setup drops, the virtual pad stays alive so the game never sees a disconnect, the missing pad's inputs go neutral, the other pad keeps working, and the same pad is re-bound and re-hidden when it returns. A notification says what happened.
 
-**Virtual pads come in two kinds, chosen by identity** ([findings/identity.md](findings/identity.md)). A uinput pad serves the generic identity and Xbox identities. A PlayStation identity needs a uhid pad, because SDL and Steam ignore an evdev node carrying Sony's IDs. The default, when a profile names none, is the generic one: a virtual pad that claims to be real hardware is a choice. Copying a pad means its IDs on a uinput pad for Xbox-family pads and a uhid copy for PlayStation pads.
+**Virtual pads come in two kinds, chosen by identity** ([architecture](../architecture.md#virtual-pads)). A uinput pad serves the generic identity and Xbox identities. A PlayStation identity needs a uhid pad, because SDL and Steam ignore an evdev node carrying Sony's IDs. The default, when a profile names none, is the generic one: a virtual pad that claims to be real hardware is a choice. Copying a pad means its IDs on a uinput pad for Xbox-family pads and a uhid copy for PlayStation pads.
 
 **The DualSense identity and the Steam blacklist fallback are in the first release, built last.** Everything else is brought up end to end with generic and Xbox identities and the helper first, so either can slip to a point release without holding 0.5.0. Two reviewers recommended deferring both; the maintainer chose to keep them.
 
@@ -97,7 +97,7 @@ One word per thing, here and in everything written from this plan:
 
 **Feedback routes rumble everywhere and passes the rest through between like pads.** Rumble is translated between the two forms (force-feedback requests on uinput, output reports on uhid). When the sink and the source are the same kind of pad, the whole output report passes through, so LEDs and trigger effects work; between unlike pads they are dropped.
 
-**Pads are read directly through evdev, on one epoll thread** ([findings/input-loop.md](findings/input-loop.md)). gilrs leaves the dependency set: it opens pads by path, so it can't take the descriptors the helper hands over, and its loop wakes about a hundred times a second when idle where the new one never does. The first release includes its own parser for SDL's controller database, so pads outside the Xbox and PlayStation families, which gilrs used to normalize, keep working.
+**Pads are read directly through evdev, on one epoll thread** ([architecture](../architecture.md#the-input-path)). gilrs leaves the dependency set: it opens pads by path, so it can't take the descriptors the helper hands over, and its loop wakes about a hundred times a second when idle where the new one never does. The first release includes its own parser for SDL's controller database, so pads outside the Xbox and PlayStation families, which gilrs used to normalize, keep working.
 
 **The input thread asks for real-time scheduling and degrades quietly.** If the kernel refuses, the daemon runs normally and its status says which. Packages raise the limit where they can; rtkit is not used.
 
@@ -194,7 +194,7 @@ The rewrite targets similar functionality, not identical.
 
 ## Ecosystem survey
 
-The legacy dependencies were chosen a year ago, and the Rust input ecosystem moves quickly. Before the spikes pick their building blocks, survey it and write `docs/plans/findings/ecosystem.md`:
+The legacy dependencies were chosen a year ago, and the Rust input ecosystem moves quickly. Before the spikes pick their building blocks, survey it and write a finding:
 
 - **Legacy dependencies** (`gilrs`, `evdev`, `udev`, `ksni`, `notify-rust`, `ashpd`, `fs2`, `dirs`, `signal-hook`, `parking_lot`, `env_logger`, and the common ones TisVlay already pins): the current release, what changed since the pinned version (gilrs's changelog especially), maintenance state, and what TisVlay uses in that role.
 - **Alternatives by goal:** evdev and uinput access; hidraw and uhid (the `archive/uhid` tag tried `uhid-virt` and `hidapi`); controller mapping databases; HID report descriptors and ready-made controller emulation, PlayStation above all; hotplug (udev bindings against pure-Rust netlink); epoll-style loops beside tokio; ratatui; graph or dataflow crates worth borrowing from.
@@ -204,7 +204,7 @@ Each entry records its source and date. The survey chooses nothing: it gives eac
 
 ## Spikes
 
-Each spike is a workspace under `spikes/<name>/`, run on the development host, with the maintainer asked only for physical actions such as pressing buttons, batched into one checklist per session with results captured to a log. On that host the maintainer has allowed: grabbing and releasing pads; editing Steam's config, backed up first and restored after each test; restarting Steam; and `sudo` for temporary udev rules and node permissions, each command shown before it runs and undone afterward. Each ends in `docs/plans/findings/<name>.md` holding a results table and a verdict, and work stops there for review. At step 4 the findings are folded into `docs/architecture.md` (hardware caveats into `docs/concerns/`) and the findings directory is deleted. Spike code is deleted in the commit that lands its replacement in `crates/`, except S4, whose tests and nodes are promoted to become the core crate.
+Each spike is a workspace under `spikes/<name>/`, run on the development host, with the maintainer asked only for physical actions such as pressing buttons, batched into one checklist per session with results captured to a log. On that host the maintainer has allowed: grabbing and releasing pads; editing Steam's config, backed up first and restored after each test; restarting Steam; and `sudo` for temporary udev rules and node permissions, each command shown before it runs and undone afterward. Each ended in a finding holding a results table and a verdict, with a stop for review. The findings were then folded into `docs/architecture.md` (hardware caveats into `docs/concerns/`) and deleted; git history has them. Spike code is deleted in the commit that lands its replacement in `crates/`, except S4, whose tests and nodes are promoted to become the core crate.
 
 Order: the survey, then S1 and S5, then S2, then S4, then S3. S5 precedes S4 because the sink type decides what feedback looks like; S1 precedes S2 because a grab decides who may read the pad.
 
@@ -342,7 +342,7 @@ A check, not a comparison.
    28. `docs: retire the rewrite plan`.
    29. `chore(release): 0.5.0` — the maintainer tags, then runs the NixOS and KDE checklist.
 
-   Still to decide before step 29: whether the SDK is published to crates.io with 0.5.0 or once its API has settled.
+   0.5.0 ships as packages only. The core, protocol and SDK crates are published to crates.io once a second client has exercised the API.
 6. **Retire this plan** in build step 28, per the plans convention.
 
 The repository move is the maintainer's, out of band, and gates none of these.

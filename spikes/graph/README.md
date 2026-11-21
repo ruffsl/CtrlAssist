@@ -10,4 +10,4 @@ The routing model as a pure crate: no device, async or serialization code, and n
 - `tests/properties.rs`: invariants under random sequences.
 - `examples/bench.rs`: time per step, and a check that stepping allocates nothing.
 
-`just spike-graph` runs the tests and the benchmark. The results and verdict are in `docs/plans/findings/routing-graph.md`.
+`just spike-graph` runs the tests and the benchmark. The results are in `docs/architecture.md`, under "What the platform does".
