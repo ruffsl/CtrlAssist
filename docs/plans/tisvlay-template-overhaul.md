@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding ([findings/hiding.md](findings/hiding.md)) and identity ([findings/identity.md](findings/identity.md)) spikes are done and accepted; the input loop spike has its finding, [findings/input-loop.md](findings/input-loop.md), done and accepted. Two checks still need the maintainer at the machine: identifiers across reconnects, and suspend, resume and a Bluetooth drop.
-- **Next action:** the routing graph spike, once two questions about its node API are settled with the maintainer: how a mode decides a control is active, and how far the switch binding goes.
+- **Next action:** the routing graph spike, once two remaining questions about its nodes are settled with the maintainer: whether a stick is owned as a pair or per axis, and what a switch does to buttons the outgoing pad was holding.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -97,6 +97,10 @@ One word per thing, here and in everything written from this plan:
 **Pads are read directly through evdev, on one epoll thread** ([findings/input-loop.md](findings/input-loop.md)). gilrs leaves the dependency set: it opens pads by path, so it can't take the descriptors the helper hands over, and its loop wakes about a hundred times a second when idle where the new one never does. The first release includes its own parser for SDL's controller database, so pads outside the Xbox and PlayStation families, which gilrs used to normalize, keep working.
 
 **The input thread asks for real-time scheduling and degrades quietly.** If the kernel refuses, the daemon runs normally and its status says which. Packages raise the limit where they can; rtkit is not used.
+
+**Activity is split between the source and the node.** A source has a deadzone that zeroes its rest noise before any node sees it, since a worn stick is a fact about the pad. A mux node has an engage threshold and a lower release threshold on what remains, since "is the assist touching this?" is the mode's question and two thresholds stop a hovering stick from flickering between owners. Defaults match the legacy 0.1, so most profiles set neither. No ownership is held by a timer.
+
+**The switch is an input to the node, not a pad event it happens to see.** In the first release it can be raised by one button named in the profile (default Mode, consumed rather than forwarded), on whichever source the profile names, or by a client through a daemon rpc. Modeling it as a signal means later triggers don't change the node.
 
 **The legacy words stay, for users too:** primary and assist for the roles; mux with priority, average and toggle; demux with unicast and multicast. Two alternative families were tried and read worse: these are precise, already paired, already in the README and issues, and "assist" is the project's name. Clients add a one-line description beside each, since the mode names are jargon to a newcomer.
 
@@ -282,6 +286,7 @@ Each becomes a `docs/ideas/` entry at step 4, with the trigger that would bring 
 - Gyro, touchpad, LED and trigger-effect passthrough (S5 keeping uhid, then demand).
 - A preset for splitting one pad (#53), and button debounce, which that issue also asks for.
 - A visual graph editor.
+- Button chords as a switch (a design for the first chord button, which otherwise leaks to the game or delays every chord member).
 - Flatpak and Flathub (a maintainer or contributor on SteamOS or Bazzite, #13).
 - Cooperating with InputPlumber where it is installed (someone on Bazzite who can test it).
 - A bare binary tarball (a request from a distro none of the packages serve).
