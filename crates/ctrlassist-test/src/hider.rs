@@ -103,8 +103,12 @@ fn serve(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>) {
             Some(Request::Reopen(token)) => match hidden.get(&token.0) {
                 Some(id) => {
                     note(Asked::Reopen(id.to_string()));
-                    let node = ctrlassist_device::connected()
-                        .ok()
+                    // Listing every pad can fail while other tests' pads
+                    // come and go under it, where the real service looks
+                    // the one pad up directly: a failed listing is made
+                    // again, so that only a pad that isn't there is absent.
+                    let listed = (0..50).find_map(|_| ctrlassist_device::connected().ok());
+                    let node = listed
                         .and_then(|pads| {
                             pads.into_iter().find(|found| found.identifiers.id() == *id)
                         })

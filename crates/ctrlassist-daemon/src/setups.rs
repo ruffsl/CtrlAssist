@@ -370,7 +370,15 @@ fn retake(
         // The service knows the pad by what it is, not by its node.
         return read(hidden.event, &wanted.node, database).map(|pad| (pad, Some(token)));
     }
-    take(wanted, database, hiding)
+    let taken = take(wanted, database, hiding)?;
+    // Hidden afresh, under a new name: the old one is given up, so that
+    // what it hid isn't left for the connection's end to restore.
+    if let (Some(old), Some(new)) = (token, taken.1)
+        && old != new
+    {
+        hiding.restore(&[old]);
+    }
+    Ok(taken)
 }
 
 /// The blocking part of a start.

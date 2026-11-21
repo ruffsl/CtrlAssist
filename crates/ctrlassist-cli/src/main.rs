@@ -33,6 +33,10 @@ fn main() -> Result<()> {
             args.socket = args.socket.or(cli.socket);
             return ctrlassist_daemon::service::main(args);
         }
+        Command::Service(Service::Tray(mut args)) => {
+            args.socket = args.socket.or(cli.socket);
+            return ctrlassist_tray::service::main(args);
+        }
         command => command,
     };
     let socket = cli

@@ -15,7 +15,7 @@ crates/
                               # release and mirrors its state, and a state watcher
   ctrlassist-core/            # the routing model: controls, pad state, groups, mux and
                               # demux nodes, the graph, the feedback router. No dependencies.
-  ctrlassist-cli/             # the ctrlassist binary: `service daemon`, `status`, `pads`,
+  ctrlassist-cli/             # the ctrlassist binary: `service daemon`, `service tray`, `status`, `pads`,
                               # `identities`, `identify`, `forget`, `profile`, `start`,
                               # `stop`, `update`, `select`, `setups`; shell completions
                               # that ask the daemon for names
@@ -31,6 +31,9 @@ crates/
   ctrlassist-protocol/        # what the daemon and its clients agree on: the profile
                               # schema; session configuration, keys, the rpc table,
                               # typed wire errors and the version check
+  ctrlassist-tray/            # the system tray: the menu as plain data from the SDK's
+                              # mirror, the quick-start builder, notifications from
+                              # what changes, and the ksni item that renders them
   ctrlassist-test/            # fake pads made through uinput and uhid, one with rumble
                               # motors, and the
                               # ctrlassist-fixture binary the VM checks drive, and

@@ -27,6 +27,7 @@ ctrlassist-device = { path = "crates/ctrlassist-device" }
 ctrlassist-hider = { path = "crates/ctrlassist-hider" }
 ctrlassist-protocol = { path = "crates/ctrlassist-protocol" }
 ctrlassist-test = { path = "crates/ctrlassist-test" }
+ctrlassist-tray = { path = "crates/ctrlassist-tray" }
 
 # Profiles on disk and payloads on the wire
 serde = { version = "1", features = ["derive"] }
@@ -46,6 +47,13 @@ zenoh-ext = { version = "~1.10", default-features = false, features = ["unstable
 tracing = "0.1"
 tracing-journald = "0.3"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "fmt", "registry"] }
+
+# The tray: a StatusNotifierItem, and desktop notifications (z-with-tokio
+# keeps zbus on tokio and drops the default async-io stack). TisVlay's pins.
+ksni = "0.3"
+# Held below 4.19, which moved to zbus 6 while ksni is on zbus 5: one
+# zbus in the tree, as in TisVlay, until ksni moves too.
+notify-rust = { version = ">=4.18, <4.19", default-features = false, features = ["z-with-tokio"] }
 
 # Tests
 tempfile = "3"

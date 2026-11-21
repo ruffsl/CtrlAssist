@@ -24,6 +24,8 @@ allow = [
     "ISC",
     "Zlib",
     "Unicode-3.0",
+    # ksni, the tray. Public-domain equivalent.
+    "Unlicense",
 ]
 confidence-threshold = 0.93
 

@@ -291,6 +291,16 @@ A small emulator: it presents a real pad's report descriptor, answers the kernel
 
 **Feedback on a virtual pad** comes in two forms: force-feedback requests on uinput, and the pad's raw output report on uhid, which carries rumble as two levels beside LEDs and trigger effects. Rumble from either feeds the router. Between a sink and a source of the same kind the rest of the output report passes through; the last one is kept per sink so that a pad joining gets it and a pad leaving gets a reset. Between unlike pads everything but rumble is dropped.
 
+## The tray
+
+The tray is a client like the CLI: `ctrlassist service tray` holds an SDK client, renders its menu from the client's mirror of the daemon, and turns each click into an rpc. It keeps nothing the daemon doesn't, and it may start before the daemon and outlive it.
+
+- **The menu is made as plain data** from one snapshot of the mirror, then turned into the toolkit's items in one place, so what the menu shows for any state is tested without a desktop.
+- **Its order** is the kept profiles, each with start or stop and, while it runs, its phase, its pads, its virtual pads and who has control; then quick start; then the pads, with identify and forget; then the hiding mechanism and whether real-time scheduling was granted.
+- **Quick start** takes two pads, a mode, an identity, who feels rumble and whether to start by itself, and writes them as one kept profile, `quick`, in the full form, which it then starts, or restarts if it is running. The choices are read back from that profile when the tray starts, so they are stored nowhere else. A pad that isn't connected, is the other choice, or is part of another setup can't be picked.
+- **Notifications come from the difference between two snapshots:** a setup held or running again, a setup failed, the daemon stopped or back, and, as a setup starts, pads that are only grabbed or can't rumble. Nothing is said while state is still arriving, nor of a daemon that was absent when the tray started. Something asked from the menu that the daemon refuses is said as a notification too, since a menu has nowhere else to say it.
+- **Without a StatusNotifier host,** as on GNOME with no extension for it, the tray keeps running for its notifications and its icon appears if a host does.
+
 ## Control plane
 
 zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the daemon listening as a peer, as TisVlay's does: its clients only ever talk to it, never to each other, so nothing needs routing between them. The patterns are TisVlay's: cached publishers for state, rpcs declared once in a table, a liveliness token for presence, typed wire errors, and a `major.minor` check between client and daemon. Its [zenoh laws](https://github.com/TisVlay/TisVlay/blob/main/docs/architecture.md) apply; the ones this design leans on:

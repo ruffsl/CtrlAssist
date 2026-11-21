@@ -106,11 +106,12 @@ check: deny shear typos actionlint zizmor fmt build clippy doc test
 # coverage rises; never lower it.
 cov_baseline_lines := "95"
 
-# Kept out of the coverage figure: test infrastructure, and the hiding
-# service's own files, which need root and real device nodes. Both are
-# exercised by the virtual machine checks. The service's client and wire
-# format are counted.
-cov_exclude := "--ignore-filename-regex 'ctrlassist-test/|ctrlassist-hider/src/(main|activation|seat|pad|hide)\\.rs'"
+# Kept out of the coverage figure: test infrastructure; the hiding
+# service's own files, which need root and real device nodes, and are
+# exercised by the virtual machine checks, its client and wire format
+# being counted; and the two files of the tray that need a desktop's
+# session bus, which hold only what puts the rest on a desktop.
+cov_exclude := "--ignore-filename-regex 'ctrlassist-test/|ctrlassist-hider/src/(main|activation|seat|pad|hide)\\.rs|ctrlassist-tray/src/(desktop|service)\\.rs'"
 
 # Advisories and yanked crates, which change without the lockfile changing.
 #
@@ -192,6 +193,11 @@ daemon-start:
         cargo run --profile {{ _dev_profile }} --bin ctrlassist -- service daemon \
         --socket "{{ socket }}" --state-dir "{{ state_dir }}" --config-dir "{{ config_dir }}" \
         --hider-socket "{{ hider_dev_socket }}"
+
+# Start the tray against the dev daemon
+[group('dev')]
+tray-start:
+    cargo run --profile {{ _dev_profile }} --bin ctrlassist -- service tray --socket "{{ socket }}"
 
 # Run the CLI against the dev daemon, such as `just cli status`
 [group('dev')]
