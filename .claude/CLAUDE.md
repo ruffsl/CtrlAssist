@@ -50,9 +50,11 @@ docs/
   plans/                      # the plan in flight
   concerns/, ideas/           # one doc per item; each README.md is its index
 packaging/
-  nix/                        # crate.nix (one crate's binaries as a package) and the
-                              # VM checks (test-*.nix)
-  systemd/                    # the hiding service's socket and service units
+  nix/                        # package.nix and module.nix (CtrlAssist as installed on
+                              # NixOS), crate.nix (one crate's binaries, for the VM
+                              # checks' fixture) and the VM checks (test-*.nix)
+  systemd/                    # the hiding service's socket and service units, and
+                              # the daemon's and the tray's user units
   udev/                       # the rule that gives the seat user uinput and uhid
   licensing/                  # deny.toml: license policy and the one-version gate
 .vscode/tasks.json            # editor tasks that start, stop and restart the dev stack

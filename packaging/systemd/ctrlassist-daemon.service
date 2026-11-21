@@ -1,0 +1,18 @@
+[Unit]
+Description=CtrlAssist daemon
+Documentation=https://github.com/CtrlAssist/CtrlAssist
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ctrlassist service daemon
+SyslogIdentifier=ctrlassist-daemon
+Restart=on-failure
+RestartSec=5
+# The input thread asks for real-time scheduling at priority 10 and runs
+# without it if refused. A user service can have it only if the user's
+# service manager was given as much, which the package's system
+# configuration does where it can.
+LimitRTPRIO=10
+
+[Install]
+WantedBy=default.target

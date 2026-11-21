@@ -1,22 +1,27 @@
-# The daemon, end to end, on a clean machine with one user at a graphical
-# session and the hiding service installed: a profile run from real device
-# nodes to a virtual pad, with its pads hidden by the real service, through
-# a reconnect, a stop, a kill, and a start by itself.
+# CtrlAssist as installed by its NixOS module, end to end, on a clean
+# machine with one user at a graphical session: the daemon as that user's
+# service, a profile run from real device nodes to a virtual pad, with its
+# pads hidden by the real hiding service, through a reconnect, a stop, a
+# kill, and a start by itself.
 {
   pkgs,
   fixture,
-  hider,
-  cli,
+  package,
+  module,
 }:
 pkgs.testers.runNixOSTest {
   name = "ctrlassist-daemon";
 
   nodes.machine = {
-    boot.kernelModules = [
-      "uinput"
-      "uhid"
-      "joydev"
-    ];
+    imports = [ module ];
+    # Everything CtrlAssist needs of the system comes from this.
+    services.ctrlassist = {
+      enable = true;
+      inherit package;
+    };
+
+    # For the js nodes the checks look at; the module loads the rest.
+    boot.kernelModules = [ "joydev" ];
     users.users.alice = {
       isNormalUser = true;
       uid = 1000;
@@ -31,22 +36,7 @@ pkgs.testers.runNixOSTest {
     };
     virtualisation.qemu.options = [ "-vga none -device virtio-gpu-pci" ];
 
-    # The hiding service's units as packaged, and the rule that gives the
-    # seat user uinput, which the daemon makes its virtual pads through.
-    systemd.packages = [ hider ];
-    systemd.sockets.ctrlassist-hider.wantedBy = [ "sockets.target" ];
-    systemd.services.ctrlassist-hider.path = [ pkgs.systemd ];
-    services.udev.packages = [
-      (pkgs.writeTextDir "lib/udev/rules.d/70-ctrlassist.rules" (
-        builtins.readFile ../udev/70-ctrlassist.rules
-      ))
-    ];
-
-    environment.systemPackages = [
-      fixture
-      hider
-      cli
-    ];
+    environment.systemPackages = [ fixture ];
   };
 
   testScript = ''
@@ -104,12 +94,14 @@ pkgs.testers.runNixOSTest {
         machine.succeed("udevadm settle")
         assert rules() == [], rules()
 
-    def daemon(unit):
-        machine.succeed(
-            f"systemd-run --unit {unit} --uid alice -p Environment={ENV} -p Environment=HOME=/home/alice "
-            "ctrlassist service daemon"
-        )
-        machine.wait_until_succeeds("su -l alice -c " + shlex.quote(ENV + " ctrlassist status"))
+    def as_alice(command):
+        return "su -l alice -c " + shlex.quote(ENV + " " + command)
+
+    def daemon_is_up():
+        machine.wait_until_succeeds(as_alice("ctrlassist status"))
+
+    def daemon_journal():
+        return machine.succeed("journalctl _SYSTEMD_USER_UNIT=ctrlassist-daemon.service -o cat")
 
     HID, PLAIN, VIRTUAL = "Fixture Fake HID Pad", "Fixture Fake Pad", "CtrlAssist Virtual Pad"
 
@@ -123,10 +115,32 @@ pkgs.testers.runNixOSTest {
     machine.succeed("udevadm settle")
     assert alice_can_open(HID) and alice_can_open(PLAIN)
 
-    daemon("daemon")
+    with subtest("the module installs the command, its units, its rule and its completions"):
+        machine.succeed("test -x /run/current-system/sw/bin/ctrlassist -a -x /run/current-system/sw/bin/ctrlassist-hider")
+        # A shell's completions are linked into the system only where that
+        # shell is enabled, so the package itself is looked at.
+        for completion in ("fish/vendor_completions.d/ctrlassist.fish", "bash-completion/completions/ctrlassist.bash", "zsh/site-functions/_ctrlassist"):
+            machine.succeed("test -s ${package}/share/" + completion)
+        machine.succeed("systemctl is-active ctrlassist-hider.socket")
+        machine.succeed("su -l alice -c 'test -w /dev/uinput -a -w /dev/uhid'")
+
+    with subtest("the daemon is the user's service, started with the session, and its input thread is real-time"):
+        daemon_is_up()
+        machine.succeed(as_alice("systemctl --user is-active ctrlassist-daemon.service"))
+        assert "real-time scheduling was refused" not in daemon_journal(), daemon_journal()
+        # The scheduling class of the daemon's thread named `input`: FF is first-in-first-out.
+        machine.succeed("ps -eLo cls,comm | grep -E '^ *FF +input$'")
+
+    with subtest("the tray runs without a tray host, for its notifications"):
+        # Its unit hangs off graphical-session.target, which a desktop
+        # reaches and this machine's bare compositor doesn't, so it is
+        # started by hand. With no tray host it stays up all the same.
+        machine.succeed(as_alice("systemctl --user start ctrlassist-tray.service"))
+        machine.wait_until_succeeds("journalctl _SYSTEMD_USER_UNIT=ctrlassist-tray.service -o cat | grep -q 'the tray is up'")
+        machine.succeed(as_alice("systemctl --user is-active ctrlassist-tray.service"))
 
     with subtest("the daemon finds the hiding service and the pads"):
-        journal = machine.succeed("journalctl -u daemon -o cat")
+        journal = daemon_journal()
         assert "the hiding service isn't there" not in journal, journal
         pads = known()
         assert pads[HID]["connected"] and pads[PLAIN]["connected"], pads
@@ -190,22 +204,24 @@ pkgs.testers.runNixOSTest {
         cli("profile", "put", "/tmp/couch.toml")
         phase_is("running")
         assert not alice_can_open(HID) and not alice_can_open(PLAIN)
-        machine.succeed("systemctl kill --signal=KILL daemon")
-        wait_restored()
-        assert alice_can_open(HID) and alice_can_open(PLAIN)
-        machine.wait_until_fails("ctrlassist-fixture pads | grep -q 'CtrlAssist Virtual Pad'")
-        machine.succeed("systemctl reset-failed daemon || true")
-
-    with subtest("the next daemon starts the profile by itself, and stopping the daemon restores the pads"):
-        daemon("daemon-again")
-        phase_is("running")
-        assert known()[HID]["hidden"] and known()[PLAIN]["hidden"]
-        assert not alice_can_open(HID) and not alice_can_open(PLAIN)
-        machine.succeed("systemctl stop daemon-again")
+        machine.succeed(as_alice("systemctl --user kill --signal=KILL ctrlassist-daemon.service"))
+        # The hiding service restores at once; the unit brings the daemon
+        # back only after its restart delay, so there is time to look.
         wait_restored()
         assert alice_can_open(HID) and alice_can_open(PLAIN)
         assert VIRTUAL not in nodes()
-        journal = machine.succeed("journalctl -u daemon-again -o cat")
-        assert "the daemon has stopped" in journal, journal
+
+    with subtest("the unit restarts the daemon, which starts the profile by itself"):
+        daemon_is_up()
+        phase_is("running")
+        assert known()[HID]["hidden"] and known()[PLAIN]["hidden"]
+        assert not alice_can_open(HID) and not alice_can_open(PLAIN)
+
+    with subtest("stopping the service restores the pads"):
+        machine.succeed(as_alice("systemctl --user stop ctrlassist-daemon.service"))
+        wait_restored()
+        assert alice_can_open(HID) and alice_can_open(PLAIN)
+        assert VIRTUAL not in nodes()
+        assert "the daemon has stopped" in daemon_journal()
   '';
 }
