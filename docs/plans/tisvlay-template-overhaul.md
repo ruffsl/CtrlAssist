@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** plan approved by the maintainer; step 1 in progress.
-- **Next action:** step 1 (clean slate and minimal scaffold), then step 2 (ecosystem survey), stopping when its finding is written.
+- **Status:** plan approved by the maintainer; step 1 done.
+- **Next action:** step 2 (ecosystem survey), stopping when its finding is written.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.

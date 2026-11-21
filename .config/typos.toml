@@ -1,0 +1,24 @@
+# typos-cli config (`just typos`). American English is the project rule;
+# `locale = "en-us"` makes British spellings errors rather than accepted
+# variants.
+#
+# The allow-lists below hold names this repo can't rename. A word we own is
+# fixed, never added here.
+[default]
+locale = "en-us"
+
+[default.extend-words]
+# The `refactor-claud-opus-4.5` branch, an earlier refactor the docs cite.
+claud = "claud"
+# The terminal UI crate.
+ratatui = "ratatui"
+
+[files]
+# Scan the dotted directories too: .claude/ holds the project instructions.
+ignore-hidden = false
+extend-exclude = [
+    "Cargo.lock",
+    "target/",
+    ".git/",
+    ".direnv/",
+]

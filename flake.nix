@@ -1,0 +1,59 @@
+{
+  description = "CtrlAssist - controller assist for gaming on Linux";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs =
+    {
+      nixpkgs,
+      rust-overlay,
+      ...
+    }:
+    let
+      # x86_64 and aarch64 Linux only: the tool is built on evdev and uinput.
+      eachSystem =
+        f:
+        let
+          bySystem = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ] f;
+        in
+        nixpkgs.lib.genAttrs [ "devShells" ] (
+          output: nixpkgs.lib.mapAttrs (_: outputs: outputs.${output}) bySystem
+        );
+    in
+    eachSystem (
+      system:
+      let
+        overlays = [ rust-overlay.overlays.default ];
+        pkgs = import nixpkgs { inherit overlays system; };
+        # The toolchain pin lives in rust-toolchain.toml, shared with rustup.
+        rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+      in
+      {
+        # Every tool a `just` recipe or prek hook calls comes from here, so
+        # the checks run the same for everyone. A tool joins this list in
+        # the commit that first uses it.
+        devShells.default = pkgs.mkShell {
+          packages = with pkgs; [
+            just
+            just-lsp
+            # jstest and evtest-style tools for looking at pads by hand
+            linuxConsoleTools
+            lldb
+            pkg-config
+            prek
+            rust
+            typos
+            udev
+          ];
+
+          RUST_SRC_PATH = "${rust}/lib/rustlib/src/rust/library";
+        };
+      }
+    );
+}

@@ -1,0 +1,30 @@
+# `prek install` wires both the pre-commit and commit-msg git hooks; the
+# commit-msg stage runs the Conventional Commits check (last repo below).
+# Local hook ids match the `just` recipe they run.
+default_install_hook_types = ["pre-commit", "commit-msg"]
+
+[[repos]]
+repo = "builtin"
+# docs/artwork/ holds LFS-tracked exports; the text fixers would rewrite their bytes.
+hooks = [
+    { id = "check-added-large-files", priority = 0 },
+    { id = "check-merge-conflict", priority = 0 },
+    { id = "check-toml", priority = 0 },
+    { id = "check-yaml", priority = 0 },
+    { id = "end-of-file-fixer", exclude = "^docs/artwork/", priority = 0 },
+    { id = "trailing-whitespace", exclude = "^docs/artwork/", priority = 0 },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+    { id = "typos", name = "typos", language = "system", entry = "just typos", always_run = true, pass_filenames = false, priority = 0 },
+]
+
+# Conventional Commits subject check (commit-msg stage).
+[[repos]]
+repo = "https://github.com/compilerla/conventional-pre-commit"
+rev = "v4.4.0"
+hooks = [
+    { id = "conventional-pre-commit", stages = ["commit-msg"] },
+]
