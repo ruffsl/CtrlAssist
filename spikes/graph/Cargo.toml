@@ -1,0 +1,16 @@
+[package]
+name = "spike-graph"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+# No dependencies: this crate is the routing model with no device, async
+# or serialization code, and is meant to become the core crate.
+[dependencies]
+
+[dev-dependencies]
+proptest = "1"
+
+[profile.release]
+debug = "line-tables-only"
