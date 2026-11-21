@@ -35,7 +35,9 @@ pub enum Identity {
 }
 
 impl Identity {
-    fn name(self) -> &'static str {
+    /// The name a game sees.
+    #[must_use]
+    pub fn name(self) -> &'static str {
         match self {
             Self::Generic => "CtrlAssist Virtual Pad",
             Self::Xbox => "Microsoft Xbox Series S|X Controller",
@@ -50,6 +52,13 @@ impl Identity {
             Self::Generic => InputId::new(BusType::BUS_USB, 0x1234, 0x5678, 0x0111),
             Self::Xbox => InputId::new(BusType::BUS_USB, 0x045e, 0x0b12, 0x0507),
         }
+    }
+
+    /// The vendor and product numbers a game sees.
+    #[must_use]
+    pub fn model(self) -> (u16, u16) {
+        let id = self.id();
+        (id.vendor(), id.product())
     }
 
     /// The highest value of a trigger, as that pad's driver reports it.

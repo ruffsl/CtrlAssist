@@ -112,6 +112,20 @@ pub enum Identity {
     Xbox,
 }
 
+impl Identity {
+    /// Every identity, in the order they are listed to a person.
+    pub const ALL: [Self; 2] = [Self::Generic, Self::Xbox];
+
+    /// The identity's name, as a profile writes it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::Xbox => "xbox",
+        }
+    }
+}
+
 /// A pad in the full form.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]

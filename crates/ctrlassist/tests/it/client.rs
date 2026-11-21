@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ctrlassist::{DaemonClient, Error, StateEvent, StateWatcher, StateWatcherConfig};
-use ctrlassist_daemon::Daemon;
+use ctrlassist_daemon::{Daemon, Paths};
 use ctrlassist_device::InputThread;
 use ctrlassist_protocol::{VERSION, keys};
 use serde_json::json;
@@ -20,7 +20,7 @@ use crate::fake::{FakeDaemon, answer_info};
 const CONVERGE: Duration = Duration::from_secs(20);
 
 /// A socket path short enough for the kernel's limit.
-fn socket() -> (TempDir, PathBuf) {
+pub(crate) fn socket() -> (TempDir, PathBuf) {
     let dir = tempfile::Builder::new()
         .prefix("ca")
         .tempdir_in("/tmp")
@@ -30,7 +30,7 @@ fn socket() -> (TempDir, PathBuf) {
 }
 
 /// Poll `check` until it holds, failing with `what` at the deadline.
-async fn eventually<F, Fut>(what: &str, mut check: F)
+pub(crate) async fn eventually<F, Fut>(what: &str, mut check: F)
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = bool>,
@@ -42,7 +42,7 @@ where
     }
 }
 
-async fn next_matching(
+pub(crate) async fn next_matching(
     watcher: &mut StateWatcher,
     want: impl Fn(&StateEvent) -> bool,
 ) -> StateEvent {
@@ -58,9 +58,13 @@ async fn next_matching(
     .expect("the event never arrived")
 }
 
-async fn start_daemon(socket: &std::path::Path) -> Daemon {
+pub(crate) async fn start_daemon(socket: &std::path::Path) -> Daemon {
     let (input, _reports) = InputThread::spawn().unwrap();
-    Daemon::start(socket, input).await.unwrap()
+    let paths = Paths {
+        socket: socket.to_path_buf(),
+        state: socket.with_file_name("state"),
+    };
+    Daemon::start(&paths, input).await.unwrap()
 }
 
 /// No start-order assumptions: a client opened before the daemon's

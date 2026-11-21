@@ -35,6 +35,18 @@ error_codes! {
     BadRequest = "bad-request",
     /// The query's key names no rpc of the family it reached.
     UnknownRpc = "unknown-rpc",
+    /// No known pad goes by the name given.
+    UnknownPad = "unknown-pad",
+    /// More than one known pad goes by the name given.
+    AmbiguousPad = "ambiguous-pad",
+    /// The pad is known but not connected, and the request needs it.
+    PadDisconnected = "pad-disconnected",
+    /// The pad is connected, and the request is for one that isn't.
+    PadConnected = "pad-connected",
+    /// The pad has no rumble motors the kernel can drive.
+    PadWithoutRumble = "pad-without-rumble",
+    /// The pad couldn't be opened, or refused what was asked of it.
+    PadRefused = "pad-refused",
     /// The daemon stopped before it could answer.
     DaemonShuttingDown = "daemon-shutting-down",
     /// The daemon failed on its side; the request itself may be fine.
@@ -73,6 +85,14 @@ impl WireError {
         Self {
             code: ErrorCode::UnknownRpc,
             message: format!("no such rpc: {verb}"),
+        }
+    }
+
+    /// A pad-related refusal, with its own code.
+    pub fn pad(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
         }
     }
 
@@ -117,5 +137,8 @@ mod tests {
             ErrorCode::DaemonShuttingDown
         );
         assert_eq!(WireError::internal("x").code, ErrorCode::Internal);
+        let refusal = WireError::pad(ErrorCode::UnknownPad, "no pad is called x");
+        assert_eq!(refusal.code.as_str(), "unknown-pad");
+        assert_eq!(refusal.message, "no pad is called x");
     }
 }

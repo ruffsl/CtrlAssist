@@ -15,9 +15,11 @@ crates/
                               # release and mirrors its state, and a state watcher
   ctrlassist-core/            # the routing model: controls, pad state, groups, mux and
                               # demux nodes, the graph, the feedback router. No dependencies.
-  ctrlassist-cli/             # the ctrlassist binary: `service daemon`, `status`
-  ctrlassist-daemon/          # the control side: the session, liveliness, the daemon's
-                              # rpcs and state, logging
+  ctrlassist-cli/             # the ctrlassist binary: `service daemon`, `status`, `pads`,
+                              # `identities`, `identify`, `forget`
+  ctrlassist-daemon/          # the control side: the session, liveliness, the reactor
+                              # that owns the known pads and serves the rpcs, the
+                              # hotplug watch, the store of remembered pads, logging
   ctrlassist-device/          # the kernel side: pads read from descriptors, the kernel
                               # gamepad layout, the controller database and its pinned
                               # snapshot, uinput virtual pads, the input thread, hotplug
@@ -26,7 +28,8 @@ crates/
   ctrlassist-protocol/        # what the daemon and its clients agree on: the profile
                               # schema; session configuration, keys, the rpc table,
                               # typed wire errors and the version check
-  ctrlassist-test/            # fake pads made through uinput and uhid, and the
+  ctrlassist-test/            # fake pads made through uinput and uhid, one with rumble
+                              # motors, and the
                               # ctrlassist-fixture binary the VM checks drive, and
                               # ctrlassist-bench, which times the input path
 vendor/                       # third-party crates carried with a fix upstream lacks;

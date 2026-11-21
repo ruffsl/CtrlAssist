@@ -174,6 +174,9 @@ vm name:
 runtime_dir := env("XDG_RUNTIME_DIR", "/tmp")
 socket := env("CTRLASSIST_SOCKET", runtime_dir / "ctrlassist/zenoh.sock")
 
+# What the dev daemon remembers is kept apart from an installed daemon's.
+state_dir := env("CTRLASSIST_STATE_DIR", justfile_directory() / "target/dev-state")
+
 # RELEASE=true runs optimized builds.
 _dev_profile := if env("RELEASE", "false") == "true" { "release" } else { "test" }
 _daemon_log := "info,ctrlassist_daemon=debug,ctrlassist_protocol=debug,zenoh=warn"
@@ -182,7 +185,8 @@ _daemon_log := "info,ctrlassist_daemon=debug,ctrlassist_protocol=debug,zenoh=war
 [group('dev')]
 daemon-start:
     RUST_LOG="{{ _daemon_log }}" \
-        cargo run --profile {{ _dev_profile }} --bin ctrlassist -- service daemon --socket "{{ socket }}"
+        cargo run --profile {{ _dev_profile }} --bin ctrlassist -- service daemon \
+        --socket "{{ socket }}" --state-dir "{{ state_dir }}"
 
 # Run the CLI against the dev daemon, such as `just cli status`
 [group('dev')]

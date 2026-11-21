@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use ctrlassist_daemon::Daemon;
+use ctrlassist_daemon::{Daemon, Paths};
 use ctrlassist_device::InputThread;
 use ctrlassist_protocol::VERSION;
 use tempfile::TempDir;
@@ -17,6 +17,15 @@ fn socket() -> (TempDir, PathBuf) {
         .unwrap();
     let socket = dir.path().join("zenoh.sock");
     (dir, socket)
+}
+
+async fn start(socket: &Path) -> Daemon {
+    let (input, _reports) = InputThread::spawn().unwrap();
+    let paths = Paths {
+        socket: socket.to_path_buf(),
+        state: socket.with_file_name("state"),
+    };
+    Daemon::start(&paths, input).await.unwrap()
 }
 
 /// Runs the built `ctrlassist` binary.
@@ -36,8 +45,7 @@ fn text(bytes: &[u8]) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn status_reports_a_running_daemon_and_its_release() {
     let (_dir, socket) = socket();
-    let (input, _reports) = InputThread::spawn().unwrap();
-    let daemon = Daemon::start(&socket, input).await.unwrap();
+    let daemon = start(&socket).await;
 
     let plain = ctrlassist(&socket, &["status"]);
     assert!(plain.status.success(), "{}", text(&plain.stderr));
@@ -87,7 +95,8 @@ fn the_daemon_as_a_service_verb_runs_until_told_to_stop_and_stops_cleanly() {
     let daemon = Command::new(env!("CARGO_BIN_EXE_ctrlassist"))
         .arg("--socket")
         .arg(&socket)
-        .args(["service", "daemon"])
+        .args(["service", "daemon", "--state-dir"])
+        .arg(socket.with_file_name("state"))
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
@@ -124,7 +133,15 @@ fn the_command_explains_itself() {
         .unwrap();
     let said = text(&help.stdout);
     assert!(help.status.success());
-    for verb in ["status", "service", "--socket"] {
+    for verb in [
+        "status",
+        "pads",
+        "identities",
+        "identify",
+        "forget",
+        "service",
+        "--socket",
+    ] {
         assert!(said.contains(verb), "{said}");
     }
     let version = Command::new(env!("CARGO_BIN_EXE_ctrlassist"))
@@ -135,4 +152,107 @@ fn the_command_explains_itself() {
         text(&version.stdout).trim(),
         format!("ctrlassist {VERSION}")
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pads_lists_a_connected_pad_and_forget_drops_it_once_it_has_left() {
+    const TEST: &str = "pads_lists_a_connected_pad_and_forget_drops_it_once_it_has_left";
+    if !ctrlassist_test::can_make_pads(TEST) {
+        return;
+    }
+    let (_dir, socket) = socket();
+    let fake = ctrlassist_test::FakePad::new("CLI \u{1b}[31mPad", 0x1209, 0x7b01).unwrap();
+    let daemon = start(&socket).await;
+    let id = "model:1209:7b01:CLI \u{1b}[31mPad";
+
+    let json = ctrlassist(&socket, &["pads", "--json"]);
+    assert!(json.status.success(), "{}", text(&json.stderr));
+    let pads: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
+    let ours = pads.iter().find(|pad| pad["id"] == id).unwrap();
+    assert_eq!(ours["connected"], true);
+    assert_eq!(ours["rumble"], false);
+    assert_eq!(ours["vendor"], 0x1209);
+
+    // As a table, a pad's own text can't drive the terminal.
+    let plain = ctrlassist(&socket, &["pads"]);
+    assert!(plain.status.success(), "{}", text(&plain.stderr));
+    let said = text(&plain.stdout);
+    let mut lines = said.lines();
+    let heading = lines.next().unwrap();
+    assert!(
+        heading.starts_with("ID") && heading.ends_with("RUMBLE"),
+        "{said}"
+    );
+    let row = lines.find(|line| line.contains("1209:7b01")).unwrap();
+    assert!(row.starts_with("model:1209:7b01:CLI ?[31mPad  "), "{row}");
+    assert!(row.ends_with("yes        no"), "{row}");
+    assert!(!said.contains('\u{1b}'), "{said:?}");
+
+    // What can't be done says why, as an error.
+    let connected = ctrlassist(&socket, &["forget", "model:1209:7b01"]);
+    assert_eq!(connected.status.code(), Some(1));
+    assert!(text(&connected.stderr).contains("pad-connected"));
+    let silent = ctrlassist(&socket, &["identify", "model:1209:7b01"]);
+    assert_eq!(silent.status.code(), Some(1));
+    assert!(text(&silent.stderr).contains("pad-without-rumble"));
+    let unknown = ctrlassist(&socket, &["identify", "no-such-pad", "--millis", "50"]);
+    assert!(text(&unknown.stderr).contains("no known pad is called no-such-pad"));
+
+    drop(fake);
+    let mut forgotten = ctrlassist(&socket, &["forget", "model:1209:7b01"]);
+    for _ in 0..200 {
+        if forgotten.status.success() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        forgotten = ctrlassist(&socket, &["forget", "model:1209:7b01"]);
+    }
+    assert!(forgotten.status.success(), "{}", text(&forgotten.stderr));
+    let json = ctrlassist(&socket, &["pads", "--json"]);
+    let pads: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
+    assert!(pads.iter().all(|pad| pad["id"] != id));
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identities_lists_what_a_virtual_pad_can_be() {
+    let (_dir, socket) = socket();
+    let daemon = start(&socket).await;
+    let plain = ctrlassist(&socket, &["identities"]);
+    assert!(plain.status.success(), "{}", text(&plain.stderr));
+    let said = text(&plain.stdout);
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines.len(), 3, "{said}");
+    assert!(lines[0].starts_with("ID       NAME"), "{said}");
+    assert!(
+        lines[1].starts_with("generic  CtrlAssist Virtual Pad"),
+        "{said}"
+    );
+    assert!(lines[2].contains("045e:0b12"), "{said}");
+
+    let json = ctrlassist(&socket, &["identities", "--json"]);
+    let identities: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(identities[0]["id"], "generic");
+    assert_eq!(identities[1]["id"], "xbox");
+    daemon.stop().await;
+}
+
+#[test]
+fn a_command_that_needs_the_daemon_says_when_there_is_none() {
+    let (_dir, socket) = socket();
+    for arguments in [
+        &["pads"][..],
+        &["identities"],
+        &["identify", "x"],
+        &["forget", "x"],
+    ] {
+        let output = ctrlassist(&socket, arguments);
+        assert_eq!(output.status.code(), Some(1), "{arguments:?}");
+        assert!(
+            text(&output.stderr).contains(&format!("no daemon is running on {}", socket.display())),
+            "{arguments:?}: {}",
+            text(&output.stderr)
+        );
+        assert!(output.stdout.is_empty());
+    }
 }

@@ -20,6 +20,7 @@ publish = false
 # Every dependency is declared once here and inherited by the crates.
 [workspace.dependencies]
 # Internal crates. Unpublished ones are path-only.
+ctrlassist = { path = "crates/ctrlassist" }
 ctrlassist-core = { path = "crates/ctrlassist-core" }
 ctrlassist-daemon = { path = "crates/ctrlassist-daemon" }
 ctrlassist-device = { path = "crates/ctrlassist-device" }

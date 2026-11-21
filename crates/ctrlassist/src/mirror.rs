@@ -2,6 +2,8 @@
 //! current by subscriber tasks and readable as a snapshot. Deltas surface
 //! as [`StateEvent`](crate::StateEvent)s on a broadcast channel.
 
+use std::collections::BTreeMap;
+
 use ctrlassist_protocol::{keys, payload};
 use zenoh::sample::{Sample, SampleKind};
 
@@ -14,22 +16,70 @@ pub(crate) struct DaemonMirror {
     /// The daemon's own state, as last published. Absent until it first
     /// arrives, and while the daemon is down.
     pub daemon: Option<payload::Daemon>,
+    /// The pads the daemon knows, by key segment.
+    pub pads: BTreeMap<String, payload::Pad>,
+    /// What a virtual pad can present itself as, by name.
+    pub identities: BTreeMap<String, payload::Identity>,
+}
+
+/// Apply a sample to the row it is for; whether anything changed.
+fn assign<T: serde::de::DeserializeOwned>(
+    rows: &mut BTreeMap<String, T>,
+    id: &str,
+    sample: &Sample,
+) -> bool {
+    match sample.kind() {
+        SampleKind::Put => match serde_json::from_slice(&sample.payload().to_bytes()) {
+            Ok(row) => {
+                rows.insert(id.to_string(), row);
+                true
+            }
+            Err(_) => false,
+        },
+        SampleKind::Delete => rows.remove(id).is_some(),
+    }
 }
 
 impl Mirror for DaemonMirror {
     fn keys() -> Vec<String> {
-        vec![keys::daemon()]
+        vec![keys::daemon(), keys::pad_wild(), keys::identity_wild()]
     }
 
     fn clear(&mut self) -> Vec<StateEvent> {
-        self.daemon
+        let mut removed: Vec<StateEvent> = self
+            .daemon
             .take()
             .map(|_| StateEvent::DaemonStateChanged)
             .into_iter()
-            .collect()
+            .collect();
+        removed.extend(
+            std::mem::take(&mut self.pads)
+                .into_values()
+                .map(|pad| StateEvent::PadChanged { pad: pad.id }),
+        );
+        if !std::mem::take(&mut self.identities).is_empty() {
+            removed.push(StateEvent::IdentitiesChanged);
+        }
+        removed
     }
 
     fn apply(&mut self, sample: &Sample) -> Option<StateEvent> {
+        let key = sample.key_expr().as_str();
+        if let Some(id) = keys::parse_pad(key) {
+            // The event names the pad as a person would, which a delete
+            // can only take from the row it removes.
+            let was = self.pads.get(id).map(|pad| pad.id.clone());
+            let changed = assign(&mut self.pads, id, sample);
+            let pad = self.pads.get(id).map(|pad| pad.id.clone()).or(was)?;
+            return changed.then_some(StateEvent::PadChanged { pad });
+        }
+        if let Some(id) = keys::parse_identity(key) {
+            return assign(&mut self.identities, id, sample)
+                .then_some(StateEvent::IdentitiesChanged);
+        }
+        if key != keys::daemon() {
+            return None;
+        }
         self.daemon = match sample.kind() {
             SampleKind::Put => Some(serde_json::from_slice(&sample.payload().to_bytes()).ok()?),
             SampleKind::Delete => None,
@@ -51,6 +101,90 @@ mod tests {
 
     fn put(body: &str) -> Sample {
         SampleBuilder::put(key(), body.as_bytes().to_vec()).into()
+    }
+
+    fn put_on(key: String, body: &impl serde::Serialize) -> Sample {
+        let key = KeyExpr::try_from(key).expect("a state key is a valid key expression");
+        SampleBuilder::put(key, serde_json::to_vec(body).expect("a payload serializes")).into()
+    }
+
+    fn delete_on(key: String) -> Sample {
+        let key = KeyExpr::try_from(key).expect("a state key is a valid key expression");
+        SampleBuilder::delete(key).into()
+    }
+
+    fn pad(id: &str, connected: bool) -> payload::Pad {
+        payload::Pad {
+            id: id.to_string(),
+            name: "Pad".to_string(),
+            vendor: 1,
+            product: 2,
+            connected,
+            hidden: false,
+            setup: None,
+            rumble: None,
+        }
+    }
+
+    #[test]
+    fn pads_and_identities_are_kept_by_key_and_dropped_with_the_daemon() {
+        let mut mirror = DaemonMirror::default();
+        let key = keys::pad(&keys::pad_id("address:aa"));
+        let changed = |pad: &str| {
+            Some(StateEvent::PadChanged {
+                pad: pad.to_string(),
+            })
+        };
+
+        assert_eq!(
+            mirror.apply(&put_on(key.clone(), &pad("address:aa", true))),
+            changed("address:aa")
+        );
+        assert_eq!(
+            mirror.apply(&put_on(key.clone(), &pad("address:aa", false))),
+            changed("address:aa")
+        );
+        assert!(!mirror.pads[&keys::pad_id("address:aa")].connected);
+        // A body this release can't read, and a delete of a row it never
+        // had, change nothing.
+        assert_eq!(mirror.apply(&put_on(key.clone(), &"nonsense")), None);
+        assert_eq!(
+            mirror.apply(&delete_on(keys::pad("0000000000000000"))),
+            None
+        );
+        assert_eq!(mirror.pads.len(), 1);
+        assert_eq!(mirror.apply(&delete_on(key.clone())), changed("address:aa"));
+        assert!(mirror.pads.is_empty());
+
+        let xbox = payload::Identity {
+            id: "xbox".to_string(),
+            name: "Xbox".to_string(),
+            vendor: 0x045e,
+            product: 0x0b12,
+            available: true,
+        };
+        assert_eq!(
+            mirror.apply(&put_on(keys::identity("xbox"), &xbox)),
+            Some(StateEvent::IdentitiesChanged)
+        );
+        assert_eq!(mirror.identities["xbox"], xbox);
+        // A key the mirror doesn't know is not the daemon's own state.
+        assert_eq!(
+            mirror.apply(&put_on("ctrlassist/later/x".to_string(), &1)),
+            None
+        );
+
+        mirror.apply(&put_on(key, &pad("address:aa", true)));
+        assert_eq!(
+            mirror.clear(),
+            [
+                StateEvent::PadChanged {
+                    pad: "address:aa".to_string()
+                },
+                StateEvent::IdentitiesChanged
+            ]
+        );
+        assert!(mirror.pads.is_empty() && mirror.identities.is_empty());
     }
 
     #[test]

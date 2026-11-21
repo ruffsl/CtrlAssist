@@ -296,7 +296,7 @@ zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the d
 | `ctrlassist/daemon` | state | version; whether real-time scheduling was granted; the hiding mechanism in use |
 | `ctrlassist/rpc/daemon/info` | rpc | the daemon's release, for the version check; its reply's shape is frozen |
 | `ctrlassist/identity/<id>` | state | each identity a virtual pad can take, and whether it is available now |
-| `ctrlassist/pad/<id>` | state | name, model, address, connected, hidden, which setup uses it, whether it can rumble |
+| `ctrlassist/pad/<id>` | state | the id it is known by across reconnects, name, model, connected, hidden, which setup uses it, whether it can rumble |
 | `ctrlassist/profile/<id>` | state | the profile |
 | `ctrlassist/setup/<id>` | state | starting, running, held or failed with a reason; each node's selected input |
 | `ctrlassist/mirror/<pad>` | stream | the pad's current state |
@@ -304,7 +304,9 @@ zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the d
 | `ctrlassist/rpc/setup/{start,stop,update,select}` | rpc | run a profile; stop it; change it, replying live or disruptive; select a node's input |
 | `ctrlassist/rpc/pad/{identify,forget}` | rpc | buzz a pad so the user can tell which is which; drop a remembered pad |
 
-Key segments marked `<id>` are derived by the daemon, never taken raw from a pad's or a profile's name, since those are free text.
+Key segments marked `<id>` are derived by the daemon, never taken raw from a pad's or a profile's name, since those are free text. A pad's segment is a hash of the id it is known by, so a client can work it out too; an rpc that names a pad takes that id, the segment, a bare address, or a model when only one known pad is of it.
+
+`identify` buzzes for a duration the caller gives, and replies once the motors run. `forget` is refused for a pad that is connected, which would be taken in again at once.
 
 **The mirror** is published only while something subscribes: the input thread checks one flag per frame and, when it is set, offers the state with a send that never waits. The control side publishes the latest state each time its previous publish completes, skipping what arrived in between, so the cost follows what the subscriber takes rather than the pad's rate.
 
@@ -372,7 +374,7 @@ Groups appear only when a pad isn't laid out as a gamepad; the schema has no key
 | What | Where | Notes |
 |---|---|---|
 | Profiles | `$XDG_CONFIG_HOME/ctrlassist/profiles/` | One file each, with a schema version; written durably. |
-| Known pads | `$XDG_STATE_HOME/ctrlassist/` | Address, model and name of pads seen, for profiles that name a pad that isn't connected. |
+| Known pads | `$XDG_STATE_HOME/ctrlassist/pads.toml` | Id, model and name of pads seen, and whether each could rumble, for profiles that name a pad that isn't connected. Written durably; a file that can't be understood is left as it is. |
 | Identity data | `$XDG_STATE_HOME/ctrlassist/identities/` | What a PlayStation identity was copied from, per model and transport. |
 | Steam blacklist record | `$XDG_STATE_HOME/ctrlassist/` | Entries the daemon added, so they can be removed after a crash. |
 

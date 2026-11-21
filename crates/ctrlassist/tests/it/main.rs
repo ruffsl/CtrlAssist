@@ -8,3 +8,4 @@
 
 mod client;
 mod fake;
+mod pads;

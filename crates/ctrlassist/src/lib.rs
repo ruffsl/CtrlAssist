@@ -16,9 +16,10 @@ use ctrlassist_protocol::bootstrap;
 /// in the user's runtime directory.
 pub use ctrlassist_protocol::bootstrap::default_socket_path;
 use ctrlassist_protocol::caller::Caller;
-use ctrlassist_protocol::endpoint::daemon;
+use ctrlassist_protocol::endpoint::{Unary, daemon, pad};
 pub use ctrlassist_protocol::error::ErrorCode;
-pub use ctrlassist_protocol::payload::Daemon as DaemonState;
+pub use ctrlassist_protocol::payload::{Daemon as DaemonState, Identity, Pad};
+use ctrlassist_protocol::rpc;
 pub use ctrlassist_protocol::rpc::ServiceInfo;
 pub use error::{BoxError, Error, Result};
 use tokio::sync::{broadcast, mpsc};
@@ -36,6 +37,17 @@ pub enum StateEvent {
     /// The daemon's own state changed in the mirror, or left it because
     /// the daemon went away. Re-read [`DaemonClient::daemon_state`].
     DaemonStateChanged,
+    /// A pad's state changed in the mirror: it connected or left, the
+    /// daemon came to know it or forgot it, or it left the mirror because
+    /// the daemon went away. Re-read [`DaemonClient::list_pads`].
+    PadChanged {
+        /// The pad, by the id it is known by across reconnects.
+        pad: String,
+    },
+    /// What a virtual pad can present itself as changed, or left the
+    /// mirror because the daemon went away. Re-read
+    /// [`DaemonClient::list_identities`].
+    IdentitiesChanged,
     /// The daemon's liveliness token appeared: it's running and serving
     /// rpcs. Can repeat for one lifetime, so treat it idempotently.
     DaemonAppeared,
@@ -148,6 +160,70 @@ impl DaemonClient {
         Ok(self.mirror.read(|mirror| mirror.daemon.clone()))
     }
 
+    /// The pads the daemon knows, connected or remembered, in the order
+    /// of their ids: a mirror read, no rpc.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::VersionMismatch`] when the daemon is known to
+    /// run another release.
+    pub fn list_pads(&self) -> Result<Vec<Pad>> {
+        self.refuse_known_mismatch()?;
+        let mut pads: Vec<Pad> = self
+            .mirror
+            .read(|mirror| mirror.pads.values().cloned().collect());
+        pads.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(pads)
+    }
+
+    /// What a virtual pad can present itself as: a mirror read, no rpc.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::VersionMismatch`] when the daemon is known to
+    /// run another release.
+    pub fn list_identities(&self) -> Result<Vec<Identity>> {
+        self.refuse_known_mismatch()?;
+        Ok(self
+            .mirror
+            .read(|mirror| mirror.identities.values().cloned().collect()))
+    }
+
+    /// Buzz a pad for `duration`, so a person can tell which one it is.
+    /// `pad` is its id, a bare address, or `model:<vendor>:<product>`
+    /// when one known pad is of that model. Returns once the buzz has
+    /// started.
+    ///
+    /// # Errors
+    ///
+    /// Refused with [`ErrorCode::UnknownPad`], [`ErrorCode::AmbiguousPad`],
+    /// [`ErrorCode::PadDisconnected`], [`ErrorCode::PadWithoutRumble`] or
+    /// [`ErrorCode::PadRefused`], or with [`ErrorCode::BadRequest`] for a
+    /// duration of nothing or of more than five seconds; and fails as any
+    /// rpc can.
+    pub async fn identify_pad(&self, pad: &str, duration: Duration) -> Result<()> {
+        let request = rpc::IdentifyRequest {
+            pad: pad.to_string(),
+            // Longer than the daemon accepts either way.
+            millis: u32::try_from(duration.as_millis()).unwrap_or(u32::MAX),
+        };
+        self.call::<pad::Identify>(&request).await.map(|_| ())
+    }
+
+    /// Stop remembering a pad that isn't connected. `pad` names it as for
+    /// [`Self::identify_pad`].
+    ///
+    /// # Errors
+    ///
+    /// Refused with [`ErrorCode::UnknownPad`], [`ErrorCode::AmbiguousPad`]
+    /// or [`ErrorCode::PadConnected`]; and fails as any rpc can.
+    pub async fn forget_pad(&self, pad: &str) -> Result<()> {
+        let request = rpc::PadRequest {
+            pad: pad.to_string(),
+        };
+        self.call::<pad::Forget>(&request).await.map(|_| ())
+    }
+
     /// The daemon's release. Ungated, so it reports what's running even
     /// across a mismatch.
     ///
@@ -178,6 +254,15 @@ impl DaemonClient {
 
     fn subscribe_events(&self) -> broadcast::Receiver<StateEvent> {
         self.events.subscribe()
+    }
+
+    /// Call a daemon rpc, once the daemon's release is known to match.
+    async fn call<R: Unary<Target = ()>>(&self, request: &R::Request) -> Result<R::Response> {
+        self.check_release().await?;
+        self.caller
+            .call::<R>(&(), request)
+            .await
+            .map_err(Error::from_rpc)
     }
 
     /// Fail when the daemon is already known to run another release: the

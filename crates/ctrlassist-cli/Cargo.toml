@@ -12,10 +12,15 @@ publish.workspace = true
 [[bin]]
 name = "ctrlassist"
 path = "src/main.rs"
+# The SDK library is also named `ctrlassist`; documenting both writes the
+# same `target/doc/ctrlassist/` page, and rustdoc warns on the collision.
+# The command's reference lives in its `--help`, not in rustdoc.
+doc = false
 
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+ctrlassist = { workspace = true }
 ctrlassist-daemon = { workspace = true }
 ctrlassist-protocol = { workspace = true }
 serde_json = { workspace = true }
@@ -23,6 +28,7 @@ tokio = { workspace = true }
 zenoh = { workspace = true }
 
 [dev-dependencies]
+ctrlassist-test = { workspace = true }
 ctrlassist-device = { workspace = true }
 tempfile = { workspace = true }
 

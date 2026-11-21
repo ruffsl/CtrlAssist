@@ -452,3 +452,14 @@ fn a_profile_written_out_reads_back_the_same() {
         .unwrap();
     assert_eq!(older.schema, 1);
 }
+
+#[test]
+fn an_identity_goes_by_the_name_a_profile_writes() {
+    for identity in Identity::ALL {
+        assert_eq!(
+            serde_json::to_value(identity).unwrap(),
+            identity.as_str(),
+            "{identity:?}"
+        );
+    }
+}

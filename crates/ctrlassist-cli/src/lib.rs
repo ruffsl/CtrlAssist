@@ -30,6 +30,33 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List the pads the daemon knows: those connected, and those it
+    /// remembers.
+    Pads {
+        /// Print a JSON array, one object per pad.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List what a virtual pad can present itself as.
+    Identities {
+        /// Print a JSON array, one object per identity.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Buzz a pad, to tell which one it is.
+    Identify {
+        /// The pad: its id as `pads` prints it, a bare address, or
+        /// `model:<vendor>:<product>` when one known pad is of that model.
+        pad: String,
+        /// How long to buzz, in milliseconds.
+        #[arg(long, value_name = "MS", default_value_t = 600)]
+        millis: u32,
+    },
+    /// Stop remembering a pad that isn't connected.
+    Forget {
+        /// The pad, named as for `identify`.
+        pad: String,
+    },
     /// Become one of CtrlAssist's long-running processes.
     #[command(subcommand)]
     Service(Service),

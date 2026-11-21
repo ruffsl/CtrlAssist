@@ -157,7 +157,8 @@ fn each_identity_reports_its_own_name_and_numbers() {
     let (sink, reader) = pair(Identity::Xbox);
     assert_eq!(sink.identity(), Identity::Xbox);
     let ids = reader.identifiers();
-    assert_eq!(ids.name, "Microsoft Xbox Series S|X Controller");
+    assert_eq!(ids.name, Identity::Xbox.name());
+    assert_eq!((ids.vendor, ids.product), Identity::Xbox.model());
     assert_eq!((ids.bus, ids.vendor, ids.product), (3, 0x045e, 0x0b12));
 
     let (_sink, reader) = pair(Identity::Generic);

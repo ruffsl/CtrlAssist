@@ -12,6 +12,7 @@ readme = "README.md"
 
 [dependencies]
 ctrlassist-protocol = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -19,6 +20,7 @@ zenoh = { workspace = true }
 zenoh-ext = { workspace = true }
 
 [dev-dependencies]
+ctrlassist-test = { workspace = true }
 ctrlassist-daemon = { workspace = true }
 ctrlassist-device = { workspace = true }
 tempfile = { workspace = true }

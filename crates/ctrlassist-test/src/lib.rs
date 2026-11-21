@@ -10,10 +10,12 @@
 mod hid;
 mod inspect;
 mod pad;
+mod rumble;
 
 pub use hid::FakeHidPad;
 pub use inspect::{NodeKind, Pad, Reads, can_open, count_reads, pads};
 pub use pad::FakePad;
+pub use rumble::{Motors, RumblePad};
 
 use std::path::Path;
 
@@ -29,6 +31,30 @@ pub fn uinput_available() -> bool {
 #[must_use]
 pub fn fake_pads_required() -> bool {
     std::env::var_os("CTRLASSIST_REQUIRE_FAKE_PADS").is_some()
+}
+
+/// Whether `test` can make fake pads here. Where it can't, this says so
+/// on standard error and the test should return, unless fake pads are
+/// required here.
+///
+/// # Panics
+///
+/// Panics if fake pads are required and can't be made.
+#[must_use]
+pub fn can_make_pads(test: &str) -> bool {
+    use std::io::Write as _;
+    if uinput_available() {
+        return true;
+    }
+    assert!(
+        !fake_pads_required(),
+        "{test}: /dev/uinput isn't writable, and fake pads are required here"
+    );
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIPPED {test}: /dev/uinput isn't writable here"
+    );
+    false
 }
 
 /// Whether this process may create pads through uhid.

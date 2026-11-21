@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ctrlassist_daemon::Daemon;
+use ctrlassist_daemon::{Daemon, Paths};
 use ctrlassist_device::InputThread;
 use ctrlassist_protocol::caller::{Caller, RpcError};
 use ctrlassist_protocol::endpoint::daemon;
@@ -25,9 +25,17 @@ fn socket() -> (TempDir, PathBuf) {
     (dir, socket)
 }
 
+/// The daemon's paths around `socket`: its state goes beside it.
+fn paths(socket: &Path) -> Paths {
+    Paths {
+        socket: socket.to_path_buf(),
+        state: socket.with_file_name("state"),
+    }
+}
+
 async fn start(socket: &Path) -> Daemon {
     let (input, _reports) = InputThread::spawn().unwrap();
-    Daemon::start(socket, input).await.unwrap()
+    Daemon::start(&paths(socket), input).await.unwrap()
 }
 
 async fn is_alive(client: &Session) -> bool {
@@ -54,6 +62,15 @@ async fn a_client_finds_the_daemon_alive_asks_its_release_and_reads_its_state() 
         .await
         .unwrap();
     assert_eq!(info.version, VERSION);
+    // What it publishes from a cache is listed, so a client knows when it
+    // has all of it.
+    for key in [
+        keys::daemon(),
+        keys::identity("generic"),
+        keys::identity("xbox"),
+    ] {
+        assert!(info.keys.contains(&key), "{key} isn't in {:?}", info.keys);
+    }
 
     // State was published before this client connected, and still
     // arrives: it is read from the daemon's cache.
@@ -114,11 +131,19 @@ async fn the_socket_s_directory_is_made_for_the_user_alone() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_daemon_that_cannot_make_its_socket_s_directory_says_so() {
     let (input, _reports) = InputThread::spawn().unwrap();
-    let error = Daemon::start(Path::new("/proc/nowhere/zenoh.sock"), input)
+    let error = Daemon::start(&paths(Path::new("/proc/nowhere/zenoh.sock")), input)
         .await
         .unwrap_err();
     assert!(
         error.to_string().contains("creating /proc/nowhere"),
         "{error}"
     );
+}
+
+#[test]
+fn a_daemon_given_no_paths_uses_the_user_s_runtime_and_state_directories() {
+    let paths = Paths::default_for_user();
+    assert!(paths.socket.ends_with("ctrlassist/zenoh.sock"));
+    assert!(paths.state.ends_with("ctrlassist"));
+    assert_ne!(paths.socket.parent(), Some(paths.state.as_path()));
 }

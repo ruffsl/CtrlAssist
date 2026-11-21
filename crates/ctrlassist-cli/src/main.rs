@@ -4,6 +4,7 @@
 //! panic on a closed pipe. Results are `writeln!(io::stdout(), …)?`, and
 //! `main` ends a run whose reader has gone quietly.
 
+mod pads;
 mod status;
 
 use std::io;
@@ -32,6 +33,10 @@ fn main() -> Result<()> {
         .block_on(async {
             match command {
                 Command::Status { json } => status::status(&socket, json).await,
+                Command::Pads { json } => pads::pads(&socket, json).await,
+                Command::Identities { json } => pads::identities(&socket, json).await,
+                Command::Identify { pad, millis } => pads::identify(&socket, &pad, millis).await,
+                Command::Forget { pad } => pads::forget(&socket, &pad).await,
                 Command::Service(_) => Ok(()),
             }
         });

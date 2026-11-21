@@ -7,7 +7,7 @@ use ctrlassist_device::InputThread;
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::info;
 
-use crate::Daemon;
+use crate::{Daemon, Paths};
 
 /// The daemon's arguments.
 #[derive(clap::Args, Clone, Debug, Default)]
@@ -16,6 +16,10 @@ pub struct Args {
     /// directory.
     #[arg(long)]
     pub socket: Option<PathBuf>,
+    /// The directory for what the daemon remembers between runs, in place
+    /// of the one in the user's state directory.
+    #[arg(long, value_name = "DIRECTORY")]
+    pub state_dir: Option<PathBuf>,
 }
 
 /// Runs the daemon until it is told to stop, on a runtime of its own.
@@ -41,10 +45,12 @@ async fn run(args: Args, input: InputThread) -> Result<()> {
         "ctrlassist-daemon",
         &["ctrlassist_daemon=info", "ctrlassist_protocol=info"],
     )?;
-    let socket = args
-        .socket
-        .unwrap_or_else(ctrlassist_protocol::bootstrap::default_socket_path);
-    let daemon = Daemon::start(&socket, input).await?;
+    let defaults = Paths::default_for_user();
+    let paths = Paths {
+        socket: args.socket.unwrap_or(defaults.socket),
+        state: args.state_dir.unwrap_or(defaults.state),
+    };
+    let daemon = Daemon::start(&paths, input).await?;
 
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;

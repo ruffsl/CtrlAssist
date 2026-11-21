@@ -196,3 +196,23 @@ pub mod daemon {
         }
     }
 }
+
+/// The pad rpcs: `ctrlassist/rpc/pad/<verb>`.
+pub mod pad {
+    use super::{keys, rpc};
+
+    family! {
+        /// A decoded pad rpc.
+        target: (),
+        key: |_target, verb| keys::pad_rpc(verb),
+        parse: keys::parse_pad_rpc,
+        wild: keys::pad_rpc_wild,
+        rpcs: {
+            /// Buzz a pad, so a person can tell which one it is. Replies
+            /// once the buzz has started.
+            Identify = "identify" (rpc::IdentifyRequest) -> rpc::Ack, write;
+            /// Drop a remembered pad that isn't connected.
+            Forget = "forget" (rpc::PadRequest) -> rpc::Ack, write;
+        }
+    }
+}

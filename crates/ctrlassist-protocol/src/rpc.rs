@@ -7,6 +7,27 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Ack {}
 
+/// Names a pad: by the id it is known by across reconnects, by that id's
+/// key segment, by a bare address, or as `model:<vendor>:<product>` when
+/// only one known pad is of that model.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PadRequest {
+    /// The pad.
+    pub pad: String,
+}
+
+/// Asks a pad to buzz, so a person can tell which one it is.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct IdentifyRequest {
+    /// The pad, named as in a [`PadRequest`].
+    pub pad: String,
+    /// How long to buzz, in milliseconds: from 1 to [`IDENTIFY_MAX_MS`].
+    pub millis: u32,
+}
+
+/// The longest buzz `identify` accepts, in milliseconds.
+pub const IDENTIFY_MAX_MS: u32 = 5_000;
+
 /// Reply to the daemon's `info` rpc: the handshake a client runs before
 /// anything else.
 ///
