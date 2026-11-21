@@ -74,6 +74,7 @@ pub async fn run(options: TrayOptions) -> Result<()> {
             return Ok(());
         }
     };
+    info!(socket = %options.socket.display(), "the tray is up");
     let quit = Arc::new(Notify::new());
     tokio::spawn(follow(daemon.clone(), handle.clone(), notifier.clone()));
     tokio::spawn(act(daemon, clicked, notifier, Arc::clone(&quit)));
