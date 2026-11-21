@@ -88,6 +88,9 @@
         checks.platform = pkgs.callPackage ./packaging/nix/test-platform.nix {
           fixture = self.packages.${system}.fixture;
         };
+        checks.device = pkgs.callPackage ./packaging/nix/test-device.nix {
+          fixture = self.packages.${system}.fixture;
+        };
         checks.hider = pkgs.callPackage ./packaging/nix/test-hider.nix {
           inherit (self.packages.${system}) fixture hider;
         };

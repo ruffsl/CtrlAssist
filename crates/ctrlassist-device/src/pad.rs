@@ -1,0 +1,223 @@
+//! A pad, read from an open descriptor on its event node.
+
+use std::io;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+
+use ctrlassist_core::PadState;
+use evdev::{Device, EventType};
+use rustix::fs::fstat;
+
+use crate::layout::{AxisRange, Mapping};
+
+/// Why a pad couldn't be opened or read.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum PadError {
+    /// The pad has gone: unplugged, out of range, or its driver re-bound.
+    Gone,
+    /// The descriptor isn't an event device, or the kernel refused a read.
+    Io(io::Error),
+}
+
+impl std::fmt::Display for PadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gone => f.write_str("the pad has gone"),
+            Self::Io(error) => write!(f, "the pad couldn't be read: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for PadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Gone => None,
+            Self::Io(error) => Some(error),
+        }
+    }
+}
+
+impl From<io::Error> for PadError {
+    fn from(error: io::Error) -> Self {
+        // The kernel answers a read on a removed device with ENODEV.
+        if error.raw_os_error() == Some(rustix::io::Errno::NODEV.raw_os_error()) {
+            Self::Gone
+        } else {
+            Self::Io(error)
+        }
+    }
+}
+
+/// What tells a pad from others, as the kernel and udev report it. Every
+/// string is the pad's own claim and is not to be trusted as more.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Identity {
+    /// The pad's name.
+    pub name: String,
+    /// The bus it is on, as the kernel numbers them: 3 is USB, 5 Bluetooth.
+    pub bus: u16,
+    /// Its vendor number.
+    pub vendor: u16,
+    /// Its product number.
+    pub product: u16,
+    /// Its version number.
+    pub version: u16,
+    /// Its own address, the kernel's `uniq`: the same over USB and
+    /// Bluetooth for a PlayStation pad, absent for an Xbox pad on USB.
+    pub address: Option<String>,
+    /// Its USB serial number, from udev.
+    pub serial: Option<String>,
+    /// Where it is plugged in, the kernel's `phys`.
+    pub port: Option<String>,
+}
+
+fn nonempty(text: Option<&str>) -> Option<String> {
+    text.map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// The USB serial number udev holds for the device a descriptor is on.
+fn serial(fd: BorrowedFd<'_>) -> Option<String> {
+    let stat = fstat(fd).ok()?;
+    let device = udev::Device::from_devnum(udev::DeviceType::Character, stat.st_rdev).ok()?;
+    nonempty(device.property_value("ID_SERIAL_SHORT")?.to_str())
+}
+
+/// A pad being read.
+///
+/// Reading it is level-based, like the graph it feeds: [`read`](Self::read)
+/// reports the pad's whole state after each report frame that changed it,
+/// not the events that made the change.
+#[derive(Debug)]
+pub struct Pad {
+    device: Device,
+    mapping: Mapping,
+    identity: Identity,
+    /// The state as of the last complete frame.
+    state: PadState,
+    /// The state with the events of a frame still arriving applied.
+    pending: PadState,
+}
+
+impl Pad {
+    /// Takes over a descriptor open on a pad's event node, and reads what
+    /// the pad holds now. The mapping is the kernel's gamepad layout.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the descriptor isn't an event device.
+    pub fn from_fd(fd: OwnedFd) -> Result<Self, PadError> {
+        let serial = serial(fd.as_fd());
+        let device = Device::from_fd(fd)?;
+        // A read with nothing waiting must return, not block the thread
+        // that every other pad is read on.
+        device.set_nonblocking(true)?;
+
+        let keys: Vec<u16> = device
+            .supported_keys()
+            .map(|keys| keys.iter().map(evdev::KeyCode::code).collect())
+            .unwrap_or_default();
+        let now = device.get_abs_state()?;
+        let absolutes: Vec<(u16, AxisRange)> = device
+            .supported_absolute_axes()
+            .map(|axes| {
+                axes.iter()
+                    .filter_map(|axis| {
+                        let info = now.get(usize::from(axis.0))?;
+                        let range = AxisRange {
+                            min: info.minimum,
+                            max: info.maximum,
+                        };
+                        Some((axis.0, range))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mapping = Mapping::kernel(&keys, &absolutes);
+
+        // What is held at this moment: a pad can be opened mid-press.
+        let mut state = PadState::NEUTRAL;
+        for (code, _) in &absolutes {
+            if let Some(info) = now.get(usize::from(*code)) {
+                mapping.apply(&mut state, EventType::ABSOLUTE.0, *code, info.value);
+            }
+        }
+        for key in device.get_key_state()?.iter() {
+            mapping.apply(&mut state, EventType::KEY.0, key.code(), 1);
+        }
+
+        let id = device.input_id();
+        let identity = Identity {
+            name: device.name().unwrap_or_default().to_string(),
+            bus: id.bus_type().0,
+            vendor: id.vendor(),
+            product: id.product(),
+            version: id.version(),
+            address: nonempty(device.unique_name()),
+            serial,
+            port: nonempty(device.physical_path()),
+        };
+        Ok(Self {
+            device,
+            mapping,
+            identity,
+            state,
+            pending: state,
+        })
+    }
+
+    /// What tells this pad from others.
+    #[must_use]
+    pub fn identity(&self) -> &Identity {
+        &self.identity
+    }
+
+    /// What the pad held as of its last complete report frame.
+    #[must_use]
+    pub fn state(&self) -> &PadState {
+        &self.state
+    }
+
+    /// Reads everything waiting, and calls `frame` with the pad's state
+    /// after each report frame that changed it. Returns when nothing is
+    /// left to read.
+    ///
+    /// When the kernel has dropped events because they weren't read in
+    /// time, the pad's true state is fetched again, so a release that
+    /// was dropped can't leave a button held.
+    ///
+    /// # Errors
+    ///
+    /// [`PadError::Gone`] when the pad has gone; the state then stays as
+    /// it last was, and what that should mean is the caller's decision.
+    pub fn read(&mut self, mut frame: impl FnMut(&PadState)) -> Result<(), PadError> {
+        loop {
+            let events = match self.device.fetch_events() {
+                Ok(events) => events,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) => return Err(error.into()),
+            };
+            for event in events {
+                let kind = event.event_type();
+                if kind == EventType::SYNCHRONIZATION {
+                    // The end of a frame, or of the made-up events that
+                    // stand in for dropped ones.
+                    if self.pending != self.state {
+                        self.state = self.pending;
+                        frame(&self.state);
+                    }
+                } else {
+                    self.mapping
+                        .apply(&mut self.pending, kind.0, event.code(), event.value());
+                }
+            }
+        }
+    }
+}
+
+impl AsFd for Pad {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.device.as_fd()
+    }
+}

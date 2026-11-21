@@ -9,7 +9,8 @@ use evdev::{
     UinputAbsSetup,
 };
 
-/// A gamepad made through uinput: the standard buttons and two sticks.
+/// A gamepad made through uinput: the standard buttons, two sticks, two
+/// triggers and a hat.
 ///
 /// It has no HID device behind it, so no hidraw node and no driver to
 /// re-bind. Dropping it removes it, as unplugging a pad would.
@@ -59,12 +60,23 @@ impl FakePad {
         ] {
             builder = builder.with_absolute_axis(&UinputAbsSetup::new(axis, stick))?;
         }
+        let trigger = AbsInfo::new(0, 0, 255, 0, 0, 0);
+        for axis in [AbsoluteAxisCode::ABS_Z, AbsoluteAxisCode::ABS_RZ] {
+            builder = builder.with_absolute_axis(&UinputAbsSetup::new(axis, trigger))?;
+        }
+        let hat = AbsInfo::new(0, -1, 1, 0, 0, 0);
+        for axis in [AbsoluteAxisCode::ABS_HAT0X, AbsoluteAxisCode::ABS_HAT0Y] {
+            builder = builder.with_absolute_axis(&UinputAbsSetup::new(axis, hat))?;
+        }
         let mut device = builder.build()?;
         let event_node = device
             .enumerate_dev_nodes_blocking()?
             .filter_map(Result::ok)
             .find(|node| node.to_string_lossy().contains("/event"))
             .ok_or_else(|| io::Error::other("the fake pad has no event node"))?;
+        // The node exists before udev has set who may open it. Wait for
+        // udev to finish with it, so the caller can open it at once.
+        let _ = std::process::Command::new("udevadm").arg("settle").status();
         Ok(Self { device, event_node })
     }
 
@@ -72,6 +84,20 @@ impl FakePad {
     #[must_use]
     pub fn event_node(&self) -> &Path {
         &self.event_node
+    }
+
+    /// Sends events as one report frame, each an event type, a code and
+    /// a value as the kernel numbers them.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the kernel refuses the write.
+    pub fn frame(&mut self, events: &[(u16, u16, i32)]) -> io::Result<()> {
+        let events: Vec<InputEvent> = events
+            .iter()
+            .map(|(kind, code, value)| InputEvent::new(*kind, *code, *value))
+            .collect();
+        self.device.emit(&events)
     }
 
     /// Presses or releases the south face button, as one report frame.

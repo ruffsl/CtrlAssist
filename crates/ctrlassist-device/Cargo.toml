@@ -1,0 +1,27 @@
+[package]
+name = "ctrlassist-device"
+description = "CtrlAssist's kernel side: pads read from descriptors, virtual pads, and the input thread"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+ctrlassist-core = { workspace = true }
+evdev = { workspace = true }
+rustix = { workspace = true, features = ["fs"] }
+udev = { workspace = true }
+
+[dev-dependencies]
+ctrlassist-test = { workspace = true }
+rustix = { workspace = true, features = ["event"] }
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
+[lints]
+workspace = true

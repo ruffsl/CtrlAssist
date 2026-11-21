@@ -13,6 +13,8 @@ Cargo.toml                    # workspace root: one version, the lint table, the
 crates/
   ctrlassist-core/            # the routing model: controls, pad state, groups, mux and
                               # demux nodes, the graph, the feedback router. No dependencies.
+  ctrlassist-device/          # the kernel side: pads read from descriptors, the kernel
+                              # gamepad layout
   ctrlassist-hider/           # the hiding service: its wire types and client as a library,
                               # and the root binary
   ctrlassist-test/            # fake pads made through uinput and uhid, and the

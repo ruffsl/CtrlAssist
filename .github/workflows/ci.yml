@@ -102,6 +102,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # libudev for the udev crate, libsystemd for the hiding service's
+      # session check.
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libudev-dev libsystemd-dev pkg-config
+
       - name: Toolchain
         run: rustup component add llvm-tools-preview && rustup show
 
@@ -135,8 +140,21 @@ jobs:
             --skip actionlint
             --skip zizmor
 
+      # A runner is nobody's seat, so nothing gives its user uinput or the
+      # event nodes. Open them on this throwaway machine, and make a test
+      # that still can't make a fake pad fail instead of skipping.
+      - name: Let the tests make fake pads
+        run: |
+          sudo modprobe uinput
+          echo 'KERNEL=="uinput", MODE="0666"' | sudo tee /etc/udev/rules.d/99-ctrlassist-ci.rules
+          echo 'SUBSYSTEM=="input", MODE="0666"' | sudo tee --append /etc/udev/rules.d/99-ctrlassist-ci.rules
+          sudo udevadm control --reload
+          sudo udevadm trigger --settle
+
       - name: Test
         run: just test-ci
+        env:
+          CTRLASSIST_REQUIRE_FAKE_PADS: "1"
 
       - name: Upload coverage
         if: ${{ !cancelled() }}
@@ -157,6 +175,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # libudev for the udev crate, libsystemd for the hiding service's
+      # session check.
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libudev-dev libsystemd-dev pkg-config
 
       # The floor is read from Cargo.toml, padded to x.y.z for rustup.
       - name: Toolchain

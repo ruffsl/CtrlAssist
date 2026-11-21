@@ -15,8 +15,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use ctrlassist_core::gamepad;
+use ctrlassist_device::Pad;
 use ctrlassist_hider::{Client, Hidden};
 use ctrlassist_test::{FakeHidPad, FakePad, NodeKind, can_open, count_reads, pads};
+use rustix::event::{PollFd, PollFlags, poll};
 
 fn parse_hex(text: &str) -> Result<u16, std::num::ParseIntError> {
     u16::from_str_radix(text.trim_start_matches("0x"), 16)
@@ -69,6 +72,13 @@ enum Command {
         socket: PathBuf,
         #[arg(long)]
         control: PathBuf,
+    },
+    /// Read a pad as the daemon does and print each state it reports,
+    /// stopping after `frames` of them.
+    Read {
+        node: PathBuf,
+        #[arg(long, default_value_t = 4)]
+        frames: usize,
     },
     /// Count reads on a node for a window, printing the count each second
     /// and whether the node was cut off.
@@ -219,6 +229,29 @@ fn main() -> Result<()> {
             socket,
             control,
         } => hide(&node, &socket, &control),
+        Command::Read { node, frames } => {
+            let file = File::open(&node).with_context(|| format!("opening {}", node.display()))?;
+            let mut pad = Pad::from_fd(file.into()).context("reading the pad")?;
+            let identity = pad.identity();
+            println!(
+                "pad name={:?} id={:04x}:{:04x} address={:?} serial={:?}",
+                identity.name, identity.vendor, identity.product, identity.address, identity.serial
+            );
+            let mut seen = 0;
+            while seen < frames {
+                poll(&mut [PollFd::new(&pad, PollFlags::IN)], None)?;
+                pad.read(|state| {
+                    seen += 1;
+                    println!(
+                        "frame south={} left_x={:.2}",
+                        state.get(gamepad::SOUTH),
+                        state.get(gamepad::LEFT_X)
+                    );
+                })
+                .context("reading the pad")?;
+            }
+            Ok(())
+        }
         Command::Listen { node, millis } => {
             let reads = count_reads(
                 &node,

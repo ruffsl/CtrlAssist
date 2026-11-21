@@ -23,6 +23,14 @@ pub fn uinput_available() -> bool {
     can_open(Path::new("/dev/uinput"), true)
 }
 
+/// Whether a test that can't make a fake pad must fail instead of
+/// skipping: set where the machine is meant to allow it, as in CI, so a
+/// machine that silently stopped allowing it is noticed.
+#[must_use]
+pub fn fake_pads_required() -> bool {
+    std::env::var_os("CTRLASSIST_REQUIRE_FAKE_PADS").is_some()
+}
+
 /// Whether this process may create pads through uhid.
 #[must_use]
 pub fn uhid_available() -> bool {

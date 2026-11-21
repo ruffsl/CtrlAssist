@@ -26,12 +26,12 @@ How the workspace is tested and where a new test goes. The approach is TisVlay's
 
 | Fake | Made through | Has | Stands in for |
 |---|---|---|---|
-| `FakePad` | uinput | An event node and a js node | Any evdev gamepad; a pad with no HID driver |
+| `FakePad` | uinput | An event node and a js node; buttons, two sticks, two triggers, a hat | Any evdev gamepad; a pad with no HID driver |
 | `FakeHidPad` | uhid | Those, plus a HID device with a driver bound, a hidraw node and an address | A PlayStation pad, any Bluetooth pad, anything whose driver is re-bound or whose hidraw node is read |
 
-A clean machine opens neither interface to an ordinary user, so a test that needs one checks `uinput_available()` or `uhid_available()` and skips, visibly, where it is missing. The virtual machine checks run as root and never skip.
+A clean machine opens neither interface to an ordinary user, so a test that needs one checks `uinput_available()` or `uhid_available()` and skips where it is missing, writing a `SKIPPED` line that says why. With `CTRLASSIST_REQUIRE_FAKE_PADS` set it fails instead; CI sets it, after opening uinput and the event nodes on its runner. The virtual machine checks run as root and never skip.
 
-`ctrlassist-fixture` is the same fakes as a command, for the virtual machine checks' scripts: it creates a pad and holds it until killed, lists pads with what the caller can open, and counts what arrives on a node.
+`ctrlassist-fixture` is the same fakes as a command, for the virtual machine checks' scripts: it creates a pad and holds it until killed, lists pads with what the caller can open, counts what arrives on a node, reads a pad as the daemon does, and hides a pad through the hiding service.
 
 ## Virtual machine checks
 
@@ -39,6 +39,7 @@ Each `packaging/nix/test-*.nix` is a NixOS test exposed as a flake check and run
 
 | Check | Asserts |
 |---|---|
+| `device` | A seat user reads a pad's report frames from a descriptor as pad states; an unplugged pad is reported as gone |
 | `hider` | The hiding service as packaged, hardening included: a hidden pad is denied and its earlier reader cut off; the other pad of the same model is untouched; the passed descriptor delivers input; a reconnecting pad is never visible; restore, a killed client and a killed service each give the pad back and leave no rule; a user not in front of the machine, a keyboard and a hostile pad name get nowhere; a pad with no driver is restored exactly |
 | `platform` | A seat user can open a pad's event and js nodes, and can't open `/dev/uinput`, `/dev/uhid` or a hidraw node; both kinds of fake pad deliver what they are sent |
 
