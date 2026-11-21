@@ -71,19 +71,23 @@ pub(crate) fn found(device: &udev::Device) -> Option<Found> {
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(str::to_string);
-    Some(Found {
-        node,
-        identifiers: Identifiers {
-            name: attribute(&input, "name").unwrap_or_default(),
-            bus: hex(attribute(&input, "id/bustype")),
-            vendor: hex(attribute(&input, "id/vendor")),
-            product: hex(attribute(&input, "id/product")),
-            version: hex(attribute(&input, "id/version")),
-            address: attribute(&input, "uniq"),
-            serial,
-            port: attribute(&input, "phys"),
-        },
-    })
+    let identifiers = Identifiers {
+        name: attribute(&input, "name").unwrap_or_default(),
+        bus: hex(attribute(&input, "id/bustype")),
+        vendor: hex(attribute(&input, "id/vendor")),
+        product: hex(attribute(&input, "id/product")),
+        version: hex(attribute(&input, "id/version")),
+        address: attribute(&input, "uniq"),
+        serial,
+        port: attribute(&input, "phys"),
+    };
+    // A pad that goes while it is being read leaves some of this empty,
+    // the `phys` that marks the daemon's own pads included. What was
+    // read is a pad only if the pad was still there afterwards.
+    input
+        .syspath()
+        .exists()
+        .then_some(Found { node, identifiers })
 }
 
 /// Every pad connected now, the daemon's own virtual pads included; see
