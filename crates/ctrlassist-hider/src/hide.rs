@@ -137,12 +137,16 @@ fn retrigger(nodes: &[PathBuf]) -> io::Result<()> {
 
 fn open_event(identity: &Identity) -> Result<OwnedFd, Refusal> {
     let nodes = pad::nodes(identity);
-    let event = nodes.first().ok_or(Refusal::Absent)?;
+    open(nodes.first().ok_or(Refusal::Absent)?)
+}
+
+/// Opens a pad's node for a client, for reading and writing.
+pub(crate) fn open(node: &Path) -> Result<OwnedFd, Refusal> {
     fs::OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags((OFlags::NONBLOCK | OFlags::CLOEXEC).bits() as i32)
-        .open(event)
+        .open(node)
         .map(OwnedFd::from)
         .map_err(|_| Refusal::Failed)
 }

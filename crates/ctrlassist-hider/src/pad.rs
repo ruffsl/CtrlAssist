@@ -223,9 +223,36 @@ pub(crate) fn rebind(identity: &Identity) -> Option<Rebind> {
     driver_of(&find(identity)?.parent()?).1
 }
 
+/// The HID drivers whose pads' raw nodes the service opens for a caller.
+/// A raw node takes whatever the pad's firmware does, so this names the
+/// pads a virtual pad is made to pass as, and nothing else.
+const RAW_DRIVERS: [&str; 1] = ["playstation"];
+
+/// The raw HID node of the pad the descriptor is open on.
+pub(crate) fn raw_node(fd: BorrowedFd<'_>) -> Result<PathBuf, Refusal> {
+    let pad = identify(fd)?;
+    let offered = pad
+        .rebind
+        .as_ref()
+        .is_some_and(|rebind| rebind.bus == "hid" && RAW_DRIVERS.contains(&rebind.driver.as_str()));
+    if !offered {
+        return Err(Refusal::Unsupported);
+    }
+    family(&pad.identity)
+        .into_iter()
+        .find_map(|(raw, node)| raw.then_some(node))
+        .ok_or(Refusal::Absent)
+}
+
 /// Every device node of the connected pad with this identity: its event
 /// node first, then its js and hidraw nodes.
 pub(crate) fn nodes(identity: &Identity) -> Vec<PathBuf> {
+    family(identity).into_iter().map(|(_, node)| node).collect()
+}
+
+/// Every device node of the connected pad with this identity, each with
+/// whether it is a raw HID node: its event node first.
+fn family(identity: &Identity) -> Vec<(bool, PathBuf)> {
     let mut found = Vec::new();
     let Some(event) = find(identity) else {
         return found;
@@ -233,7 +260,7 @@ pub(crate) fn nodes(identity: &Identity) -> Vec<PathBuf> {
     let (Some(node), Some(input)) = (event.devnode(), event.parent()) else {
         return found;
     };
-    found.push(node.to_path_buf());
+    found.push((false, node.to_path_buf()));
     let parent = std::iter::successors(Some(input.clone()), udev::Device::parent)
         .find(|device| subsystem(device) == Some("hid"))
         .unwrap_or(input);
@@ -248,9 +275,10 @@ pub(crate) fn nodes(identity: &Identity) -> Vec<PathBuf> {
             let Some(child_node) = child.devnode() else {
                 continue;
             };
-            let is_sibling = matches!(subsystem(&child), Some("input" | "hidraw"));
+            let raw = subsystem(&child) == Some("hidraw");
+            let is_sibling = raw || subsystem(&child) == Some("input");
             if is_sibling && child_node != node {
-                found.push(child_node.to_path_buf());
+                found.push((raw, child_node.to_path_buf()));
             }
         }
     }

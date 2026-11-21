@@ -116,6 +116,12 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"ctrlassist-hider check {keyboard} | grep 'refused'")
         machine.succeed("ctrlassist-hider check /dev/null | grep 'refused'")
 
+    with subtest("a raw node is opened only for the kinds of pad the service names"):
+        raw = f"ctrlassist-fixture raw {pads()[A]['event'][0]} --socket {SOCKET}"
+        told = machine.succeed(f"su -l alice -c '{raw}'")
+        assert "doesn't open that kind of pad's raw node" in told, told
+        assert "isn't the user in front" in machine.succeed(raw)
+
     with subtest("someone not in front of the machine is refused"):
         _, told = hide("as-root", pads()[A]["event"][0], user="root")
         assert "isn't the user in front" in told, told

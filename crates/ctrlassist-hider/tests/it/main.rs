@@ -77,6 +77,7 @@ fn every_request_and_reply_survives_the_wire() {
         Request::Hide,
         Request::Reopen(Token(7)),
         Request::Restore(Token(u32::MAX)),
+        Request::Raw,
     ] {
         assert_eq!(Request::decode(&request.encode()), Some(request));
     }
@@ -88,6 +89,7 @@ fn every_request_and_reply_survives_the_wire() {
         Refusal::Absent,
         Refusal::Failed,
         Refusal::BadRequest,
+        Refusal::Unsupported,
     ];
     for refusal in refusals {
         let reply = Reply::refused(refusal);

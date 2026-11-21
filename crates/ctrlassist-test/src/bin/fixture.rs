@@ -78,6 +78,13 @@ enum Command {
         #[arg(long)]
         control: PathBuf,
     },
+    /// Ask the hiding service for a pad's raw HID node, and say what it
+    /// answered.
+    Raw {
+        node: PathBuf,
+        #[arg(long)]
+        socket: PathBuf,
+    },
     /// Read a pad as the daemon does and print each state it reports,
     /// stopping after `frames` of them.
     Read {
@@ -245,6 +252,15 @@ fn main() -> Result<()> {
             socket,
             control,
         } => hide(&node, &socket, &control),
+        Command::Raw { node, socket } => {
+            let client = Client::connect(&socket).context("connecting to the hiding service")?;
+            let pad = File::open(&node).with_context(|| format!("opening {}", node.display()))?;
+            match client.raw(pad.as_fd()) {
+                Ok(_) => println!("raw: ok"),
+                Err(error) => println!("raw: refused: {error}"),
+            }
+            Ok(())
+        }
         Command::Read { node, frames } => {
             let file = File::open(&node).with_context(|| format!("opening {}", node.display()))?;
             let mut pad = Pad::from_fd(file.into()).context("reading the pad")?;

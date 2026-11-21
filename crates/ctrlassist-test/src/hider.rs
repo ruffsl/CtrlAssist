@@ -24,6 +24,8 @@ pub enum Asked {
     Reopen(String),
     /// To restore a pad.
     Restore(String),
+    /// For a pad's raw HID node.
+    Raw(String),
     /// Nothing more: the client's connection closed, which restores
     /// whatever it still had hidden.
     Closed,
@@ -55,6 +57,16 @@ fn pad_of(fd: &OwnedFd) -> Option<(PathBuf, PadId)> {
         .into_iter()
         .find(|found| found.node == node)?;
     Some((node, found.identifiers.id()))
+}
+
+/// The raw HID node beside an event node, for a pad with a HID device.
+fn raw_of(event: &Path) -> Option<PathBuf> {
+    let name = event.file_name()?;
+    let beside = Path::new("/sys/class/input")
+        .join(name)
+        .join("device/device/hidraw");
+    let raw = std::fs::read_dir(beside).ok()?.next()?.ok()?;
+    Some(Path::new("/dev").join(raw.file_name()))
 }
 
 fn open(node: &Path) -> Option<OwnedFd> {
@@ -135,6 +147,23 @@ fn serve(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>) {
                     }
                 }
                 None => Reply::refused(Refusal::UnknownToken),
+            },
+            // The real service opens it for the kinds of pad it names;
+            // the stand-in for any pad whose raw node this user can open.
+            Some(Request::Raw) => match fds.first().and_then(pad_of) {
+                Some((node, id)) => {
+                    note(Asked::Raw(id.to_string()));
+                    pass = raw_of(&node).and_then(|raw| open(&raw));
+                    match pass {
+                        Some(_) => Reply {
+                            refusal: None,
+                            token: Token(0),
+                            dislodged: false,
+                        },
+                        None => Reply::refused(Refusal::Unsupported),
+                    }
+                }
+                None => Reply::refused(Refusal::NotAPad),
             },
             None => Reply::refused(Refusal::BadRequest),
         };

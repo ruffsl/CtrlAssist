@@ -37,10 +37,12 @@ pub enum Refusal {
     Failed,
     /// The request wasn't understood.
     BadRequest,
+    /// The pad isn't of a kind whose raw node the service opens.
+    Unsupported,
 }
 
 impl Refusal {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::NotPermitted,
         Self::NotAPad,
         Self::Busy,
@@ -48,6 +50,7 @@ impl Refusal {
         Self::Absent,
         Self::Failed,
         Self::BadRequest,
+        Self::Unsupported,
     ];
 
     fn code(self) -> u8 {
@@ -59,6 +62,7 @@ impl Refusal {
             Self::Absent => 5,
             Self::Failed => 6,
             Self::BadRequest => 7,
+            Self::Unsupported => 8,
         }
     }
 }
@@ -73,6 +77,7 @@ impl std::fmt::Display for Refusal {
             Self::Absent => "the pad isn't connected",
             Self::Failed => "the service couldn't carry the request out",
             Self::BadRequest => "the request wasn't understood",
+            Self::Unsupported => "the service doesn't open that kind of pad's raw node",
         })
     }
 }
@@ -88,6 +93,9 @@ pub enum Request {
     Reopen(Token),
     /// Restore a hidden pad.
     Restore(Token),
+    /// Open the raw HID node of the pad whose event node the
+    /// accompanying descriptor is on.
+    Raw,
 }
 
 impl Request {
@@ -101,6 +109,7 @@ impl Request {
             Self::Hide => (1, 0),
             Self::Reopen(token) => (2, token.0),
             Self::Restore(token) => (3, token.0),
+            Self::Raw => (4, 0),
         };
         let token = token.to_le_bytes();
         [opcode, token[0], token[1], token[2], token[3]]
@@ -117,6 +126,7 @@ impl Request {
             1 => Some(Self::Hide),
             2 => Some(Self::Reopen(token)),
             3 => Some(Self::Restore(token)),
+            4 => Some(Self::Raw),
             _ => None,
         }
     }

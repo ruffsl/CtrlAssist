@@ -142,6 +142,24 @@ fn serve(connections: &mut [Connection], index: usize, next_token: &mut u32) -> 
                 None => refuse(connection, Refusal::UnknownToken),
             }
         }
+        Some(Request::Raw) => {
+            let connection = &connections[index];
+            let Some(descriptor) = fds.first() else {
+                refuse(connection, Refusal::BadRequest);
+                return true;
+            };
+            match pad::raw_node(descriptor.as_fd()).and_then(|node| hide::open(&node)) {
+                Ok(raw) => {
+                    let answer = Reply {
+                        refusal: None,
+                        token: Token(0),
+                        dislodged: false,
+                    };
+                    reply(connection, answer, Some(&raw));
+                }
+                Err(refusal) => refuse(connection, refusal),
+            }
+        }
         None => refuse(&connections[index], Refusal::BadRequest),
     }
     true

@@ -10,6 +10,11 @@
 //! A pad is named by a descriptor the caller already holds, never by a
 //! path or a name, so the service grants nothing the caller couldn't
 //! already read.
+//!
+//! One request grants more than that, to the same caller and for the
+//! same pad: the pad's raw HID node, which a seat user can't open on a
+//! clean machine, for the kinds of pad named in the service. A virtual
+//! pad that is to pass as such a pad is made from what that node says.
 
 mod wire;
 
@@ -156,6 +161,19 @@ impl Client {
     pub fn reopen(&self, token: Token) -> Result<Hidden, Error> {
         let (reply, fds) = self.ask(Request::Reopen(token), None)?;
         Self::hidden(reply, fds)
+    }
+
+    /// Opens the raw HID node of the pad whose event node `pad` is open
+    /// on, for reading and writing.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the service refuses (the caller isn't the user in front
+    /// of the machine, the descriptor isn't a pad's, or the pad isn't of
+    /// a kind whose raw node it opens) or the connection breaks.
+    pub fn raw(&self, pad: BorrowedFd<'_>) -> Result<OwnedFd, Error> {
+        let (_, fds) = self.ask(Request::Raw, Some(pad))?;
+        fds.into_iter().next().ok_or(Error::Protocol)
     }
 
     /// Restores a hidden pad.

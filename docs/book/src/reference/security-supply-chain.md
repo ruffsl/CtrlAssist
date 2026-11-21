@@ -9,6 +9,7 @@ The hiding service is kept small so it can be read in one sitting, and is closed
 - It starts only when first asked, from a socket; nothing of it runs before that.
 - It serves only the person at the machine: a graphical session at the seat, not SSH or another user.
 - It acts only on game controllers the caller could already open, proved by handing it the open controller, never a name or a path.
+- One thing it grants that you may not have had: raw access to a PlayStation controller of yours, which a virtual controller needs to be able to pass as one. It opens that for no other kind of device.
 - No text from a device reaches a system rule unchecked.
 - It is confined by its service unit: no new privileges, no home directories, and a read-only system apart from `/run`.
 - Whatever it hid is restored when its client goes away, however that happens, and when the service itself stops.
