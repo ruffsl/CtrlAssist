@@ -58,6 +58,10 @@ enum Command {
         node: PathBuf,
         #[arg(long, default_value_t = 1000)]
         millis: u64,
+        /// Print the running count every second, and say why reading
+        /// stopped if it does before the window ends.
+        #[arg(long)]
+        progress: bool,
     },
 }
 
@@ -73,7 +77,7 @@ fn main() -> Result<()> {
         } => fake_pad(&name, vendor, product, pulse),
         Command::FakeHid { name, pulse } => fake_hid(&name, pulse),
         Command::Grab { node } => grab(&node),
-        Command::Listen { node, millis } => listen(&node, millis),
+        Command::Listen { node, millis, progress } => listen(&node, millis, progress),
     }
 }
 
@@ -409,8 +413,10 @@ fn readable_before(fd: RawFd, deadline: Instant) -> Result<bool> {
     Ok(ready > 0)
 }
 
-fn listen(node: &Path, millis: u64) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_millis(millis);
+fn listen(node: &Path, millis: u64, progress: bool) -> Result<()> {
+    let started = Instant::now();
+    let deadline = started + Duration::from_millis(millis);
+    let mut reported = 0;
     let text = node.to_string_lossy();
     let mut count = 0usize;
 
@@ -439,9 +445,28 @@ fn listen(node: &Path, millis: u64) -> Result<()> {
             .open(node)
             .with_context(|| format!("opening {}", node.display()))?;
         let mut buffer = [0u8; 4096];
-        while readable_before(file.as_raw_fd(), deadline)? {
+        loop {
+            // Wake at least once a second so progress is printed while idle.
+            let tick = deadline.min(Instant::now() + Duration::from_secs(1));
+            let ready = readable_before(file.as_raw_fd(), tick)?;
+            let seconds = started.elapsed().as_secs();
+            if progress && seconds > reported {
+                reported = seconds;
+                println!("t={seconds}s events={count}");
+            }
+            if !ready {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                continue;
+            }
             match file.read(&mut buffer) {
-                Ok(0) => break,
+                Ok(0) => {
+                    if progress {
+                        println!("stopped: end of file");
+                    }
+                    break;
+                }
                 Ok(read) if is_js => {
                     count += buffer[..read]
                         .chunks_exact(8)
@@ -450,6 +475,10 @@ fn listen(node: &Path, millis: u64) -> Result<()> {
                 }
                 Ok(_) => count += 1,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) if progress => {
+                    println!("stopped: {e}");
+                    break;
+                }
                 Err(e) => return Err(e).context("reading"),
             }
         }

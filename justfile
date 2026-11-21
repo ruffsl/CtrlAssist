@@ -86,6 +86,88 @@ spike-hiding-root vendor="054c" product="0ce6":
     observe "after the rule is removed"
     echo "Wrote $log"
 
+# Starts Steam if it isn't running, opens the pad's hidraw node as Steam
+# would, hides the pad with the udev rule, re-binds its driver, then
+# restores, logging at each stage what the already-open reader and Steam
+# still see. The pad must be on USB. Asks for the sudo password.
+#
+# Does hiding dislodge a program that already has the pad open?
+[group('spike')]
+spike-hiding-dislodge vendor="054c" product="0ce6":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    probe=spikes/hiding/target/debug/probe
+    log=spikes/hiding/target/dislodge.log
+    rule=/run/udev/rules.d/72-ctrlassist-spike.rules
+    steam_log=$HOME/.local/share/Steam/logs/controller.txt
+    (cd spikes/hiding && cargo build --quiet)
+    : > "$log"
+    say() { echo "===== $1 =====" | tee -a "$log"; }
+    # The pad's HID device and hidraw node, from its vendor and product.
+    hid=$("$probe" pads | awk -v id="vendor={{ vendor }} product={{ product }}" \
+        'index($0, id) { found = 1 } found && $1 == "hid" { print $2; exit }')
+    hidraw=$("$probe" pads | awk -v hid="$hid" \
+        '$1 == "hid" { found = ($2 == hid) } found && $1 == "node" && $2 == "hidraw" { print $3; exit }')
+    driver=$(basename "$(readlink "/sys/bus/hid/devices/$hid/driver")")
+    echo "pad: hid=$hid hidraw=$hidraw driver=$driver" | tee -a "$log"
+    started_steam=false
+    if ! pgrep -x steam > /dev/null; then
+        setsid nohup steam -silent > /dev/null 2>&1 < /dev/null &
+        started_steam=true
+        echo "started Steam; waiting for it to find the pad" | tee -a "$log"
+        sleep 25
+    fi
+    steam_mark=$(wc -l < "$steam_log")
+    steam_since() {
+        tail -n "+$((steam_mark + 1))" "$steam_log" \
+            | grep -E "Local Device Found|type:|Product:|device closed|device opened|Hiding" || true
+        steam_mark=$(wc -l < "$steam_log")
+    }
+    rebind() {
+        echo "$hid" | sudo tee "/sys/bus/hid/drivers/$driver/unbind" > /dev/null || true
+        echo "$hid" | sudo tee "/sys/bus/hid/drivers/$driver/bind" > /dev/null
+        sudo udevadm settle
+    }
+    restore() {
+        sudo rm -f "$rule"
+        sudo udevadm control --reload
+        rebind
+    }
+    trap restore EXIT
+    # A reader that holds the node open across everything, as Steam does.
+    "$probe" listen "$hidraw" --millis 40000 --progress >> "$log" 2>&1 &
+    reader=$!
+    say "before: reader running, Steam's view"
+    sleep 4
+    steam_since | tee -a "$log"
+    say "rule installed (nodes denied); is the open reader still receiving?"
+    sudo mkdir -p /run/udev/rules.d
+    printf '%s\n' \
+        'SUBSYSTEM=="input", ATTRS{id/vendor}=="{{ vendor }}", ATTRS{id/product}=="{{ product }}", MODE="0000", GROUP="root", TAG-="uaccess"' \
+        'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="{{ vendor }}", ATTRS{idProduct}=="{{ product }}", MODE="0000", GROUP="root", TAG-="uaccess"' \
+        | sudo tee "$rule" > /dev/null
+    sudo udevadm control --reload
+    sudo udevadm trigger --action=add --subsystem-match=input --subsystem-match=hidraw
+    sudo udevadm settle
+    sleep 6
+    steam_since | tee -a "$log"
+    say "driver re-bound with the rule in place; reader and Steam now?"
+    rebind
+    sleep 6
+    steam_since | tee -a "$log"
+    "$probe" access 2>&1 | tee -a "$log"
+    say "rule removed and driver re-bound; does Steam find the pad again?"
+    restore
+    trap - EXIT
+    sleep 8
+    steam_since | tee -a "$log"
+    "$probe" access 2>&1 | tee -a "$log"
+    kill "$reader" 2> /dev/null || true
+    if "$started_steam"; then
+        steam -shutdown > /dev/null 2>&1 || true
+    fi
+    echo "Wrote $log"
+
 # For comparing identifiers across reconnects and transports, e.g.
 # `just spike-hiding-ids "dualsense usb"`.
 #

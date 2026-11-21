@@ -90,6 +90,8 @@ One word per thing, here and in everything written from this plan:
 
 **Virtual pads come in two kinds, chosen by identity** ([findings/identity.md](findings/identity.md)). A uinput pad serves the generic identity and Xbox identities. A PlayStation identity needs a uhid pad, because SDL and Steam ignore an evdev node carrying Sony's IDs. The default, when a profile names none, is the generic one: a virtual pad that claims to be real hardware is a choice. Copying a pad means its IDs on a uinput pad for Xbox-family pads and a uhid copy for PlayStation pads.
 
+**The DualSense identity and the Steam blacklist fallback are in the first release, built last.** Everything else is brought up end to end with generic and Xbox identities and the helper first, so either can slip to a point release without holding 0.5.0. Two reviewers recommended deferring both; the maintainer chose to keep them.
+
 **A DualSense identity is copied from a connected pad, never shipped.** Its report descriptor and feature reports are read from a real DualSense and cached per pad in the user's state directory, so the identity is offered only to someone who has had one connected, and nothing of Sony's is carried in the repository.
 
 **Feedback routes rumble everywhere and passes the rest through between like pads.** Rumble is translated between the two forms (force-feedback requests on uinput, output reports on uhid). When the sink and the source are the same kind of pad, the whole output report passes through, so LEDs and trigger effects work; between unlike pads they are dropped.
