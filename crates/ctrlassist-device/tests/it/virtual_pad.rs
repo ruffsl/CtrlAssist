@@ -5,7 +5,7 @@ use std::fs::File;
 use std::os::fd::OwnedFd;
 use std::path::Path;
 
-use ctrlassist_core::{Effect, FeedbackError, PadState, gamepad};
+use ctrlassist_core::{Effect, FeedbackError, Level, PadState, gamepad};
 use ctrlassist_device::{Identity, Pad, Request, VirtualPad};
 use evdev::{Device, FFEffectData, FFEffectKind, FFReplay, FFTrigger};
 use rustix::event::{PollFd, PollFlags, poll};
@@ -226,4 +226,85 @@ fn an_upload_that_is_refused_fails_in_the_game_and_does_not_hang_it() {
     assert_eq!(requests.len(), 1);
     // Out of space, as a real pad with no free effect answers.
     assert_eq!(outcome, Err(Some(28)));
+}
+
+/// A pad opened for writing as well, as the hiding service opens them.
+fn writable(node: &Path) -> Pad {
+    let fd: OwnedFd = File::options()
+        .read(true)
+        .write(true)
+        .open(node)
+        .unwrap()
+        .into();
+    Pad::from_fd(fd).unwrap()
+}
+
+#[test]
+fn a_rumble_level_is_one_endless_effect_replaced_without_a_gap_and_removed_at_zero() {
+    if !can_make_pads(
+        "a_rumble_level_is_one_endless_effect_replaced_without_a_gap_and_removed_at_zero",
+    ) {
+        return;
+    }
+    // A virtual pad stands in for a real pad with motors: it reports what
+    // it is asked, as a real pad's driver would be.
+    let mut motors = VirtualPad::create(Identity::Generic).unwrap();
+    let node = motors.event_node().to_path_buf();
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+
+    let player = move || {
+        let mut pad = writable(&node);
+        assert!(pad.can_rumble());
+        let first = Level {
+            strong: 0x8000,
+            weak: 0,
+        };
+        let second = Level {
+            strong: 0x2000,
+            weak: 0xffff,
+        };
+        pad.rumble(first).unwrap();
+        // The same level again asks the pad for nothing.
+        pad.rumble(first).unwrap();
+        pad.rumble(second).unwrap();
+        pad.rumble(Level::default()).unwrap();
+    };
+    let (requests, ()) = serve_while(&mut motors, player, |_| Ok(()));
+    let endless = |strong, weak| Effect {
+        strong,
+        weak,
+        length_ms: 0,
+        delay_ms: 0,
+    };
+    assert_eq!(
+        requests,
+        [
+            Request::Upload {
+                id: 0,
+                effect: endless(0x8000, 0)
+            },
+            Request::Play { id: 0, count: 1 },
+            // The second level starts before the first is taken away.
+            Request::Upload {
+                id: 1,
+                effect: endless(0x2000, 0xffff)
+            },
+            Request::Play { id: 1, count: 1 },
+            Request::Play { id: 0, count: 0 },
+            Request::Erase { id: 0 },
+            Request::Play { id: 1, count: 0 },
+            Request::Erase { id: 1 },
+        ]
+    );
+}
+
+#[test]
+fn a_pad_without_motors_ignores_rumble() {
+    if !can_make_pads("a_pad_without_motors_ignores_rumble") {
+        return;
+    }
+    let fake = ctrlassist_test::FakePad::new("No Motors", 0x1209, 0x5eed).unwrap();
+    let mut pad = writable(fake.event_node());
+    assert!(!pad.can_rumble());
+    pad.rumble(Level { strong: 1, weak: 1 }).unwrap();
 }

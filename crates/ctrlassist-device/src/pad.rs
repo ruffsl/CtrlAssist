@@ -3,8 +3,10 @@
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
-use ctrlassist_core::PadState;
-use evdev::{Device, EventType};
+use ctrlassist_core::{Level, PadState};
+use evdev::{
+    Device, EventType, FFEffect, FFEffectCode, FFEffectData, FFEffectKind, FFReplay, FFTrigger,
+};
 use rustix::fs::fstat;
 
 use crate::layout::{AxisRange, Mapping};
@@ -88,7 +90,6 @@ fn serial(device_number: u64) -> Option<String> {
 /// Reading it is level-based, like the graph it feeds: [`read`](Self::read)
 /// reports the pad's whole state after each report frame that changed it,
 /// not the events that made the change.
-#[derive(Debug)]
 pub struct Pad {
     device: Device,
     mapping: Mapping,
@@ -98,6 +99,18 @@ pub struct Pad {
     state: PadState,
     /// The state with the events of a frame still arriving applied.
     pending: PadState,
+    can_rumble: bool,
+    /// The one effect kept on the pad while it rumbles, and its level.
+    rumble: Option<(FFEffect, Level)>,
+}
+
+impl std::fmt::Debug for Pad {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pad")
+            .field("identifiers", &self.identifiers)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Pad {
@@ -148,6 +161,9 @@ impl Pad {
             mapping.apply(&mut state, EventType::KEY.0, key.code(), 1);
         }
 
+        let can_rumble = device
+            .supported_ff()
+            .is_some_and(|ff| ff.contains(FFEffectCode::FF_RUMBLE));
         let id = device.input_id();
         let identifiers = Identifiers {
             name: device.name().unwrap_or_default().to_string(),
@@ -166,6 +182,8 @@ impl Pad {
             device_number,
             state,
             pending: state,
+            can_rumble,
+            rumble: None,
         })
     }
 
@@ -222,6 +240,53 @@ impl Pad {
                 }
             }
         }
+    }
+}
+
+impl Pad {
+    /// Whether the pad has rumble motors the kernel can drive.
+    #[must_use]
+    pub fn can_rumble(&self) -> bool {
+        self.can_rumble
+    }
+
+    /// Makes the pad's motors run at `level` until told otherwise; a
+    /// level of zero stops them. A pad that can't rumble ignores this.
+    ///
+    /// The pad holds one effect however many games are rumbling it: the
+    /// new level starts before the old effect is removed, so there is no
+    /// gap between them.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the pad has gone, the descriptor isn't open for writing,
+    /// or the pad refuses the effect; the motors then stay as they were.
+    pub fn rumble(&mut self, level: Level) -> Result<(), PadError> {
+        if !self.can_rumble || self.rumble.as_ref().is_some_and(|(_, held)| *held == level) {
+            return Ok(());
+        }
+        if level == Level::default() {
+            // Dropping the effect stops and removes it.
+            self.rumble = None;
+            return Ok(());
+        }
+        let mut effect = self.device.upload_ff_effect(FFEffectData {
+            direction: 0,
+            trigger: FFTrigger::default(),
+            // No length: it runs until it is replaced or removed. When
+            // each rumble ends is the router's business.
+            replay: FFReplay {
+                length: 0,
+                delay: 0,
+            },
+            kind: FFEffectKind::Rumble {
+                strong_magnitude: level.strong,
+                weak_magnitude: level.weak,
+            },
+        })?;
+        effect.play(1)?;
+        self.rumble = Some((effect, level));
+        Ok(())
     }
 }
 
