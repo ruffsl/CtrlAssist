@@ -690,6 +690,70 @@ fn an_idle_input_thread_never_wakes() {
     );
 }
 
+/// Tapped, the thread says what a game asks of a virtual pad and what
+/// the pads are told; untapped, it says nothing of either.
+#[test]
+fn a_tapped_thread_says_what_passes_through_a_setup_s_feedback() {
+    if !can_make_pads("a_tapped_thread_says_what_passes_through_a_setup_s_feedback") {
+        return;
+    }
+    use ctrlassist_device::Tap;
+    let primary = FakePad::new("Thread Tap Primary", 0x1209, 0x5eed).unwrap();
+    let (sink, _game) = sink();
+    let node = sink.event_node().to_path_buf();
+    let graph = Graph::build(GraphSpec {
+        sources: vec![source()],
+        nodes: vec![],
+        sinks: vec![Input::Source(PRIMARY)],
+    })
+    .unwrap();
+    let setup = Setup::new(graph, vec![Some(read(&primary))], vec![sink]);
+    let (thread, reports) = InputThread::spawn().unwrap();
+    thread.send(Command::Start(ID, Box::new(setup))).unwrap();
+    let mut pad = game_opens(&node);
+    let mut play = |strong| {
+        let mut effect = pad.upload_ff_effect(rumble(strong, 0, 0, 0)).unwrap();
+        effect.play(1).unwrap();
+        effect
+    };
+    // Untapped: a rumble comes and goes unremarked.
+    drop(play(0x1000));
+    thread.tap(true);
+    let _held = play(0x8000);
+    let mut seen = Vec::new();
+    while seen.len() < 3 {
+        match reports.recv().unwrap() {
+            Report::Tapped { setup: ID, tap } => seen.push(tap),
+            other => unreachable!("expected a tap, got {other:?}"),
+        }
+    }
+    assert!(matches!(
+        seen[0],
+        Tap::Asked {
+            request: Request::Upload { effect, .. },
+            ..
+        } if effect.strong == 0x8000
+    ));
+    assert!(matches!(
+        seen[1],
+        Tap::Asked {
+            request: Request::Play { count: 1, .. },
+            ..
+        }
+    ));
+    // The pad has no motors, and is told all the same.
+    assert_eq!(
+        seen[2],
+        Tap::Told {
+            source: PRIMARY,
+            level: ctrlassist_core::Level {
+                strong: 0x8000,
+                weak: 0
+            }
+        }
+    );
+}
+
 #[test]
 fn a_buzz_outranks_a_game_s_rumble_and_then_gives_the_pad_back_to_it() {
     if !can_make_pads("a_buzz_outranks_a_game_s_rumble_and_then_gives_the_pad_back_to_it") {

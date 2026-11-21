@@ -233,6 +233,9 @@ impl Daemon {
             })
             .context("starting the thread that carries the input thread's reports")?;
 
+        // What games ask of the virtual pads and what the pads are told
+        // is said only where it would be logged.
+        input.tap(tracing::enabled!(tracing::Level::DEBUG));
         let realtime = input.is_realtime();
         let state = payload::Daemon {
             version: VERSION.to_string(),

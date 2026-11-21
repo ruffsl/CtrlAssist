@@ -1836,6 +1836,11 @@ impl Reactor {
                 self.publish_setup(&name).await;
             }
             Report::GraphTaken { setup, old } => self.took(setup, old).await,
+            // Asked for only when this is being logged.
+            Report::Tapped { setup, tap } => {
+                let name = self.setups.name_of(setup).unwrap_or_default();
+                tracing::debug!(setup = name, ?tap, "feedback");
+            }
             Report::GraphRefused { setup, graph } => {
                 // Only a setup the input thread no longer runs refuses
                 // one, and its own report says what became of it.

@@ -146,6 +146,8 @@ Feedback is not input run backward.
 
 **A game's upload is answered leniently.** The router holds the effects itself, so an upload succeeds whether or not any pad can rumble, and a game that insists on rumble still runs when one pad lacks it or rumble is off. The daemon's state says which pads can't.
 
+**What passes through feedback can be watched.** With the daemon logging at debug level, the input thread reports each thing a game asks of a virtual pad, each output report a virtual DualSense is sent, and each level a pad is told, and the daemon logs them. It is off otherwise: a game can ask for rumble many times a second.
+
 The options that were set aside are in [ideas/rumble-routing-model.md](ideas/rumble-routing-model.md).
 
 ## The daemon

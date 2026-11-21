@@ -125,6 +125,51 @@ impl NewGraph {
     }
 }
 
+/// Something that passed through a setup's feedback, for whoever is
+/// working out why a rumble did or didn't arrive. Reported only while
+/// the input thread is [tapped](InputThread::tap).
+#[derive(Clone, Copy, PartialEq, Debug)]
+#[non_exhaustive]
+pub enum Tap {
+    /// A game asked this of a virtual pad.
+    Asked {
+        /// The virtual pad.
+        sink: SinkId,
+        /// What it asked.
+        request: Request,
+    },
+    /// A game sent a virtual pad an output report: its two bytes of
+    /// marks, its two rumble bytes, and its later byte of marks, where a
+    /// DualSense's report has them.
+    Output {
+        /// The virtual pad.
+        sink: SinkId,
+        /// The report's second and third bytes.
+        marks: [u8; 2],
+        /// Its fourth and fifth: the weak motor, then the strong.
+        motors: [u8; 2],
+        /// Its fortieth.
+        later: u8,
+    },
+    /// A pad was told to run its motors at this level.
+    Told {
+        /// The pad.
+        source: SourceId,
+        /// The level.
+        level: Level,
+    },
+}
+
+/// The most taps kept from one piece of a setup's handling.
+const TAPS: usize = 8;
+
+/// Keeps a tap, if there is room for one more.
+fn note(taps: &mut [Option<Tap>; TAPS], tap: Tap) {
+    if let Some(place) = taps.iter_mut().find(|place| place.is_none()) {
+        *place = Some(tap);
+    }
+}
+
 /// Names a setup to the input thread.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SetupId(pub u32);
@@ -153,6 +198,8 @@ pub struct Setup {
     /// The pads that have each virtual pad's last output report, by sink
     /// number.
     passed: Vec<SourceSet>,
+    /// What passed through its feedback in the handling under way.
+    taps: [Option<Tap>; TAPS],
     failed: bool,
 }
 
@@ -179,6 +226,7 @@ impl Setup {
             wanted,
             buzz,
             passed,
+            taps: [None; TAPS],
             failed: false,
         }
     }
@@ -443,57 +491,61 @@ impl Setup {
             router,
             sinks,
             failed,
+            taps,
             ..
         } = self;
         let Some(sink) = sinks.get_mut(index) else {
             return;
         };
         let id = SinkId(index);
-        let served = sink.serve(|request| match request {
-            Request::Upload {
-                id: effect,
-                effect: data,
-            } => router.upload(
-                EffectKey {
+        let served = sink.serve(|request| {
+            note(taps, Tap::Asked { sink: id, request });
+            match request {
+                Request::Upload {
+                    id: effect,
+                    effect: data,
+                } => router.upload(
+                    EffectKey {
+                        sink: id,
+                        id: effect,
+                    },
+                    data,
+                    now_ms,
+                ),
+                Request::Erase { id: effect } => router.erase(EffectKey {
                     sink: id,
                     id: effect,
-                },
-                data,
-                now_ms,
-            ),
-            Request::Erase { id: effect } => router.erase(EffectKey {
-                sink: id,
-                id: effect,
-            }),
-            Request::Play { id: effect, count } => router.play(
-                EffectKey {
-                    sink: id,
-                    id: effect,
-                },
-                count,
-                now_ms,
-            ),
-            Request::Gain(gain) => {
-                router.set_gain(id, gain);
-                Ok(())
-            }
-            // A level is one endless effect of the pad's own, replaced
-            // as the level changes and stopped at none.
-            Request::Level(level) => {
-                let key = EffectKey {
-                    sink: id,
-                    id: LEVEL_EFFECT,
-                };
-                let effect = Effect {
-                    strong: level.strong,
-                    weak: level.weak,
-                    length_ms: 0,
-                    delay_ms: 0,
-                };
-                let on = u32::from(level != Level::default());
-                router
-                    .upload(key, effect, now_ms)
-                    .and_then(|()| router.play(key, on, now_ms))
+                }),
+                Request::Play { id: effect, count } => router.play(
+                    EffectKey {
+                        sink: id,
+                        id: effect,
+                    },
+                    count,
+                    now_ms,
+                ),
+                Request::Gain(gain) => {
+                    router.set_gain(id, gain);
+                    Ok(())
+                }
+                // A level is one endless effect of the pad's own, replaced
+                // as the level changes and stopped at none.
+                Request::Level(level) => {
+                    let key = EffectKey {
+                        sink: id,
+                        id: LEVEL_EFFECT,
+                    };
+                    let effect = Effect {
+                        strong: level.strong,
+                        weak: level.weak,
+                        length_ms: 0,
+                        delay_ms: 0,
+                    };
+                    let on = u32::from(level != Level::default());
+                    router
+                        .upload(key, effect, now_ms)
+                        .and_then(|()| router.play(key, on, now_ms))
+                }
             }
         });
         if served.is_err() {
@@ -514,6 +566,7 @@ impl Setup {
             wanted,
             buzz,
             passed,
+            taps,
             ..
         } = self;
         for (index, sink) in sinks.iter_mut().enumerate() {
@@ -523,6 +576,16 @@ impl Setup {
             // the pads its feedback goes to: to all of them when it is
             // new, and to one that has just become one of them.
             let fresh = sink.take_output().is_some();
+            if let (true, Some(report)) = (fresh, sink.last_output()) {
+                let at = |index: usize| report.get(index).copied().unwrap_or(0);
+                let tap = Tap::Output {
+                    sink: SinkId(index),
+                    marks: [at(1), at(2)],
+                    motors: [at(3), at(4)],
+                    later: at(39),
+                };
+                note(taps, tap);
+            }
             let had = passed.get(index).copied().unwrap_or(SourceSet::EMPTY);
             if let Some(report) = sink.last_output() {
                 for source in targets.iter() {
@@ -538,6 +601,7 @@ impl Setup {
             }
         }
         *next_ms = router.poll(now_ms, &mut |source, level| {
+            note(taps, Tap::Told { source, level });
             if let Some(want) = wanted.get_mut(source.0) {
                 *want = level;
             }
@@ -681,6 +745,14 @@ pub enum Report {
         /// The graph.
         graph: Box<NewGraph>,
     },
+    /// Something passed through a setup's feedback, while the thread is
+    /// tapped.
+    Tapped {
+        /// The setup.
+        setup: SetupId,
+        /// What passed.
+        tap: Tap,
+    },
     /// A pad in a running setup has gone. The setup carries on with the
     /// pad reading as at rest. The pad is handed back to be dropped.
     PadGone {
@@ -725,6 +797,7 @@ pub struct InputThread {
     commands: Option<SyncSender<Command>>,
     wake: Arc<OwnedFd>,
     stop: Arc<AtomicBool>,
+    tap: Arc<AtomicBool>,
     realtime: bool,
     thread: Option<JoinHandle<()>>,
 }
@@ -750,7 +823,9 @@ impl InputThread {
         let (outbox, reports) = sync_channel(QUEUE);
         let (granted_tx, granted) = sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
+        let tap = Arc::new(AtomicBool::new(false));
         let mut state = State {
+            tap: Arc::clone(&tap),
             epoll,
             wake: Arc::clone(&wake),
             timer,
@@ -770,10 +845,18 @@ impl InputThread {
             commands: Some(commands),
             wake,
             stop,
+            tap,
             realtime,
             thread: Some(thread),
         };
         Ok((thread, reports))
+    }
+
+    /// Has the thread report what passes through each setup's feedback,
+    /// as [`Report::Tapped`], or stop: for finding out why a rumble did
+    /// or didn't arrive. Off unless asked for.
+    pub fn tap(&self, on: bool) {
+        self.tap.store(on, Ordering::Relaxed);
     }
 
     /// Whether the kernel granted the thread real-time scheduling.
@@ -828,6 +911,7 @@ struct State {
     inbox: Receiver<Command>,
     outbox: SyncSender<Report>,
     stop: Arc<AtomicBool>,
+    tap: Arc<AtomicBool>,
     slots: [Option<Running>; SETUPS],
 }
 
@@ -908,6 +992,18 @@ impl State {
             }
             gone
         }));
+        // Said only to someone listening: a game can ask for rumble
+        // many times a second.
+        let taps = std::mem::take(&mut setup.taps);
+        if self.tap.load(Ordering::Relaxed) {
+            for tap in taps.into_iter().flatten() {
+                self.report(Report::Tapped { setup: id, tap });
+            }
+        }
+        let Some(running) = self.slots.get_mut(slot).and_then(Option::as_mut) else {
+            return;
+        };
+        let setup = &mut running.setup;
         match outcome {
             Ok(gone) => {
                 let failed = setup.failed;

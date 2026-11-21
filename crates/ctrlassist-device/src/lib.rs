@@ -24,4 +24,4 @@ pub use pad::{Identifiers, Pad, PadError, PadId};
 pub use sink::{
     Identity, OWN_ADDRESS, OWN_MARKER, Request, TEST_ADDRESS, TEST_MARKER, VirtualPad, own_address,
 };
-pub use thread::{Command, InputThread, NewGraph, Place, Report, SendError, Setup, SetupId};
+pub use thread::{Command, InputThread, NewGraph, Place, Report, SendError, Setup, SetupId, Tap};
