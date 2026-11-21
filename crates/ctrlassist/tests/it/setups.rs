@@ -25,6 +25,16 @@ fn priority(primary: u16, assist: u16) -> String {
     )
 }
 
+/// What the stand-in for the hiding service was asked about setups'
+/// pads. A DualSense connected to the machine is copied by any daemon
+/// with a hiding service, which is asked for its raw node; that is no
+/// part of what these tests are about.
+fn asked(hider: &ctrlassist_test::FakeHider) -> Vec<ctrlassist_test::Asked> {
+    let mut asked = hider.asked();
+    asked.retain(|asked| !matches!(asked, ctrlassist_test::Asked::Raw(_)));
+    asked
+}
+
 /// A client whose mirror holds all the daemon has published.
 async fn hydrated(socket: &Path) -> DaemonClient {
     let client = DaemonClient::connect(socket).await.unwrap();
@@ -349,7 +359,7 @@ async fn with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored
     client.start_setup("couch").await.unwrap();
     let setup = in_phase(&client, "couch", Phase::Running).await;
     assert_eq!(
-        hider.asked(),
+        asked(&hider),
         [
             Asked::Hide(assist_id.clone()),
             Asked::Hide(primary_id.clone())
@@ -377,10 +387,19 @@ async fn with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored
     in_phase(&client, "couch", Phase::Held).await;
     let mut assist = FakePad::new("Hide Assist", VENDOR, 0x8002).unwrap();
     in_phase(&client, "couch", Phase::Running).await;
-    assert_eq!(
-        hider.asked().last(),
-        Some(&Asked::Reopen(assist_id.clone()))
-    );
+    // Almost always. The daemon can hear from the input thread that the
+    // pad went, and find a pad on its node again, before udev has told
+    // anyone the pad is back: the service then says it is absent, and
+    // the daemon hides it afresh and gives up the old name, which leaves
+    // the pad hidden once all the same.
+    let all = asked(&hider);
+    let reopened = all.last() == Some(&Asked::Reopen(assist_id.clone()));
+    let afresh = all.ends_with(&[
+        Asked::Reopen(assist_id.clone()),
+        Asked::Hide(assist_id.clone()),
+        Asked::Restore(assist_id.clone()),
+    ]);
+    assert!(reopened || afresh, "everything asked: {all:?}");
     assist.south(true).unwrap();
     south_is(&mut game, true).await;
 
@@ -393,6 +412,8 @@ async fn with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored
         .filter(|asked| matches!(asked, Asked::Restore(_)))
         .collect();
     restored.sort_by_key(|asked| format!("{asked:?}"));
+    // The assist twice, if it was hidden afresh above.
+    restored.dedup();
     assert_eq!(
         restored,
         [Asked::Restore(primary_id), Asked::Restore(assist_id)]
@@ -408,7 +429,7 @@ async fn with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored
     in_phase(&client, "couch", Phase::Running).await;
     daemon.stop().await;
     eventually("the connection never closed", async || {
-        hider.asked().last() == Some(&Asked::Closed)
+        asked(&hider).last() == Some(&Asked::Closed)
     })
     .await;
 }
@@ -746,7 +767,7 @@ async fn another_pad_is_taken_as_the_setup_runs_and_the_one_given_up_is_shown_ag
     assert!(!client.update_setup("couch", false).await.unwrap());
     assert!(!client.update_setup("couch", true).await.unwrap());
     assert_eq!(
-        hider.asked()[2..],
+        asked(&hider)[2..],
         [
             Asked::Hide(id(0x8903, "Change Third")),
             Asked::Restore(id(0x8902, "Change Assist"))
@@ -780,13 +801,13 @@ async fn another_pad_is_taken_as_the_setup_runs_and_the_one_given_up_is_shown_ag
     south_is(&mut game, false).await;
 
     // The two change parts: nothing is opened or shown again for that.
-    let asked = hider.asked().len();
+    let before = asked(&hider).len();
     client
         .put_profile("couch", &priority(0x8903, 0x8901))
         .await
         .unwrap();
     assert!(!client.update_setup("couch", true).await.unwrap());
-    assert_eq!(hider.asked().len(), asked);
+    assert_eq!(asked(&hider).len(), before);
     let swapped = client.setup("couch").unwrap().unwrap();
     let primary_now = swapped
         .sources
@@ -900,5 +921,120 @@ async fn a_setup_never_takes_another_pad_that_got_its_pad_s_node() {
             "round {round}: a stranger was taken into the setup"
         );
     }
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connected_dualsense_is_copied_and_virtual_ones_are_made_from_it() {
+    use ctrlassist_test::Asked;
+    const TEST: &str = "a_connected_dualsense_is_copied_and_virtual_ones_are_made_from_it";
+    if !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    let real = ctrlassist_test::FakeDualSense::new(0x01).unwrap();
+    // The stand-in service hands over a raw node only if this user can
+    // open it, which a machine's own rules decide.
+    let raw = ctrlassist_test::raw_node_of(real.event_node());
+    if !raw.is_some_and(|raw| ctrlassist_test::can_open(&raw, true)) {
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED {TEST}: a DualSense's raw node isn't this user's to open here"
+        );
+        return;
+    }
+    let id = "address:0c:27:56:00:51:01";
+    let (_dir, socket) = socket();
+    let hider = ctrlassist_test::FakeHider::listen(&socket.with_file_name("hider.sock")).unwrap();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    let offered = |client: &DaemonClient| {
+        let identities = client.list_identities().unwrap();
+        let dualsense = identities
+            .iter()
+            .find(|identity| identity.id == "dualsense");
+        dualsense.is_some_and(|identity| identity.available)
+    };
+
+    // The pad was connected when the daemon started: it is copied, and
+    // from then on a DualSense is something a virtual pad can be.
+    eventually("the DualSense never was offered", async || offered(&client)).await;
+    // One pad is copied, once: this one, or a real one if the machine
+    // has one connected.
+    let asked = hider.asked();
+    assert!(matches!(asked.as_slice(), [Asked::Raw(_)]), "{asked:?}");
+
+    // One pad as two virtual DualSenses.
+    client
+        .put_profile(
+            "twin",
+            "preset = \"multicast\"\npad = \"0c:27:56:00:51:01\"\nidentity = \"dualsense\"\n",
+        )
+        .await
+        .unwrap();
+    client.start_setup("twin").await.unwrap();
+    let setup = in_phase(&client, "twin", Phase::Running).await;
+    assert_eq!(setup.sinks.len(), 2);
+    assert!(setup.sinks.iter().all(|sink| sink.identity == "dualsense"));
+    assert_ne!(setup.sinks[0].node, setup.sinks[1].node);
+    // Each is a pad of the kernel's driver with an address of its own,
+    // and neither is taken for a pad to play with.
+    let mut games = Vec::new();
+    for sink in &setup.sinks {
+        let file = File::open(sink.node.as_deref().unwrap()).unwrap();
+        let pad = Pad::from_fd(OwnedFd::from(file)).unwrap();
+        let ids = pad.identifiers().clone();
+        assert_eq!((ids.vendor, ids.product), (0x054c, 0x0ce6));
+        assert!(pad.is_own_output(), "{ids:?}");
+        games.push((pad, ids.address));
+    }
+    assert_ne!(games[0].1, games[1].1);
+    let known = client.list_pads().unwrap();
+    assert!(known.iter().any(|pad| pad.id == id), "{known:?}");
+    assert!(
+        known
+            .iter()
+            .all(|pad| !pad.id.starts_with("address:02:ca:55:")),
+        "{known:?}"
+    );
+
+    // What the pad does, both games see.
+    real.south(true);
+    for (game, _) in &mut games {
+        south_is(game, true).await;
+    }
+    real.south(false);
+    for (game, _) in &mut games {
+        south_is(game, false).await;
+    }
+    client.stop_setup("twin").await.unwrap();
+    daemon.stop().await;
+    drop(hider);
+    drop(real);
+
+    // What was copied is kept: the next daemon offers the identity with
+    // no DualSense connected, and none to ask the service about.
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    assert!(offered(&client));
+    // Without one ever copied, it is listed and can't be made.
+    let (_other_dir, other) = crate::client::socket();
+    let empty = start_daemon(&other).await;
+    let fresh = hydrated(&other).await;
+    assert!(!offered(&fresh));
+    fresh
+        .put_profile(
+            "solo",
+            "preset = \"multicast\"\npad = \"model:1209:8a01\"\nidentity = \"dualsense\"\n",
+        )
+        .await
+        .unwrap();
+    let refused = fresh.start_setup("solo").await.unwrap_err();
+    assert_eq!(refused.rpc_code(), Some(ErrorCode::SetupFailed));
+    assert!(
+        refused.to_string().contains("no DualSense has been copied"),
+        "{refused}"
+    );
+    empty.stop().await;
     daemon.stop().await;
 }

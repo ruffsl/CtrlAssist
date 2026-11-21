@@ -15,13 +15,14 @@ use std::sync::{Arc, Mutex};
 
 use ctrlassist_core::{Graph, Input, Level, NodeId, NodeSpec, SourceId};
 use ctrlassist_device::{
-    Command, Database, NewGraph, Pad, Place, Report, SendError, Setup, SetupId, VirtualPad,
+    Command, Database, DualSenseData, Found, NewGraph, Pad, Place, Report, SendError, Setup,
+    SetupId, VirtualPad, own_address,
 };
 use ctrlassist_hider::{Client, Token};
 use ctrlassist_protocol::endpoint::setup;
 use ctrlassist_protocol::error::{ErrorCode, WireError};
 use ctrlassist_protocol::payload::{self, Phase};
-use ctrlassist_protocol::profile::{PadRef, Plan, Profile};
+use ctrlassist_protocol::profile::{Identity, PadRef, Plan, Profile};
 use ctrlassist_protocol::serve::Responder;
 use ctrlassist_protocol::{keys, rpc};
 use tracing::{info, warn};
@@ -452,6 +453,8 @@ pub(crate) enum Done {
         name: String,
         waiting: Option<Waiting>,
     },
+    /// A connected pad was copied, or couldn't be.
+    Copied(Option<DualSenseData>),
     /// Something was dropped where dropping may block.
     Dropped,
 }
@@ -547,12 +550,39 @@ fn retake(
     Ok(taken)
 }
 
+/// The address of the virtual pad `sink` of the setup `setup`: the same
+/// each time that setup runs, since Steam keeps what it knows of a pad
+/// by its address, and another for every other sink.
+fn address_of(setup: &str, sink: &str) -> [u8; 6] {
+    let hash = keys::pad_id(&format!("{setup}/{sink}"));
+    let number = u64::from_str_radix(&hash, 16).unwrap_or(0);
+    own_address((number & 0x00ff_ffff) as u32)
+}
+
+/// Makes one virtual pad of a setup.
+fn make_sink(
+    setup: &str,
+    name: &str,
+    identity: Identity,
+    dualsense: Option<&DualSenseData>,
+) -> std::io::Result<VirtualPad> {
+    match (identity, dualsense) {
+        (Identity::DualSense, Some(data)) => VirtualPad::dualsense(data, address_of(setup, name)),
+        (Identity::DualSense, None) => Err(std::io::Error::other(
+            "no DualSense has been copied yet: connect one over USB, with the hiding service running",
+        )),
+        (identity, _) => VirtualPad::create(device_identity(identity)),
+    }
+}
+
 /// The blocking part of a start.
 fn make(
     plan: Plan,
+    setup: &str,
     nodes: &[Option<Wanted>],
     database: &Database,
     hiding: &Hiding,
+    dualsense: Option<&DualSenseData>,
 ) -> Result<Made, String> {
     let graph = Graph::build(plan.graph).map_err(|error| error.to_string())?;
     let mut pads = Vec::new();
@@ -571,7 +601,7 @@ fn make(
     }
     let mut sinks = Vec::new();
     for sink in &plan.sinks {
-        match VirtualPad::create(device_identity(sink.identity)) {
+        match make_sink(setup, &sink.name, sink.identity, dualsense) {
             Ok(made) => sinks.push(made),
             Err(error) => {
                 // Nothing of a start that fails is left: its pads are
@@ -630,6 +660,36 @@ impl Reactor {
             drop(setup);
             hiding.restore(&tokens);
             Done::Retired { name, waiting }
+        });
+    }
+
+    /// Copies a DualSense that has connected over USB, if none has been
+    /// copied yet: what a virtual one is made from. Its raw node is the
+    /// hiding service's to open, so without the service nothing is
+    /// copied.
+    pub(crate) fn copy_from(&mut self, found: &Found) {
+        let ids = &found.identifiers;
+        let usb = 3;
+        let is_one = (ids.vendor, ids.product) == ctrlassist_device::Identity::DualSense.model()
+            && ids.bus == usb
+            && !found.is_own_output();
+        let wanted = self.copied.dualsense().is_none() && !self.copying;
+        if !(is_one && wanted && matches!(*self.hiding, Hiding::Service(_))) {
+            return;
+        }
+        self.copying = true;
+        let node = found.node.clone();
+        let hiding = Arc::clone(&self.hiding);
+        self.work.spawn_blocking(move || {
+            let raw = open(&node)
+                .ok()
+                .and_then(|pad| hiding.ask(|client| client.raw(pad.as_fd())));
+            let data = raw.and_then(|raw| {
+                DualSenseData::read(raw.as_fd())
+                    .inspect_err(|error| warn!(node = %node.display(), %error, "a connected DualSense couldn't be copied"))
+                    .ok()
+            });
+            Done::Copied(data)
         });
     }
 
@@ -762,8 +822,9 @@ impl Reactor {
         }
         let database = Arc::clone(&self.database);
         let hiding = Arc::clone(&self.hiding);
+        let dualsense = self.copied.dualsense().cloned();
         self.work.spawn_blocking(move || Done::Started {
-            outcome: make(plan, &nodes, &database, &hiding),
+            outcome: make(plan, &name, &nodes, &database, &hiding, dualsense.as_ref()),
             name,
             asker,
         });
@@ -1544,6 +1605,15 @@ impl Reactor {
                 }
                 None => {}
             },
+            Done::Copied(data) => {
+                self.copying = false;
+                if let Some(data) = data {
+                    self.copied.keep(data);
+                    if let Err(error) = self.publish_identities().await {
+                        warn!(%error, "publishing the identities failed");
+                    }
+                }
+            }
             Done::Dropped => {}
         }
     }
@@ -1763,6 +1833,7 @@ mod tests {
             Arc::new(input),
             Database::parse(""),
             Hiding::Grab,
+            crate::copied::Copied::open(&dir.path().join("state")),
         );
         let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
             .await

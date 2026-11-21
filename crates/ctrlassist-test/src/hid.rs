@@ -146,3 +146,96 @@ pub fn synthetic_dualsense(newer: bool) -> ctrlassist_device::DualSenseData {
         firmware,
     }
 }
+
+/// A virtual DualSense that stands in for a connected real one: made
+/// from [`synthetic_dualsense`], with an address a real pad could have,
+/// so the daemon takes it for a pad to play with and to copy. It is
+/// served on a thread of its own, as a real pad answers whoever reads
+/// its raw node. Dropping it disconnects it.
+pub struct FakeDualSense {
+    states: Option<std::sync::mpsc::Sender<ctrlassist_core::PadState>>,
+    serving: Option<std::thread::JoinHandle<()>>,
+    node: std::path::PathBuf,
+}
+
+impl std::fmt::Debug for FakeDualSense {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeDualSense")
+            .field("node", &self.node)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FakeDualSense {
+    /// Creates the pad with the address `0c:27:56:00:51:<last>`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if uhid can't be opened or the kernel's PlayStation driver
+    /// doesn't take the pad.
+    pub fn new(last: u8) -> io::Result<Self> {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        let data = synthetic_dualsense(true);
+        let address = [0x0c, 0x27, 0x56, 0x00, 0x51, last];
+        let mut pad = ctrlassist_device::VirtualPad::dualsense(&data, address)?;
+        let node = pad.event_node().to_path_buf();
+        let (states, wanted) = std::sync::mpsc::channel();
+        let serving = std::thread::Builder::new()
+            .name("fake-dualsense".into())
+            .spawn(move || {
+                loop {
+                    // Nothing says a state is waiting, so look often.
+                    let mut fds = [PollFd::new(&pad, PollFlags::IN)];
+                    let wait = Timespec {
+                        tv_sec: 0,
+                        tv_nsec: 5_000_000,
+                    };
+                    let _ = poll(&mut fds, Some(&wait));
+                    if pad.serve(|_| Ok(())).is_err() {
+                        return;
+                    }
+                    loop {
+                        match wanted.try_recv() {
+                            Ok(state) => {
+                                let _ = pad.write(&state);
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                            // Dropped: the pad goes with this thread.
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+                        }
+                    }
+                }
+            })?;
+        Ok(Self {
+            states: Some(states),
+            serving: Some(serving),
+            node,
+        })
+    }
+
+    /// The pad's event node.
+    #[must_use]
+    pub fn event_node(&self) -> &std::path::Path {
+        &self.node
+    }
+
+    /// Presses or releases the south button.
+    pub fn south(&self, pressed: bool) {
+        let state = ctrlassist_core::PadState::NEUTRAL.with(
+            ctrlassist_core::gamepad::SOUTH,
+            f32::from(u8::from(pressed)),
+        );
+        if let Some(states) = &self.states {
+            let _ = states.send(state);
+        }
+    }
+}
+
+impl Drop for FakeDualSense {
+    fn drop(&mut self) {
+        drop(self.states.take());
+        if let Some(serving) = self.serving.take() {
+            let _ = serving.join();
+        }
+    }
+}

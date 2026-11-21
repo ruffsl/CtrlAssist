@@ -110,11 +110,14 @@ pub enum Identity {
     Generic,
     /// An Xbox pad.
     Xbox,
+    /// A DualSense, made from one that has been connected.
+    #[serde(rename = "dualsense")]
+    DualSense,
 }
 
 impl Identity {
     /// Every identity, in the order they are listed to a person.
-    pub const ALL: [Self; 2] = [Self::Generic, Self::Xbox];
+    pub const ALL: [Self; 3] = [Self::Generic, Self::Xbox, Self::DualSense];
 
     /// The identity's name, as a profile writes it.
     #[must_use]
@@ -122,6 +125,7 @@ impl Identity {
         match self {
             Self::Generic => "generic",
             Self::Xbox => "xbox",
+            Self::DualSense => "dualsense",
         }
     }
 }

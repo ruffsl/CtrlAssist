@@ -55,7 +55,7 @@ The packages need glibc 2.34 or newer: Debian 12, Ubuntu 22.04, and any current 
 - `ctrlassist`, the command, daemon and tray, and `ctrlassist-hider`, the hiding service.
 - The daemon and the tray as services of your user, enabled for every user and started at login. To opt out: `systemctl --user mask ctrlassist-daemon ctrlassist-tray`.
 - The hiding service as a system service, started the first time it is needed.
-- A udev rule giving the person at the machine access to `/dev/uinput` and `/dev/uhid`, which virtual pads are made through.
+- A udev rule giving the person at the machine access to `/dev/uinput` and `/dev/uhid`, which virtual pads are made through, and a setting that loads those and the system's PlayStation controller driver at boot.
 - A setting that lets users' services ask for real-time scheduling up to priority 10.
 - Shell completions for bash, zsh and fish.
 

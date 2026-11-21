@@ -38,6 +38,8 @@ const VERSION: u32 = 0x8111;
 pub(crate) const NAME: &str = "Sony Interactive Entertainment DualSense Wireless Controller";
 /// The bus type for USB, from linux/input.h.
 const BUS_USB: u16 = 3;
+/// Where the kernel's PlayStation driver is, once its module is loaded.
+const DRIVER: &str = "/sys/bus/hid/drivers/playstation";
 
 const INPUT_REPORT: u8 = 0x01;
 const INPUT_SIZE: usize = 64;
@@ -316,15 +318,17 @@ pub(crate) struct Emulator {
     /// The rumble last asked for, so that a report that changes only a
     /// light isn't taken for a new level.
     level: Level,
+    /// Whether the driver has let the pad go since this was last asked.
+    stopped: bool,
     /// Kept between calls so that serving allocates nothing.
     event: Box<[u8; UHID_EVENT]>,
 }
 
 impl Emulator {
     /// Creates the pad, answers the driver as it binds, and waits for
-    /// the pad's event node. A driver that binds and then refuses the
-    /// pad, as for an address it already has, lets the pad go, which
-    /// ends the wait with an error.
+    /// the pad's event node. A driver that starts on the pad and then
+    /// refuses it, as for an address it already has, lets the pad go
+    /// before it is bound, which ends the wait with an error.
     pub(crate) fn create(data: &DualSenseData, address: [u8; 6]) -> io::Result<Self> {
         let firmware: [u8; FIRMWARE_SIZE] = data
             .firmware
@@ -338,6 +342,14 @@ impl Emulator {
                     "the copied pad's data isn't whole",
                 )
             })?;
+        // With the driver there, it is the one to bind. Without, the
+        // generic driver would, and no pad of the driver's would come.
+        if !Path::new(DRIVER).exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the kernel's PlayStation driver isn't loaded",
+            ));
+        }
         // The process and a count tell virtual pads apart in the marker.
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let number = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -361,6 +373,7 @@ impl Emulator {
             firmware,
             calibration: calibration(),
             level: Level::default(),
+            stopped: false,
             event: Box::new([0; UHID_EVENT]),
         };
         let uniq = address_text(address);
@@ -381,6 +394,14 @@ impl Emulator {
             ];
             poll(&mut fds, None)?;
             pad.serve(|_| Ok(()))?;
+            if std::mem::take(&mut pad.stopped) && !bound {
+                // It bound and then gave the pad up, as for an address
+                // it already has.
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "the kernel's PlayStation driver refused the pad",
+                ));
+            }
             for event in watch.iter() {
                 let device = event.device();
                 let ours = device
@@ -453,12 +474,10 @@ impl Emulator {
                 Err(error) => return Err(error),
             }
             match asked(self.event.as_slice()) {
-                Asked::Stop => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "the kernel let the virtual pad go",
-                    ));
-                }
+                // The driver let the pad go. That is the pad's end only
+                // while it is being made; later it is a driver bound
+                // again, as hiding the pad does, and the pad carries on.
+                Asked::Stop => self.stopped = true,
                 Asked::Rumble(level) if level != self.level => {
                     self.level = level;
                     // Nothing waits on this; a refusal has nowhere to go.

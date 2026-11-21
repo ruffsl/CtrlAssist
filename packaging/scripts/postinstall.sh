@@ -12,7 +12,7 @@ systemctl daemon-reload || true
 # The modules now, as modules-load.d will at each boot; then the rule
 # that gives their nodes to the user at the seat. Guarded so image builds
 # without a kernel of their own stay quiet.
-modprobe -a uinput uhid 2>/dev/null || true
+modprobe -a uinput uhid hid-playstation 2>/dev/null || true
 udevadm control --reload 2>/dev/null || true
 udevadm trigger --subsystem-match=misc --sysname-match=uinput --sysname-match=uhid 2>/dev/null || true
 

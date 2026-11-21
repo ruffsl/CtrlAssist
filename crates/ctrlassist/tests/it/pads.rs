@@ -224,11 +224,13 @@ async fn the_identities_are_listed_with_whether_they_can_be_made() {
     assert_eq!(
         listed,
         [
+            // Listed, and not to be made until a DualSense is copied.
+            ("dualsense", 0x054c, 0x0ce6, false),
             ("generic", 0x1234, 0x5678, available),
             ("xbox", 0x045e, 0x0b12, available)
         ]
     );
-    assert_eq!(identities[1].name, "Microsoft Xbox Series S|X Controller");
+    assert_eq!(identities[2].name, "Microsoft Xbox Series S|X Controller");
 
     // Gone with the daemon, as everything it published is.
     let mut watcher = StateWatcher::new(&client, StateWatcherConfig::default());

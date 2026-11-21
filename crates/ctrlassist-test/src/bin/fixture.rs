@@ -64,6 +64,19 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         pulse: u64,
     },
+    /// Create a virtual DualSense from data of the test crate's own and
+    /// hold it, answering the kernel; with --pulse, press a button on
+    /// that period in milliseconds. It has the address of one of the
+    /// daemon's own virtual pads unless --real, which gives it one a
+    /// real pad could have, so that it stands in for a connected one.
+    FakeDualsense {
+        #[arg(long)]
+        real: bool,
+        #[arg(long, default_value_t = 1)]
+        number: u8,
+        #[arg(long, default_value_t = 0)]
+        pulse: u64,
+    },
     /// List pads, one per line: name, uniq, vendor:product, then each node
     /// with whether the caller can open it.
     Pads,
@@ -215,6 +228,39 @@ fn main() -> Result<()> {
                 FakeHidPad::new(&name, &uniq, vendor, product).context("creating the uhid pad")?;
             println!("created");
             hold(pulse, |pressed| pad.report(u8::from(pressed), 0, 0))
+        }
+        Command::FakeDualsense {
+            real,
+            number,
+            pulse,
+        } => {
+            let address = if real {
+                [0x0c, 0x27, 0x56, 0x00, 0x00, number]
+            } else {
+                ctrlassist_device::own_address(u32::from(number))
+            };
+            let data = ctrlassist_test::synthetic_dualsense(false);
+            let mut pad =
+                VirtualPad::dualsense(&data, address).context("creating the virtual DualSense")?;
+            println!("node {}", pad.event_node().display());
+            let mut pressed = false;
+            loop {
+                // Whatever reads the pad's raw node is answered at once;
+                // the press waits its turn.
+                let wait = (pulse > 0).then(|| rustix::event::Timespec {
+                    tv_sec: (pulse / 1000) as i64,
+                    tv_nsec: ((pulse % 1000) * 1_000_000) as i64,
+                });
+                let mut fds = [PollFd::new(&pad, PollFlags::IN)];
+                let ready = poll(&mut fds, wait.as_ref())?;
+                pad.serve(|_| Ok(()))?;
+                if ready == 0 {
+                    pressed = !pressed;
+                    let state = ctrlassist_core::PadState::NEUTRAL
+                        .with(gamepad::SOUTH, f32::from(u8::from(pressed)));
+                    pad.write(&state)?;
+                }
+            }
         }
         Command::Pads => {
             for pad in pads()? {

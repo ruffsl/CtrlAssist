@@ -5,6 +5,7 @@
 //! and publishes its own state; pads, profiles and setups follow.
 
 mod book;
+mod copied;
 mod durable;
 mod hotplug;
 pub mod logging;
@@ -124,6 +125,7 @@ pub(crate) fn device_identity(identity: Identity) -> ctrlassist_device::Identity
     match identity {
         Identity::Generic => ctrlassist_device::Identity::Generic,
         Identity::Xbox => ctrlassist_device::Identity::Xbox,
+        Identity::DualSense => ctrlassist_device::Identity::DualSense,
     }
 }
 
@@ -185,6 +187,7 @@ impl Daemon {
             Arc::clone(&input),
             database(&paths.config),
             hiding,
+            copied::Copied::open(&paths.state),
         );
 
         // The input thread's reports wait on a thread of their own, which
@@ -208,24 +211,11 @@ impl Daemon {
             hiding: mechanism,
         };
         // Whether this process may make a virtual pad at all: every
-        // identity so far is made through uinput.
+        // identity needs uinput, for the pad itself or to read it back.
         let uinput = OpenOptions::new().write(true).open("/dev/uinput").is_ok();
         let published = async {
             reactor.publish(keys::daemon(), &state).await?;
-            for identity in Identity::ALL {
-                let device = device_identity(identity);
-                let (vendor, product) = device.model();
-                let body = payload::Identity {
-                    id: identity.as_str().to_string(),
-                    name: device.name().to_string(),
-                    vendor,
-                    product,
-                    available: uinput,
-                };
-                reactor
-                    .publish(keys::identity(identity.as_str()), &body)
-                    .await?;
-            }
+            reactor.publish_identities().await?;
             reactor.publish_pads().await?;
             reactor.publish_profiles().await
         };

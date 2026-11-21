@@ -13,8 +13,8 @@ mod inspect;
 mod pad;
 mod rumble;
 
-pub use hid::{FakeHidPad, synthetic_dualsense};
-pub use hider::{Asked, FakeHider};
+pub use hid::{FakeDualSense, FakeHidPad, synthetic_dualsense};
+pub use hider::{Asked, FakeHider, raw_node_of};
 pub use inspect::{NodeKind, Pad, Reads, can_open, count_reads, pads};
 pub use pad::FakePad;
 pub use rumble::{Motors, RumblePad};
@@ -84,25 +84,20 @@ pub fn phys_connected(phys: &str) -> bool {
 }
 
 /// Whether `test` can make a virtual DualSense here: uhid and uinput are
-/// writable. Where it can't, this says so on standard error and the test
-/// should return, unless fake pads are required here.
-///
-/// # Panics
-///
-/// Panics if fake pads are required and can't be made.
+/// writable and the kernel's PlayStation driver is loaded. Where it
+/// can't, this says so on standard error and the test should return.
+/// Nothing requires it of a machine, CI's runners included: the virtual
+/// machine checks are where a virtual DualSense is always made.
 #[must_use]
 pub fn can_make_hid_pads(test: &str) -> bool {
     use std::io::Write as _;
-    if uhid_available() && uinput_available() {
+    let driver = Path::new("/sys/bus/hid/drivers/playstation").exists();
+    if uhid_available() && uinput_available() && driver {
         return true;
     }
-    assert!(
-        !fake_pads_required(),
-        "{test}: /dev/uhid isn't writable, and fake pads are required here"
-    );
     let _ = writeln!(
         std::io::stderr(),
-        "SKIPPED {test}: /dev/uhid isn't writable here"
+        "SKIPPED {test}: /dev/uhid isn't writable here, or the kernel's PlayStation driver isn't loaded"
     );
     false
 }

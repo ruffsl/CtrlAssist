@@ -11,7 +11,7 @@ How CtrlAssist is put on a machine. After TisVlay's packaging, which has the lon
 
 - `/usr/bin/ctrlassist`, which is the command, the daemon (`service daemon`) and the tray (`service tray`), and `/usr/bin/ctrlassist-hider`, the hiding service.
 - The hiding service's socket and service as system units; the daemon and the tray as user units, enabled for every user and started at their next login.
-- A udev rule that gives uinput and uhid to the user at the seat, and a `modules-load.d` file that loads both.
+- A udev rule that gives uinput and uhid to the user at the seat, and a `modules-load.d` file that loads both, and the kernel's PlayStation driver, which a virtual DualSense is a pad of.
 - A drop-in on `user@.service` that lets users' services ask for real-time scheduling up to priority 10, which the daemon's input thread does. It reaches no login shell. Removing the file turns it off; `spikes/realtime/README.md` has what was measured and why this way.
 - Completions for bash, zsh and fish.
 - `NOTICE`, which carries the bundled controller database's license, and `THIRD-PARTY-LICENSES.html`, the license of every crate built in, under `/usr/share/doc/ctrlassist/`.

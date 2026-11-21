@@ -60,7 +60,8 @@ fn pad_of(fd: &OwnedFd) -> Option<(PathBuf, PadId)> {
 }
 
 /// The raw HID node beside an event node, for a pad with a HID device.
-fn raw_of(event: &Path) -> Option<PathBuf> {
+#[must_use]
+pub fn raw_node_of(event: &Path) -> Option<PathBuf> {
     let name = event.file_name()?;
     let beside = Path::new("/sys/class/input")
         .join(name)
@@ -115,12 +116,8 @@ fn serve(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>) {
             Some(Request::Reopen(token)) => match hidden.get(&token.0) {
                 Some(id) => {
                     note(Asked::Reopen(id.to_string()));
-                    // Listing every pad can fail while other tests' pads
-                    // come and go under it, where the real service looks
-                    // the one pad up directly: a failed listing is made
-                    // again, so that only a pad that isn't there is absent.
-                    let listed = (0..50).find_map(|_| ctrlassist_device::connected().ok());
-                    let node = listed
+                    let node = ctrlassist_device::connected()
+                        .ok()
                         .and_then(|pads| {
                             pads.into_iter().find(|found| found.identifiers.id() == *id)
                         })
@@ -153,7 +150,7 @@ fn serve(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>) {
             Some(Request::Raw) => match fds.first().and_then(pad_of) {
                 Some((node, id)) => {
                     note(Asked::Raw(id.to_string()));
-                    pass = raw_of(&node).and_then(|raw| open(&raw));
+                    pass = raw_node_of(&node).and_then(|raw| open(&raw));
                     match pass {
                         Some(_) => Reply {
                             refusal: None,

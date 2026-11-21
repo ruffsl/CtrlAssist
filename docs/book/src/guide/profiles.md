@@ -63,8 +63,13 @@ Once a part has taken a controller, it waits for that same controller if it disc
 |---|---|
 | `generic` (the default) | A plain gamepad that games map from its buttons. |
 | `xbox` | An Xbox Series controller, which most games recognize outright. |
+| `dualsense` | A PlayStation 5 DualSense controller, with PlayStation button prompts in games that have them. |
 
 `ctrlassist identities` lists them and whether each can be made on this machine.
+
+A `dualsense` can be made only once CtrlAssist has seen a real one: the first time you connect a DualSense by USB cable, with the hiding service installed, it copies what that controller says of itself and keeps the copy in `~/.local/state/ctrlassist/identities/`. From then on the identity is available whether or not that controller is connected. Nothing of Sony's ships with CtrlAssist. Until then `dualsense` is listed as not available, and a profile that names it says why it can't start.
+
+A virtual DualSense carries the buttons, sticks, triggers and rumble. Its touchpad and motion sensors are there and report nothing, and the system shows a battery and lights for it, as it does for a real one.
 
 ## Starting by itself
 

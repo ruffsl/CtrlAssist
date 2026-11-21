@@ -70,6 +70,9 @@ in
     boot.kernelModules = [
       "uinput"
       "uhid"
+      # A virtual DualSense is this driver's pad, and the driver has to
+      # be there before the pad is.
+      "hid-playstation"
     ];
     services.udev.packages = [ cfg.package ];
 

@@ -2,6 +2,10 @@
 Description=CtrlAssist hiding service
 Documentation=https://github.com/CtrlAssist/CtrlAssist
 Requires=ctrlassist-hider.socket
+# It exits when its last client has gone and is started again by the
+# next, so how often it starts is its clients' doing: a few short-lived
+# ones in a row must not leave it refused, and hiding with it.
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart=/usr/bin/ctrlassist-hider

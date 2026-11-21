@@ -230,18 +230,21 @@ async fn identities_lists_what_a_virtual_pad_can_be() {
     assert!(plain.status.success(), "{}", text(&plain.stderr));
     let said = text(&plain.stdout);
     let lines: Vec<&str> = said.lines().collect();
-    assert_eq!(lines.len(), 3, "{said}");
-    assert!(lines[0].starts_with("ID       NAME"), "{said}");
+    assert_eq!(lines.len(), 4, "{said}");
+    assert!(lines[0].starts_with("ID         NAME"), "{said}");
+    assert!(lines[1].starts_with("dualsense  "), "{said}");
+    assert!(lines[1].ends_with("054c:0ce6  no"), "{said}");
     assert!(
-        lines[1].starts_with("generic  CtrlAssist Virtual Pad"),
+        lines[2].starts_with("generic    CtrlAssist Virtual Pad"),
         "{said}"
     );
-    assert!(lines[2].contains("045e:0b12"), "{said}");
+    assert!(lines[3].contains("045e:0b12"), "{said}");
 
     let json = ctrlassist(&socket, &["identities", "--json"]);
     let identities: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
-    assert_eq!(identities[0]["id"], "generic");
-    assert_eq!(identities[1]["id"], "xbox");
+    assert_eq!(identities[0]["id"], "dualsense");
+    assert_eq!(identities[1]["id"], "generic");
+    assert_eq!(identities[2]["id"], "xbox");
     daemon.stop().await;
 }
 

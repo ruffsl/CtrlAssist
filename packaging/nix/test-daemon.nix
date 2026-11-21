@@ -146,8 +146,9 @@ pkgs.testers.runNixOSTest {
         assert pads[HID]["connected"] and pads[PLAIN]["connected"], pads
         assert pads[HID]["id"] == "address:02:00:00:00:00:01", pads[HID]
         assert not pads[HID]["hidden"] and not pads[PLAIN]["hidden"]
-        identities = json.loads(cli("identities", "--json"))
-        assert all(identity["available"] for identity in identities), identities
+        identities = {identity["id"]: identity["available"] for identity in json.loads(cli("identities", "--json"))}
+        # A DualSense is listed, and can't be made until one has been copied.
+        assert identities == {"generic": True, "xbox": True, "dualsense": False}, identities
 
     with subtest("a profile is put, and one that is wrong is refused with where"):
         machine.succeed(
@@ -231,6 +232,38 @@ pkgs.testers.runNixOSTest {
         assert VIRTUAL not in nodes()
         pads = known()
         assert not pads[HID]["hidden"] and pads[HID].get("setup") is None, pads[HID]
+
+    with subtest("a connected DualSense is copied through the service, and virtual ones are made from it"):
+        # A stand-in for a real one: a pad of the kernel's PlayStation
+        # driver with an address a real pad could have.
+        machine.succeed("systemd-run --unit pad-ds ctrlassist-fixture fake-dualsense --real --pulse 20")
+        command = "su -l alice -c " + shlex.quote(ENV + " ctrlassist identities")
+        machine.wait_until_succeeds(f"{command} | grep -q 'dualsense .* yes$'")
+        machine.succeed("su -l alice -c 'test -s ~/.local/state/ctrlassist/identities/dualsense.toml'")
+        machine.succeed(
+            "printf '%s\\n' 'preset = \"multicast\"' 'pad = \"0c:27:56:00:00:01\"' "
+            "'identity = \"dualsense\"' > /tmp/twin.toml"
+        )
+        cli("profile", "put", "/tmp/twin.toml")
+        cli("start", "twin")
+        phase_is("running", name="twin")
+        twin = setup("twin")
+        assert [sink["identity"] for sink in twin["sinks"]] == ["dualsense", "dualsense"], twin
+        machine.succeed("udevadm settle")
+        # Each is the kernel driver's own pad, the user's to read, and
+        # carries what the pad behind it does; none is taken for a pad.
+        for sink in twin["sinks"]:
+            out = machine.succeed(f"su -l alice -c 'ctrlassist-fixture read {sink['node']} --frames 4'")
+            assert len([line for line in out.splitlines() if line.startswith("frame ")]) == 4, out
+        assert not any("02:ca:55:" in pad["id"] for pad in json.loads(cli("pads", "--json")))
+        machine.succeed("test $(ls /sys/bus/hid/drivers/playstation | grep -c 054C:0CE6) = 3")
+        cli("stop", "twin")
+        assert setup("twin") is None
+        machine.succeed("systemctl stop pad-ds")
+        machine.wait_until_succeeds("test $(ls /sys/bus/hid/drivers/playstation | grep -c 054C:0CE6) = 0")
+        cli("profile", "delete", "twin")
+        # What was copied is kept: still offered with no DualSense there.
+        assert "yes" in machine.succeed(f"{command} | grep dualsense")
 
     with subtest("a daemon that is killed gets its pads restored and its virtual pad removed"):
         # Kept with the asking to start by itself, for the daemon after it.

@@ -16,8 +16,9 @@ use ctrlassist_core::Level;
 use ctrlassist_device::{Database, InputThread, Pad, Report};
 use ctrlassist_protocol::endpoint::{daemon, pad, profile, setup};
 use ctrlassist_protocol::error::{ErrorCode, WireError};
+use ctrlassist_protocol::profile::Identity;
 use ctrlassist_protocol::serve::Responder;
-use ctrlassist_protocol::{VERSION, keys, rpc};
+use ctrlassist_protocol::{VERSION, keys, payload, rpc};
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot;
@@ -30,6 +31,8 @@ use zenoh::query::{Query, Queryable};
 use zenoh_ext::{AdvancedPublisher, AdvancedPublisherBuilderExt, CacheConfig, MissDetectionConfig};
 
 use crate::book::Book;
+use crate::copied::Copied;
+use crate::device_identity;
 use crate::hotplug::Seen;
 use crate::profiles::Profiles;
 use crate::setups::{Done, Hiding, Setups};
@@ -88,6 +91,11 @@ pub(crate) struct Reactor {
     publishers: BTreeMap<String, AdvancedPublisher<'static>>,
     /// The buzzes under way; each ends itself.
     buzzes: JoinSet<()>,
+    /// What has been copied from a connected pad for a virtual pad to
+    /// pass as one.
+    pub(crate) copied: Copied,
+    /// Whether a connected pad is being copied now.
+    pub(crate) copying: bool,
 }
 
 impl std::fmt::Debug for Reactor {
@@ -127,6 +135,10 @@ async fn buzz(node: PathBuf, millis: u32, responder: Responder<pad::Identify>) {
 }
 
 impl Reactor {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is one of the things the reactor owns; a struct of them would only move the list"
+    )]
     pub(crate) fn new(
         session: Session,
         book: Book,
@@ -135,6 +147,7 @@ impl Reactor {
         input: Arc<InputThread>,
         database: Database,
         hiding: Hiding,
+        copied: Copied,
     ) -> Self {
         Self {
             session,
@@ -148,7 +161,36 @@ impl Reactor {
             work: JoinSet::new(),
             publishers: BTreeMap::new(),
             buzzes: JoinSet::new(),
+            copied,
+            copying: false,
         }
+    }
+
+    /// Publishes what a virtual pad can present itself as, and whether
+    /// each can be made now: through uinput, or for a DualSense through
+    /// uhid from a pad that has been copied.
+    pub(crate) async fn publish_identities(&mut self) -> zenoh::Result<()> {
+        let writable = |node: &str| OpenOptions::new().write(true).open(node).is_ok();
+        let uinput = writable("/dev/uinput");
+        let copied = self.copied.dualsense().is_some();
+        for identity in Identity::ALL {
+            let device = device_identity(identity);
+            let (vendor, product) = device.model();
+            let available = match identity {
+                Identity::DualSense => copied && writable("/dev/uhid"),
+                _ => uinput,
+            };
+            let body = payload::Identity {
+                id: identity.as_str().to_string(),
+                name: device.name().to_string(),
+                vendor,
+                product,
+                available,
+            };
+            self.publish(keys::identity(identity.as_str()), &body)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Publishes `body` on `key`, from a cache.
@@ -269,6 +311,7 @@ impl Reactor {
         let arrived = matches!(seen, Seen::Arrived(..));
         let (changed, remembered): (Vec<String>, bool) = match seen {
             Seen::Arrived(found, rumble) => {
+                self.copy_from(&found);
                 let changed = self.book.arrived(&found, rumble);
                 let remembered = changed.iter().any(|changed| changed.remembered);
                 if let Some(pad) = changed.last() {

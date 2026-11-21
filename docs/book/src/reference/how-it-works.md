@@ -42,3 +42,4 @@ Xbox and PlayStation controllers present a standard layout through their system 
 | Profiles | `~/.config/ctrlassist/profiles/` |
 | Your own controller layouts | `~/.config/ctrlassist/gamecontrollerdb.txt` |
 | Controllers seen before | `~/.local/state/ctrlassist/pads.toml` |
+| What a DualSense said of itself, for the `dualsense` identity | `~/.local/state/ctrlassist/identities/dualsense.toml` |

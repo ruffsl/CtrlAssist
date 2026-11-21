@@ -11,6 +11,8 @@ pkgs.testers.runNixOSTest {
   nodes.machine = {
     boot.kernelModules = [
       "uinput"
+      "uhid"
+      "hid-playstation"
       "joydev"
     ];
     users.users.alice = {

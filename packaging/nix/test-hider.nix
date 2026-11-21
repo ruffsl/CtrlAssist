@@ -13,6 +13,7 @@ pkgs.testers.runNixOSTest {
     boot.kernelModules = [
       "uinput"
       "uhid"
+      "hid-playstation"
       "joydev"
     ];
     users.users.alice = {
@@ -121,6 +122,18 @@ pkgs.testers.runNixOSTest {
         told = machine.succeed(f"su -l alice -c '{raw}'")
         assert "doesn't open that kind of pad's raw node" in told, told
         assert "isn't the user in front" in machine.succeed(raw)
+        # A pad of the PlayStation driver: a virtual DualSense with an
+        # address a real one could have.
+        fake("pad-ds", "fake-dualsense", "--real")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 0c:27:56:00:00:01")
+        machine.succeed("udevadm settle")
+        dualsense = pads()["0c:27:56:00:00:01"]
+        assert pads(as_user="alice")["0c:27:56:00:00:01"]["hidraw"][1] != "open", "a seat user can't open it"
+        raw = f"ctrlassist-fixture raw {dualsense['event'][0]} --socket {SOCKET}"
+        assert "raw: ok" in machine.succeed(f"su -l alice -c '{raw}'")
+        assert "isn't the user in front" in machine.succeed(raw)
+        machine.succeed("systemctl stop pad-ds")
+        machine.wait_until_fails("ctrlassist-fixture pads | grep -c 0c:27:56:00:00:01")
 
     with subtest("someone not in front of the machine is refused"):
         _, told = hide("as-root", pads()[A]["event"][0], user="root")

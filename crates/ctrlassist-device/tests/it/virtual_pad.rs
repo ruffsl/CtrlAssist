@@ -395,6 +395,10 @@ fn a_virtual_dualsense_is_a_dualsense_to_the_kernel_s_driver() {
         );
         // The same state again is nothing new to send.
         sink.write(&held).unwrap();
+        // A second pad with its address is refused by the driver, which
+        // is an error and not a wait without end.
+        let twice = VirtualPad::dualsense(&data, address).unwrap_err();
+        assert_eq!(twice.kind(), std::io::ErrorKind::AlreadyExists, "{twice}");
 
         // A game rumbles the pad through the driver, and stops.
         let game = move || {

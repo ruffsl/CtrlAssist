@@ -529,6 +529,7 @@ Quick start >
   Identity: generic >
     (o) generic
     ( ) xbox
+    ( ) dualsense
   Rumble goes to: both pads >
     (o) both pads
     ( ) primary only

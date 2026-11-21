@@ -290,6 +290,8 @@ A small emulator: it presents a real pad's report descriptor, answers the kernel
 - **The kernel driver picks its rumble report layout from the firmware version** the pad reports, so the emulator parses both layouts. Rumble arrives as a level, not an effect, and is held in the router as one endless effect of the pad's own.
 - **Making one waits for the driver, as events.** The driver reads its three feature reports as it binds, registers the pad's input devices, and only once it is bound does the kernel pass on what the pad reports: a report written before that is dropped. So creation answers the driver and returns when udev has reported both the pad's event node and the driver bound. A driver that binds and then refuses the pad lets it go, which ends the wait with an error; another driver binding in its place does too.
 - **Side effects:** the kernel registers a battery device and LEDs for every such pad, which a desktop will show.
+- **The copy is made when a DualSense connects,** if none has been copied and the hiding service is there: the daemon opens the pad's event node, asks the service for its raw node, reads the two things off it and keeps them. It happens once; the identity's published state turns available, and stays so across restarts. Without the service nothing is copied, even where a machine's own rules would let the user open the raw node.
+- **The driver has to be loaded before the pad is made,** or the generic HID driver takes it. The packages load it at boot; making a pad without it is refused with why.
 
 **Feedback on a virtual pad** comes in two forms: force-feedback requests on uinput, and the pad's raw output report on uhid, which carries rumble as two levels beside LEDs and trigger effects. Rumble from either feeds the router. Between a sink and a source of the same kind the rest of the output report passes through; the last one is kept per sink so that a pad joining gets it and a pad leaving gets a reset. Between unlike pads everything but rumble is dropped.
 
@@ -397,7 +399,7 @@ Groups appear only when a pad isn't laid out as a gamepad; the schema has no key
 |---|---|---|
 | Profiles | `$XDG_CONFIG_HOME/ctrlassist/profiles/` | One file each, named for the profile, with a schema version; written durably. A file that arrived some other way is listed with what is wrong with it, and left as it is. |
 | Known pads | `$XDG_STATE_HOME/ctrlassist/pads.toml` | Id, model and name of pads seen, and whether each could rumble, for profiles that name a pad that isn't connected. Written durably; a file that can't be understood is left as it is. |
-| Identity data | `$XDG_STATE_HOME/ctrlassist/identities/` | What a PlayStation identity was copied from, per model and transport. |
+| Identity data | `$XDG_STATE_HOME/ctrlassist/identities/dualsense.toml` | A DualSense's report descriptor and firmware report, as hex, copied from the first one seen on USB. A file that isn't whole is left alone and the identity not offered. |
 | Steam blacklist record | `$XDG_STATE_HOME/ctrlassist/` | Entries the daemon added, so they can be removed after a crash. |
 
 ## Permissions
