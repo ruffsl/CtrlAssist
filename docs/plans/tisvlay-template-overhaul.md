@@ -2,12 +2,12 @@
 
 ## State
 
-- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding spike is done and accepted ([findings/hiding.md](findings/hiding.md)), with one check still needing the maintainer (identifiers across reconnects); the identity spike is done and accepted ([findings/identity.md](findings/identity.md)).
-- **Next action:** the input loop spike, stopping when its finding is written.
+- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding ([findings/hiding.md](findings/hiding.md)) and identity ([findings/identity.md](findings/identity.md)) spikes are done and accepted; the input loop spike has its finding, [findings/input-loop.md](findings/input-loop.md), awaiting review. Two checks still need the maintainer at the machine: identifiers across reconnects, and suspend, resume and a Bluetooth drop.
+- **Next action:** after that review, the routing graph spike.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
-- **Legacy baseline:** after step 1 removes the tree, build 0.4.0 from a `git worktree` of `legacy/0.4`, which carries its own flake.
+- **Legacy baseline:** 0.4.0 built from a `git worktree` of `legacy/0.4` at `../legacy-0.4`, which carries its own flake.
 - **Working rules,** until step 1's `CLAUDE.md` carries them:
   - Commit coherent checkpoints with Conventional Commit subjects. No `Co-Authored-By` trailer. Never amend or force-push.
   - Run the gates that exist before committing.
@@ -215,13 +215,13 @@ Order: the survey, then S1 and S5, then S2, then S4, then S3. S5 precedes S4 bec
 
 *Question:* what does the data path look like, and what reads the pads?
 
-- [ ] Build fake pads through uinput so the loop runs without hardware, and a harness that timestamps an event entering a fake pad and leaving a virtual pad.
-- [ ] Build the loop: one thread blocked in epoll over the pads and the virtual pads' feedback requests, processing whole report frames, resyncing on dropped events, answering feedback uploads.
-- [ ] Decide the reader: gilrs as is; direct evdev with a mapping database applied; or direct evdev alone for pads already in a standard layout. Test the first two with one pad that needs a mapping.
-- [ ] Measure the loop and the legacy 0.4.0 binary, on an idle host and with every core loaded: latency median and tail, CPU at a sustained high event rate from two pads, and wakeups while idle (`perf stat` and the thread's context-switch counters).
-- [ ] Record whether the input thread needs real-time scheduling to hold its tail under load, and what granting that costs to package.
-- [ ] Exercise suspend and resume and a Bluetooth drop, and record the race between a returning pad being re-hidden and a game seeing it.
-- [ ] Write the finding.
+- [x] Build fake pads through uinput so the loop runs without hardware, and a harness that timestamps an event entering a fake pad and leaving a virtual pad.
+- [x] Build the loop: one thread blocked in epoll over the pads and the virtual pad's feedback requests, processing whole report frames, resyncing on dropped events, answering feedback uploads.
+- [x] Decide the reader: direct evdev, settled by gilrs opening pads by path and keeping its mapping parser private. A pad that needs a mapping was not on hand to test.
+- [x] Measure the loop and the legacy 0.4.0 binary, on an idle host and with every core loaded: latency median and tail, CPU at a sustained high event rate from two pads, and wakeups while idle.
+- [x] Record whether the input thread needs real-time scheduling to hold its tail under load, and what granting that costs to package.
+- [ ] Exercise suspend and resume and a Bluetooth drop, and record the race between a returning pad being re-hidden and a game seeing it (needs the maintainer at the machine).
+- [x] Write the finding.
 
 *Verdict:* the loop is kept if it makes no wakeups while idle and is no worse than legacy on latency tail and CPU in every measured condition. The reader is the cheapest option that merges two different pads correctly.
 

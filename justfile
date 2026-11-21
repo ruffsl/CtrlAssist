@@ -95,3 +95,21 @@ spike-hiding-ids label:
     (cd spikes/hiding && cargo build --quiet)
     echo "===== {{ label }} =====" >> spikes/hiding/target/ids.log
     spikes/hiding/target/debug/probe pads | tee -a spikes/hiding/target/ids.log
+
+# Needs the legacy binary: `git worktree add ../legacy-0.4 legacy/0.4`, then
+# `nix develop -c cargo build --release` inside it.
+#
+# Time the new loop (with and without real-time scheduling) and the legacy binary, idle and loaded
+[group('spike')]
+spike-loop-bench legacy="../legacy-0.4/target/release/ctrlassist" runs="3":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    (cd spikes/loop && cargo build --release --quiet)
+    bench=spikes/loop/target/release/loopspike
+    for load in 0 "$(nproc)"; do
+        for _ in $(seq {{ runs }}); do
+            "$bench" bench --target ours --load "$load"
+            "$bench" bench --target ours --rt --load "$load"
+            "$bench" bench --target legacy --legacy-bin {{ legacy }} --load "$load"
+        done
+    done
