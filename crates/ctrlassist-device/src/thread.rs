@@ -138,18 +138,12 @@ pub enum Tap {
         /// What it asked.
         request: Request,
     },
-    /// A game sent a virtual pad an output report: its two bytes of
-    /// marks, its two rumble bytes, and its later byte of marks, where a
-    /// DualSense's report has them.
+    /// A game sent a virtual pad an output report.
     Output {
         /// The virtual pad.
         sink: SinkId,
-        /// The report's second and third bytes.
-        marks: [u8; 2],
-        /// Its fourth and fifth: the weak motor, then the strong.
-        motors: [u8; 2],
-        /// Its fortieth.
-        later: u8,
+        /// The report, as far as a DualSense's goes over USB.
+        report: [u8; 48],
     },
     /// A pad was told to run its motors at this level.
     Told {
@@ -576,15 +570,13 @@ impl Setup {
             // the pads its feedback goes to: to all of them when it is
             // new, and to one that has just become one of them.
             let fresh = sink.take_output().is_some();
-            if let (true, Some(report)) = (fresh, sink.last_output()) {
-                let at = |index: usize| report.get(index).copied().unwrap_or(0);
-                let tap = Tap::Output {
-                    sink: SinkId(index),
-                    marks: [at(1), at(2)],
-                    motors: [at(3), at(4)],
-                    later: at(39),
-                };
-                note(taps, tap);
+            if let (true, Some(sent)) = (fresh, sink.last_output()) {
+                let mut report = [0u8; 48];
+                for (place, byte) in report.iter_mut().zip(sent) {
+                    *place = *byte;
+                }
+                let sink = SinkId(index);
+                note(taps, Tap::Output { sink, report });
             }
             let had = passed.get(index).copied().unwrap_or(SourceSet::EMPTY);
             if let Some(report) = sink.last_output() {

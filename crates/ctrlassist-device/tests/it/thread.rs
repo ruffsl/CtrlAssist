@@ -720,37 +720,43 @@ fn a_tapped_thread_says_what_passes_through_a_setup_s_feedback() {
     drop(play(0x1000));
     thread.tap(true);
     let _held = play(0x8000);
+    // The pad has no motors, and is told its level all the same. What
+    // was still on its way from before the tap may come first.
+    let told = Tap::Told {
+        source: PRIMARY,
+        level: ctrlassist_core::Level {
+            strong: 0x8000,
+            weak: 0,
+        },
+    };
     let mut seen = Vec::new();
-    while seen.len() < 3 {
+    while seen.last() != Some(&told) {
         match reports.recv().unwrap() {
             Report::Tapped { setup: ID, tap } => seen.push(tap),
             other => unreachable!("expected a tap, got {other:?}"),
         }
     }
-    assert!(matches!(
-        seen[0],
-        Tap::Asked {
-            request: Request::Upload { effect, .. },
-            ..
-        } if effect.strong == 0x8000
-    ));
-    assert!(matches!(
-        seen[1],
-        Tap::Asked {
-            request: Request::Play { count: 1, .. },
-            ..
-        }
-    ));
-    // The pad has no motors, and is told all the same.
-    assert_eq!(
-        seen[2],
-        Tap::Told {
-            source: PRIMARY,
-            level: ctrlassist_core::Level {
-                strong: 0x8000,
-                weak: 0
+    let uploaded = seen.iter().position(|tap| {
+        matches!(
+            tap,
+            Tap::Asked {
+                request: Request::Upload { effect, .. },
+                ..
+            } if effect.strong == 0x8000
+        )
+    });
+    let played = seen.iter().rposition(|tap| {
+        matches!(
+            tap,
+            Tap::Asked {
+                request: Request::Play { count: 1, .. },
+                ..
             }
-        }
+        )
+    });
+    assert!(
+        uploaded.is_some() && uploaded < played,
+        "the upload, then the play, then the level: {seen:?}"
     );
 }
 

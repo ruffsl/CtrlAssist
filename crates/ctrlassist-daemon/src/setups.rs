@@ -1839,7 +1839,17 @@ impl Reactor {
             // Asked for only when this is being logged.
             Report::Tapped { setup, tap } => {
                 let name = self.setups.name_of(setup).unwrap_or_default();
-                tracing::debug!(setup = name, ?tap, "feedback");
+                match tap {
+                    ctrlassist_device::Tap::Output { sink, report } => {
+                        let hex = report.iter().fold(String::new(), |mut text, byte| {
+                            use std::fmt::Write as _;
+                            let _ = write!(text, "{byte:02x}");
+                            text
+                        });
+                        tracing::debug!(setup = name, sink = sink.0, report = hex, "feedback");
+                    }
+                    tap => tracing::debug!(setup = name, ?tap, "feedback"),
+                }
             }
             Report::GraphRefused { setup, graph } => {
                 // Only a setup the input thread no longer runs refuses
