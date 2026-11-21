@@ -57,7 +57,7 @@ What is lost is gilrs's normalization of oddly laid out pads. The pads the first
 
 ## Feedback on the loop thread
 
-A rumble test through SDL on the loop's virtual pad, with the real DualSense as the primary, completed normally and left the loop running, so the upload was answered and forwarded. Whether the pad physically shook was not observed. The upload is answered inline: the game's call blocks until it is, and the loop does nothing else in between.
+A rumble test through SDL on the loop's virtual pad, with the real DualSense as the primary, completed normally, left the loop running, and shook the pad (confirmed by the maintainer). The upload is answered inline: the game's call blocks until it is, and the loop does nothing else in between.
 
 ## A lesson for the daemon
 
