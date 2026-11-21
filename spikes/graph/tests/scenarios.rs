@@ -440,7 +440,7 @@ fn rumble_reaches_both_pads_of_a_priority_mux() {
     let (mut router, mut commands) = router_for(&graph);
     let asked = router.upload(KEY, RUMBLE, &mut commands);
     assert_eq!(asked, bit(PRIMARY) | bit(ASSIST));
-    assert_eq!(router.confirm(KEY, asked), Reply::Accepted);
+    assert_eq!(router.confirm(KEY, asked, &mut commands), Reply::Accepted);
     router.play(KEY, true, &mut commands);
     router.play(KEY, false, &mut commands);
     router.erase(KEY, &mut commands);
@@ -470,7 +470,7 @@ fn toggle_rumbles_only_the_active_pad_and_moves_with_the_switch() {
     let (mut router, mut commands) = router_for(&graph);
     assert_eq!(graph.feedback_targets(0), bit(PRIMARY));
     let asked = router.upload(KEY, RUMBLE, &mut commands);
-    router.confirm(KEY, asked);
+    router.confirm(KEY, asked, &mut commands);
     router.play(KEY, true, &mut commands);
     commands.clear();
 
@@ -509,7 +509,7 @@ fn rumble_can_be_off() {
     let (mut router, mut commands) = router_for(&graph);
     let asked = router.upload(KEY, RUMBLE, &mut commands);
     assert_eq!(asked, 0);
-    assert_eq!(router.confirm(KEY, asked), Reply::Accepted, "the game is not told its rumble goes nowhere");
+    assert_eq!(router.confirm(KEY, asked, &mut commands), Reply::Accepted, "the game is not told its rumble goes nowhere");
     router.play(KEY, true, &mut commands);
     assert!(commands.is_empty());
 }
@@ -519,7 +519,7 @@ fn an_upload_is_accepted_if_any_pad_takes_it() {
     let graph = mux(Mode::Priority);
     let (mut router, mut commands) = router_for(&graph);
     let asked = router.upload(KEY, RUMBLE, &mut commands);
-    assert_eq!(router.confirm(KEY, asked & !bit(ASSIST)), Reply::Accepted);
+    assert_eq!(router.confirm(KEY, asked & !bit(ASSIST), &mut commands), Reply::Accepted);
     commands.clear();
     router.play(KEY, true, &mut commands);
     assert_eq!(commands, [Command::Play { target: PRIMARY, key: KEY }], "the pad that refused is left alone");
@@ -530,7 +530,7 @@ fn an_upload_every_pad_refuses_is_refused() {
     let graph = mux(Mode::Priority);
     let (mut router, mut commands) = router_for(&graph);
     let asked = router.upload(KEY, RUMBLE, &mut commands);
-    assert_eq!(router.confirm(KEY, 0), Reply::Rejected);
+    assert_eq!(router.confirm(KEY, 0, &mut commands), Reply::Rejected);
     commands.clear();
     router.play(KEY, true, &mut commands);
     assert!(commands.is_empty(), "a refused effect is forgotten");
@@ -575,8 +575,8 @@ fn two_virtual_pads_can_rumble_one_pad_without_colliding() {
     let second = EffectKey { sink: 1, id: 0 };
     router.upload(first, RUMBLE, &mut commands);
     router.upload(second, Effect { strong: 1, weak: 1 }, &mut commands);
-    router.confirm(first, bit(0));
-    router.confirm(second, bit(0));
+    router.confirm(first, bit(0), &mut commands);
+    router.confirm(second, bit(0), &mut commands);
     commands.clear();
     router.erase(first, &mut commands);
     router.play(second, true, &mut commands);
@@ -607,7 +607,7 @@ fn a_returning_pad_gets_its_effects_back() {
     let graph = mux(Mode::Priority);
     let (mut router, mut commands) = router_for(&graph);
     let asked = router.upload(KEY, RUMBLE, &mut commands);
-    router.confirm(KEY, asked);
+    router.confirm(KEY, asked, &mut commands);
     router.play(KEY, true, &mut commands);
     commands.clear();
 

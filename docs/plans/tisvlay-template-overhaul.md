@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding ([findings/hiding.md](findings/hiding.md)) and identity ([findings/identity.md](findings/identity.md)) spikes are done and accepted; the input loop spike has its finding, [findings/input-loop.md](findings/input-loop.md), done and accepted. Two checks still need the maintainer at the machine: identifiers across reconnects, and suspend, resume and a Bluetooth drop.
-- **Next action:** the routing graph spike, stopping when its finding is written.
+- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding ([findings/hiding.md](findings/hiding.md)), identity ([findings/identity.md](findings/identity.md)) and input loop ([findings/input-loop.md](findings/input-loop.md)) spikes are done and accepted; the routing graph spike has its finding, [findings/routing-graph.md](findings/routing-graph.md), awaiting review. Two checks still need the maintainer at the machine: identifiers across reconnects, and suspend, resume and a Bluetooth drop.
+- **Next action:** after that review, the last spike: zenoh beside the input loop.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -245,12 +245,12 @@ Order: the survey, then S1 and S5, then S2, then S4, then S3. S5 precedes S4 bec
 
 *Question:* what is the node API, and does one model express every row of the feature table?
 
-- [ ] In a pure crate with no device or async dependencies, write scenario tests first: each mux and demux mode; a chained demux into mux; feedback for each (upload, play, stop, erase, gain, with replies); rumble routed to a pad other than the one providing input; a target rejecting an upload; two sinks driving one pad; a pad dropping out and returning; and one source that isn't gamepad-shaped.
-- [ ] Write the nodes and an executor that make them pass, with nothing wired around the executor.
-- [ ] Add property tests for the invariants (priority never forwards a primary button while assist holds it; outputs stay in range; a switch leaves the sink consistent with the newly active pad; no effect outlives its erase).
-- [ ] Benchmark one executor step and compare it with S2's per-event cost.
-- [ ] Draft the profile format for three presets and one hand-written graph.
-- [ ] Write the finding.
+- [x] In a pure crate with no device or async dependencies, write scenario tests first: each mux and demux mode; a chained demux into mux; feedback for each (upload, play, stop, erase, with replies); rumble routed to a pad other than the one providing input; a target rejecting an upload; two sinks driving one pad; a pad dropping out and returning; and one source that isn't gamepad-shaped. Gain was left out.
+- [x] Write the nodes and an executor that make them pass, with nothing wired around the executor.
+- [x] Add property tests for the invariants.
+- [x] Benchmark one executor step and compare it with the input loop's per-event cost.
+- [x] Draft the profile format for three presets and one hand-written graph.
+- [x] Write the finding.
 
 *Verdict:* the model is kept if every scenario passes through the executor without a special case, a step allocates nothing, and its cost is below S2's measurement noise. The open-ended vocabulary is kept if the non-gamepad scenario needed no change to node code.
 

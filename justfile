@@ -113,3 +113,8 @@ spike-loop-bench legacy="../legacy-0.4/target/release/ctrlassist" runs="3":
             "$bench" bench --target legacy --legacy-bin {{ legacy }} --load "$load"
         done
     done
+
+# Run the routing graph spike's tests and its step benchmark
+[group('spike')]
+spike-graph:
+    cd spikes/graph && cargo test && cargo run --release --example bench
