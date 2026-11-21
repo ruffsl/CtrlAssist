@@ -20,13 +20,13 @@ fn socket() -> (TempDir, PathBuf) {
 }
 
 async fn start(socket: &Path) -> Daemon {
-    let (input, _reports) = InputThread::spawn().unwrap();
+    let (input, reports) = InputThread::spawn().unwrap();
     let paths = Paths {
         socket: socket.to_path_buf(),
         state: socket.with_file_name("state"),
         config: socket.with_file_name("config"),
     };
-    Daemon::start(&paths, input).await.unwrap()
+    Daemon::start(&paths, input, reports).await.unwrap()
 }
 
 /// Runs the built `ctrlassist` binary.
@@ -141,6 +141,9 @@ fn the_command_explains_itself() {
         "identify",
         "forget",
         "profile",
+        "start",
+        "stop",
+        "setups",
         "service",
         "--socket",
     ] {
@@ -249,6 +252,9 @@ fn a_command_that_needs_the_daemon_says_when_there_is_none() {
         &["forget", "x"],
         &["profile", "list"],
         &["profile", "delete", "x"],
+        &["start", "x"],
+        &["stop", "x"],
+        &["setups"],
     ] {
         let output = ctrlassist(&socket, arguments);
         assert_eq!(output.status.code(), Some(1), "{arguments:?}");
@@ -317,5 +323,66 @@ async fn a_profile_file_is_checked_put_shown_listed_and_deleted() {
     let gone = ctrlassist(&socket, &["profile", "show", "desk"]);
     assert_eq!(gone.status.code(), Some(1));
     assert!(text(&gone.stderr).contains("no profile is called desk"));
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_profile_is_started_listed_and_stopped() {
+    const TEST: &str = "a_profile_is_started_listed_and_stopped";
+    if !ctrlassist_test::can_make_pads(TEST) {
+        return;
+    }
+    let (dir, socket) = socket();
+    let _primary = ctrlassist_test::FakePad::new("CLI Primary", 0x1209, 0x7e01).unwrap();
+    let daemon = start(&socket).await;
+    let file = dir.path().join("couch.toml");
+    std::fs::write(
+        &file,
+        "preset = \"priority\"\nprimary = \"model:1209:7e01\"\nassist = \"model:1209:7e02\"\n",
+    )
+    .unwrap();
+    let put = ctrlassist(&socket, &["profile", "put", file.to_str().unwrap()]);
+    assert!(put.status.success(), "{}", text(&put.stderr));
+    let none = ctrlassist(&socket, &["setups"]);
+    assert_eq!(text(&none.stdout), "no setups exist\n");
+
+    let started = ctrlassist(&socket, &["start", "couch"]);
+    assert!(started.status.success(), "{}", text(&started.stderr));
+    let twice = ctrlassist(&socket, &["start", "couch"]);
+    assert_eq!(twice.status.code(), Some(1));
+    assert!(text(&twice.stderr).contains("setup-exists"));
+
+    // Its assist isn't connected, so it is held, and says what it waits
+    // for.
+    let listed = ctrlassist(&socket, &["setups"]);
+    let said = text(&listed.stdout);
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines.len(), 5, "{said}");
+    assert!(lines[0].starts_with("SETUP  PHASE  PART"), "{said}");
+    assert!(lines[1].starts_with("couch  held"), "{said}");
+    assert!(
+        lines[2].ends_with("pad assist           (waiting for a pad that fits)"),
+        "{said}"
+    );
+    assert!(
+        lines[3].ends_with("pad primary          model:1209:7e01:CLI Primary"),
+        "{said}"
+    );
+    assert!(
+        lines[4].contains("virtual pad virtual")
+            && lines[4].contains("generic at /dev/input/event"),
+        "{said}"
+    );
+    let json = ctrlassist(&socket, &["setups", "--json"]);
+    let setups: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(setups[0]["name"], "couch");
+    assert_eq!(setups[0]["phase"], "held");
+
+    let stopped = ctrlassist(&socket, &["stop", "couch"]);
+    assert!(stopped.status.success(), "{}", text(&stopped.stderr));
+    let again = ctrlassist(&socket, &["stop", "couch"]);
+    assert!(text(&again.stderr).contains("unknown-setup"));
+    let none = ctrlassist(&socket, &["setups", "--json"]);
+    assert_eq!(text(&none.stdout), "[]\n");
     daemon.stop().await;
 }

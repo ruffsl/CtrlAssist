@@ -248,11 +248,13 @@ fn stopping_a_setup_hands_it_back_and_takes_its_virtual_pad_away() {
     };
     assert_eq!(setup.pads().len(), 2);
     let node = setup.sinks()[0].event_node().to_path_buf();
-    assert!(node.exists());
-    // The virtual pad lives exactly as long as the setup does.
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    let phys = ctrlassist_test::phys_of(&node).expect("the virtual pad is connected");
+    // The virtual pad lives exactly as long as the setup does. Its node's
+    // path may be another pad's by now, so it is known by its own mark.
     drop(setup);
     let _ = std::process::Command::new("udevadm").arg("settle").status();
-    assert!(!node.exists());
+    assert!(!ctrlassist_test::phys_connected(&phys));
 
     // A stop for a setup that isn't running is nothing.
     rig.thread.send(Command::Stop(ID)).unwrap();

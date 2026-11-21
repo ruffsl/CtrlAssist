@@ -57,6 +57,30 @@ pub fn can_make_pads(test: &str) -> bool {
     false
 }
 
+/// Where the pad on `node` says it is plugged in, the kernel's `phys`.
+/// A virtual pad's is its alone, so it tells that pad from another that
+/// was later given the same node.
+#[must_use]
+pub fn phys_of(node: &Path) -> Option<String> {
+    ctrlassist_device::connected()
+        .ok()?
+        .into_iter()
+        .find(|found| found.node == node)?
+        .identifiers
+        .port
+}
+
+/// Whether a pad that says it is plugged in at `phys` is connected. A
+/// node's path isn't the test for a pad having gone: the kernel hands a
+/// freed node number to the next pad, which may be another test's.
+#[must_use]
+pub fn phys_connected(phys: &str) -> bool {
+    ctrlassist_device::connected().is_ok_and(|pads| {
+        pads.iter()
+            .any(|found| found.identifiers.port.as_deref() == Some(phys))
+    })
+}
+
 /// Whether this process may create pads through uhid.
 #[must_use]
 pub fn uhid_available() -> bool {

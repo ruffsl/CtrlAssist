@@ -51,6 +51,17 @@ error_codes! {
     InvalidProfile = "invalid-profile",
     /// No profile is kept under the name given.
     UnknownProfile = "unknown-profile",
+    /// A setup of that name exists already.
+    SetupExists = "setup-exists",
+    /// No setup goes by the name given.
+    UnknownSetup = "unknown-setup",
+    /// The setup is between two phases, and the request has to wait for
+    /// it to settle.
+    SetupBusy = "setup-busy",
+    /// The setup couldn't be started; the message says why.
+    SetupFailed = "setup-failed",
+    /// A pad the request needs is in use by a setup.
+    PadInUse = "pad-in-use",
     /// The daemon stopped before it could answer.
     DaemonShuttingDown = "daemon-shutting-down",
     /// The daemon failed on its side; the request itself may be fine.

@@ -22,6 +22,8 @@ pub(crate) struct DaemonMirror {
     pub identities: BTreeMap<String, payload::Identity>,
     /// The profiles the daemon keeps, by name.
     pub profiles: BTreeMap<String, payload::Profile>,
+    /// The setups that exist, by name.
+    pub setups: BTreeMap<String, payload::Setup>,
 }
 
 /// Apply a sample to the row it is for; whether anything changed.
@@ -49,6 +51,7 @@ impl Mirror for DaemonMirror {
             keys::pad_wild(),
             keys::identity_wild(),
             keys::profile_wild(),
+            keys::setup_wild(),
         ]
     }
 
@@ -72,6 +75,11 @@ impl Mirror for DaemonMirror {
                 .into_keys()
                 .map(|profile| StateEvent::ProfileChanged { profile }),
         );
+        removed.extend(
+            std::mem::take(&mut self.setups)
+                .into_keys()
+                .map(|setup| StateEvent::SetupChanged { setup }),
+        );
         removed
     }
 
@@ -92,6 +100,11 @@ impl Mirror for DaemonMirror {
         if let Some(name) = keys::parse_profile(key) {
             return assign(&mut self.profiles, name, sample).then(|| StateEvent::ProfileChanged {
                 profile: name.to_string(),
+            });
+        }
+        if let Some(name) = keys::parse_setup(key) {
+            return assign(&mut self.setups, name, sample).then(|| StateEvent::SetupChanged {
+                setup: name.to_string(),
             });
         }
         if key != keys::daemon() {
@@ -211,6 +224,22 @@ mod tests {
         assert_eq!(mirror.apply(&delete_on(keys::profile("couch"))), None);
         mirror.apply(&put_on(keys::profile("couch"), &couch));
 
+        let running = payload::Setup {
+            name: "couch".to_string(),
+            phase: payload::Phase::Running,
+            reason: None,
+            sources: Vec::new(),
+            sinks: Vec::new(),
+        };
+        let setup_changed = Some(StateEvent::SetupChanged {
+            setup: "couch".to_string(),
+        });
+        assert_eq!(
+            mirror.apply(&put_on(keys::setup("couch"), &running)),
+            setup_changed
+        );
+        assert_eq!(mirror.setups["couch"], running);
+
         mirror.apply(&put_on(key, &pad("address:aa", true)));
         assert_eq!(
             mirror.clear(),
@@ -222,8 +251,12 @@ mod tests {
                 StateEvent::ProfileChanged {
                     profile: "couch".to_string()
                 },
+                StateEvent::SetupChanged {
+                    setup: "couch".to_string()
+                },
             ]
         );
+        assert!(mirror.setups.is_empty());
         assert!(mirror.pads.is_empty() && mirror.identities.is_empty());
         assert!(mirror.profiles.is_empty());
     }

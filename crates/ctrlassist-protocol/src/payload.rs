@@ -82,6 +82,79 @@ impl std::fmt::Display for Problem {
     }
 }
 
+/// A setup: a profile being run. Its key is
+/// [`keys::setup`](crate::keys::setup) of `name`, published from when it
+/// is asked for until it is stopped.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Setup {
+    /// The setup's name: the profile it runs.
+    pub name: String,
+    /// Where it is in its life.
+    pub phase: Phase,
+    /// Why it failed, for a person to read; absent in any other phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Its pads, in the order of their names in the profile.
+    pub sources: Vec<SetupSource>,
+    /// Its virtual pads, in the order of their names in the profile.
+    pub sinks: Vec<SetupSink>,
+}
+
+/// Where a setup is in its life.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum Phase {
+    /// Its pads are being opened and its virtual pads made.
+    Starting,
+    /// Every pad it needs is there.
+    Running,
+    /// A pad it needs is missing: the virtual pads stay, the missing pad
+    /// reads as at rest, and the rest carries on.
+    Held,
+    /// It couldn't start, or stopped working; `reason` says why. Its
+    /// virtual pads are gone. It stays listed until it is stopped.
+    Failed,
+}
+
+impl Phase {
+    /// The phase as it travels on the wire, and as it is shown.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Held => "held",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// One of a setup's pads.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SetupSource {
+    /// Its name in the profile.
+    pub name: String,
+    /// The pad it is, by the id the pad is known by; absent while no pad
+    /// that fits the profile has been found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pad: Option<String>,
+    /// Whether that pad is there now.
+    pub present: bool,
+}
+
+/// One of a setup's virtual pads.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SetupSink {
+    /// Its name in the profile.
+    pub name: String,
+    /// The identity it presents, by name.
+    pub identity: String,
+    /// Its event node, once it is made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+}
+
 /// What a virtual pad can present itself as. Its key is
 /// [`keys::identity`](crate::keys::identity) of `id`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -102,6 +175,13 @@ pub struct Identity {
 mod tests {
     use super::*;
     use crate::profile::Profile as Schema;
+
+    #[test]
+    fn a_phase_travels_as_the_word_it_is_shown_as() {
+        for phase in [Phase::Starting, Phase::Running, Phase::Held, Phase::Failed] {
+            assert_eq!(serde_json::to_value(phase).unwrap(), phase.as_str());
+        }
+    }
 
     #[test]
     fn a_problem_reads_as_where_then_what() {

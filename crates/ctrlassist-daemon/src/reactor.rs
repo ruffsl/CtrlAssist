@@ -9,11 +9,12 @@ use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::os::fd::OwnedFd;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ctrlassist_core::Level;
-use ctrlassist_device::Pad;
-use ctrlassist_protocol::endpoint::{daemon, pad, profile};
+use ctrlassist_device::{Database, InputThread, Pad, Report};
+use ctrlassist_protocol::endpoint::{daemon, pad, profile, setup};
 use ctrlassist_protocol::error::{ErrorCode, WireError};
 use ctrlassist_protocol::serve::Responder;
 use ctrlassist_protocol::{VERSION, keys, rpc};
@@ -31,6 +32,7 @@ use zenoh_ext::{AdvancedPublisher, AdvancedPublisherBuilderExt, CacheConfig, Mis
 use crate::book::Book;
 use crate::hotplug::Seen;
 use crate::profiles::Profiles;
+use crate::setups::{Done, Setups};
 use crate::store::Store;
 
 /// Heartbeat period for sample-miss recovery on cached publishers: a
@@ -51,6 +53,7 @@ pub(crate) struct Rpcs {
     pub(crate) daemon: Rpc,
     pub(crate) pad: Rpc,
     pub(crate) profile: Rpc,
+    pub(crate) setup: Rpc,
 }
 
 impl Rpcs {
@@ -60,6 +63,7 @@ impl Rpcs {
             daemon: session.declare_queryable(daemon::Incoming::wild()).await?,
             pad: session.declare_queryable(pad::Incoming::wild()).await?,
             profile: session.declare_queryable(profile::Incoming::wild()).await?,
+            setup: session.declare_queryable(setup::Incoming::wild()).await?,
         })
     }
 }
@@ -67,9 +71,17 @@ impl Rpcs {
 /// What the reactor owns.
 pub(crate) struct Reactor {
     session: Session,
-    book: Book,
+    pub(crate) book: Book,
     store: Store,
-    profiles: Profiles,
+    pub(crate) profiles: Profiles,
+    pub(crate) setups: Setups,
+    /// The input thread, which runs the setups.
+    pub(crate) input: Arc<InputThread>,
+    /// The layouts of pads whose drivers don't present a gamepad's.
+    pub(crate) database: Arc<Database>,
+    /// Blocking work under way for the setups, each piece coming back as
+    /// what it did.
+    pub(crate) work: JoinSet<Done>,
     /// One cached publisher per key published now.
     publishers: BTreeMap<String, AdvancedPublisher<'static>>,
     /// The buzzes under way; each ends itself.
@@ -113,12 +125,23 @@ async fn buzz(node: PathBuf, millis: u32, responder: Responder<pad::Identify>) {
 }
 
 impl Reactor {
-    pub(crate) fn new(session: Session, book: Book, store: Store, profiles: Profiles) -> Self {
+    pub(crate) fn new(
+        session: Session,
+        book: Book,
+        store: Store,
+        profiles: Profiles,
+        input: Arc<InputThread>,
+        database: Database,
+    ) -> Self {
         Self {
             session,
             book,
             store,
             profiles,
+            setups: Setups::default(),
+            input,
+            database: Arc::new(database),
+            work: JoinSet::new(),
             publishers: BTreeMap::new(),
             buzzes: JoinSet::new(),
         }
@@ -148,7 +171,7 @@ impl Reactor {
     }
 
     /// Takes `key` back: subscribers see it deleted.
-    async fn unpublish(&mut self, key: &str) {
+    pub(crate) async fn unpublish(&mut self, key: &str) {
         if let Some(publisher) = self.publishers.remove(key)
             && let Err(error) = publisher.delete().await
         {
@@ -223,6 +246,13 @@ impl Reactor {
         }
     }
 
+    /// Publishes a pad's state; a failure is logged.
+    pub(crate) async fn publish_pad_logged(&mut self, id: &str) {
+        if let Err(error) = self.publish_pad(id).await {
+            warn!(pad = id, %error, "publishing a pad's state failed");
+        }
+    }
+
     fn save(&self) {
         if let Err(error) = self.store.save(&self.book.known()) {
             warn!(%error, "the known pads couldn't be saved; they are kept until the daemon stops");
@@ -231,7 +261,8 @@ impl Reactor {
 
     /// Takes in what the hotplug watch saw.
     pub(crate) async fn saw(&mut self, seen: Seen) {
-        let (changed, remembered) = match seen {
+        let arrived = matches!(seen, Seen::Arrived(..));
+        let (changed, remembered): (Vec<String>, bool) = match seen {
             Seen::Arrived(found, rumble) => {
                 let changed = self.book.arrived(&found, rumble);
                 let remembered = changed.iter().any(|changed| changed.remembered);
@@ -258,10 +289,12 @@ impl Reactor {
         if remembered {
             self.save();
         }
-        for id in changed {
-            if let Err(error) = self.publish_pad(&id).await {
-                warn!(pad = id, %error, "publishing a pad's state failed");
-            }
+        for id in &changed {
+            self.publish_pad_logged(id).await;
+        }
+        // The last is the pad that connected, if one did.
+        if arrived && let Some(id) = changed.last() {
+            self.pad_arrived(id).await;
         }
     }
 
@@ -332,6 +365,7 @@ impl Reactor {
         mut self,
         rpcs: Rpcs,
         mut seen: UnboundedReceiver<Seen>,
+        mut reports: UnboundedReceiver<Report>,
         mut stop: oneshot::Receiver<()>,
     ) {
         loop {
@@ -340,6 +374,9 @@ impl Reactor {
                 Ok(query) = rpcs.daemon.recv_async() => self.daemon_rpc(query).await,
                 Ok(query) = rpcs.pad.recv_async() => self.pad_rpc(query).await,
                 Ok(query) = rpcs.profile.recv_async() => self.profile_rpc(query).await,
+                Ok(query) = rpcs.setup.recv_async() => self.setup_rpc(query).await,
+                Some(report) = reports.recv() => self.reported(report).await,
+                Some(Ok(done)) = self.work.join_next() => self.done(done).await,
                 Some(seen) = seen.recv() => self.saw(seen).await,
                 // A finished buzz has nothing to say.
                 Some(_) = self.buzzes.join_next() => {}
@@ -347,5 +384,8 @@ impl Reactor {
         }
         // Pads still buzzing stop as their tasks are dropped.
         self.buzzes.shutdown().await;
+        // What is being made or dropped finishes; the setups themselves
+        // go with the input thread.
+        while self.work.join_next().await.is_some() {}
     }
 }

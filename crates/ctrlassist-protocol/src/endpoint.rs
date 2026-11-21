@@ -218,6 +218,26 @@ pub mod profile {
     }
 }
 
+/// The setup rpcs: `ctrlassist/rpc/setup/<verb>`.
+pub mod setup {
+    use super::{keys, rpc};
+
+    family! {
+        /// A decoded setup rpc.
+        target: (),
+        key: |_target, verb| keys::setup_rpc(verb),
+        parse: keys::parse_setup_rpc,
+        wild: keys::setup_rpc_wild,
+        rpcs: {
+            /// Run a kept profile. Replies once its virtual pads exist
+            /// and it is running or held, or with why it couldn't start.
+            Start = "start" (rpc::SetupRequest) -> rpc::Ack, write;
+            /// Stop a setup. Replies once its virtual pads are gone.
+            Stop = "stop" (rpc::SetupRequest) -> rpc::Ack, write;
+        }
+    }
+}
+
 /// The pad rpcs: `ctrlassist/rpc/pad/<verb>`.
 pub mod pad {
     use super::{keys, rpc};

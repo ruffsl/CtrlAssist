@@ -57,6 +57,22 @@ pub enum Command {
         /// The pad, named as for `identify`.
         pad: String,
     },
+    /// Run a kept profile: its pads become its virtual pads.
+    Start {
+        /// The profile's name.
+        profile: String,
+    },
+    /// Stop a setup: its virtual pads go.
+    Stop {
+        /// The setup's name: the profile it runs.
+        setup: String,
+    },
+    /// List the setups that exist, with their pads and virtual pads.
+    Setups {
+        /// Print a JSON array, one object per setup.
+        #[arg(long)]
+        json: bool,
+    },
     /// List, show, check, keep and delete profiles.
     #[command(subcommand)]
     Profile(Profile),

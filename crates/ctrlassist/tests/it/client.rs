@@ -59,13 +59,13 @@ pub(crate) async fn next_matching(
 }
 
 pub(crate) async fn start_daemon(socket: &std::path::Path) -> Daemon {
-    let (input, _reports) = InputThread::spawn().unwrap();
+    let (input, reports) = InputThread::spawn().unwrap();
     let paths = Paths {
         socket: socket.to_path_buf(),
         state: socket.with_file_name("state"),
         config: socket.with_file_name("config"),
     };
-    Daemon::start(&paths, input).await.unwrap()
+    Daemon::start(&paths, input, reports).await.unwrap()
 }
 
 /// No start-order assumptions: a client opened before the daemon's

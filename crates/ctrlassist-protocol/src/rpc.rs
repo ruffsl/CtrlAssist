@@ -61,6 +61,13 @@ pub struct ProfileRequest {
     pub name: String,
 }
 
+/// Names a setup, which goes by the name of the profile it runs.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SetupRequest {
+    /// The setup's name.
+    pub name: String,
+}
+
 /// Reply to the daemon's `info` rpc: the handshake a client runs before
 /// anything else.
 ///

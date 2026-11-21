@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use ctrlassist_device::Found;
 use ctrlassist_protocol::error::{ErrorCode, WireError};
+use ctrlassist_protocol::profile::PadRef;
 use ctrlassist_protocol::{keys, payload};
 
 /// What is remembered of a pad once it is unplugged.
@@ -31,6 +32,22 @@ struct Row {
     /// The event nodes it is connected on now. Two pads that report
     /// nothing to tell them apart share a row and have a node each.
     nodes: Vec<PathBuf>,
+    /// When it last connected, as a count of connections: lower is
+    /// earlier.
+    connected: u64,
+    /// The setup that uses it.
+    setup: Option<String>,
+}
+
+impl Row {
+    fn remembered(known: Known) -> Self {
+        Self {
+            known,
+            nodes: Vec::new(),
+            connected: 0,
+            setup: None,
+        }
+    }
 }
 
 /// What a change to the book touched.
@@ -46,6 +63,8 @@ pub(crate) struct Changed {
 #[derive(Debug, Default)]
 pub(crate) struct Book {
     rows: BTreeMap<String, Row>,
+    /// How many connections have been seen.
+    connections: u64,
 }
 
 impl Book {
@@ -53,17 +72,12 @@ impl Book {
     pub(crate) fn new(known: Vec<Known>) -> Self {
         let rows = known
             .into_iter()
-            .map(|known| {
-                (
-                    known.id.clone(),
-                    Row {
-                        known,
-                        nodes: Vec::new(),
-                    },
-                )
-            })
+            .map(|known| (known.id.clone(), Row::remembered(known)))
             .collect();
-        Self { rows }
+        Self {
+            rows,
+            connections: 0,
+        }
     }
 
     /// What to remember: every pad, connected or not.
@@ -109,13 +123,17 @@ impl Book {
             rumble: rumble.or(was.and_then(|was| was.rumble)),
         };
         let remembered = was != Some(&known);
-        let row = self.rows.entry(id.clone()).or_insert_with(|| Row {
-            known: known.clone(),
-            nodes: Vec::new(),
-        });
+        let row = self
+            .rows
+            .entry(id.clone())
+            .or_insert_with(|| Row::remembered(known.clone()));
         row.known = known;
         let connected = !row.nodes.contains(&found.node);
         if connected {
+            if row.nodes.is_empty() {
+                self.connections += 1;
+                row.connected = self.connections;
+            }
             row.nodes.push(found.node.clone());
         }
         if remembered || connected {
@@ -162,9 +180,16 @@ impl Book {
     }
 
     /// Stop remembering the pad `reference` names. A connected pad can't
-    /// be forgotten: it would be taken in again at once.
+    /// be forgotten: it would be taken in again at once. Nor can one a
+    /// setup is waiting for.
     pub(crate) fn forget(&mut self, reference: &str) -> Result<String, WireError> {
         let id = self.resolve(reference)?.to_string();
+        if let Some(setup) = self.user(&id) {
+            return Err(WireError::refusal(
+                ErrorCode::PadInUse,
+                format!("{id} is part of the setup {setup}; stop that first"),
+            ));
+        }
         if self.node(&id).is_some() {
             return Err(WireError::refusal(
                 ErrorCode::PadConnected,
@@ -173,6 +198,55 @@ impl Book {
         }
         self.rows.remove(&id);
         Ok(id)
+    }
+
+    /// The connected pads that `wanted` could mean and that no setup
+    /// uses, in the order they connected.
+    pub(crate) fn fitting(&self, wanted: &PadRef) -> Vec<&str> {
+        let mut fitting: Vec<&Row> = self
+            .rows
+            .values()
+            .filter(|row| !row.nodes.is_empty() && row.setup.is_none())
+            .filter(|row| wanted.matches(&row.known.id, row.known.vendor, row.known.product))
+            .collect();
+        fitting.sort_by_key(|row| row.connected);
+        fitting
+            .into_iter()
+            .map(|row| row.known.id.as_str())
+            .collect()
+    }
+
+    /// Whether `wanted` could mean the pad `id`.
+    pub(crate) fn fits(&self, id: &str, wanted: &PadRef) -> bool {
+        self.rows
+            .get(id)
+            .is_some_and(|row| wanted.matches(id, row.known.vendor, row.known.product))
+    }
+
+    /// The setup that uses the pad, if one does.
+    pub(crate) fn user(&self, id: &str) -> Option<&str> {
+        self.rows.get(id)?.setup.as_deref()
+    }
+
+    /// Notes that `setup` uses the pad. A pad the book doesn't know (one
+    /// a profile names that has never been seen) has nothing to note.
+    pub(crate) fn claim(&mut self, id: &str, setup: &str) {
+        if let Some(row) = self.rows.get_mut(id) {
+            row.setup = Some(setup.to_string());
+        }
+    }
+
+    /// Notes that `setup` no longer uses any pad. Returns the pads it
+    /// used.
+    pub(crate) fn release(&mut self, setup: &str) -> Vec<String> {
+        self.rows
+            .iter_mut()
+            .filter(|(_, row)| row.setup.as_deref() == Some(setup))
+            .map(|(id, row)| {
+                row.setup = None;
+                id.clone()
+            })
+            .collect()
     }
 
     /// A node the pad is connected on, if it is.
@@ -194,9 +268,9 @@ impl Book {
             vendor: row.known.vendor,
             product: row.known.product,
             connected: !row.nodes.is_empty(),
-            // Nothing hides a pad or runs a setup yet.
+            // Nothing hides a pad yet.
             hidden: false,
-            setup: None,
+            setup: row.setup.clone(),
             rumble: row.known.rumble,
         })
     }
@@ -386,6 +460,63 @@ mod tests {
         assert_eq!(
             book.resolve("aa:bb:cc:dd:ee:ff"),
             Ok("address:aa:bb:cc:dd:ee:ff")
+        );
+    }
+
+    #[test]
+    fn a_setup_takes_the_pads_that_fit_in_the_order_they_connected() {
+        let mut book = Book::default();
+        let second = found(
+            "/dev/input/event6",
+            "DualSense",
+            Some("aa:bb:cc:dd:ee:02"),
+            None,
+        );
+        let first = found(
+            "/dev/input/event5",
+            "DualSense",
+            Some("aa:bb:cc:dd:ee:01"),
+            None,
+        );
+        // The later address connects first: the order is of connecting,
+        // not of names.
+        book.arrived(&second, None);
+        book.arrived(&first, None);
+        let model = PadRef::parse("model:054c:0ce6").unwrap();
+        let exact = PadRef::parse("aa:bb:cc:dd:ee:01").unwrap();
+        assert_eq!(
+            book.fitting(&model),
+            ["address:aa:bb:cc:dd:ee:02", "address:aa:bb:cc:dd:ee:01"]
+        );
+        assert_eq!(book.fitting(&exact), ["address:aa:bb:cc:dd:ee:01"]);
+        assert!(book.fits("address:aa:bb:cc:dd:ee:01", &model));
+        assert!(!book.fits("address:aa:bb:cc:dd:ee:02", &exact));
+        assert!(!book.fits("address:none", &model));
+
+        // One in use fits no other setup, and says whose it is.
+        book.claim("address:aa:bb:cc:dd:ee:02", "couch");
+        book.claim("address:never-seen", "couch");
+        assert_eq!(book.fitting(&model), ["address:aa:bb:cc:dd:ee:01"]);
+        assert_eq!(book.user("address:aa:bb:cc:dd:ee:02"), Some("couch"));
+        assert_eq!(book.user("address:aa:bb:cc:dd:ee:01"), None);
+        assert_eq!(
+            book.pad("address:aa:bb:cc:dd:ee:02")
+                .unwrap()
+                .setup
+                .as_deref(),
+            Some("couch")
+        );
+        book.left(Path::new("/dev/input/event6"));
+        let refused = book.forget("aa:bb:cc:dd:ee:02").unwrap_err();
+        assert_eq!(refused.code, ErrorCode::PadInUse);
+
+        // One that left and returned is the latest to connect.
+        assert_eq!(book.release("couch"), ["address:aa:bb:cc:dd:ee:02"]);
+        assert_eq!(book.release("couch"), Vec::<String>::new());
+        book.arrived(&second, None);
+        assert_eq!(
+            book.fitting(&model),
+            ["address:aa:bb:cc:dd:ee:01", "address:aa:bb:cc:dd:ee:02"]
         );
     }
 

@@ -191,7 +191,9 @@ It is created before the async runtime and shares nothing with it but the queues
 
 A single reactor task owns the profiles, the known pads and the running setups, with commands in and state out. It is not an ECS as TisVlay's daemon is: the state is a pad list and a few setups, not many interacting state machines. Beside it run the zenoh bridge, a udev monitor for hotplug, and the hiding service's client.
 
-A setup moves through starting, running, held and failed. Starting covers the round trip to the hiding service and creating the virtual pads. Held means a pad it needs is missing: the virtual pads stay, the missing pad reads as at rest, and the rest carries on.
+A setup goes by the name of the profile it runs, and moves through starting, running, held and failed. Starting covers the round trip to the hiding service and creating the virtual pads; that work blocks, so it is done off the reactor and comes back to it as a result. Held means a pad it needs is missing: the virtual pads stay, the missing pad reads as at rest, and the rest carries on. A setup may start held, and a start that fails leaves nothing behind; failed is for a setup that was running and stopped working, which stays listed until it is stopped.
+
+A source that names an exact pad is that pad, there or not. One that names a model takes the first pad of that model to have connected that no setup uses, and from then on waits for that pad and no other.
 
 A change to a running setup is live if the virtual pads are untouched (a threshold, a rule, the switch, a feedback setting) and disruptive if one must be recreated (its identity or capabilities), which the game sees as a disconnect. The daemon says which before applying it.
 
@@ -298,7 +300,7 @@ zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the d
 | `ctrlassist/identity/<id>` | state | each identity a virtual pad can take, and whether it is available now |
 | `ctrlassist/pad/<id>` | state | the id it is known by across reconnects, name, model, connected, hidden, which setup uses it, whether it can rumble |
 | `ctrlassist/profile/<name>` | state | the profile as its TOML, and what is wrong with it if anything is |
-| `ctrlassist/setup/<id>` | state | starting, running, held or failed with a reason; each node's selected input |
+| `ctrlassist/setup/<name>` | state | starting, running, held or failed with a reason; which pad each source is and whether it is there; each virtual pad's identity and node; each node's selected input |
 | `ctrlassist/mirror/<pad>` | stream | the pad's current state |
 | `ctrlassist/rpc/profile/{validate,put,delete}` | rpc | check a profile and say where it is wrong; write one |
 | `ctrlassist/rpc/setup/{start,stop,update,select}` | rpc | run a profile; stop it; change it, replying live or disruptive; select a node's input |

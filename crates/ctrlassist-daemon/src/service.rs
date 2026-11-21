@@ -3,7 +3,9 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use ctrlassist_device::InputThread;
+use std::sync::mpsc::Receiver;
+
+use ctrlassist_device::{InputThread, Report};
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::info;
 
@@ -35,16 +37,13 @@ pub fn main(args: Args) -> Result<()> {
     // Before the runtime: the input thread shares nothing with it but
     // its queues, and asks for real-time scheduling for itself alone.
     let (input, reports) = InputThread::spawn().context("starting the input thread")?;
-    // Nothing runs a setup yet, so nothing is reported; the receiver is
-    // held so the thread's reports have somewhere to go.
-    let _reports = reports;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(args, input))
+        .block_on(run(args, input, reports))
 }
 
-async fn run(args: Args, input: InputThread) -> Result<()> {
+async fn run(args: Args, input: InputThread, reports: Receiver<Report>) -> Result<()> {
     crate::logging::init(
         "ctrlassist-daemon",
         &["ctrlassist_daemon=info", "ctrlassist_protocol=info"],
@@ -55,7 +54,7 @@ async fn run(args: Args, input: InputThread) -> Result<()> {
         state: args.state_dir.unwrap_or(defaults.state),
         config: args.config_dir.unwrap_or(defaults.config),
     };
-    let daemon = Daemon::start(&paths, input).await?;
+    let daemon = Daemon::start(&paths, input, reports).await?;
 
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;

@@ -20,6 +20,7 @@ zenoh = { workspace = true }
 zenoh-ext = { workspace = true }
 
 [dev-dependencies]
+ctrlassist-core = { workspace = true }
 ctrlassist-test = { workspace = true }
 ctrlassist-daemon = { workspace = true }
 ctrlassist-device = { workspace = true }

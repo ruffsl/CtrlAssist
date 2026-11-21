@@ -11,14 +11,17 @@ pub mod logging;
 mod profiles;
 mod reactor;
 pub mod service;
+mod setups;
 mod store;
 
 use std::fs::OpenOptions;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 
 use anyhow::{Context, Result, anyhow};
-use ctrlassist_device::InputThread;
+use ctrlassist_device::{Database, InputThread, Report};
 use ctrlassist_protocol::profile::Identity;
 use ctrlassist_protocol::{VERSION, bootstrap, keys, payload};
 use tokio::sync::{mpsc, oneshot};
@@ -79,7 +82,7 @@ pub struct Daemon {
     reactor: JoinHandle<()>,
     watch: Watch,
     session: Session,
-    input: InputThread,
+    input: Arc<InputThread>,
 }
 
 impl std::fmt::Debug for Daemon {
@@ -90,8 +93,29 @@ impl std::fmt::Debug for Daemon {
     }
 }
 
+/// The controller database: the snapshot built in, under the user's own
+/// `gamecontrollerdb.txt` in the configuration directory, if there is
+/// one.
+fn database(config: &Path) -> Database {
+    let bundled = Database::bundled();
+    let path = config.join("gamecontrollerdb.txt");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let own = Database::parse(&text);
+            info!(path = %path.display(), layouts = own.len(), skipped = own.skipped(), "the user's controller database is laid over the built-in one");
+            bundled.overlaid(own)
+        }
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                warn!(path = %path.display(), %error, "the user's controller database can't be read; using the built-in one alone");
+            }
+            bundled
+        }
+    }
+}
+
 /// What the device crate calls an identity a profile names.
-fn device_identity(identity: Identity) -> ctrlassist_device::Identity {
+pub(crate) fn device_identity(identity: Identity) -> ctrlassist_device::Identity {
     match identity {
         Identity::Generic => ctrlassist_device::Identity::Generic,
         Identity::Xbox => ctrlassist_device::Identity::Xbox,
@@ -100,15 +124,20 @@ fn device_identity(identity: Identity) -> ctrlassist_device::Identity {
 
 impl Daemon {
     /// Starts the daemon at `paths`, around an input thread that is
-    /// already running: that thread is created before any async runtime
-    /// exists, so the caller makes it.
+    /// already running, and what it reports: that thread is created
+    /// before any async runtime exists, so the caller makes it.
     ///
     /// # Errors
     ///
     /// Fails if the socket's directory can't be made, another daemon
     /// holds the socket, udev can't be watched, or zenoh refuses a
     /// declaration.
-    pub async fn start(paths: &Paths, input: InputThread) -> Result<Self> {
+    pub async fn start(
+        paths: &Paths,
+        input: InputThread,
+        reports: Receiver<Report>,
+    ) -> Result<Self> {
+        let input = Arc::new(input);
         let socket: &Path = &paths.socket;
         if let Some(directory) = socket.parent() {
             // The user's alone: who can reach the socket is who can open
@@ -138,7 +167,28 @@ impl Daemon {
             .context("starting the hotplug watch")?
             .context("watching udev for pads")?;
         let profiles = Profiles::open(&paths.config.join("profiles"));
-        let mut reactor = Reactor::new(session.clone(), Book::new(known), store, profiles);
+        let mut reactor = Reactor::new(
+            session.clone(),
+            Book::new(known),
+            store,
+            profiles,
+            Arc::clone(&input),
+            database(&paths.config),
+        );
+
+        // The input thread's reports wait on a thread of their own, which
+        // ends with the input thread.
+        let (reported, reports_in) = mpsc::unbounded_channel();
+        std::thread::Builder::new()
+            .name("reports".into())
+            .spawn(move || {
+                for report in reports {
+                    if reported.send(report).is_err() {
+                        return;
+                    }
+                }
+            })
+            .context("starting the thread that carries the input thread's reports")?;
 
         let realtime = input.is_realtime();
         let state = payload::Daemon {
@@ -181,7 +231,7 @@ impl Daemon {
         }
 
         let (stop, stopped) = oneshot::channel();
-        let reactor = tokio::spawn(reactor.run(rpcs, seen, stopped));
+        let reactor = tokio::spawn(reactor.run(rpcs, seen, reports_in, stopped));
 
         // The token is what clients take as "the daemon is there", so it
         // comes last: everything it serves is declared by the time a
@@ -228,7 +278,8 @@ impl Daemon {
         if let Err(error) = session.close().await {
             warn!(%error, "closing the control plane failed");
         }
-        // Joins both threads, off the runtime's workers.
+        // Joins both threads, off the runtime's workers. The reactor's
+        // hold on the input thread went with the reactor.
         let _ = tokio::task::spawn_blocking(move || {
             drop(watch);
             drop(input);

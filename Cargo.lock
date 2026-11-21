@@ -493,6 +493,7 @@ dependencies = [
 name = "ctrlassist"
 version = "0.5.0"
 dependencies = [
+ "ctrlassist-core",
  "ctrlassist-daemon",
  "ctrlassist-device",
  "ctrlassist-protocol",

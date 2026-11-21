@@ -6,6 +6,7 @@
 
 mod pads;
 mod profiles;
+mod setups;
 mod status;
 
 use std::io;
@@ -39,6 +40,9 @@ fn main() -> Result<()> {
                 Command::Identify { pad, millis } => pads::identify(&socket, &pad, millis).await,
                 Command::Forget { pad } => pads::forget(&socket, &pad).await,
                 Command::Profile(command) => profiles::run(&socket, command).await,
+                Command::Start { profile } => setups::start(&socket, &profile).await,
+                Command::Stop { setup } => setups::stop(&socket, &setup).await,
+                Command::Setups { json } => setups::setups(&socket, json).await,
                 Command::Service(_) => Ok(()),
             }
         });

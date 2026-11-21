@@ -16,9 +16,11 @@ use ctrlassist_protocol::bootstrap;
 /// in the user's runtime directory.
 pub use ctrlassist_protocol::bootstrap::default_socket_path;
 use ctrlassist_protocol::caller::Caller;
-use ctrlassist_protocol::endpoint::{Unary, daemon, pad, profile};
+use ctrlassist_protocol::endpoint::{Unary, daemon, pad, profile, setup};
 pub use ctrlassist_protocol::error::ErrorCode;
-pub use ctrlassist_protocol::payload::{Daemon as DaemonState, Identity, Pad, Problem, Profile};
+pub use ctrlassist_protocol::payload::{
+    Daemon as DaemonState, Identity, Pad, Phase, Problem, Profile, Setup, SetupSink, SetupSource,
+};
 use ctrlassist_protocol::rpc;
 pub use ctrlassist_protocol::rpc::ServiceInfo;
 pub use error::{BoxError, Error, Result};
@@ -50,6 +52,14 @@ pub enum StateEvent {
     ProfileChanged {
         /// The profile's name.
         profile: String,
+    },
+    /// A setup's state changed in the mirror: it was started or stopped,
+    /// it moved between phases, a pad of its came or went, or it left the
+    /// mirror because the daemon went away. Re-read
+    /// [`DaemonClient::list_setups`].
+    SetupChanged {
+        /// The setup's name: the profile it runs.
+        setup: String,
     },
     /// What a virtual pad can present itself as changed, or left the
     /// mirror because the daemon went away. Re-read
@@ -279,6 +289,62 @@ impl DaemonClient {
             name: name.to_string(),
         };
         self.call::<profile::Delete>(&request).await.map(|_| ())
+    }
+
+    /// The setups that exist, in the order of their names: a mirror read,
+    /// no rpc.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::VersionMismatch`] when the daemon is known to
+    /// run another release.
+    pub fn list_setups(&self) -> Result<Vec<Setup>> {
+        self.refuse_known_mismatch()?;
+        Ok(self
+            .mirror
+            .read(|mirror| mirror.setups.values().cloned().collect()))
+    }
+
+    /// The setup called `name`, if there is one: a mirror read, no rpc.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::VersionMismatch`] when the daemon is known to
+    /// run another release.
+    pub fn setup(&self, name: &str) -> Result<Option<Setup>> {
+        self.refuse_known_mismatch()?;
+        Ok(self.mirror.read(|mirror| mirror.setups.get(name).cloned()))
+    }
+
+    /// Run the kept profile `name` as a setup of the same name. Returns
+    /// once its virtual pads exist; it is then running, or held if a pad
+    /// it needs isn't connected, which its state says.
+    ///
+    /// # Errors
+    ///
+    /// Refused with [`ErrorCode::UnknownProfile`],
+    /// [`ErrorCode::InvalidProfile`], [`ErrorCode::SetupExists`],
+    /// [`ErrorCode::PadInUse`], or [`ErrorCode::SetupFailed`] with why;
+    /// and fails as any rpc can.
+    pub async fn start_setup(&self, name: &str) -> Result<()> {
+        let request = rpc::SetupRequest {
+            name: name.to_string(),
+        };
+        self.call::<setup::Start>(&request).await.map(|_| ())
+    }
+
+    /// Stop the setup `name`. Returns once its virtual pads are gone.
+    ///
+    /// # Errors
+    ///
+    /// Refused with [`ErrorCode::UnknownSetup`], or with
+    /// [`ErrorCode::SetupBusy`] while it is starting or stopping; and
+    /// fails as any rpc can.
+    pub async fn stop_setup(&self, name: &str) -> Result<()> {
+        let request = rpc::SetupRequest {
+            name: name.to_string(),
+        };
+        self.call::<setup::Stop>(&request).await.map(|_| ())
     }
 
     /// Buzz a pad for `duration`, so a person can tell which one it is.

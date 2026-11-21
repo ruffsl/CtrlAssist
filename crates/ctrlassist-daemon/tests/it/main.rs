@@ -35,8 +35,8 @@ fn paths(socket: &Path) -> Paths {
 }
 
 async fn start(socket: &Path) -> Daemon {
-    let (input, _reports) = InputThread::spawn().unwrap();
-    Daemon::start(&paths(socket), input).await.unwrap()
+    let (input, reports) = InputThread::spawn().unwrap();
+    Daemon::start(&paths(socket), input, reports).await.unwrap()
 }
 
 async fn is_alive(client: &Session) -> bool {
@@ -131,10 +131,14 @@ async fn the_socket_s_directory_is_made_for_the_user_alone() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_daemon_that_cannot_make_its_socket_s_directory_says_so() {
-    let (input, _reports) = InputThread::spawn().unwrap();
-    let error = Daemon::start(&paths(Path::new("/proc/nowhere/zenoh.sock")), input)
-        .await
-        .unwrap_err();
+    let (input, reports) = InputThread::spawn().unwrap();
+    let error = Daemon::start(
+        &paths(Path::new("/proc/nowhere/zenoh.sock")),
+        input,
+        reports,
+    )
+    .await
+    .unwrap_err();
     assert!(
         error.to_string().contains("creating /proc/nowhere"),
         "{error}"

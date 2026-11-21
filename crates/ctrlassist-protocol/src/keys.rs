@@ -120,6 +120,37 @@ pub(crate) fn parse_profile_rpc(key: &str) -> Option<&str> {
     key.strip_prefix("ctrlassist/rpc/profile/")
 }
 
+/// A setup's state, a [`Setup`](crate::payload::Setup): a cached publish
+/// for as long as the setup exists. `name` is the profile it runs.
+pub fn setup(name: &str) -> String {
+    format!("ctrlassist/setup/{name}")
+}
+
+/// Wildcard over every setup's state.
+pub fn setup_wild() -> String {
+    "ctrlassist/setup/*".to_string()
+}
+
+/// Parse a [`setup`] key into the setup's name.
+pub fn parse_setup(key: &str) -> Option<&str> {
+    segment(key.strip_prefix("ctrlassist/setup/")?)
+}
+
+/// A setup rpc's key.
+pub(crate) fn setup_rpc(verb: &str) -> String {
+    format!("ctrlassist/rpc/setup/{verb}")
+}
+
+/// Wildcard the setup rpcs' queryable is declared on.
+pub fn setup_rpc_wild() -> String {
+    "ctrlassist/rpc/setup/*".to_string()
+}
+
+/// Parse a [`setup_rpc`] key into its verb.
+pub(crate) fn parse_setup_rpc(key: &str) -> Option<&str> {
+    key.strip_prefix("ctrlassist/rpc/setup/")
+}
+
 /// `rest` if it is exactly one key segment.
 fn segment(rest: &str) -> Option<&str> {
     (!rest.is_empty() && !rest.contains('/')).then_some(rest)
@@ -143,6 +174,11 @@ mod tests {
         assert_eq!(parse_pad_rpc(&daemon_rpc("info")), None);
         assert!(pad_rpc_wild().starts_with("ctrlassist/rpc/pad/"));
 
+        let key = setup_rpc("start");
+        assert_eq!(parse_setup_rpc(&key), Some("start"));
+        assert_eq!(parse_setup_rpc(&profile_rpc("put")), None);
+        assert!(setup_rpc_wild().starts_with("ctrlassist/rpc/setup/"));
+
         let key = profile_rpc("put");
         assert_eq!(parse_profile_rpc(&key), Some("put"));
         assert_eq!(parse_profile_rpc(&pad_rpc("forget")), None);
@@ -159,6 +195,9 @@ mod tests {
         assert_eq!(parse_identity(&identity("xbox")), Some("xbox"));
         assert_eq!(parse_identity(&pad(&id)), None);
         assert!(pad(&id).starts_with(pad_wild().trim_end_matches('*')));
+        assert_eq!(parse_setup(&setup("couch")), Some("couch"));
+        assert_eq!(parse_setup(&profile("couch")), None);
+        assert!(setup("couch").starts_with(setup_wild().trim_end_matches('*')));
         assert_eq!(parse_profile(&profile("couch")), Some("couch"));
         assert_eq!(parse_profile(&identity("xbox")), None);
         assert!(profile("couch").starts_with(profile_wild().trim_end_matches('*')));
