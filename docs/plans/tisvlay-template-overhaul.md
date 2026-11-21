@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** plan approved by the maintainer; step 1 done.
-- **Next action:** step 2 (ecosystem survey), stopping when its finding is written.
+- **Status:** steps 1 and 2 done. The survey finding, [findings/ecosystem.md](findings/ecosystem.md), awaits maintainer review.
+- **Next action:** after that review, step 3: the hiding and identity spikes, in a clean NixOS VM and on the development host.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
