@@ -37,6 +37,8 @@ struct Row {
     connected: u64,
     /// The setup that uses it.
     setup: Option<String>,
+    /// Whether the hiding service has it hidden.
+    hidden: bool,
 }
 
 impl Row {
@@ -46,6 +48,7 @@ impl Row {
             nodes: Vec::new(),
             connected: 0,
             setup: None,
+            hidden: false,
         }
     }
 }
@@ -236,14 +239,22 @@ impl Book {
         }
     }
 
-    /// Notes that `setup` no longer uses any pad. Returns the pads it
-    /// used.
+    /// Notes whether the hiding service has the pad hidden.
+    pub(crate) fn set_hidden(&mut self, id: &str, hidden: bool) {
+        if let Some(row) = self.rows.get_mut(id) {
+            row.hidden = hidden;
+        }
+    }
+
+    /// Notes that `setup` no longer uses any pad, nor hides one. Returns
+    /// the pads it used.
     pub(crate) fn release(&mut self, setup: &str) -> Vec<String> {
         self.rows
             .iter_mut()
             .filter(|(_, row)| row.setup.as_deref() == Some(setup))
             .map(|(id, row)| {
                 row.setup = None;
+                row.hidden = false;
                 id.clone()
             })
             .collect()
@@ -268,8 +279,7 @@ impl Book {
             vendor: row.known.vendor,
             product: row.known.product,
             connected: !row.nodes.is_empty(),
-            // Nothing hides a pad yet.
-            hidden: false,
+            hidden: row.hidden,
             setup: row.setup.clone(),
             rumble: row.known.rumble,
         })
@@ -506,12 +516,16 @@ mod tests {
                 .as_deref(),
             Some("couch")
         );
+        book.set_hidden("address:aa:bb:cc:dd:ee:02", true);
+        book.set_hidden("address:never-seen", true);
+        assert!(book.pad("address:aa:bb:cc:dd:ee:02").unwrap().hidden);
         book.left(Path::new("/dev/input/event6"));
         let refused = book.forget("aa:bb:cc:dd:ee:02").unwrap_err();
         assert_eq!(refused.code, ErrorCode::PadInUse);
 
         // One that left and returned is the latest to connect.
         assert_eq!(book.release("couch"), ["address:aa:bb:cc:dd:ee:02"]);
+        assert!(!book.pad("address:aa:bb:cc:dd:ee:02").unwrap().hidden);
         assert_eq!(book.release("couch"), Vec::<String>::new());
         book.arrived(&second, None);
         assert_eq!(

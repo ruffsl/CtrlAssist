@@ -10,6 +10,33 @@ pub struct Daemon {
     /// Whether the kernel granted the input thread real-time scheduling.
     /// Without it, latency under load is not dependable.
     pub realtime: bool,
+    /// How the pads of a running setup are kept from games.
+    pub hiding: Hiding,
+}
+
+/// How the pads of a running setup are kept from games.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum Hiding {
+    /// The hiding service makes them absent: nothing but the daemon can
+    /// open them.
+    Service,
+    /// The hiding service isn't there, so each is grabbed: programs that
+    /// read its event or joystick node hear nothing, but one that reads
+    /// it some other way, as Steam reads a PlayStation pad, still sees it.
+    Grab,
+}
+
+impl Hiding {
+    /// The mechanism as it travels on the wire, and as it is shown.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Service => "service",
+            Self::Grab => "grab",
+        }
+    }
 }
 
 /// A pad the daemon knows: one connected now, or one it remembers. Its
@@ -175,6 +202,13 @@ pub struct Identity {
 mod tests {
     use super::*;
     use crate::profile::Profile as Schema;
+
+    #[test]
+    fn a_hiding_mechanism_travels_as_the_word_it_is_shown_as() {
+        for hiding in [Hiding::Service, Hiding::Grab] {
+            assert_eq!(serde_json::to_value(hiding).unwrap(), hiding.as_str());
+        }
+    }
 
     #[test]
     fn a_phase_travels_as_the_word_it_is_shown_as() {

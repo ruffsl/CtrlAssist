@@ -32,7 +32,7 @@ use zenoh_ext::{AdvancedPublisher, AdvancedPublisherBuilderExt, CacheConfig, Mis
 use crate::book::Book;
 use crate::hotplug::Seen;
 use crate::profiles::Profiles;
-use crate::setups::{Done, Setups};
+use crate::setups::{Done, Hiding, Setups};
 use crate::store::Store;
 
 /// Heartbeat period for sample-miss recovery on cached publishers: a
@@ -79,6 +79,8 @@ pub(crate) struct Reactor {
     pub(crate) input: Arc<InputThread>,
     /// The layouts of pads whose drivers don't present a gamepad's.
     pub(crate) database: Arc<Database>,
+    /// How a setup's pads are kept from games.
+    pub(crate) hiding: Arc<Hiding>,
     /// Blocking work under way for the setups, each piece coming back as
     /// what it did.
     pub(crate) work: JoinSet<Done>,
@@ -132,6 +134,7 @@ impl Reactor {
         profiles: Profiles,
         input: Arc<InputThread>,
         database: Database,
+        hiding: Hiding,
     ) -> Self {
         Self {
             session,
@@ -141,6 +144,7 @@ impl Reactor {
             setups: Setups::default(),
             input,
             database: Arc::new(database),
+            hiding: Arc::new(hiding),
             work: JoinSet::new(),
             publishers: BTreeMap::new(),
             buzzes: JoinSet::new(),

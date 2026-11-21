@@ -300,6 +300,19 @@ impl Pad {
         &self.identifiers
     }
 
+    /// Takes the pad's events for this descriptor alone: every other
+    /// reader of its event node, and of the joystick node beside it,
+    /// hears nothing until this pad is dropped. The kernel lifts the grab
+    /// if the process dies. Programs that read the pad some other way, as
+    /// Steam reads a PlayStation pad through hidraw, still see it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the pad has gone, or another descriptor holds the grab.
+    pub fn grab(&mut self) -> io::Result<()> {
+        self.device.grab()
+    }
+
     /// Whether this is one of the daemon's own virtual pads; see
     /// [`Identifiers::is_own_output`].
     #[must_use]

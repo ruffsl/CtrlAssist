@@ -266,7 +266,9 @@ mod tests {
         let mut mirror = DaemonMirror::default();
         assert!(mirror.clear().is_empty(), "nothing was showing");
 
-        let event = mirror.apply(&put(r#"{"version":"0.5.0","realtime":true}"#));
+        let event = mirror.apply(&put(
+            r#"{"version":"0.5.0","realtime":true,"hiding":"service"}"#,
+        ));
         assert!(matches!(event, Some(StateEvent::DaemonStateChanged)));
         assert!(mirror.daemon.as_ref().is_some_and(|state| state.realtime));
 
@@ -282,7 +284,9 @@ mod tests {
     #[test]
     fn clearing_reports_what_was_showing() {
         let mut mirror = DaemonMirror::default();
-        mirror.apply(&put(r#"{"version":"0.5.0","realtime":false}"#));
+        mirror.apply(&put(
+            r#"{"version":"0.5.0","realtime":false,"hiding":"grab"}"#,
+        ));
         let removed = mirror.clear();
         assert!(matches!(removed[..], [StateEvent::DaemonStateChanged]));
         assert!(mirror.daemon.is_none());

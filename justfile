@@ -182,12 +182,16 @@ config_dir := env("CTRLASSIST_CONFIG_DIR", justfile_directory() / "target/dev-co
 _dev_profile := if env("RELEASE", "false") == "true" { "release" } else { "test" }
 _daemon_log := "info,ctrlassist_daemon=debug,ctrlassist_protocol=debug,zenoh=warn"
 
+# With `just hider-dev` running in another terminal, a setup's pads are
+# hidden through it; without, they are grabbed.
+#
 # Start the daemon
 [group('dev')]
 daemon-start:
     RUST_LOG="{{ _daemon_log }}" \
         cargo run --profile {{ _dev_profile }} --bin ctrlassist -- service daemon \
-        --socket "{{ socket }}" --state-dir "{{ state_dir }}" --config-dir "{{ config_dir }}"
+        --socket "{{ socket }}" --state-dir "{{ state_dir }}" --config-dir "{{ config_dir }}" \
+        --hider-socket "{{ hider_dev_socket }}"
 
 # Run the CLI against the dev daemon, such as `just cli status`
 [group('dev')]

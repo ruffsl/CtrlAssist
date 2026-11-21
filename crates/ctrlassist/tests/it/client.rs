@@ -64,6 +64,7 @@ pub(crate) async fn start_daemon(socket: &std::path::Path) -> Daemon {
         socket: socket.to_path_buf(),
         state: socket.with_file_name("state"),
         config: socket.with_file_name("config"),
+        hider: socket.with_file_name("hider.sock"),
     };
     Daemon::start(&paths, input, reports).await.unwrap()
 }
@@ -119,7 +120,7 @@ async fn a_watcher_built_late_hears_what_already_happened() {
     daemon
         .put(
             &keys::daemon(),
-            &json!({"version": VERSION, "realtime": false}),
+            &json!({"version": VERSION, "realtime": false, "hiding": "grab"}),
         )
         .await;
     let client = DaemonClient::connect(&socket).await.unwrap();
@@ -133,7 +134,7 @@ async fn a_watcher_built_late_hears_what_already_happened() {
     daemon
         .put(
             &keys::daemon(),
-            &json!({"version": VERSION, "realtime": true}),
+            &json!({"version": VERSION, "realtime": true, "hiding": "grab"}),
         )
         .await;
     next_matching(&mut watcher, |e| *e == StateEvent::DaemonStateChanged).await;

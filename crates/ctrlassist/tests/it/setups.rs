@@ -271,3 +271,144 @@ async fn a_setup_that_cannot_start_says_why_and_leaves_nothing() {
     assert!(client.list_setups().unwrap().is_empty());
     daemon.stop().await;
 }
+
+/// Opens a pad's node as some other program would, beside the daemon.
+fn bystander(pad: &FakePad) -> Pad {
+    let file: OwnedFd = File::open(pad.event_node()).unwrap().into();
+    Pad::from_fd(file).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_the_hiding_service_a_setup_s_pads_are_grabbed() {
+    const TEST: &str = "without_the_hiding_service_a_setup_s_pads_are_grabbed";
+    if !can_make_pads(TEST) {
+        return;
+    }
+    let mut primary = FakePad::new("Grab Primary", VENDOR, 0x7f01).unwrap();
+    let _assist = FakePad::new("Grab Assist", VENDOR, 0x7f02).unwrap();
+    let (_dir, socket) = socket();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    assert_eq!(
+        client.daemon_state().unwrap().unwrap().hiding,
+        ctrlassist::Hiding::Grab
+    );
+    client
+        .put_profile("couch", &priority(0x7f01, 0x7f02))
+        .await
+        .unwrap();
+    let mut other = bystander(&primary);
+
+    client.start_setup("couch").await.unwrap();
+    let setup = in_phase(&client, "couch", Phase::Running).await;
+    // Grabbed isn't hidden: the pads' state doesn't claim it.
+    assert!(client.list_pads().unwrap().iter().all(|pad| !pad.hidden));
+    let mut game = game(&setup).await;
+    primary.south(true).unwrap();
+    south_is(&mut game, true).await;
+    // The press reached the game through the virtual pad, and nobody
+    // reading the pad itself heard it.
+    other.read(|_| {}).unwrap();
+    assert!(other.state().get(gamepad::SOUTH) < 0.5);
+    primary.south(false).unwrap();
+    south_is(&mut game, false).await;
+
+    // Stopped, the pad is everyone's again.
+    client.stop_setup("couch").await.unwrap();
+    primary.south(true).unwrap();
+    south_is(&mut other, true).await;
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored() {
+    use ctrlassist_test::Asked;
+    const TEST: &str = "with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored";
+    if !can_make_pads(TEST) {
+        return;
+    }
+    let mut primary = FakePad::new("Hide Primary", VENDOR, 0x8001).unwrap();
+    let assist = FakePad::new("Hide Assist", VENDOR, 0x8002).unwrap();
+    let (_dir, socket) = socket();
+    let hider = ctrlassist_test::FakeHider::listen(&socket.with_file_name("hider.sock")).unwrap();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    assert_eq!(
+        client.daemon_state().unwrap().unwrap().hiding,
+        ctrlassist::Hiding::Service
+    );
+    client
+        .put_profile("couch", &priority(0x8001, 0x8002))
+        .await
+        .unwrap();
+    let primary_id = "model:1209:8001:Hide Primary".to_string();
+    let assist_id = "model:1209:8002:Hide Assist".to_string();
+
+    // Started: each pad was handed to the service, in source order, and
+    // says it is hidden.
+    client.start_setup("couch").await.unwrap();
+    let setup = in_phase(&client, "couch", Phase::Running).await;
+    assert_eq!(
+        hider.asked(),
+        [
+            Asked::Hide(assist_id.clone()),
+            Asked::Hide(primary_id.clone())
+        ]
+    );
+    eventually("the pads never said they were hidden", async || {
+        client
+            .list_pads()
+            .unwrap()
+            .iter()
+            .filter(|pad| pad.setup.as_deref() == Some("couch"))
+            .all(|pad| pad.hidden)
+    })
+    .await;
+    // It reads the pads through what the service handed back.
+    let mut game = game(&setup).await;
+    primary.south(true).unwrap();
+    south_is(&mut game, true).await;
+    primary.south(false).unwrap();
+    south_is(&mut game, false).await;
+
+    // A hidden pad that leaves and returns is opened through the service
+    // again, not hidden afresh.
+    drop(assist);
+    in_phase(&client, "couch", Phase::Held).await;
+    let mut assist = FakePad::new("Hide Assist", VENDOR, 0x8002).unwrap();
+    in_phase(&client, "couch", Phase::Running).await;
+    assert_eq!(
+        hider.asked().last(),
+        Some(&Asked::Reopen(assist_id.clone()))
+    );
+    assist.south(true).unwrap();
+    south_is(&mut game, true).await;
+
+    // Stopped: each pad is restored, and no longer says it is hidden.
+    client.stop_setup("couch").await.unwrap();
+    // The reply means they are: the stop is answered once it is done.
+    let mut restored: Vec<Asked> = hider
+        .asked()
+        .into_iter()
+        .filter(|asked| matches!(asked, Asked::Restore(_)))
+        .collect();
+    restored.sort_by_key(|asked| format!("{asked:?}"));
+    assert_eq!(
+        restored,
+        [Asked::Restore(primary_id), Asked::Restore(assist_id)]
+    );
+    eventually("the pads still said they were hidden", async || {
+        client.list_pads().unwrap().iter().all(|pad| !pad.hidden)
+    })
+    .await;
+
+    // A daemon that stops, however it stops, closes its connection, which
+    // is what restores anything it still had hidden.
+    client.start_setup("couch").await.unwrap();
+    in_phase(&client, "couch", Phase::Running).await;
+    daemon.stop().await;
+    eventually("the connection never closed", async || {
+        hider.asked().last() == Some(&Asked::Closed)
+    })
+    .await;
+}

@@ -8,11 +8,13 @@
 //! where it is missing and run for real in the virtual machine check.
 
 mod hid;
+mod hider;
 mod inspect;
 mod pad;
 mod rumble;
 
 pub use hid::FakeHidPad;
+pub use hider::{Asked, FakeHider};
 pub use inspect::{NodeKind, Pad, Reads, can_open, count_reads, pads};
 pub use pad::FakePad;
 pub use rumble::{Motors, RumblePad};

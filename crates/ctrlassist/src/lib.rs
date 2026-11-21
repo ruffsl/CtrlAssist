@@ -19,7 +19,8 @@ use ctrlassist_protocol::caller::Caller;
 use ctrlassist_protocol::endpoint::{Unary, daemon, pad, profile, setup};
 pub use ctrlassist_protocol::error::ErrorCode;
 pub use ctrlassist_protocol::payload::{
-    Daemon as DaemonState, Identity, Pad, Phase, Problem, Profile, Setup, SetupSink, SetupSource,
+    Daemon as DaemonState, Hiding, Identity, Pad, Phase, Problem, Profile, Setup, SetupSink,
+    SetupSource,
 };
 use ctrlassist_protocol::rpc;
 pub use ctrlassist_protocol::rpc::ServiceInfo;

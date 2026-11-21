@@ -34,6 +34,7 @@ use book::Book;
 use hotplug::Watch;
 use profiles::Profiles;
 use reactor::{Reactor, Rpcs};
+use setups::Hiding;
 use store::Store;
 
 /// Where a daemon keeps what it needs.
@@ -45,6 +46,8 @@ pub struct Paths {
     pub state: PathBuf,
     /// The directory for what the user had it keep: the profiles.
     pub config: PathBuf,
+    /// The hiding service's socket.
+    pub hider: PathBuf,
 }
 
 /// The directory `variable` names, if it is set to an absolute path, or
@@ -61,13 +64,15 @@ impl Paths {
     /// The paths a daemon uses when it isn't given any: the socket in the
     /// user's runtime directory; `$XDG_STATE_HOME/ctrlassist`, or
     /// `~/.local/state/ctrlassist` where that isn't set; and
-    /// `$XDG_CONFIG_HOME/ctrlassist`, or `~/.config/ctrlassist`.
+    /// `$XDG_CONFIG_HOME/ctrlassist`, or `~/.config/ctrlassist`; and the
+    /// hiding service's socket where its package puts it.
     #[must_use]
     pub fn default_for_user() -> Self {
         Self {
             socket: bootstrap::default_socket_path(),
             state: user_directory("XDG_STATE_HOME", ".local/state").join("ctrlassist"),
             config: user_directory("XDG_CONFIG_HOME", ".config").join("ctrlassist"),
+            hider: PathBuf::from(ctrlassist_hider::SOCKET_PATH),
         }
     }
 }
@@ -167,6 +172,11 @@ impl Daemon {
             .context("starting the hotplug watch")?
             .context("watching udev for pads")?;
         let profiles = Profiles::open(&paths.config.join("profiles"));
+        let hider = paths.hider.clone();
+        let hiding = tokio::task::spawn_blocking(move || Hiding::find(&hider))
+            .await
+            .context("looking for the hiding service")?;
+        let mechanism = hiding.mechanism();
         let mut reactor = Reactor::new(
             session.clone(),
             Book::new(known),
@@ -174,6 +184,7 @@ impl Daemon {
             profiles,
             Arc::clone(&input),
             database(&paths.config),
+            hiding,
         );
 
         // The input thread's reports wait on a thread of their own, which
@@ -194,6 +205,7 @@ impl Daemon {
         let state = payload::Daemon {
             version: VERSION.to_string(),
             realtime,
+            hiding: mechanism,
         };
         // Whether this process may make a virtual pad at all: every
         // identity so far is made through uinput.

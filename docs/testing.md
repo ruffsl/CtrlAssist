@@ -28,6 +28,7 @@ How the workspace is tested and where a new test goes. The approach is TisVlay's
 |---|---|---|---|
 | `FakePad` | uinput | An event node and a js node; buttons, two sticks, two triggers, a hat | Any evdev gamepad; a pad with no HID driver |
 | `RumblePad` | uinput | An event node; two buttons, a stick, and rumble motors that note what they were told | A pad a buzz or a game's rumble must reach |
+| `FakeHider` | a socket | The hiding service's protocol, hiding nothing: it hands back the pad's node and notes what it was asked | The hiding service, for what the daemon asks of it and when |
 | `FakeHidPad` | uhid | Those, plus a HID device with a driver bound, a hidraw node and an address | A PlayStation pad, any Bluetooth pad, anything whose driver is re-bound or whose hidraw node is read |
 
 A clean machine opens neither interface to an ordinary user, so a test that needs one checks `can_make_pads()`, `uinput_available()` or `uhid_available()` and skips where it is missing, writing a `SKIPPED` line that says why. With `CTRLASSIST_REQUIRE_FAKE_PADS` set it fails instead; CI sets it, after opening uinput and the event nodes on its runner. The virtual machine checks run as root and never skip.

@@ -253,7 +253,9 @@ In a Flatpak, or where the service isn't installed, the daemon uses what an unpr
 - **A grab** on each pad's event node, which silences evdev and joydev readers and is undone by the kernel if the daemon dies.
 - **Steam's controller blacklist,** which hides a pad from Steam, by vendor and product, the next time Steam starts. It is a persistent edit to a file the daemon doesn't own, so each entry is recorded in the daemon's state directory before it is written, reconciled at startup, and removed when the setup stops.
 
-The daemon's state says which mechanism is in use and what it leaves visible.
+The daemon looks for the service once, when it starts, and its state says which mechanism is in use. A pad's own state says `hidden` only when the service has hidden it: a grabbed pad is silenced, not absent. If the service is there but refuses a pad, that pad is grabbed instead and the setup still starts.
+
+**In a setup's life,** each pad is hidden as the setup starts, before its virtual pads are made; a pad that left and returns is opened again through the service, having never been visible in between; and when the setup stops, the daemon drops everything that read the pads and then has the service restore them, so `stop` returns with the pads back as they were.
 
 ## Virtual pads
 
@@ -295,7 +297,7 @@ zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the d
 | Key | Kind | Holds |
 |---|---|---|
 | `ctrlassist/alive/daemon` | liveliness | present while the daemon runs |
-| `ctrlassist/daemon` | state | version; whether real-time scheduling was granted; the hiding mechanism in use |
+| `ctrlassist/daemon` | state | version; whether real-time scheduling was granted; the hiding mechanism in use, `service` or `grab` |
 | `ctrlassist/rpc/daemon/info` | rpc | the daemon's release, for the version check; its reply's shape is frozen |
 | `ctrlassist/identity/<id>` | state | each identity a virtual pad can take, and whether it is available now |
 | `ctrlassist/pad/<id>` | state | the id it is known by across reconnects, name, model, connected, hidden, which setup uses it, whether it can rumble |

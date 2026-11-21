@@ -539,6 +539,7 @@ dependencies = [
  "clap",
  "ctrlassist-core",
  "ctrlassist-device",
+ "ctrlassist-hider",
  "ctrlassist-protocol",
  "rustix",
  "serde",

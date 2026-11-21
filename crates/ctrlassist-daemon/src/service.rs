@@ -26,6 +26,9 @@ pub struct Args {
     /// the user's configuration directory.
     #[arg(long, value_name = "DIRECTORY")]
     pub config_dir: Option<PathBuf>,
+    /// The hiding service's socket, in place of the installed one.
+    #[arg(long, value_name = "SOCKET")]
+    pub hider_socket: Option<PathBuf>,
 }
 
 /// Runs the daemon until it is told to stop, on a runtime of its own.
@@ -53,6 +56,7 @@ async fn run(args: Args, input: InputThread, reports: Receiver<Report>) -> Resul
         socket: args.socket.unwrap_or(defaults.socket),
         state: args.state_dir.unwrap_or(defaults.state),
         config: args.config_dir.unwrap_or(defaults.config),
+        hider: args.hider_socket.unwrap_or(defaults.hider),
     };
     let daemon = Daemon::start(&paths, input, reports).await?;
 
