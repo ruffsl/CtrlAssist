@@ -216,15 +216,20 @@ fn input_report(state: &PadState, sequence: u8) -> [u8; INPUT_SIZE] {
     report
 }
 
-/// The rumble an output report asks for, if it sets rumble. The driver
-/// marks that in one of two places, by the pad's firmware; the levels are
-/// in the same place either way.
+/// The rumble the pad is left at by an output report. Rumble is marked
+/// in one of two places, by the pad's firmware, with the levels in the
+/// same place either way. A report that marks it in neither ends it: a
+/// real DualSense stops rumbling at one, which is how SDL stops a rumble,
+/// by sending its next report without the mark.
 fn rumble_of(report: &[u8]) -> Option<Level> {
     let [OUTPUT_REPORT, flags0, _, weak, strong, ..] = *report else {
         return None;
     };
     let flags2 = report.get(39).copied().unwrap_or(0);
-    (flags0 & 0x01 != 0 || flags2 & 0x04 != 0).then(|| Level {
+    if flags0 & 0x01 == 0 && flags2 & 0x04 == 0 {
+        return Some(Level::default());
+    }
+    Some(Level {
         strong: u16::from(strong) * 257,
         weak: u16::from(weak) * 257,
     })
@@ -315,8 +320,8 @@ pub(crate) struct Emulator {
     pairing: [u8; PAIRING_SIZE],
     firmware: [u8; FIRMWARE_SIZE],
     calibration: [u8; CALIBRATION_SIZE],
-    /// The rumble last asked for, so that a report that changes only a
-    /// light isn't taken for a new level.
+    /// The rumble last asked for, so that a report that leaves it as it
+    /// is isn't taken for a new level.
     level: Level,
     /// Whether the driver has let the pad go since this was last asked.
     stopped: bool,
@@ -611,7 +616,11 @@ mod tests {
         let mut report = [0u8; 63];
         report[0] = OUTPUT_REPORT;
         (report[3], report[4]) = (0x40, 0x80);
-        assert_eq!(rumble_of(&report), None, "nothing marks the rumble as set");
+        assert_eq!(
+            rumble_of(&report),
+            Some(Level::default()),
+            "with rumble marked nowhere, the pad doesn't rumble"
+        );
         let level = Level {
             strong: 0x8080,
             weak: 0x4040,
@@ -693,12 +702,18 @@ mod tests {
             weak: 257,
         };
         assert_eq!(asked(&output), Asked::Rumble(level));
-        // An output report that sets a light and not rumble.
+        // An output report that sets a light and marks no rumble ends
+        // whatever rumble there was, as on the pad itself.
         let light = event(UHID_OUTPUT, &|event| {
             event[4..6].copy_from_slice(&[OUTPUT_REPORT, 0x00]);
             event[4 + UHID_DATA..6 + UHID_DATA].copy_from_slice(&63u16.to_ne_bytes());
         });
-        assert_eq!(asked(&light), Asked::Nothing);
+        assert_eq!(asked(&light), Asked::Rumble(Level::default()));
+        let other = event(UHID_OUTPUT, &|event| {
+            event[4] = 0x31;
+            event[4 + UHID_DATA..6 + UHID_DATA].copy_from_slice(&63u16.to_ne_bytes());
+        });
+        assert_eq!(asked(&other), Asked::Nothing, "another report");
         assert_eq!(asked(&[]), Asked::Nothing, "an event cut short");
     }
 
