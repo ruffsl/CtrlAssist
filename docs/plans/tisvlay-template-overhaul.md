@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding spike has its finding, [findings/hiding.md](findings/hiding.md), awaiting maintainer review; one check still needs the maintainer at the machine (identifiers across reconnects).
-- **Next action:** after that review, the virtual pad identity spike.
+- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding spike is done and accepted ([findings/hiding.md](findings/hiding.md)); one check still needs the maintainer at the machine (identifiers across reconnects).
+- **Next action:** the virtual pad identity spike, stopping when its finding is written.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -70,7 +70,9 @@ One word per thing, here and in everything written from this plan:
 
 **A user-level daemon,** unlike TisVlay's system daemon: the pads belong to the seat user and Steam's config is in their home. The packages install static udev rules for what the daemon needs (uinput access, and uhid if S5 calls for it).
 
-**Privilege is confined to a minimal helper, and only if needed.** The daemon never runs as root. If S1 finds that no unprivileged mechanism makes a pad absent to games, the native packages install a small privileged helper (socket-activated or a polkit action) that hides and restores pads and does nothing else. Channels that can't install it, the Flatpak above all, fall back to the unprivileged mechanisms.
+**Privilege is confined to a minimal helper.** The daemon never runs as root. The hiding spike found no unprivileged way to make a pad absent to games ([findings/hiding.md](findings/hiding.md)), so the native packages install a small root helper that does one thing: on request it installs a runtime udev rule denying a pad's event, js and hidraw nodes to everyone, opens them itself and passes the open descriptors to the daemon, and removes the rule and restores the nodes when the daemon's connection closes, crash included. It hands over descriptors rather than permissions because the daemon and the games are the same user. The active seat user may connect to it, enforced on its socket the way TisVlay enforces its own; no prompt. Channels that can't install it, the Flatpak above all, fall back to a grab plus Steam's blacklist, with the gaps the finding lists.
+
+**InputPlumber is out of scope for the first release.** CtrlAssist works independently and documents that the two shouldn't manage the same pad. Cooperation could not be tested on the development host and would be a second, unexercised code path.
 
 **Daemon and thin clients, as separate processes of one binary.** `ctrlassist service daemon` owns the pads and the graph. The CLI, tray, GUI and TUI are clients. Reasons to split rather than run one process: a GUI toolkit shouldn't share a process with the input loop; a client crash shouldn't drop the virtual pad mid-game; a gamescope session may have no tray; and the engine must outlive a settings window.
 
@@ -100,11 +102,7 @@ One word per thing, here and in everything written from this plan:
 
 ## Provisional, pending spikes
 
-**Whether the privileged helper is needed,** and what it does. Games run as the same user as the daemon, so a group or ACL rule can't admit the daemon while excluding the game, which leaves a grab and Steam's blacklist as the unprivileged mechanisms, both partial. InputPlumber hides pads with runtime udev rules, which needs root. S1 decides whether unprivileged mechanisms are enough and no helper ships, or the helper applies the hiding.
-
-**How to relate to InputPlumber.** CtrlAssist works alone everywhere. Where InputPlumber is running, the intent is to stay out of its way and, if it is simple, use its D-Bus API for hiding. S1 measures what cooperation takes; if it adds much complexity, CtrlAssist stays fully independent and only documents the coexistence.
-
-**Pads are identified by a stable hardware ID,** falling back to vendor and product plus port, then name. S1 records which identifiers are actually stable.
+**Pads are identified by a stable hardware ID,** falling back to vendor and product plus port, then name. The hiding spike found the kernel's `uniq` value to be the pad's own address on both pads tested, and Steam keys its per-pad configuration by it; whether it is the same over USB and Bluetooth, and what an Xbox pad reports, is the one check still open.
 
 **Feedback's representation.** A uinput sink receives kernel force-feedback requests; a uhid sink would receive raw HID output reports. Until S5 reports, feedback is an open set of kinds (force-feedback effect, HID output report, LED), not the kernel effect alone.
 
@@ -279,6 +277,7 @@ Each becomes a `docs/ideas/` entry at step 4, with the trigger that would bring 
 - A preset for splitting one pad (#53), and button debounce, which that issue also asks for.
 - A visual graph editor.
 - Flatpak and Flathub (a maintainer or contributor on SteamOS or Bazzite, #13).
+- Cooperating with InputPlumber where it is installed (someone on Bazzite who can test it).
 - A bare binary tarball (a request from a distro none of the packages serve).
 - Hardware verification of the deb, rpm and Arch packages.
 - Keyboard and mouse as sources or sinks.
