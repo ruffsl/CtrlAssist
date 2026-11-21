@@ -7,8 +7,11 @@
 
 mod layout;
 mod pad;
+mod realtime;
 mod sink;
+mod thread;
 
 pub use layout::{AxisRange, Mapping};
 pub use pad::{Identifiers, Pad, PadError};
 pub use sink::{Identity, Request, VirtualPad};
+pub use thread::{Command, InputThread, Report, SendError, Setup, SetupId};

@@ -21,7 +21,7 @@ fn pair(identity: Identity) -> (VirtualPad, Pad) {
     (sink, Pad::from_fd(fd).unwrap())
 }
 
-fn rumble(strong: u16, weak: u16, length: u16, delay: u16) -> FFEffectData {
+pub(crate) fn rumble(strong: u16, weak: u16, length: u16, delay: u16) -> FFEffectData {
     FFEffectData {
         direction: 0,
         trigger: FFTrigger::default(),
@@ -65,7 +65,7 @@ fn serve_while<T: Send + 'static>(
     (requests, outcome)
 }
 
-fn game_opens(node: &Path) -> Device {
+pub(crate) fn game_opens(node: &Path) -> Device {
     // A game writes to the node to play effects.
     Device::open(node).unwrap()
 }
@@ -229,7 +229,7 @@ fn an_upload_that_is_refused_fails_in_the_game_and_does_not_hang_it() {
 }
 
 /// A pad opened for writing as well, as the hiding service opens them.
-fn writable(node: &Path) -> Pad {
+pub(crate) fn writable(node: &Path) -> Pad {
     let fd: OwnedFd = File::options()
         .read(true)
         .write(true)

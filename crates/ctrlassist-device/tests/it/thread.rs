@@ -1,0 +1,429 @@
+//! The input thread, end to end through the kernel: fake pads in, a
+//! virtual pad out, a stand-in game asking for rumble.
+
+use std::fs::File;
+use std::os::fd::OwnedFd;
+use std::sync::mpsc::Receiver;
+
+use ctrlassist_core::{
+    Effect, Graph, GraphSpec, Input, Layout, Mode, MuxConfig, NodeId, NodeSpec, PadState, SourceId,
+    SourceSpec, gamepad,
+};
+use ctrlassist_device::{
+    Command, Identity, InputThread, Pad, Report, Request, Setup, SetupId, VirtualPad,
+};
+use ctrlassist_test::FakePad;
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
+
+use crate::virtual_pad::{game_opens, rumble, writable};
+use crate::{can_make_pads, read_until};
+
+const EV_KEY: u16 = 1;
+const EV_ABS: u16 = 3;
+const ABS_X: u16 = 0x00;
+const BTN_SOUTH: u16 = 0x130;
+const BTN_EAST: u16 = 0x131;
+
+const PRIMARY: SourceId = SourceId(0);
+const ASSIST: SourceId = SourceId(1);
+const ID: SetupId = SetupId(7);
+
+fn source() -> SourceSpec {
+    SourceSpec {
+        deadzone: 0.1,
+        layout: Layout::gamepad(),
+    }
+}
+
+/// Two pads into one virtual pad, the assist outranking the primary.
+fn mux(mode: Mode) -> Graph {
+    Graph::build(GraphSpec {
+        sources: vec![source(), source()],
+        nodes: vec![NodeSpec::Mux {
+            inputs: vec![Input::Source(PRIMARY), Input::Source(ASSIST)],
+            config: MuxConfig::new(mode, &Layout::gamepad()),
+        }],
+        sinks: vec![Input::Node(NodeId(0), 0)],
+    })
+    .unwrap()
+}
+
+fn read(fake: &FakePad) -> Pad {
+    let fd: OwnedFd = File::open(fake.event_node()).unwrap().into();
+    Pad::from_fd(fd).unwrap()
+}
+
+/// A virtual pad, and a reader on it standing in for the game.
+fn sink() -> (VirtualPad, Pad) {
+    let sink = VirtualPad::create(Identity::Generic).unwrap();
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    let fd: OwnedFd = File::open(sink.event_node()).unwrap().into();
+    (sink, Pad::from_fd(fd).unwrap())
+}
+
+struct Rig {
+    primary: FakePad,
+    assist: FakePad,
+    game: Pad,
+    thread: InputThread,
+    reports: Receiver<Report>,
+}
+
+fn rig(mode: Mode) -> Rig {
+    let primary = FakePad::new("Thread Test Primary", 0x1209, 0x5eed).unwrap();
+    let assist = FakePad::new("Thread Test Assist", 0x1209, 0x5eed).unwrap();
+    let (sink, game) = sink();
+    let setup = Setup::new(
+        mux(mode),
+        vec![Some(read(&primary)), Some(read(&assist))],
+        vec![sink],
+    );
+    let (thread, reports) = InputThread::spawn().unwrap();
+    thread.send(Command::Start(ID, Box::new(setup))).unwrap();
+    Rig {
+        primary,
+        assist,
+        game,
+        thread,
+        reports,
+    }
+}
+
+fn last(frames: &[PadState]) -> PadState {
+    *frames.last().unwrap()
+}
+
+#[test]
+fn two_pads_reach_the_game_as_one_with_the_assist_outranking_the_primary() {
+    if !can_make_pads("two_pads_reach_the_game_as_one_with_the_assist_outranking_the_primary") {
+        return;
+    }
+    let mut rig = rig(Mode::Priority);
+
+    rig.primary
+        .frame(&[(EV_KEY, BTN_SOUTH, 1), (EV_ABS, ABS_X, 32767)])
+        .unwrap();
+    let held = PadState::NEUTRAL
+        .with(gamepad::SOUTH, 1.0)
+        .with(gamepad::LEFT_X, 1.0);
+    let frames = read_until(&mut rig.game, |frames| frames.last() == Some(&held));
+    assert_eq!(last(&frames), held);
+
+    // The assist takes the stick and adds a button of its own.
+    rig.assist
+        .frame(&[(EV_KEY, BTN_EAST, 1), (EV_ABS, ABS_X, -32768)])
+        .unwrap();
+    let taken = held.with(gamepad::EAST, 1.0).with(gamepad::LEFT_X, -1.0);
+    let frames = read_until(&mut rig.game, |frames| frames.last() == Some(&taken));
+    assert_eq!(last(&frames), taken);
+
+    // And gives it back by letting go.
+    rig.assist
+        .frame(&[(EV_KEY, BTN_EAST, 0), (EV_ABS, ABS_X, 0)])
+        .unwrap();
+    let frames = read_until(&mut rig.game, |frames| frames.last() == Some(&held));
+    assert_eq!(last(&frames), held);
+}
+
+#[test]
+fn a_press_and_release_in_separate_frames_both_reach_the_game() {
+    if !can_make_pads("a_press_and_release_in_separate_frames_both_reach_the_game") {
+        return;
+    }
+    let mut rig = rig(Mode::Priority);
+    // Faster than anything reads them: both frames wait in the kernel.
+    for _ in 0..5 {
+        rig.primary.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+        rig.primary.frame(&[(EV_KEY, BTN_SOUTH, 0)]).unwrap();
+    }
+    let frames = read_until(&mut rig.game, |frames| frames.len() >= 10);
+    let pressed = PadState::NEUTRAL.with(gamepad::SOUTH, 1.0);
+    let expected: Vec<PadState> = (0..5).flat_map(|_| [pressed, PadState::NEUTRAL]).collect();
+    assert_eq!(frames, expected);
+}
+
+#[test]
+fn a_setup_starts_with_what_its_pads_already_hold() {
+    if !can_make_pads("a_setup_starts_with_what_its_pads_already_hold") {
+        return;
+    }
+    let mut primary = FakePad::new("Thread Test Held", 0x1209, 0x5eed).unwrap();
+    primary.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    let assist = FakePad::new("Thread Test Assist", 0x1209, 0x5eed).unwrap();
+    let (sink, mut game) = sink();
+    let setup = Setup::new(
+        mux(Mode::Priority),
+        vec![Some(read(&primary)), Some(read(&assist))],
+        vec![sink],
+    );
+    let (thread, _reports) = InputThread::spawn().unwrap();
+    thread.send(Command::Start(ID, Box::new(setup))).unwrap();
+
+    let held = PadState::NEUTRAL.with(gamepad::SOUTH, 1.0);
+    let frames = read_until(&mut game, |frames| frames.last() == Some(&held));
+    assert_eq!(last(&frames), held);
+}
+
+#[test]
+fn a_switch_command_hands_a_toggle_to_the_other_pad() {
+    if !can_make_pads("a_switch_command_hands_a_toggle_to_the_other_pad") {
+        return;
+    }
+    let mut rig = rig(Mode::Toggle);
+    rig.primary.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    rig.assist.frame(&[(EV_KEY, BTN_EAST, 1)]).unwrap();
+    let primary_only = PadState::NEUTRAL.with(gamepad::SOUTH, 1.0);
+    let frames = read_until(&mut rig.game, |frames| frames.last() == Some(&primary_only));
+    assert_eq!(
+        last(&frames),
+        primary_only,
+        "a toggle starts on its first input"
+    );
+
+    rig.thread
+        .send(Command::Switch {
+            setup: ID,
+            node: NodeId(0),
+        })
+        .unwrap();
+    let assist_only = PadState::NEUTRAL.with(gamepad::EAST, 1.0);
+    let frames = read_until(&mut rig.game, |frames| frames.last() == Some(&assist_only));
+    assert_eq!(last(&frames), assist_only);
+
+    rig.thread
+        .send(Command::Select {
+            setup: ID,
+            node: NodeId(0),
+            index: 0,
+        })
+        .unwrap();
+    let frames = read_until(&mut rig.game, |frames| frames.last() == Some(&primary_only));
+    assert_eq!(last(&frames), primary_only);
+}
+
+#[test]
+fn a_pad_that_goes_is_reported_and_the_setup_carries_on_without_it() {
+    if !can_make_pads("a_pad_that_goes_is_reported_and_the_setup_carries_on_without_it") {
+        return;
+    }
+    let Rig {
+        mut primary,
+        mut assist,
+        mut game,
+        thread: _thread,
+        reports,
+    } = rig(Mode::Priority);
+    primary.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    read_until(&mut game, |frames| !frames.is_empty());
+
+    drop(primary);
+    match reports.recv().unwrap() {
+        Report::PadGone { setup, source, .. } => assert_eq!((setup, source), (ID, PRIMARY)),
+        other => unreachable!("expected the pad to be reported gone, got {other:?}"),
+    }
+    // What the missing pad held is let go, not left held forever.
+    let frames = read_until(&mut game, |frames| {
+        frames.last() == Some(&PadState::NEUTRAL)
+    });
+    assert_eq!(last(&frames), PadState::NEUTRAL);
+
+    assist.frame(&[(EV_KEY, BTN_EAST, 1)]).unwrap();
+    let frames = read_until(&mut game, |frames| !frames.is_empty());
+    assert_eq!(last(&frames), PadState::NEUTRAL.with(gamepad::EAST, 1.0));
+}
+
+#[test]
+fn stopping_a_setup_hands_it_back_and_takes_its_virtual_pad_away() {
+    if !can_make_pads("stopping_a_setup_hands_it_back_and_takes_its_virtual_pad_away") {
+        return;
+    }
+    let rig = rig(Mode::Priority);
+    rig.thread.send(Command::Stop(ID)).unwrap();
+    let setup = match rig.reports.recv().unwrap() {
+        Report::Stopped(id, setup) => {
+            assert_eq!(id, ID);
+            setup
+        }
+        other => unreachable!("expected the setup back, got {other:?}"),
+    };
+    assert_eq!(setup.pads().len(), 2);
+    let node = setup.sinks()[0].event_node().to_path_buf();
+    assert!(node.exists());
+    // The virtual pad lives exactly as long as the setup does.
+    drop(setup);
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    assert!(!node.exists());
+
+    // A stop for a setup that isn't running is nothing.
+    rig.thread.send(Command::Stop(ID)).unwrap();
+}
+
+#[test]
+fn starting_a_setup_twice_under_one_name_fails_the_second() {
+    if !can_make_pads("starting_a_setup_twice_under_one_name_fails_the_second") {
+        return;
+    }
+    let rig = rig(Mode::Priority);
+    let second = Setup::new(mux(Mode::Priority), vec![None, None], Vec::new());
+    rig.thread
+        .send(Command::Start(ID, Box::new(second)))
+        .unwrap();
+    match rig.reports.recv().unwrap() {
+        Report::Failed(id, _) => assert_eq!(id, ID),
+        other => unreachable!("expected the second start to fail, got {other:?}"),
+    }
+}
+
+#[test]
+fn dropping_the_thread_stops_it_and_hands_back_what_was_running() {
+    if !can_make_pads("dropping_the_thread_stops_it_and_hands_back_what_was_running") {
+        return;
+    }
+    // The fake pads are kept: a pad going would be reported first.
+    let Rig {
+        thread,
+        reports,
+        primary: _primary,
+        assist: _assist,
+        game: _game,
+    } = rig(Mode::Priority);
+    drop(thread);
+    assert!(matches!(reports.recv().unwrap(), Report::Stopped(ID, _)));
+    assert!(reports.recv().is_err(), "the thread has ended");
+}
+
+#[test]
+fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
+    if !can_make_pads("a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said") {
+        return;
+    }
+    // A virtual pad stands in for a real pad with motors, read and
+    // rumbled through its event node as a real one is.
+    let mut motors = VirtualPad::create(Identity::Generic).unwrap();
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    let pad = writable(motors.event_node());
+
+    let (sink, _reader) = sink();
+    let game_node = sink.event_node().to_path_buf();
+    let graph = Graph::build(GraphSpec {
+        sources: vec![source()],
+        nodes: Vec::new(),
+        sinks: vec![Input::Source(PRIMARY)],
+    })
+    .unwrap();
+    let (thread, _reports) = InputThread::spawn().unwrap();
+    thread
+        .send(Command::Start(
+            ID,
+            Box::new(Setup::new(graph, vec![Some(pad)], vec![sink])),
+        ))
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let game = std::thread::spawn(move || {
+        let mut pad = game_opens(&game_node);
+        let mut effect = pad
+            .upload_ff_effect(rumble(0x6000, 0x3000, 300, 0))
+            .unwrap();
+        effect.play(1).unwrap();
+        // Hold the effect: the game doesn't stop it, its length does.
+        std::thread::park();
+        drop(effect);
+    });
+
+    let mut requests = Vec::new();
+    let mut ended = None;
+    for _ in 0..400 {
+        let mut fds = [PollFd::new(&motors, PollFlags::IN)];
+        let wait = Timespec {
+            tv_sec: 0,
+            tv_nsec: 10_000_000,
+        };
+        let _ = poll(&mut fds, Some(&wait));
+        motors
+            .serve(|request| {
+                requests.push(request);
+                Ok(())
+            })
+            .unwrap();
+        if requests
+            .iter()
+            .any(|request| matches!(request, Request::Erase { .. }))
+        {
+            ended = Some(started.elapsed());
+            break;
+        }
+    }
+    game.thread().unpark();
+    game.join().unwrap();
+
+    let level = Effect {
+        strong: 0x6000,
+        weak: 0x3000,
+        length_ms: 0,
+        delay_ms: 0,
+    };
+    assert_eq!(
+        requests,
+        [
+            Request::Upload {
+                id: 0,
+                effect: level
+            },
+            Request::Play { id: 0, count: 1 },
+            Request::Play { id: 0, count: 0 },
+            Request::Erase { id: 0 },
+        ]
+    );
+    let ended = ended.unwrap().as_millis();
+    // The clock started before the game played it and times are kept in
+    // whole milliseconds, so allow a little either side of 300.
+    assert!(
+        (290..600).contains(&ended),
+        "a 300 ms rumble ended after {ended} ms"
+    );
+}
+
+/// How many times the thread named `input` in this process has been
+/// scheduled out, by its own choice or the kernel's.
+fn input_thread_switches() -> u64 {
+    let task = std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .flatten()
+        .find(|task| {
+            std::fs::read_to_string(task.path().join("comm"))
+                .is_ok_and(|name| name.trim() == "input")
+        })
+        .unwrap();
+    std::fs::read_to_string(task.path().join("status"))
+        .unwrap()
+        .lines()
+        .filter(|line| line.contains("ctxt_switches"))
+        .map(|line| {
+            line.split_whitespace()
+                .nth(1)
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+        })
+        .sum()
+}
+
+#[test]
+fn an_idle_input_thread_never_wakes() {
+    if !can_make_pads("an_idle_input_thread_never_wakes") {
+        return;
+    }
+    let mut rig = rig(Mode::Priority);
+    // Something through it first, so it is known to be running.
+    rig.primary.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    read_until(&mut rig.game, |frames| !frames.is_empty());
+
+    let before = input_thread_switches();
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(
+        input_thread_switches(),
+        before,
+        "the input thread woke with nothing to do"
+    );
+}

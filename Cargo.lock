@@ -229,6 +229,7 @@ dependencies = [
  "ctrlassist-core",
  "ctrlassist-test",
  "evdev",
+ "libc",
  "rustix",
  "udev",
 ]

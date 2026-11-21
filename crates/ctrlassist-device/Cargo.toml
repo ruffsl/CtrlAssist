@@ -12,7 +12,8 @@ publish.workspace = true
 [dependencies]
 ctrlassist-core = { workspace = true }
 evdev = { workspace = true }
-rustix = { workspace = true, features = ["fs"] }
+libc = { workspace = true }
+rustix = { workspace = true, features = ["event", "fs", "time"] }
 udev = { workspace = true }
 
 [dev-dependencies]
