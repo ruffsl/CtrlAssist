@@ -596,12 +596,12 @@ async fn a_profile_that_asks_to_starts_by_itself_once_its_pads_are_there() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_update_restarts_a_setup_on_its_profile_as_kept_now_and_says_so() {
-    const TEST: &str = "an_update_restarts_a_setup_on_its_profile_as_kept_now_and_says_so";
+async fn an_update_is_taken_as_the_setup_runs_or_restarts_it_and_says_which() {
+    const TEST: &str = "an_update_is_taken_as_the_setup_runs_or_restarts_it_and_says_which";
     if !can_make_pads(TEST) {
         return;
     }
-    let _primary = FakePad::new("Update Primary", VENDOR, 0x8401).unwrap();
+    let mut primary = FakePad::new("Update Primary", VENDOR, 0x8401).unwrap();
     let _assist = FakePad::new("Update Assist", VENDOR, 0x8402).unwrap();
     let (_dir, socket) = socket();
     let daemon = start_daemon(&socket).await;
@@ -615,20 +615,65 @@ async fn an_update_restarts_a_setup_on_its_profile_as_kept_now_and_says_so() {
     let mut game_before = game(&before).await;
     let phys = phys_of(Path::new(before.sinks[0].node.as_deref().unwrap())).unwrap();
     assert!(before.nodes.is_empty());
+    primary.south(true).unwrap();
+    south_is(&mut game_before, true).await;
 
     // Putting a profile changes nothing that runs.
-    client
-        .put_profile("couch", &blended.replace("priority", "toggle"))
-        .await
-        .unwrap();
+    let toggle = blended.replace("priority", "toggle");
+    client.put_profile("couch", &toggle).await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(client.setup("couch").unwrap().unwrap().nodes.is_empty());
-    // Asked what an update would cost, the daemon says, and does nothing.
+    // Asked what an update would cost, the daemon says, and does nothing:
+    // the same pads into the same virtual pad is no restart.
+    assert!(!client.update_setup("couch", false).await.unwrap());
+    assert!(client.setup("couch").unwrap().unwrap().nodes.is_empty());
+
+    // Asked to, the setup takes the profile as it runs: the game's pad
+    // is the one it had, still holding what the primary holds, and the
+    // setup now has a node that selects.
+    assert!(!client.update_setup("couch", true).await.unwrap());
+    eventually(
+        "the setup never said what its new node selects",
+        async || {
+            client
+                .setup("couch")
+                .unwrap()
+                .is_some_and(|setup| setup.nodes.len() == 1)
+        },
+    )
+    .await;
+    let taken = client.setup("couch").unwrap().unwrap();
+    assert_eq!(taken.sinks[0].node, before.sinks[0].node);
+    assert!(phys_connected(&phys));
+    south_is(&mut game_before, true).await;
+    // The new graph is what plays: handed to the assist, the primary's
+    // press is no longer the game's, on the same virtual pad.
+    client.select("couch", "mux", Some("assist")).await.unwrap();
+    south_is(&mut game_before, false).await;
+    // A further update keeps who had control.
+    client
+        .put_profile("couch", &format!("{toggle}auto-start = true\n"))
+        .await
+        .unwrap();
+    assert!(!client.update_setup("couch", true).await.unwrap());
+    eventually("the toggle didn't stay with the assist", async || {
+        client
+            .setup("couch")
+            .unwrap()
+            .is_some_and(|setup| setup.nodes.len() == 1 && setup.nodes[0].selected == 1)
+    })
+    .await;
+    south_is(&mut game_before, false).await;
+
+    // Another identity is another virtual pad: that restarts the setup
+    // on the profile as kept now. The old virtual pad is gone by the
+    // reply, and the new setup selects.
+    client
+        .put_profile("couch", &format!("{toggle}identity = \"xbox\"\n"))
+        .await
+        .unwrap();
     assert!(client.update_setup("couch", false).await.unwrap());
     assert!(phys_connected(&phys));
-
-    // Asked to, it restarts the setup on the profile as kept now: the
-    // old virtual pad is gone by the reply, and the new setup selects.
     assert!(client.update_setup("couch", true).await.unwrap());
     assert!(
         !phys_connected(&phys),
@@ -643,6 +688,7 @@ async fn an_update_restarts_a_setup_on_its_profile_as_kept_now_and_says_so() {
     })
     .await;
     assert!(after.sources.iter().all(|source| source.present));
+    assert_eq!(after.sinks[0].identity, "xbox");
     // The game's old pad is gone for good.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     while game_before.read(|_| {}).is_ok() {

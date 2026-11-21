@@ -12,7 +12,7 @@ Every command is a short request to the daemon, except `service daemon` and `ser
 | A running profile's details | `ctrlassist setups` |
 | **Has control** | `ctrlassist select <setup> <node> [choice]` |
 | **Quick start** | Write a profile, then `ctrlassist profile put` and `ctrlassist start` |
-| **Restart as `quick`** | `ctrlassist update <name>` |
+| A pick while `quick` runs, **Restart as `quick`** | `ctrlassist profile put`, then `ctrlassist update <name>` |
 | **Pads** | `ctrlassist pads` |
 | **Identify**, **Forget** | `ctrlassist identify <pad>`, `ctrlassist forget <pad>` |
 | The status line | `ctrlassist status` |

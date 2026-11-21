@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::menu::{self, Command, Edit, Entry};
-use crate::quick::Quick;
+use crate::quick::{self, Quick};
 use crate::state::View;
 
 /// What a click asks of the daemon, or of the tray itself.
@@ -34,6 +34,9 @@ pub enum Action {
     Forget(String),
     /// Keep this TOML as the profile `quick`, and run it.
     Quick(String),
+    /// Keep this TOML as the profile `quick`, and have the running
+    /// `quick` take it if it can as it runs.
+    QuickApply(String),
     /// End the tray.
     Quit,
 }
@@ -72,10 +75,28 @@ impl PadTray {
                 match edit {
                     Edit::Primary(pad) => self.quick.primary = Some(pad),
                     Edit::Assist(pad) => self.quick.assist = Some(pad),
-                    Edit::Mode(mode) => self.quick.mode = mode,
                     Edit::Identity(identity) => self.quick.identity = identity,
-                    Edit::AutoStart(on) => self.quick.auto_start = on,
-                    Edit::Rumble(rumble) => self.quick.rumble = rumble,
+                    Edit::Mode(_) | Edit::AutoStart(_) | Edit::Rumble(_) => {
+                        match edit {
+                            Edit::Mode(mode) => self.quick.mode = mode,
+                            Edit::AutoStart(on) => self.quick.auto_start = on,
+                            Edit::Rumble(rumble) => self.quick.rumble = rumble,
+                            _ => {}
+                        }
+                        // A running `quick` takes these as it runs, so
+                        // they are applied as they are picked, onto the
+                        // pads and identity it runs with: a pick of those
+                        // still waiting isn't slipped in with them.
+                        let running = self.view.setup(quick::NAME).is_some();
+                        let live = self
+                            .view
+                            .kept_quick()
+                            .filter(|_| running)
+                            .and_then(|kept| self.quick.onto(kept).profile());
+                        if let Some(toml) = live {
+                            let _ = self.actions.send(Action::QuickApply(toml));
+                        }
+                    }
                 }
                 return;
             }

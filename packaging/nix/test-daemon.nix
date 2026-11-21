@@ -187,6 +187,21 @@ pkgs.testers.runNixOSTest {
         assert all(source["present"] for source in setup()["sources"]), setup()
         assert known()[HID]["hidden"]
 
+    with subtest("a profile of the same pads is taken as the setup runs, on the virtual pad it has"):
+        node = setup()["sinks"][0]["node"]
+        machine.succeed("sed -i 's/priority/toggle/' /tmp/couch.toml")
+        cli("profile", "put", "/tmp/couch.toml")
+        assert "would apply without" in cli("update", "couch", "--dry-run")
+        assert "applied without" in cli("update", "couch")
+        command = "su -l alice -c " + shlex.quote(ENV + " ctrlassist setups --json")
+        machine.wait_until_succeeds(f"{command} | grep -q '\"choices\":\\[\"primary\",\"assist\"\\]'")
+        taken = setup()
+        assert taken["phase"] == "running" and taken["sinks"][0]["node"] == node, taken
+        assert node == nodes()[VIRTUAL]["event"][0], node
+        assert known()[HID]["hidden"] and known()[PLAIN]["hidden"]
+        assert len(rules()) == 2, rules()
+        machine.succeed("sed -i 's/toggle/priority/' /tmp/couch.toml")
+
     with subtest("stopped, the pads are back as they were and nothing is left behind"):
         cli("stop", "couch")
         assert setup() is None

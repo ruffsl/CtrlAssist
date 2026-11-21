@@ -309,6 +309,18 @@ impl Graph {
         self.nodes.len()
     }
 
+    /// How many pads the graph has.
+    #[must_use]
+    pub fn sources(&self) -> usize {
+        self.sources.len()
+    }
+
+    /// How many virtual pads the graph has.
+    #[must_use]
+    pub fn sinks(&self) -> usize {
+        self.sinks.len()
+    }
+
     /// Which input a mux has selected, or which output a demux has. None
     /// for a node that doesn't select, one that blends its inputs or
     /// sends to every output, and for a node that doesn't exist.

@@ -381,12 +381,52 @@ async fn a_profile_is_started_listed_and_stopped() {
     assert_eq!(setups[0]["name"], "couch");
     assert_eq!(setups[0]["phase"], "held");
 
-    // An update says what it costs, before and after.
+    // An update says what it costs, before and after. A profile of the
+    // same pads and virtual pad is taken as the setup runs: the virtual
+    // pad is the one it was, and the setup has the new profile's node.
+    let node_of = |setups: &[serde_json::Value]| setups[0]["sinks"][0]["node"].clone();
+    let before = node_of(&setups);
+    std::fs::write(
+        &file,
+        "preset = \"toggle\"\nprimary = \"model:1209:7e01\"\nassist = \"model:1209:7e02\"\n",
+    )
+    .unwrap();
+    let put = ctrlassist(&socket, &["profile", "put", file.to_str().unwrap()]);
+    assert!(put.status.success(), "{}", text(&put.stderr));
+    let would = ctrlassist(&socket, &["update", "couch", "--dry-run"]);
+    assert!(text(&would.stdout).starts_with("couch: would apply without"));
+    let updated = ctrlassist(&socket, &["update", "couch"]);
+    assert!(updated.status.success(), "{}", text(&updated.stderr));
+    assert!(text(&updated.stdout).starts_with("couch: applied without"));
+    // What the toggle selects follows the update's reply.
+    let mut taken = Vec::new();
+    for _ in 0..200 {
+        let json = ctrlassist(&socket, &["setups", "--json"]);
+        taken = serde_json::from_slice::<Vec<serde_json::Value>>(&json.stdout).unwrap();
+        if taken[0]["nodes"][0]["name"] == "mux" {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(taken[0]["nodes"][0]["choices"][1], "assist", "{taken:?}");
+    assert_eq!(node_of(&taken), before, "the virtual pad never went");
+
+    // Another identity is another virtual pad, which is a restart.
+    std::fs::write(
+        &file,
+        "preset = \"toggle\"\nprimary = \"model:1209:7e01\"\nassist = \"model:1209:7e02\"\nidentity = \"xbox\"\n",
+    )
+    .unwrap();
+    let put = ctrlassist(&socket, &["profile", "put", file.to_str().unwrap()]);
+    assert!(put.status.success(), "{}", text(&put.stderr));
     let would = ctrlassist(&socket, &["update", "couch", "--dry-run"]);
     assert!(text(&would.stdout).starts_with("couch: would restart"));
     let updated = ctrlassist(&socket, &["update", "couch"]);
     assert!(updated.status.success(), "{}", text(&updated.stderr));
     assert!(text(&updated.stdout).starts_with("couch: restarted"));
+    let json = ctrlassist(&socket, &["setups", "--json"]);
+    let restarted: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(restarted[0]["sinks"][0]["identity"], "xbox");
     let unknown = ctrlassist(&socket, &["update", "nothing"]);
     assert!(text(&unknown.stderr).contains("unknown-setup"));
 

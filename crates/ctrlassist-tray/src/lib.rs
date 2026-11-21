@@ -87,12 +87,7 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
                 // `quick` profile was written from.
                 if view.hydrated && !tray.quick_settled {
                     tray.quick_settled = true;
-                    let kept = view
-                        .profiles
-                        .iter()
-                        .find(|profile| profile.name == quick::NAME)
-                        .and_then(|profile| quick::Quick::from_profile(&profile.toml));
-                    if let Some(kept) = kept {
+                    if let Some(kept) = view.kept_quick() {
                         tray.quick = kept;
                     }
                 }
@@ -165,6 +160,10 @@ pub(crate) async fn act(
                 format!("Couldn't start `{}`", quick::NAME),
                 quick_start(&daemon, &toml).await,
             ),
+            Action::QuickApply(toml) => (
+                format!("Couldn't change `{}`", quick::NAME),
+                quick_apply(&daemon, &toml).await,
+            ),
         };
         if let Err(error) = outcome {
             warn!(%error, what, "an action from the menu failed");
@@ -187,6 +186,16 @@ async fn quick_start(daemon: &DaemonClient, toml: &str) -> ctrlassist::Result<()
             outcome => outcome,
         }
     }
+}
+
+/// Keeps `toml` as the profile `quick` and has the running `quick` take
+/// it, if that needs no restart: a restart waits for a click.
+async fn quick_apply(daemon: &DaemonClient, toml: &str) -> ctrlassist::Result<()> {
+    daemon.put_profile(quick::NAME, toml).await?;
+    if !daemon.update_setup(quick::NAME, false).await? {
+        daemon.update_setup(quick::NAME, true).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -305,26 +314,42 @@ mod tests {
         );
         assert!(menu.contains("Hiding: grab"), "{menu}");
 
-        // Two pads and a toggle, picked from the menu, then started.
+        // Two pads, picked from the menu, then started.
         rig.click(Command::Quick(Edit::Primary(id("Tray Primary", 0x8701))))
             .await;
         rig.click(Command::Quick(Edit::Assist(id("Tray Assist", 0x8702))))
             .await;
-        rig.click(Command::Quick(Edit::Mode(
-            ctrlassist_protocol::profile::MuxMode::Toggle,
-        )))
-        .await;
         let menu = outline(&rig.tray.lock().await.entries());
         assert!(menu.contains("Primary: Tray Primary >"), "{menu}");
         assert!(menu.contains("\n  Start as `quick`"), "{menu}");
         rig.click(Command::QuickStart).await;
         let menu = rig.shows("quick (running) >").await;
-        assert!(menu.contains("Restart as `quick`"), "{menu}");
+        assert!(menu.contains("- Running as `quick`"), "{menu}");
         // Without the hiding service the pads are grabbed, which is said
         // once, as the setup starts.
         let grabbed = rig.told("grabbed, not hidden").await;
         assert!(grabbed.summary.starts_with("quick:"), "{grabbed:?}");
         rig.told("no rumble on Tray").await;
+
+        // A mode picked while it runs is taken at once, by the virtual
+        // pad it has: nothing waits for a click.
+        let node = |tray: &PadTray| tray.view.setup("quick").unwrap().sinks[0].node.clone();
+        let before = node(&*rig.tray.lock().await);
+        rig.click(Command::Quick(Edit::Mode(
+            ctrlassist_protocol::profile::MuxMode::Toggle,
+        )))
+        .await;
+        let menu = rig.shows("Has control >").await;
+        assert!(menu.contains("- Running as `quick`"), "{menu}");
+        assert_eq!(node(&*rig.tray.lock().await), before);
+        // Another identity is another virtual pad, which waits.
+        let identity = |identity| Command::Quick(Edit::Identity(identity));
+        rig.click(identity(ctrlassist_protocol::profile::Identity::Xbox))
+            .await;
+        let menu = outline(&rig.tray.lock().await.entries());
+        assert!(menu.contains("\n  Restart as `quick`"), "{menu}");
+        rig.click(identity(ctrlassist_protocol::profile::Identity::Generic))
+            .await;
 
         // The toggle's holder is in the menu, and a click hands over.
         let menu = rig.shows("(o) primary").await;

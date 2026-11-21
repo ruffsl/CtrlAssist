@@ -128,6 +128,26 @@ impl Quick {
         profile.to_toml().ok()
     }
 
+    /// Whether running these in place of `kept` takes a restart: other
+    /// pads or another identity. The rest a running setup takes as it
+    /// runs.
+    #[must_use]
+    pub fn restarts(&self, kept: &Self) -> bool {
+        self.primary != kept.primary || self.assist != kept.assist || self.identity != kept.identity
+    }
+
+    /// `kept` with the choices of these that a running setup takes as it
+    /// runs: the mode, who feels rumble, and whether it starts by itself.
+    #[must_use]
+    pub fn onto(&self, kept: Self) -> Self {
+        Self {
+            mode: self.mode,
+            rumble: self.rumble,
+            auto_start: self.auto_start,
+            ..kept
+        }
+    }
+
     /// The choices a kept `quick` profile was written from; nothing for
     /// text that quick start didn't write.
     #[must_use]
@@ -185,6 +205,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn only_other_pads_or_another_identity_take_a_restart() {
+        let kept = chosen();
+        let live = Quick {
+            mode: MuxMode::Toggle,
+            rumble: Rumble::Assist,
+            auto_start: true,
+            ..chosen()
+        };
+        assert!(!live.restarts(&kept));
+        let other_pad = Quick {
+            primary: Some("address:other".to_string()),
+            ..live.clone()
+        };
+        let other_identity = Quick {
+            identity: Identity::Xbox,
+            ..live.clone()
+        };
+        assert!(other_pad.restarts(&kept) && other_identity.restarts(&kept));
+        // What is taken as it runs goes onto what is kept; the rest waits.
+        assert_eq!(other_pad.onto(kept.clone()), live);
+        assert_eq!(other_identity.onto(kept), live);
     }
 
     #[test]

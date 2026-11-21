@@ -10,7 +10,7 @@ use ctrlassist_core::{
     SourceSpec, gamepad,
 };
 use ctrlassist_device::{
-    Command, Identity, InputThread, Pad, Report, Request, Setup, SetupId, VirtualPad,
+    Command, Identity, InputThread, NewGraph, Pad, Report, Request, Setup, SetupId, VirtualPad,
 };
 use ctrlassist_test::FakePad;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -225,6 +225,147 @@ fn a_switch_command_hands_a_toggle_to_the_other_pad() {
     assert!(matches!(
         rig.reports.recv().unwrap(),
         Report::Stopped(ID, _)
+    ));
+}
+
+/// A toggle over the two pads in the order given.
+fn toggle(inputs: [SourceId; 2]) -> Graph {
+    Graph::build(GraphSpec {
+        sources: vec![source(), source()],
+        nodes: vec![NodeSpec::Mux {
+            inputs: inputs.into_iter().map(Input::Source).collect(),
+            config: MuxConfig::new(Mode::Toggle, &Layout::gamepad()),
+        }],
+        sinks: vec![Input::Node(NodeId(0), 0)],
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_running_setup_takes_a_new_graph_and_the_game_keeps_its_pad() {
+    if !can_make_pads("a_running_setup_takes_a_new_graph_and_the_game_keeps_its_pad") {
+        return;
+    }
+    let mut rig = rig(Mode::Priority);
+    rig.primary.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    rig.assist.frame(&[(EV_KEY, BTN_EAST, 1)]).unwrap();
+    let both = PadState::NEUTRAL
+        .with(gamepad::SOUTH, 1.0)
+        .with(gamepad::EAST, 1.0);
+    let frames = read_until(&mut rig.game, |frames| frames.last() == Some(&both));
+    assert_eq!(last(&frames), both);
+
+    // A toggle in the priority mux's place: the game's pad stays, and
+    // changes only where the two graphs disagree about what is held.
+    let graph = Box::new(NewGraph::new(toggle([PRIMARY, ASSIST]), vec![None]));
+    rig.thread
+        .send(Command::NewGraph { setup: ID, graph })
+        .unwrap();
+    let primary_only = PadState::NEUTRAL.with(gamepad::SOUTH, 1.0);
+    let frames = read_until(&mut rig.game, |frames| frames.last() == Some(&primary_only));
+    assert_eq!(last(&frames), primary_only);
+    // The graph first, then what its nodes select.
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::GraphTaken { setup: ID, .. }
+    ));
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::Selected {
+            setup: ID,
+            node: NodeId(0),
+            index: 0
+        }
+    ));
+
+    // The new graph is what the pads now play through.
+    rig.thread
+        .send(Command::Switch {
+            setup: ID,
+            node: NodeId(0),
+        })
+        .unwrap();
+    let assist_only = PadState::NEUTRAL.with(gamepad::EAST, 1.0);
+    let frames = read_until(&mut rig.game, |frames| frames.last() == Some(&assist_only));
+    assert_eq!(last(&frames), assist_only);
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::Selected { index: 1, .. }
+    ));
+
+    // A node that carries on goes on selecting what it had: the assist,
+    // which is the new node's first input, where a toggle left to itself
+    // starts on its first and would here have been told nothing.
+    let carry = vec![Some((NodeId(0), vec![Some(1), Some(0)]))];
+    let graph = Box::new(NewGraph::new(toggle([ASSIST, PRIMARY]), carry));
+    rig.thread
+        .send(Command::NewGraph { setup: ID, graph })
+        .unwrap();
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::GraphTaken { setup: ID, .. }
+    ));
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::Selected { index: 0, .. }
+    ));
+    // And back in the first order, the assist is its second.
+    let carry = vec![Some((NodeId(0), vec![Some(1), Some(0)]))];
+    let graph = Box::new(NewGraph::new(toggle([PRIMARY, ASSIST]), carry));
+    rig.thread
+        .send(Command::NewGraph { setup: ID, graph })
+        .unwrap();
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::GraphTaken { setup: ID, .. }
+    ));
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::Selected { index: 1, .. }
+    ));
+    rig.primary.frame(&[(EV_ABS, ABS_X, 32767)]).unwrap();
+    rig.assist.frame(&[(EV_KEY, BTN_EAST, 0)]).unwrap();
+    let frames = read_until(&mut rig.game, |frames| {
+        frames.last() == Some(&PadState::NEUTRAL)
+    });
+    assert_eq!(
+        last(&frames),
+        PadState::NEUTRAL,
+        "the assist still has the toggle, so the primary's stick is not heard"
+    );
+}
+
+#[test]
+fn a_graph_of_other_pads_or_for_no_setup_is_handed_back() {
+    if !can_make_pads("a_graph_of_other_pads_or_for_no_setup_is_handed_back") {
+        return;
+    }
+    let rig = rig(Mode::Priority);
+    let one_pad = Graph::build(GraphSpec {
+        sources: vec![source()],
+        nodes: vec![],
+        sinks: vec![Input::Source(PRIMARY)],
+    })
+    .unwrap();
+    let graph = Box::new(NewGraph::new(one_pad, vec![]));
+    rig.thread
+        .send(Command::NewGraph { setup: ID, graph })
+        .unwrap();
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::GraphRefused { setup: ID, .. }
+    ));
+    let nobody = SetupId(99);
+    let graph = Box::new(NewGraph::new(mux(Mode::Average), vec![None]));
+    rig.thread
+        .send(Command::NewGraph {
+            setup: nobody,
+            graph,
+        })
+        .unwrap();
+    assert!(matches!(
+        rig.reports.recv().unwrap(),
+        Report::GraphRefused { setup, .. } if setup == nobody
     ));
 }
 

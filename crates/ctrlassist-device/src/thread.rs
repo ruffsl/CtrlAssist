@@ -45,6 +45,38 @@ fn token(slot: usize, kind: u64, index: usize) -> u64 {
     ((slot as u64) << 32) | (kind << 24) | (index as u64 & 0xff_ffff)
 }
 
+/// A new graph for a running setup, with what its nodes carry over from
+/// the graph it replaces. Built off the input thread and handed to it
+/// whole; the thread hands it back holding the graph it replaced.
+#[derive(Debug)]
+pub struct NewGraph {
+    graph: Graph,
+    /// Room for each node's selection, by node number: the thread keeps
+    /// it in place of the one it hands back.
+    selected: Vec<Option<usize>>,
+    /// By the new graph's node number: the node of the old graph it
+    /// carries on from, and where each of that node's inputs or outputs
+    /// is among its own, by the old node's numbering.
+    carry: Vec<Option<(NodeId, Vec<Option<usize>>)>>,
+}
+
+impl NewGraph {
+    /// A graph to take the place of a running setup's. `carry` says, by
+    /// the new graph's node number, which node of the old graph each
+    /// carries on from, and where each of the old node's inputs or
+    /// outputs is among the new one's: a node that selects then goes on
+    /// selecting what it had, where that still exists.
+    #[must_use]
+    pub fn new(graph: Graph, carry: Vec<Option<(NodeId, Vec<Option<usize>>)>>) -> Self {
+        let selected = vec![None; graph.nodes()];
+        Self {
+            graph,
+            selected,
+            carry,
+        }
+    }
+}
+
 /// Names a setup to the input thread.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SetupId(pub u32);
@@ -250,6 +282,60 @@ impl Setup {
         None
     }
 
+    /// Takes `new`'s graph in place of this setup's, which `new` then
+    /// holds. The pads and the virtual pads stay as they are: the new
+    /// graph is brought to what the pads hold now, each node that
+    /// carries on selects what its old one had, and the virtual pads
+    /// change only where the two graphs disagree. Returns false, with
+    /// nothing changed, for a graph of other pads or virtual pads.
+    fn take_graph(&mut self, new: &mut NewGraph) -> bool {
+        if new.graph.sources() != self.pads.len()
+            || new.graph.sinks() != self.sinks.len()
+            || new.selected.len() != new.graph.nodes()
+        {
+            return false;
+        }
+        // What each node goes on selecting, read before the old graph
+        // goes; `new.selected` is the room for it.
+        for (index, place) in new.selected.iter_mut().enumerate() {
+            *place = new
+                .carry
+                .get(index)
+                .and_then(Option::as_ref)
+                .and_then(|(old, places)| {
+                    let was = self.graph.selected(*old)?;
+                    places.get(was).copied().flatten()
+                });
+        }
+        std::mem::swap(&mut self.graph, &mut new.graph);
+        for (index, pad) in self.pads.iter().enumerate() {
+            match pad {
+                Some(pad) => self
+                    .graph
+                    .update(SourceId(index), *pad.state(), &mut |_| {}),
+                None => self.graph.set_present(SourceId(index), false, &mut |_| {}),
+            }
+        }
+        // After the pads' states, so that a switch button held through
+        // the change can't undo what is carried over.
+        for (index, place) in new.selected.iter_mut().enumerate() {
+            if let Some(choice) = place.take() {
+                self.graph.select(NodeId(index), choice, &mut |_| {});
+            }
+            // Counted as reported, so that nothing is said of the new
+            // nodes until the control side has been told of the graph.
+            *place = self.graph.selected(NodeId(index));
+        }
+        std::mem::swap(&mut self.selected, &mut new.selected);
+        self.write();
+        true
+    }
+
+    /// Has every node that selects reported afresh.
+    fn forget_reported(&mut self) {
+        self.selected.fill(None);
+    }
+
     /// A game has asked something of a virtual pad.
     fn sink_ready(&mut self, index: usize, now_ms: u64) {
         let Self {
@@ -396,6 +482,15 @@ pub enum Command {
         /// Which input or output.
         index: usize,
     },
+    /// Have a running setup take a new graph, its pads and virtual pads
+    /// staying as they are. The graph it replaces comes back in a
+    /// [`Report::GraphTaken`].
+    NewGraph {
+        /// The setup.
+        setup: SetupId,
+        /// The graph.
+        graph: Box<NewGraph>,
+    },
 }
 
 /// What the input thread tells the control side. Reports are sent without
@@ -428,6 +523,23 @@ pub enum Report {
         node: NodeId,
         /// Which of its inputs, for a mux, or its outputs, for a demux.
         index: usize,
+    },
+    /// A running setup took a new graph. The one it replaced is handed
+    /// back to be dropped. Its nodes are numbered anew from here on, and
+    /// each that selects is reported after this.
+    GraphTaken {
+        /// The setup.
+        setup: SetupId,
+        /// The graph it had.
+        old: Box<NewGraph>,
+    },
+    /// A new graph wasn't taken: the setup isn't running, or the graph
+    /// is of other pads or virtual pads. It is handed back.
+    GraphRefused {
+        /// The setup.
+        setup: SetupId,
+        /// The graph.
+        graph: Box<NewGraph>,
     },
     /// A pad in a running setup has gone. The setup carries on with the
     /// pad reading as at rest. The pad is handed back to be dropped.
@@ -751,6 +863,28 @@ impl State {
                             setup.write();
                             None
                         });
+                    }
+                }
+                Command::NewGraph { setup, mut graph } => {
+                    let mut taken = false;
+                    if let Some(slot) = self.slot_of(setup) {
+                        self.guarded(slot, now, |running, _| {
+                            taken = running.take_graph(&mut graph);
+                            None
+                        });
+                    }
+                    if !taken {
+                        self.report(Report::GraphRefused { setup, graph });
+                        continue;
+                    }
+                    // Told of the graph first, then of what its nodes
+                    // select: the control side numbers them by it.
+                    self.report(Report::GraphTaken { setup, old: graph });
+                    if let Some(slot) = self.slot_of(setup) {
+                        if let Some(running) = self.slots.get_mut(slot).and_then(Option::as_mut) {
+                            running.setup.forget_reported();
+                        }
+                        self.guarded(slot, now, |_, _| None);
                     }
                 }
             }

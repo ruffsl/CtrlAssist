@@ -10,7 +10,7 @@ The tray is the everyday way to use CtrlAssist. Its icon shows the state at a gl
 - A running one shows its state in brackets and offers **Stop**. Under it are its controllers (and which is missing, if one is), its virtual controller, and for a toggle, **Has control**: who plays now, and a click to hand over. A controller that isn't connected can't be handed to.
 - One that has failed says why. **Stop** clears it.
 
-**Quick start** pairs two controllers without writing anything; see the [Quick Start](../getting-started/quick-start.md). It keeps one profile, `quick`, which it rewrites each time. While `quick` runs the button reads **Restart**, since applying new choices restarts it; a game sees its controller disconnect and reconnect. A controller that is unplugged, already chosen for the other part, or busy in another arrangement can't be picked.
+**Quick start** pairs two controllers without writing anything; see the [Quick Start](../getting-started/quick-start.md). It keeps one profile, `quick`, which it rewrites each time. While `quick` runs, a new mode, who feels rumble and starting by itself take effect as you pick them, without the game noticing. Picking other controllers or another identity makes the button read **Restart**: those need a new virtual controller, which a game sees as its controller disconnecting and another connecting, so they wait for your click. A controller that is unplugged, already chosen for the other part, or busy in another arrangement can't be picked.
 
 **Pads** lists every controller CtrlAssist knows, connected or remembered.
 

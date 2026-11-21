@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ctrlassist_core::{Graph, Input, Level, NodeId, NodeSpec, SourceId};
-use ctrlassist_device::{Command, Database, Pad, Report, SendError, Setup, SetupId, VirtualPad};
+use ctrlassist_device::{
+    Command, Database, NewGraph, Pad, Report, SendError, Setup, SetupId, VirtualPad,
+};
 use ctrlassist_hider::{Client, Token};
 use ctrlassist_protocol::endpoint::setup;
 use ctrlassist_protocol::error::{ErrorCode, WireError};
@@ -62,6 +64,10 @@ struct Entry {
     selected: Vec<Option<usize>>,
     /// Who is owed something once the input thread hands it back.
     stopping: Option<Waiting>,
+    /// Who is owed a reply once the input thread has taken a new graph
+    /// for it. Until then `nodes` is the new graph's and what the input
+    /// thread reports of selections is the old one's.
+    taking: Option<Responder<setup::Update>>,
 }
 
 /// Who waits for a setup the input thread was asked to stop.
@@ -73,9 +79,30 @@ pub(crate) enum Waiting {
     Update(Responder<setup::Update>),
 }
 
-/// What an update costs: every one makes the virtual pads anew, until
-/// the input thread can take a new graph for a running setup.
-const UPDATED: rpc::Updated = rpc::Updated { disruptive: true };
+/// What an update by stopping and starting costs.
+const RESTARTED: rpc::Updated = rpc::Updated { disruptive: true };
+/// What an update by a new graph costs.
+const TAKEN: rpc::Updated = rpc::Updated { disruptive: false };
+
+/// For each node of a new graph, the node of the old one it carries on
+/// from, which is the one of its name, and where each of the old node's
+/// choices is among its own, by what the profile calls them. A node that
+/// selects then goes on selecting what it had.
+fn carry(
+    old: &[(String, Vec<String>)],
+    new: &[(String, Vec<String>)],
+) -> Vec<Option<(NodeId, Vec<Option<usize>>)>> {
+    new.iter()
+        .map(|(name, choices)| {
+            let (node, (_, were)) = old.iter().enumerate().find(|(_, (was, _))| was == name)?;
+            let places = were
+                .iter()
+                .map(|was| choices.iter().position(|choice| choice == was))
+                .collect();
+            Some((NodeId(node), places))
+        })
+        .collect()
+}
 
 /// Each node of `plan`, by node number: its name, and what it selects
 /// between, in the words of the profile.
@@ -111,6 +138,25 @@ fn choosers(plan: &Plan) -> Vec<(String, Vec<String>)> {
 }
 
 impl Entry {
+    /// Whether `plan` is of the pads and the virtual pads this setup
+    /// has: the same sources under the same names, and the same sinks of
+    /// the same identities. Then only the graph between them differs,
+    /// and the setup can take it as it runs.
+    fn has_the_pads_of(&self, plan: &Plan) -> bool {
+        let sources = self.slots.len() == plan.sources.len()
+            && self
+                .slots
+                .iter()
+                .zip(&plan.sources)
+                .all(|(slot, source)| slot.name == source.name && slot.wanted == source.pad);
+        let sinks =
+            self.sinks.len() == plan.sinks.len()
+                && self.sinks.iter().zip(&plan.sinks).all(|(has, sink)| {
+                    has.name == sink.name && has.identity == sink.identity.as_str()
+                });
+        sources && sinks
+    }
+
     /// Running with every pad there, held without one.
     fn settle(&mut self) {
         self.phase = if self.slots.iter().all(|slot| slot.present) {
@@ -246,7 +292,7 @@ impl Asker {
     async fn ok(self) {
         match self {
             Self::Client(responder) => responder.ok(&rpc::Ack {}).await,
-            Self::Update(responder) => responder.ok(&UPDATED).await,
+            Self::Update(responder) => responder.ok(&RESTARTED).await,
             Self::Daemon => {}
         }
     }
@@ -593,6 +639,7 @@ impl Reactor {
             selected: vec![None; plan.nodes.len()],
             nodes: choosers(&plan),
             stopping: None,
+            taking: None,
         };
         self.setups.entries.insert(name.clone(), entry);
         self.publish_setup(&name).await;
@@ -703,32 +750,41 @@ impl Reactor {
         }
     }
 
-    /// Has a setup take up its profile as it is kept now, by stopping it
-    /// and starting it again; or only says that this is what it takes.
+    /// Has a setup take up its profile as it is kept now, or only says
+    /// what that would cost. A profile of the same pads and virtual pads
+    /// is taken as the setup runs: the input thread is handed its graph.
+    /// Any other means stopping the setup and starting it again.
     async fn update(&mut self, request: rpc::UpdateRequest, responder: Responder<setup::Update>) {
         let name = request.name;
         let Some(entry) = self.setups.entries.get_mut(&name) else {
             return responder.err(&unknown(&name)).await;
         };
         // What is kept now must be right before what runs is given up.
-        let kept = self.profiles.profile(&name).map(|profile| profile.problem);
-        let refusal = match kept {
-            None => Some(WireError::refusal(
-                ErrorCode::UnknownProfile,
-                format!("the profile {name} is no longer kept; the setup runs it as it was"),
-            )),
-            Some(Some(problem)) => Some(WireError::refusal(
-                ErrorCode::InvalidProfile,
-                problem.to_string(),
-            )),
-            Some(None) => None,
+        let kept = self
+            .profiles
+            .profile(&name)
+            .map(|profile| Profile::check(&profile.toml));
+        let plan = match kept {
+            None => {
+                let refusal = WireError::refusal(
+                    ErrorCode::UnknownProfile,
+                    format!("the profile {name} is no longer kept; the setup runs it as it was"),
+                );
+                return responder.err(&refusal).await;
+            }
+            Some(Err(problem)) => {
+                let refusal = WireError::refusal(ErrorCode::InvalidProfile, problem.to_string());
+                return responder.err(&refusal).await;
+            }
+            Some(Ok(plan)) => plan,
         };
-        if let Some(refusal) = refusal {
-            return responder.err(&refusal).await;
-        }
+        let live =
+            matches!(entry.phase, Phase::Running | Phase::Held) && entry.has_the_pads_of(&plan);
         if !request.apply {
-            return responder.ok(&UPDATED).await;
+            let cost = if live { TAKEN } else { RESTARTED };
+            return responder.ok(&cost).await;
         }
+        let free = entry.stopping.is_none() && entry.taking.is_none();
         match entry.phase {
             Phase::Failed => {
                 // Nothing runs: clear it away and start afresh.
@@ -736,7 +792,37 @@ impl Reactor {
                 self.publish_setup(&name).await;
                 self.start(name, Asker::Update(responder)).await;
             }
-            Phase::Running | Phase::Held if entry.stopping.is_none() => {
+            Phase::Running | Phase::Held if free && live => {
+                let nodes = choosers(&plan);
+                let sent = Graph::build(plan.graph)
+                    .map_err(|error| error.to_string())
+                    .and_then(|graph| {
+                        let graph = Box::new(NewGraph::new(graph, carry(&entry.nodes, &nodes)));
+                        let command = Command::NewGraph {
+                            setup: entry.id,
+                            graph,
+                        };
+                        self.input.send(command).map_err(|error| error.to_string())
+                    });
+                match sent {
+                    Ok(()) => {
+                        // Numbered by the new graph from here on: a
+                        // selection asked for now reaches the input
+                        // thread after the graph does.
+                        entry.selected = vec![None; nodes.len()];
+                        entry.nodes = nodes;
+                        entry.taking = Some(responder);
+                        self.publish_setup(&name).await;
+                    }
+                    Err(error) => {
+                        let refusal = WireError::internal(format!(
+                            "the input thread didn't take the request: {error}"
+                        ));
+                        responder.err(&refusal).await;
+                    }
+                }
+            }
+            Phase::Running | Phase::Held if free => {
                 match self.input.send(Command::Stop(entry.id)) {
                     Ok(()) => entry.stopping = Some(Waiting::Update(responder)),
                     Err(error) => {
@@ -1110,11 +1196,16 @@ impl Reactor {
                 let Some(name) = self.setups.name_of(id) else {
                     return self.drop_off(setup);
                 };
-                let entry = self.setups.entries.remove(&name);
+                let mut entry = self.setups.entries.remove(&name);
                 let tokens = entry
                     .iter()
                     .flat_map(|entry| entry.slots.iter().filter_map(|slot| slot.token))
                     .collect();
+                if let Some(responder) = entry.as_mut().and_then(|entry| entry.taking.take()) {
+                    // Only if the report of the graph was lost.
+                    let refusal = WireError::internal("the setup stopped");
+                    responder.err(&refusal).await;
+                }
                 // The stop is answered once the virtual pads are gone.
                 self.retire(
                     name.clone(),
@@ -1156,6 +1247,18 @@ impl Reactor {
                     }
                     entry.stopping.take()
                 });
+                let taking = self
+                    .setups
+                    .entries
+                    .get_mut(&name)
+                    .and_then(|entry| entry.taking.take());
+                if let Some(responder) = taking {
+                    let refusal = WireError::refusal(
+                        ErrorCode::SetupFailed,
+                        "the setup failed as it took the change",
+                    );
+                    responder.err(&refusal).await;
+                }
                 self.release(&name).await;
                 warn!(setup = name, "a setup failed");
                 if stopping.is_some() {
@@ -1190,12 +1293,49 @@ impl Reactor {
                 let Some(name) = self.setups.name_of(setup) else {
                     return;
                 };
+                // While a new graph is on its way, what arrives is of
+                // the old one's nodes; the new one's follow its report.
                 if let Some(entry) = self.setups.entries.get_mut(&name)
+                    && entry.taking.is_none()
                     && let Some(selected) = entry.selected.get_mut(node.0)
                 {
                     *selected = Some(index);
                 }
                 self.publish_setup(&name).await;
+            }
+            Report::GraphTaken { setup, old } => {
+                // A graph holds only memory: dropping it never blocks.
+                drop(old);
+                let Some(name) = self.setups.name_of(setup) else {
+                    return;
+                };
+                let taking = self
+                    .setups
+                    .entries
+                    .get_mut(&name)
+                    .and_then(|entry| entry.taking.take());
+                info!(setup = name, "a setup took its profile as it runs");
+                if let Some(responder) = taking {
+                    responder.ok(&TAKEN).await;
+                }
+            }
+            Report::GraphRefused { setup, graph } => {
+                drop(graph);
+                let Some(name) = self.setups.name_of(setup) else {
+                    return;
+                };
+                // Only a setup the input thread no longer runs refuses
+                // one, and its own report says what became of it.
+                warn!(setup = name, "the input thread refused a new graph");
+                let taking = self
+                    .setups
+                    .entries
+                    .get_mut(&name)
+                    .and_then(|entry| entry.taking.take());
+                if let Some(responder) = taking {
+                    let refusal = WireError::internal("the input thread refused the new graph");
+                    responder.err(&refusal).await;
+                }
             }
             Report::PadRefused { setup, source, pad } => {
                 self.drop_off(pad);
@@ -1321,6 +1461,7 @@ mod tests {
             selected: vec![None; plan.nodes.len()],
             nodes: choosers(&plan),
             stopping: None,
+            taking: None,
         };
         reactor.setups.entries.insert("couch".to_string(), entry);
     }
@@ -1647,9 +1788,21 @@ mod tests {
             Err(RpcError::Service(refusal)) if refusal.code == ErrorCode::SetupBusy
         ));
 
-        // Running, the update waits for the input thread to hand the
-        // setup back, and a second one for the first.
+        // Running, an update to another identity waits for the input
+        // thread to hand the setup back, and a second one for the first.
         rig.reactor.setups.entries.get_mut("couch").unwrap().phase = Phase::Running;
+        rig.reactor
+            .profiles
+            .put("couch", &format!("{PROFILE}identity = \"xbox\"\n"))
+            .unwrap();
+        assert!(
+            ask_update(&mut rig, false)
+                .await
+                .await
+                .unwrap()
+                .unwrap()
+                .disruptive
+        );
         let updating = ask_update(&mut rig, true).await;
         assert!(matches!(
             rig.reactor.setups.entries["couch"].stopping,
@@ -1713,6 +1866,141 @@ mod tests {
                 .node
                 .as_deref()
                 .is_some_and(|node| node != "/dev/input/event99")
+        );
+    }
+
+    /// A profile of the same pads and virtual pad as [`PROFILE`], as a
+    /// toggle.
+    const TOGGLE: &str =
+        "preset = \"toggle\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_profile_of_the_same_pads_is_taken_as_the_setup_runs() {
+        let mut rig = rig().await;
+        follow(&mut rig.reactor, 7, Phase::Held);
+        rig.reactor.profiles.put("couch", TOGGLE).unwrap();
+        let cost = ask_update(&mut rig, false).await.await.unwrap().unwrap();
+        assert!(!cost.disruptive, "only the graph differs");
+
+        let updating = ask_update(&mut rig, true).await;
+        let entry = &rig.reactor.setups.entries["couch"];
+        assert!(entry.taking.is_some() && entry.stopping.is_none());
+        // A second update waits for the first; a stop needn't.
+        let second = ask_update(&mut rig, true).await.await.unwrap();
+        assert!(matches!(
+            second,
+            Err(RpcError::Service(refusal)) if refusal.code == ErrorCode::SetupBusy
+        ));
+        // A selection still on its way is of the old graph's nodes.
+        let selected = |index| Report::Selected {
+            setup: SetupId(7),
+            node: NodeId(0),
+            index,
+        };
+        rig.reactor.reported(selected(1)).await;
+        assert!(rig.reactor.setups.setup("couch").unwrap().nodes.is_empty());
+
+        let old = Box::new(NewGraph::new(
+            Graph::build(Profile::check(PROFILE).unwrap().graph).unwrap(),
+            Vec::new(),
+        ));
+        rig.reactor
+            .reported(Report::GraphTaken {
+                setup: SetupId(7),
+                old,
+            })
+            .await;
+        assert!(!updating.await.unwrap().unwrap().disruptive);
+        rig.reactor.reported(selected(0)).await;
+        let taken = rig.reactor.setups.setup("couch").unwrap();
+        assert_eq!(taken.phase, Phase::Held, "it never stopped");
+        assert_eq!(taken.nodes[0].choices, ["primary", "assist"]);
+        assert_eq!(taken.nodes[0].selected, 0);
+        assert_eq!(
+            taken.sinks[0].node.as_deref(),
+            Some("/dev/input/event99"),
+            "its virtual pad is the one it had"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_update_under_way_is_answered_whatever_becomes_of_the_setup() {
+        let graph = || {
+            Box::new(NewGraph::new(
+                Graph::build(Profile::check(TOGGLE).unwrap().graph).unwrap(),
+                Vec::new(),
+            ))
+        };
+        let internal = |outcome: Result<rpc::Updated, RpcError>, code| {
+            assert!(matches!(
+                outcome,
+                Err(RpcError::Service(refusal)) if refusal.code == code
+            ));
+        };
+        let mut rig = rig().await;
+        rig.reactor.profiles.put("couch", TOGGLE).unwrap();
+
+        // Refused by the input thread, which runs no such setup.
+        follow(&mut rig.reactor, 7, Phase::Running);
+        let updating = ask_update(&mut rig, true).await;
+        rig.reactor
+            .reported(Report::GraphRefused {
+                setup: SetupId(7),
+                graph: graph(),
+            })
+            .await;
+        internal(updating.await.unwrap(), ErrorCode::Internal);
+
+        // Failed as it took it.
+        let updating = ask_update(&mut rig, true).await;
+        rig.reactor
+            .reported(Report::Failed(SetupId(7), handed_back()))
+            .await;
+        internal(updating.await.unwrap(), ErrorCode::SetupFailed);
+        finish(&mut rig.reactor).await;
+        rig.reactor.setups.entries.remove("couch");
+
+        // Stopped with the report of the graph lost.
+        follow(&mut rig.reactor, 8, Phase::Running);
+        let updating = ask_update(&mut rig, true).await;
+        rig.reactor
+            .reported(Report::Stopped(SetupId(8), handed_back()))
+            .await;
+        internal(updating.await.unwrap(), ErrorCode::Internal);
+        finish(&mut rig.reactor).await;
+
+        // For a setup that has gone, either report is only a graph to drop.
+        rig.reactor
+            .reported(Report::GraphRefused {
+                setup: SetupId(99),
+                graph: graph(),
+            })
+            .await;
+        rig.reactor
+            .reported(Report::GraphTaken {
+                setup: SetupId(99),
+                old: graph(),
+            })
+            .await;
+        assert!(rig.reactor.setups.setup("couch").is_none());
+    }
+
+    /// A node carries on from the one of its name, and what it selected
+    /// is found among its choices by what the profile calls it.
+    #[test]
+    fn a_node_carries_on_from_the_one_of_its_name() {
+        let names = |names: &[&str]| names.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let old = vec![
+            ("mux".to_string(), names(&["primary", "assist"])),
+            ("gone".to_string(), names(&["0", "1"])),
+        ];
+        let new = vec![
+            ("added".to_string(), names(&["0", "1"])),
+            ("mux".to_string(), names(&["assist", "third", "primary"])),
+        ];
+        assert_eq!(
+            carry(&old, &new),
+            [None, Some((NodeId(0), vec![Some(2), Some(0)]))]
         );
     }
 }

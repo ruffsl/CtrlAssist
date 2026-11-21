@@ -3,6 +3,8 @@
 
 use ctrlassist::{DaemonState, Hiding, Identity, Pad, Phase, Profile, Setup};
 
+use crate::quick::{self, Quick};
+
 /// One snapshot of what the daemon publishes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct View {
@@ -52,6 +54,16 @@ impl View {
     #[must_use]
     pub fn setup(&self, name: &str) -> Option<&Setup> {
         self.setups.iter().find(|setup| setup.name == name)
+    }
+
+    /// The quick-start choices the kept `quick` profile was written
+    /// from, if one is kept that quick start wrote.
+    #[must_use]
+    pub fn kept_quick(&self) -> Option<Quick> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.name == quick::NAME)
+            .and_then(|profile| Quick::from_profile(&profile.toml))
     }
 
     /// The pad known by `id`, if the daemon knows one.

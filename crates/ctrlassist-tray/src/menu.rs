@@ -267,11 +267,15 @@ fn quick_entries(view: &View, quick: &Quick) -> Vec<Entry> {
             .into_iter()
             .flatten()
             .all(|pad| pickable(view, pad, None).0);
-    let start = format!(
-        "{} as `{}`",
-        if running { "Restart" } else { "Start" },
-        quick::NAME
-    );
+    // What a running `quick` takes as it runs is applied as it is
+    // picked; only other pads or another identity wait here for a click.
+    let waiting = view.kept_quick().is_none_or(|kept| quick.restarts(&kept));
+    let (verb, ready) = match (running, waiting) {
+        (false, _) => ("Start", ready),
+        (true, true) => ("Restart", ready),
+        (true, false) => ("Running", false),
+    };
+    let start = format!("{verb} as `{}`", quick::NAME);
     vec![
         sub(
             format!("Primary: {}", name_of(quick.primary.as_ref())),
