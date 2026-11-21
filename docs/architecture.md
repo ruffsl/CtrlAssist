@@ -198,7 +198,7 @@ A change to a running setup is live if the virtual pads are untouched (a thresho
 
 **Layout.** Xbox and PlayStation family pads get a standard layout from their kernel drivers. For others the device crate applies SDL's controller database through its own parser of that format. The parser treats the database as untrusted input and has a never-panics property test.
 
-**Identification.** A pad is known by the kernel's `uniq` value: the pad's own address. For PlayStation pads the kernel driver sets it from the pad's pairing report, so it is the same over USB and Bluetooth, and Steam keys its per-pad configuration by the same value. Failing that, by vendor and product plus port, then by name. A profile names a pad by address when it must be that exact pad, or by model when any pad of that kind will do. The udev properties `ID_SERIAL` and `ID_PATH` are not identifiers: one is the model name, the other is the port, and neither exists over Bluetooth.
+**Identification.** A pad is known by the kernel's `uniq` value: the pad's own address. For PlayStation pads the kernel driver sets it from the pad's pairing report, so it is the same over USB and Bluetooth, and Steam keys its per-pad configuration by the same value. An Xbox One pad on USB reports no `uniq`, but its USB serial number is in udev's `ID_SERIAL_SHORT`, so that is the second choice. Failing both, by vendor and product plus port, then by name. A profile names a pad by this identifier when it must be that exact pad, or by model when any pad of that kind will do. udev's `ID_SERIAL` and `ID_PATH` are not identifiers by themselves: for a PlayStation pad the first is only the model name, the second is the port, and neither exists over Bluetooth.
 
 **Hotplug.** When a pad in a running setup disconnects, the setup is held. When the same pad returns it is hidden again before any game can see it, re-bound to the setup, and given the current rumble level. A notification says what happened.
 
@@ -419,6 +419,7 @@ A machine with Steam's or Sunshine's udev rules installed opens more of these, w
 - uinput cannot set a device's `uniq`; it can set `phys`.
 - The uhid interface is a handful of fixed-layout events, written by hand here; the available binding crate needs libclang at build time.
 - A Bluetooth DualShock 4 appeared as a uhid device created by the Bluetooth daemon.
+- What identifies a pad differs by driver: a DualSense on USB and a DualShock 4 over Bluetooth each report their own address as `uniq`; an Xbox One pad on USB, under the `xpad` driver, reports an empty `uniq`, no HID device and no hidraw node, and a USB serial number through udev.
 
 ### The input path
 
