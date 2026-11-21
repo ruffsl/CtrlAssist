@@ -348,6 +348,28 @@ impl DaemonClient {
         self.call::<setup::Stop>(&request).await.map(|_| ())
     }
 
+    /// Have the setup `name` take up its profile as it is kept now, after
+    /// a [`Self::put_profile`]; with `apply` false, only ask what that
+    /// would cost. Returns whether it is disruptive: whether the setup's
+    /// virtual pads are made anew, which a game sees as its pad
+    /// disconnecting. Every update is, for now. With `apply`, returns
+    /// once the setup runs again.
+    ///
+    /// # Errors
+    ///
+    /// Refused with [`ErrorCode::UnknownSetup`]; with
+    /// [`ErrorCode::InvalidProfile`] or [`ErrorCode::UnknownProfile`] if
+    /// what is kept now can't be run, the setup then carrying on as it
+    /// was; with [`ErrorCode::SetupBusy`] while it is starting or
+    /// stopping; or as [`Self::start_setup`] is; and fails as any rpc can.
+    pub async fn update_setup(&self, name: &str, apply: bool) -> Result<bool> {
+        let request = rpc::UpdateRequest {
+            name: name.to_string(),
+            apply,
+        };
+        Ok(self.call::<setup::Update>(&request).await?.disruptive)
+    }
+
     /// Have a node of the setup `setup` select another input, for a mux
     /// that follows its switch, or another output, for a demux that
     /// sends to one at a time: `choice` by its name among the node's

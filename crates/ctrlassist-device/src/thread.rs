@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 
-use ctrlassist_core::{EffectKey, Graph, NodeId, Router, SinkId, SourceId};
+use ctrlassist_core::{EffectKey, Graph, Level, NodeId, Router, SinkId, SourceId};
 use rustix::event::epoll::{self, EventData, EventFlags};
 use rustix::event::{EventfdFlags, eventfd};
 use rustix::time::{
@@ -65,6 +65,11 @@ pub struct Setup {
     next_ms: Option<u64>,
     /// Each node's selection as last reported, by node number.
     selected: Vec<Option<usize>>,
+    /// The rumble level the games want of each pad, by source number.
+    wanted: Vec<Level>,
+    /// A buzz under way on a pad, by source number: its level, and when
+    /// it ends. While it lasts it is what the pad plays.
+    buzz: Vec<Option<(Level, u64)>>,
     failed: bool,
 }
 
@@ -74,10 +79,12 @@ impl Setup {
     #[must_use]
     pub fn new(graph: Graph, pads: Vec<Option<Pad>>, sinks: Vec<VirtualPad>) -> Self {
         let router = Router::new(sinks.len(), pads.len());
-        let pads = pads.into_iter().map(|pad| pad.map(Box::new)).collect();
+        let pads: Vec<Option<Box<Pad>>> = pads.into_iter().map(|pad| pad.map(Box::new)).collect();
         // Nothing reported yet, so each node that selects is reported
         // once as the setup starts.
         let selected = vec![None; graph.nodes()];
+        let wanted = vec![Level::default(); pads.len()];
+        let buzz = vec![None; pads.len()];
         Self {
             graph,
             router,
@@ -85,6 +92,8 @@ impl Setup {
             sinks,
             next_ms: None,
             selected,
+            wanted,
+            buzz,
             failed: false,
         }
     }
@@ -197,6 +206,10 @@ impl Setup {
             Err(PadError::Gone | PadError::Io(_)) => {
                 let _ = epoll::delete(epoll, &**pad);
                 let gone = slot.take();
+                // A buzz goes with the pad it was on.
+                if let Some(buzz) = self.buzz.get_mut(index) {
+                    *buzz = None;
+                }
                 graph.set_present(SourceId(index), false, &mut |_| {});
                 self.write();
                 gone
@@ -293,18 +306,47 @@ impl Setup {
             pads,
             sinks,
             next_ms,
+            wanted,
+            buzz,
             ..
         } = self;
         for index in 0..sinks.len() {
             router.set_targets(SinkId(index), graph.feedback_targets(SinkId(index)));
         }
         *next_ms = router.poll(now_ms, &mut |source, level| {
-            if let Some(Some(pad)) = pads.get_mut(source.0) {
+            if let Some(want) = wanted.get_mut(source.0) {
+                *want = level;
+            }
+            // A buzz outranks the games until it ends.
+            let buzzing = buzz.get(source.0).is_some_and(Option::is_some);
+            if !buzzing && let Some(Some(pad)) = pads.get_mut(source.0) {
                 // A pad that refuses rumble still plays; the control side
                 // knows from the pad itself which can't.
                 let _ = pad.rumble(level);
             }
         });
+        for (index, slot) in buzz.iter_mut().enumerate() {
+            let Some((_, until)) = *slot else { continue };
+            if now_ms < until {
+                *next_ms = Some(next_ms.map_or(until, |next| next.min(until)));
+                continue;
+            }
+            // Over: the pad goes back to what the games want of it.
+            *slot = None;
+            if let (Some(Some(pad)), Some(level)) = (pads.get_mut(index), wanted.get(index)) {
+                let _ = pad.rumble(*level);
+            }
+        }
+    }
+
+    /// Starts a buzz on a pad: for `millis` it plays `level`, whatever
+    /// the games want of it. A pad that is missing has nothing to buzz.
+    fn buzz(&mut self, index: usize, level: Level, millis: u32, now_ms: u64) {
+        if let (Some(Some(pad)), Some(slot)) = (self.pads.get_mut(index), self.buzz.get_mut(index))
+        {
+            let _ = pad.rumble(level);
+            *slot = Some((level, now_ms + u64::from(millis)));
+        }
     }
 }
 
@@ -324,6 +366,19 @@ pub enum Command {
         source: SourceId,
         /// The pad, opened again.
         pad: Box<Pad>,
+    },
+    /// Buzz one of a running setup's pads, so a person can tell which it
+    /// is. For that long the buzz is what the pad plays, and then it goes
+    /// back to what the games want of it.
+    Buzz {
+        /// The setup.
+        setup: SetupId,
+        /// Which of its pads.
+        source: SourceId,
+        /// How hard.
+        level: Level,
+        /// For how long, in milliseconds: the asker's own duration.
+        millis: u32,
     },
     /// Move a toggle or unicast node to its next input or output.
     Switch {
@@ -665,6 +720,19 @@ impl State {
                     }
                     if let Some(pad) = pad {
                         self.report(Report::PadRefused { setup, source, pad });
+                    }
+                }
+                Command::Buzz {
+                    setup,
+                    source,
+                    level,
+                    millis,
+                } => {
+                    if let Some(slot) = self.slot_of(setup) {
+                        self.guarded(slot, now, |setup, _| {
+                            setup.buzz(source.0, level, millis, now);
+                            None
+                        });
                     }
                 }
                 Command::Switch { setup, node } => {

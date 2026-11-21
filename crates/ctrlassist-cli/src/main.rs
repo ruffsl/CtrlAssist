@@ -43,6 +43,9 @@ fn main() -> Result<()> {
                 Command::Start { profile } => setups::start(&socket, &profile).await,
                 Command::Stop { setup } => setups::stop(&socket, &setup).await,
                 Command::Setups { json } => setups::setups(&socket, json).await,
+                Command::Update { setup, dry_run } => {
+                    setups::update(&socket, &setup, dry_run).await
+                }
                 Command::Select {
                     setup,
                     node,

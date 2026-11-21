@@ -20,6 +20,19 @@ pub(crate) async fn stop(socket: &Path, setup: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) async fn update(socket: &Path, setup: &str, dry_run: bool) -> Result<()> {
+    let (client, _watcher) = connect(socket).await?;
+    let disruptive = client.update_setup(setup, !dry_run).await?;
+    let said = match (dry_run, disruptive) {
+        (true, true) => "would restart: games would see the virtual pads disconnect and connect",
+        (true, false) => "would apply without a game noticing",
+        (false, true) => "restarted: games saw the virtual pads disconnect and connect",
+        (false, false) => "applied without a game noticing",
+    };
+    writeln!(io::stdout(), "{setup}: {said}")?;
+    Ok(())
+}
+
 pub(crate) async fn select(
     socket: &Path,
     setup: &str,

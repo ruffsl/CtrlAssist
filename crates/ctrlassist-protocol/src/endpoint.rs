@@ -234,6 +234,9 @@ pub mod setup {
             Start = "start" (rpc::SetupRequest) -> rpc::Ack, write;
             /// Stop a setup. Replies once its virtual pads are gone.
             Stop = "stop" (rpc::SetupRequest) -> rpc::Ack, write;
+            /// Have a setup take up its profile as it is kept now, or say
+            /// what that would cost. Replies once the setup runs again.
+            Update = "update" (rpc::UpdateRequest) -> rpc::Updated, write;
             /// Have a node select another input or output. Replies once
             /// the input thread has been asked; the setup's state says
             /// when it has.

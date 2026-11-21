@@ -13,7 +13,7 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use ctrlassist_core::{Graph, Input, NodeId, NodeSpec, SourceId};
+use ctrlassist_core::{Graph, Input, Level, NodeId, NodeSpec, SourceId};
 use ctrlassist_device::{Command, Database, Pad, Report, SendError, Setup, SetupId, VirtualPad};
 use ctrlassist_hider::{Client, Token};
 use ctrlassist_protocol::endpoint::setup;
@@ -60,9 +60,22 @@ struct Entry {
     /// What each node has selected, by node number, as the input thread
     /// last reported; none for a node that doesn't select.
     selected: Vec<Option<usize>>,
-    /// The reply owed once the input thread hands it back.
-    stopping: Option<Responder<setup::Stop>>,
+    /// Who is owed something once the input thread hands it back.
+    stopping: Option<Waiting>,
 }
+
+/// Who waits for a setup the input thread was asked to stop.
+#[derive(Debug)]
+pub(crate) enum Waiting {
+    /// A stop, owed its reply.
+    Stop(Responder<setup::Stop>),
+    /// An update, for which the setup is started again.
+    Update(Responder<setup::Update>),
+}
+
+/// What an update costs: every one makes the virtual pads anew, until
+/// the input thread can take a new graph for a running setup.
+const UPDATED: rpc::Updated = rpc::Updated { disruptive: true };
 
 /// Each node of `plan`, by node number: its name, and what it selects
 /// between, in the words of the profile.
@@ -224,18 +237,24 @@ pub(crate) enum Asker {
     Client(Responder<setup::Start>),
     /// The daemon itself, for a profile that starts by itself.
     Daemon,
+    /// A client that asked for an update, which is owed its reply once
+    /// the setup runs again.
+    Update(Responder<setup::Update>),
 }
 
 impl Asker {
     async fn ok(self) {
-        if let Self::Client(responder) = self {
-            responder.ok(&rpc::Ack {}).await;
+        match self {
+            Self::Client(responder) => responder.ok(&rpc::Ack {}).await,
+            Self::Update(responder) => responder.ok(&UPDATED).await,
+            Self::Daemon => {}
         }
     }
 
     async fn err(self, refusal: &WireError) {
         match self {
             Self::Client(responder) => responder.err(refusal).await,
+            Self::Update(responder) => responder.err(refusal).await,
             Self::Daemon => {
                 warn!(code = %refusal.code, reason = refusal.message, "a profile that starts by itself couldn't");
             }
@@ -262,8 +281,11 @@ pub(crate) enum Done {
     },
     /// A setup the input thread handed back is gone, virtual pads and
     /// all, and its pads are shown again; a stop that was waiting for
-    /// that can be answered.
-    Retired(Option<Responder<setup::Stop>>),
+    /// that is seen to.
+    Retired {
+        name: String,
+        waiting: Option<Waiting>,
+    },
     /// Something was dropped where dropping may block.
     Dropped,
 }
@@ -284,13 +306,39 @@ fn read(fd: OwnedFd, node: &Path, database: &Database) -> Result<Pad, String> {
     Pad::with_database(fd, database).map_err(|error| format!("reading {}: {error}", node.display()))
 }
 
+/// A pad to take: what it is known by, and the node it was last seen on.
+#[derive(Debug)]
+pub(crate) struct Wanted {
+    id: String,
+    node: PathBuf,
+}
+
 /// Takes a pad for a setup, keeping it from games: hidden by the hiding
 /// service, which hands back the only descriptor left open on it, or
 /// else grabbed. Returns the service's name for the pad if it hid it.
-fn take(node: &Path, database: &Database, hiding: &Hiding) -> Result<(Pad, Option<Token>), String> {
+fn take(
+    wanted: &Wanted,
+    database: &Database,
+    hiding: &Hiding,
+) -> Result<(Pad, Option<Token>), String> {
+    let node = wanted.node.as_path();
     let fd = open(node)?;
+    // The node is where the pad was last seen, and the kernel hands a
+    // freed node to the next pad to connect: what was opened is looked at
+    // before it is taken for the pad wanted.
+    let dup = fd.try_clone().map_err(|error| error.to_string())?;
+    let opened = read(dup, node, database)?;
+    let found = opened.identifiers().id().to_string();
+    if found != wanted.id {
+        return Err(format!(
+            "{} is {found} now, not {}",
+            node.display(),
+            wanted.id
+        ));
+    }
     // Holding the pad open is what shows the service it is ours to hide.
     if let Some(hidden) = hiding.ask(|client| client.hide(fd.as_fd())) {
+        drop(opened);
         drop(fd);
         return match read(hidden.event, node, database) {
             Ok(pad) => Ok((pad, Some(hidden.token))),
@@ -300,7 +348,8 @@ fn take(node: &Path, database: &Database, hiding: &Hiding) -> Result<(Pad, Optio
             }
         };
     }
-    let mut pad = read(fd, node, database)?;
+    drop(fd);
+    let mut pad = opened;
     if let Err(error) = pad.grab() {
         warn!(node = %node.display(), %error, "a pad couldn't be grabbed; games will see it beside the virtual pad");
     }
@@ -310,7 +359,7 @@ fn take(node: &Path, database: &Database, hiding: &Hiding) -> Result<(Pad, Optio
 /// Takes back a pad that returned. One the service still has hidden is
 /// opened through it: the pad was never visible in between.
 fn retake(
-    node: &Path,
+    wanted: &Wanted,
     token: Option<Token>,
     database: &Database,
     hiding: &Hiding,
@@ -318,15 +367,16 @@ fn retake(
     if let Some(token) = token
         && let Some(hidden) = hiding.ask(|client| client.reopen(token))
     {
-        return read(hidden.event, node, database).map(|pad| (pad, Some(token)));
+        // The service knows the pad by what it is, not by its node.
+        return read(hidden.event, &wanted.node, database).map(|pad| (pad, Some(token)));
     }
-    take(node, database, hiding)
+    take(wanted, database, hiding)
 }
 
 /// The blocking part of a start.
 fn make(
     plan: Plan,
-    nodes: &[Option<PathBuf>],
+    nodes: &[Option<Wanted>],
     database: &Database,
     hiding: &Hiding,
 ) -> Result<Made, String> {
@@ -336,7 +386,7 @@ fn make(
     for node in nodes {
         // A pad that went between being chosen and being taken is one
         // the setup starts without.
-        let pad = node.as_deref().and_then(|node| {
+        let pad = node.as_ref().and_then(|node| {
             take(node, database, hiding)
                 .inspect_err(|error| warn!(error, "a setup starts without a pad"))
                 .ok()
@@ -396,15 +446,16 @@ impl Reactor {
     /// ours still reads a pad as it comes back.
     fn retire(
         &mut self,
+        name: String,
         setup: Box<Setup>,
         tokens: Vec<Token>,
-        stopping: Option<Responder<setup::Stop>>,
+        waiting: Option<Waiting>,
     ) {
         let hiding = Arc::clone(&self.hiding);
         self.work.spawn_blocking(move || {
             drop(setup);
             hiding.restore(&tokens);
-            Done::Retired(stopping)
+            Done::Retired { name, waiting }
         });
     }
 
@@ -505,11 +556,14 @@ impl Reactor {
             Ok(slots) => slots,
             Err(refusal) => return asker.err(&refusal).await,
         };
-        let nodes: Vec<Option<PathBuf>> = slots
+        let nodes: Vec<Option<Wanted>> = slots
             .iter()
             .map(|slot| {
                 let pad = slot.pad.as_deref()?;
-                self.book.node(pad).map(Path::to_path_buf)
+                Some(Wanted {
+                    id: pad.to_string(),
+                    node: self.book.node(pad)?.to_path_buf(),
+                })
             })
             .collect();
         let pads: Vec<String> = slots.iter().filter_map(|slot| slot.pad.clone()).collect();
@@ -622,7 +676,7 @@ impl Reactor {
             }
             Phase::Running | Phase::Held if entry.stopping.is_none() => {
                 match self.input.send(Command::Stop(entry.id)) {
-                    Ok(()) => entry.stopping = Some(responder),
+                    Ok(()) => entry.stopping = Some(Waiting::Stop(responder)),
                     Err(error) => {
                         let refusal = WireError::internal(format!(
                             "the input thread didn't take the request: {error}"
@@ -639,6 +693,93 @@ impl Reactor {
                 responder.err(&refusal).await;
             }
         }
+    }
+
+    /// Has a setup take up its profile as it is kept now, by stopping it
+    /// and starting it again; or only says that this is what it takes.
+    async fn update(&mut self, request: rpc::UpdateRequest, responder: Responder<setup::Update>) {
+        let name = request.name;
+        let Some(entry) = self.setups.entries.get_mut(&name) else {
+            return responder.err(&unknown(&name)).await;
+        };
+        // What is kept now must be right before what runs is given up.
+        let kept = self.profiles.profile(&name).map(|profile| profile.problem);
+        let refusal = match kept {
+            None => Some(WireError::refusal(
+                ErrorCode::UnknownProfile,
+                format!("the profile {name} is no longer kept; the setup runs it as it was"),
+            )),
+            Some(Some(problem)) => Some(WireError::refusal(
+                ErrorCode::InvalidProfile,
+                problem.to_string(),
+            )),
+            Some(None) => None,
+        };
+        if let Some(refusal) = refusal {
+            return responder.err(&refusal).await;
+        }
+        if !request.apply {
+            return responder.ok(&UPDATED).await;
+        }
+        match entry.phase {
+            Phase::Failed => {
+                // Nothing runs: clear it away and start afresh.
+                self.setups.entries.remove(&name);
+                self.publish_setup(&name).await;
+                self.start(name, Asker::Update(responder)).await;
+            }
+            Phase::Running | Phase::Held if entry.stopping.is_none() => {
+                match self.input.send(Command::Stop(entry.id)) {
+                    Ok(()) => entry.stopping = Some(Waiting::Update(responder)),
+                    Err(error) => {
+                        let refusal = WireError::internal(format!(
+                            "the input thread didn't take the request: {error}"
+                        ));
+                        responder.err(&refusal).await;
+                    }
+                }
+            }
+            _ => {
+                let refusal = WireError::refusal(
+                    ErrorCode::SetupBusy,
+                    format!("the setup {name} is starting or stopping; ask again once it has"),
+                );
+                responder.err(&refusal).await;
+            }
+        }
+    }
+
+    /// Buzzes a pad that a setup holds, through the input thread, which
+    /// is the only thing that can reach it.
+    pub(crate) fn buzz(
+        &self,
+        setup: &str,
+        pad: &str,
+        level: Level,
+        millis: u32,
+    ) -> Result<(), WireError> {
+        let place = self.setups.entries.get(setup).and_then(|entry| {
+            let source = entry
+                .slots
+                .iter()
+                .position(|slot| slot.pad.as_deref() == Some(pad))?;
+            Some((entry.id, source, entry.slots[source].present))
+        });
+        let Some((id, source, true)) = place else {
+            return Err(WireError::refusal(
+                ErrorCode::PadDisconnected,
+                format!("{pad} isn't connected"),
+            ));
+        };
+        let command = Command::Buzz {
+            setup: id,
+            source: SourceId(source),
+            level,
+            millis,
+        };
+        self.input.send(command).map_err(|error| {
+            WireError::internal(format!("the input thread didn't take the request: {error}"))
+        })
     }
 
     /// Asks the input thread to have a node select as `request` says.
@@ -711,6 +852,9 @@ impl Reactor {
             }
             Some(((), setup::Incoming::Stop(request, responder))) => {
                 self.stop(request.name, responder).await;
+            }
+            Some(((), setup::Incoming::Update(request, responder))) => {
+                self.update(request, responder).await;
             }
             Some(((), setup::Incoming::Select(request, responder))) => {
                 responder
@@ -811,19 +955,24 @@ impl Reactor {
         if slot.present || slot.returning {
             return;
         }
-        let Some(node) = slot.pad.as_deref().and_then(|pad| self.book.node(pad)) else {
+        let wanted = slot.pad.as_deref().and_then(|pad| {
+            Some(Wanted {
+                id: pad.to_string(),
+                node: self.book.node(pad)?.to_path_buf(),
+            })
+        });
+        let Some(wanted) = wanted else {
             return;
         };
         slot.returning = true;
-        let node = node.to_path_buf();
         let token = slot.token;
         let database = Arc::clone(&self.database);
         let hiding = Arc::clone(&self.hiding);
         let name = name.to_string();
         self.work.spawn_blocking(move || {
-            // A node from before the pad left doesn't open; the pad's
-            // arrival will bring it back.
-            let (pad, token) = retake(&node, token, &database, &hiding).ok().unzip();
+            // A node from before the pad left doesn't open, or is some
+            // other pad's by now; the pad's arrival will bring it back.
+            let (pad, token) = retake(&wanted, token, &database, &hiding).ok().unzip();
             Done::Returned {
                 pad: pad.map(Box::new),
                 token: token.flatten(),
@@ -933,11 +1082,15 @@ impl Reactor {
                 pad,
                 token,
             } => self.returned(name, source, pad, token).await,
-            Done::Retired(stopping) => {
-                if let Some(responder) = stopping {
-                    responder.ok(&rpc::Ack {}).await;
+            Done::Retired { name, waiting } => match waiting {
+                Some(Waiting::Stop(responder)) => responder.ok(&rpc::Ack {}).await,
+                // The old setup is gone, pads restored: the new one starts
+                // from the profile as it is kept now.
+                Some(Waiting::Update(responder)) => {
+                    self.start(name, Asker::Update(responder)).await;
                 }
-            }
+                None => {}
+            },
             Done::Dropped => {}
         }
     }
@@ -955,7 +1108,12 @@ impl Reactor {
                     .flat_map(|entry| entry.slots.iter().filter_map(|slot| slot.token))
                     .collect();
                 // The stop is answered once the virtual pads are gone.
-                self.retire(setup, tokens, entry.and_then(|entry| entry.stopping));
+                self.retire(
+                    name.clone(),
+                    setup,
+                    tokens,
+                    entry.and_then(|entry| entry.stopping),
+                );
                 self.release(&name).await;
                 self.publish_setup(&name).await;
                 info!(setup = name, "a setup stopped");
@@ -997,7 +1155,7 @@ impl Reactor {
                     self.setups.entries.remove(&name);
                 }
                 self.publish_setup(&name).await;
-                self.retire(setup, tokens, stopping);
+                self.retire(name, setup, tokens, stopping);
             }
             Report::PadGone { setup, source, pad } => {
                 self.drop_off(pad);
@@ -1444,6 +1602,109 @@ mod tests {
         assert_eq!(
             rig.reactor.setups.setup("couch").unwrap().phase,
             Phase::Running
+        );
+    }
+
+    /// Asks for an update of `couch` as a client would.
+    async fn ask_update(rig: &mut Rig, apply: bool) -> Asked<rpc::Updated> {
+        let caller = Caller::new(rig.client.clone());
+        let asked = tokio::spawn(async move {
+            let request = rpc::UpdateRequest {
+                name: "couch".to_string(),
+                apply,
+            };
+            caller.call::<setup::Update>(&(), &request).await
+        });
+        let query = rig.requests.recv_async().await.unwrap();
+        rig.reactor.setup_rpc(query).await;
+        asked
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_update_waits_its_turn_and_a_buzz_needs_the_pad_there() {
+        let mut rig = rig().await;
+        follow(&mut rig.reactor, 7, Phase::Starting);
+        // What an update costs can be asked at any time; doing it can't.
+        assert!(
+            ask_update(&mut rig, false)
+                .await
+                .await
+                .unwrap()
+                .unwrap()
+                .disruptive
+        );
+        let busy = ask_update(&mut rig, true).await.await.unwrap();
+        assert!(matches!(
+            busy,
+            Err(RpcError::Service(refusal)) if refusal.code == ErrorCode::SetupBusy
+        ));
+
+        // Running, the update waits for the input thread to hand the
+        // setup back, and a second one for the first.
+        rig.reactor.setups.entries.get_mut("couch").unwrap().phase = Phase::Running;
+        let updating = ask_update(&mut rig, true).await;
+        assert!(matches!(
+            rig.reactor.setups.entries["couch"].stopping,
+            Some(Waiting::Update(_))
+        ));
+        let second = ask_update(&mut rig, true).await.await.unwrap();
+        assert!(matches!(
+            second,
+            Err(RpcError::Service(refusal)) if refusal.code == ErrorCode::SetupBusy
+        ));
+        drop(updating);
+
+        // A buzz reaches a pad its setup holds, and no other.
+        let pad = "address:0c:27:56:4f:bd:14";
+        let level = Level { strong: 1, weak: 1 };
+        let absent = rig.reactor.buzz("couch", pad, level, 100).unwrap_err();
+        assert_eq!(absent.code, ErrorCode::PadDisconnected);
+        for slot in &mut rig.reactor.setups.entries.get_mut("couch").unwrap().slots {
+            slot.present = true;
+        }
+        rig.reactor.buzz("couch", pad, level, 100).unwrap();
+        assert!(
+            rig.reactor
+                .buzz("couch", "address:other", level, 100)
+                .is_err()
+        );
+        assert!(rig.reactor.buzz("nothing", pad, level, 100).is_err());
+    }
+
+    /// What a node selects between is said in the profile's own words: a
+    /// source or a mux by its name, a demux's output by name and number.
+    #[test]
+    fn a_node_s_choices_are_named_as_the_profile_names_them() {
+        let full = include_str!("../../ctrlassist-protocol/tests/it/fixtures/full.toml");
+        let named = choosers(&Profile::check(full).unwrap());
+        let choices = |node: &str| -> Vec<&str> {
+            let (_, choices) = named.iter().find(|(name, _)| name == node).unwrap();
+            choices.iter().map(String::as_str).collect()
+        };
+        assert_eq!(choices("first"), ["one", "share.0"]);
+        assert_eq!(choices("second"), ["two", "share.1"]);
+        assert_eq!(choices("share"), ["0", "1"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_update_of_a_failed_setup_starts_it_afresh() {
+        if !ctrlassist_test::can_make_pads("an_update_of_a_failed_setup_starts_it_afresh") {
+            return;
+        }
+        let mut rig = rig().await;
+        follow(&mut rig.reactor, 7, Phase::Failed);
+        let updating = ask_update(&mut rig, true).await;
+        // Its pads aren't connected, so it starts held, on a setup of its
+        // own making this time.
+        finish(&mut rig.reactor).await;
+        assert!(updating.await.unwrap().unwrap().disruptive);
+        let started = rig.reactor.setups.setup("couch").unwrap();
+        assert_eq!(started.phase, Phase::Held);
+        assert!(
+            started.sinks[0]
+                .node
+                .as_deref()
+                .is_some_and(|node| node != "/dev/input/event99")
         );
     }
 }

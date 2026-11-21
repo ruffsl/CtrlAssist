@@ -146,6 +146,7 @@ fn the_command_explains_itself() {
         "stop",
         "setups",
         "select",
+        "update",
         "service",
         "--socket",
     ] {
@@ -379,6 +380,15 @@ async fn a_profile_is_started_listed_and_stopped() {
     let setups: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(setups[0]["name"], "couch");
     assert_eq!(setups[0]["phase"], "held");
+
+    // An update says what it costs, before and after.
+    let would = ctrlassist(&socket, &["update", "couch", "--dry-run"]);
+    assert!(text(&would.stdout).starts_with("couch: would restart"));
+    let updated = ctrlassist(&socket, &["update", "couch"]);
+    assert!(updated.status.success(), "{}", text(&updated.stderr));
+    assert!(text(&updated.stdout).starts_with("couch: restarted"));
+    let unknown = ctrlassist(&socket, &["update", "nothing"]);
+    assert!(text(&unknown.stderr).contains("unknown-setup"));
 
     let stopped = ctrlassist(&socket, &["stop", "couch"]);
     assert!(stopped.status.success(), "{}", text(&stopped.stderr));

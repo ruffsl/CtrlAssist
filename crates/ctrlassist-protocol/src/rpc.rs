@@ -68,6 +68,23 @@ pub struct SetupRequest {
     pub name: String,
 }
 
+/// Asks a running setup to take up its profile as it is kept now.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct UpdateRequest {
+    /// The setup's name.
+    pub name: String,
+    /// Whether to do it, or only to say what doing it would cost.
+    pub apply: bool,
+}
+
+/// Reply to `update`: what the change costs, or cost.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Updated {
+    /// Whether the setup's virtual pads are made anew, which a game
+    /// sees as its pad disconnecting and another connecting.
+    pub disruptive: bool,
+}
+
 /// Asks a node of a setup to select another input or output.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SelectRequest {

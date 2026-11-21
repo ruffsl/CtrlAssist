@@ -456,3 +456,96 @@ fn an_idle_input_thread_never_wakes() {
         "the input thread woke with nothing to do"
     );
 }
+
+#[test]
+fn a_buzz_outranks_a_game_s_rumble_and_then_gives_the_pad_back_to_it() {
+    if !can_make_pads("a_buzz_outranks_a_game_s_rumble_and_then_gives_the_pad_back_to_it") {
+        return;
+    }
+    let motors = ctrlassist_test::RumblePad::new("Thread Buzz Pad", 0x1209, 0x5eef).unwrap();
+    let pad = writable(motors.event_node());
+    let (sink, _reader) = sink();
+    let game_node = sink.event_node().to_path_buf();
+    let graph = Graph::build(GraphSpec {
+        sources: vec![source()],
+        nodes: Vec::new(),
+        sinks: vec![Input::Source(PRIMARY)],
+    })
+    .unwrap();
+    let (thread, _reports) = InputThread::spawn().unwrap();
+    thread
+        .send(Command::Start(
+            ID,
+            Box::new(Setup::new(graph, vec![Some(pad)], vec![sink])),
+        ))
+        .unwrap();
+    // What the motors were set to, leaving out the stops between levels.
+    let levels = || -> Vec<(u16, u16)> {
+        motors
+            .motors()
+            .into_iter()
+            .filter(|level| *level != (0, 0))
+            .collect()
+    };
+    let wait_for = |count: usize| {
+        for _ in 0..500 {
+            if levels().len() >= count {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        unreachable!("the motors were set {:?}", motors.motors());
+    };
+
+    // A game rumbles for longer than the test lasts.
+    let game = std::thread::spawn(move || {
+        let mut pad = game_opens(&game_node);
+        let mut effect = pad
+            .upload_ff_effect(rumble(0x6000, 0x3000, 30_000, 0))
+            .unwrap();
+        effect.play(1).unwrap();
+        std::thread::park();
+        drop(effect);
+    });
+    wait_for(1);
+
+    let buzz = ctrlassist_core::Level {
+        strong: 0xa000,
+        weak: 0xa000,
+    };
+    let asked = std::time::Instant::now();
+    thread
+        .send(Command::Buzz {
+            setup: ID,
+            source: PRIMARY,
+            level: buzz,
+            millis: 200,
+        })
+        .unwrap();
+    wait_for(3);
+    let lasted = asked.elapsed();
+    assert_eq!(
+        levels(),
+        [(0x6000, 0x3000), (0xa000, 0xa000), (0x6000, 0x3000)]
+    );
+    assert!(
+        lasted >= std::time::Duration::from_millis(200),
+        "a 200 ms buzz ended after {lasted:?}"
+    );
+
+    // A buzz for a pad the setup doesn't have, or a setup that isn't
+    // running, is nothing.
+    for (setup, source) in [(ID, SourceId(5)), (SetupId(9), PRIMARY)] {
+        thread
+            .send(Command::Buzz {
+                setup,
+                source,
+                level: buzz,
+                millis: 50,
+            })
+            .unwrap();
+    }
+    game.thread().unpark();
+    game.join().unwrap();
+    assert_eq!(levels().len(), 3);
+}

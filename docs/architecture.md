@@ -197,9 +197,11 @@ A profile with `auto-start` is started by the daemon when it can run, not merely
 
 A node that selects, a mux that follows its switch or a demux that sends to one output at a time, has its choices and the one selected in the setup's state. The input thread reports each change of selection, whether from the switch button or from `select`, which names a choice or asks for the next. A mux doesn't hand over to a pad that isn't there.
 
+A node is only where a pad was last seen: the kernel hands a freed node number to the next pad to connect, which can happen before the first pad's leaving has been heard of. So what a setup opens is checked to be the pad it wants before it is hidden, grabbed or read.
+
 A source that names an exact pad is that pad, there or not. One that names a model takes the first pad of that model to have connected that no setup uses, and from then on waits for that pad and no other.
 
-A change to a running setup is live if the virtual pads are untouched (a threshold, a rule, the switch, a feedback setting) and disruptive if one must be recreated (its identity or capabilities), which the game sees as a disconnect. The daemon says which before applying it.
+A change to a running setup is live if the virtual pads are untouched (a threshold, a rule, the switch, a feedback setting) and disruptive if one must be recreated (its identity or capabilities), which the game sees as a disconnect. The daemon says which before applying it. As built so far, every update is disruptive: the setup is stopped and started again on the profile as kept now, and `update` says so; the live change, a new graph handed to the input thread for a running setup, is still to come. Putting a profile changes nothing that runs until `update` is asked, and a profile that is wrong or gone by then leaves the setup as it was.
 
 ## Pads
 
@@ -309,12 +311,12 @@ zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the d
 | `ctrlassist/setup/<name>` | state | starting, running, held or failed with a reason; which pad each source is and whether it is there; each virtual pad's identity and node; each node's selected input |
 | `ctrlassist/mirror/<pad>` | stream | the pad's current state |
 | `ctrlassist/rpc/profile/{validate,put,delete}` | rpc | check a profile and say where it is wrong; write one |
-| `ctrlassist/rpc/setup/{start,stop,update,select}` | rpc | run a profile; stop it; change it, replying live or disruptive; select a node's input |
+| `ctrlassist/rpc/setup/{start,stop,update,select}` | rpc | run a profile; stop it; have it take up its profile as kept now, or ask what that would cost, replying live or disruptive; select a node's input |
 | `ctrlassist/rpc/pad/{identify,forget}` | rpc | buzz a pad so the user can tell which is which; drop a remembered pad |
 
 Key segments marked `<id>` are derived by the daemon, never taken raw from a pad's or a profile's name, since those are free text. A pad's segment is a hash of the id it is known by, so a client can work it out too; an rpc that names a pad takes that id, the segment, a bare address, or a model when only one known pad is of it.
 
-`identify` buzzes for a duration the caller gives, and replies once the motors run. `forget` is refused for a pad that is connected, which would be taken in again at once.
+`identify` buzzes for a duration the caller gives, and replies once the motors run. A pad a setup holds is buzzed through the input thread, the only thing that can reach a hidden pad: for that long the buzz is what the pad plays, whatever a game is rumbling, and then the pad goes back to what the games want of it. `forget` is refused for a pad that is connected, which would be taken in again at once.
 
 **The mirror** is published only while something subscribes: the input thread checks one flag per frame and, when it is set, offers the state with a send that never waits. The control side publishes the latest state each time its previous publish completes, skipping what arrived in between, so the cost follows what the subscriber takes rather than the pad's rate.
 

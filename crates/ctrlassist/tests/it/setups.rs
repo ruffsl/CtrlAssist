@@ -594,3 +594,154 @@ async fn a_profile_that_asks_to_starts_by_itself_once_its_pads_are_there() {
     in_phase(&client, "couch", Phase::Running).await;
     daemon.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_update_restarts_a_setup_on_its_profile_as_kept_now_and_says_so() {
+    const TEST: &str = "an_update_restarts_a_setup_on_its_profile_as_kept_now_and_says_so";
+    if !can_make_pads(TEST) {
+        return;
+    }
+    let _primary = FakePad::new("Update Primary", VENDOR, 0x8401).unwrap();
+    let _assist = FakePad::new("Update Assist", VENDOR, 0x8402).unwrap();
+    let (_dir, socket) = socket();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    let blended = priority(0x8401, 0x8402);
+    client.put_profile("couch", &blended).await.unwrap();
+    let unknown = client.update_setup("couch", true).await.unwrap_err();
+    assert_eq!(unknown.rpc_code(), Some(ErrorCode::UnknownSetup));
+    client.start_setup("couch").await.unwrap();
+    let before = in_phase(&client, "couch", Phase::Running).await;
+    let mut game_before = game(&before).await;
+    let phys = phys_of(Path::new(before.sinks[0].node.as_deref().unwrap())).unwrap();
+    assert!(before.nodes.is_empty());
+
+    // Putting a profile changes nothing that runs.
+    client
+        .put_profile("couch", &blended.replace("priority", "toggle"))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(client.setup("couch").unwrap().unwrap().nodes.is_empty());
+    // Asked what an update would cost, the daemon says, and does nothing.
+    assert!(client.update_setup("couch", false).await.unwrap());
+    assert!(phys_connected(&phys));
+
+    // Asked to, it restarts the setup on the profile as kept now: the
+    // old virtual pad is gone by the reply, and the new setup selects.
+    assert!(client.update_setup("couch", true).await.unwrap());
+    assert!(
+        !phys_connected(&phys),
+        "the old virtual pad outlived the update"
+    );
+    let after = in_phase(&client, "couch", Phase::Running).await;
+    eventually("the new setup never said what it selects", async || {
+        client
+            .setup("couch")
+            .unwrap()
+            .is_some_and(|setup| setup.nodes.len() == 1)
+    })
+    .await;
+    assert!(after.sources.iter().all(|source| source.present));
+    // The game's old pad is gone for good.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while game_before.read(|_| {}).is_ok() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the game still read the old virtual pad"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // A profile that is wrong now, or gone, leaves what runs as it was.
+    let node = after.sinks[0].node.clone();
+    client.delete_profile("couch").await.unwrap();
+    let gone = client.update_setup("couch", true).await.unwrap_err();
+    assert_eq!(gone.rpc_code(), Some(ErrorCode::UnknownProfile));
+    assert_eq!(client.setup("couch").unwrap().unwrap().sinks[0].node, node);
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pad_in_a_setup_is_buzzed_through_the_setup() {
+    const TEST: &str = "a_pad_in_a_setup_is_buzzed_through_the_setup";
+    if !can_make_pads(TEST) {
+        return;
+    }
+    let fake = ctrlassist_test::RumblePad::new("Setup Rumble Pad", VENDOR, 0x8501).unwrap();
+    let (_dir, socket) = socket();
+    // With the hiding service: the daemon's only way to the pad is the
+    // descriptor its setup holds.
+    let _hider = ctrlassist_test::FakeHider::listen(&socket.with_file_name("hider.sock")).unwrap();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    client
+        .put_profile(
+            "solo",
+            "preset = \"multicast\"\npad = \"model:1209:8501\"\noutputs = 2\n",
+        )
+        .await
+        .unwrap();
+    client.start_setup("solo").await.unwrap();
+    let setup = in_phase(&client, "solo", Phase::Running).await;
+    assert_eq!(setup.sinks.len(), 2);
+
+    let asked = std::time::Instant::now();
+    client
+        .identify_pad("model:1209:8501", Duration::from_millis(200))
+        .await
+        .unwrap();
+    eventually("the buzz never ended", async || fake.motors().len() >= 2).await;
+    assert_eq!(fake.motors(), [(0xa000, 0xa000), (0, 0)]);
+    assert!(asked.elapsed() >= Duration::from_millis(200));
+    daemon.stop().await;
+}
+
+/// The kernel hands a freed node to the next pad to connect, so the node
+/// a pad was last seen on can be another pad's before its leaving has
+/// been heard of. A setup takes only the pad it wants.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_setup_never_takes_another_pad_that_got_its_pad_s_node() {
+    const TEST: &str = "a_setup_never_takes_another_pad_that_got_its_pad_s_node";
+    if !can_make_pads(TEST) {
+        return;
+    }
+    let _primary = FakePad::new("Node Primary", VENDOR, 0x8601).unwrap();
+    let (_dir, socket) = socket();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    client
+        .put_profile("couch", &priority(0x8601, 0x8602))
+        .await
+        .unwrap();
+    client.start_setup("couch").await.unwrap();
+    in_phase(&client, "couch", Phase::Held).await;
+
+    // Pads of other models come and go as fast as they can, taking and
+    // freeing node numbers, while the assist does the same.
+    for round in 0..12 {
+        let assist = FakePad::new("Node Assist", VENDOR, 0x8602).unwrap();
+        in_phase(&client, "couch", Phase::Running).await;
+        drop(assist);
+        let _stranger = FakePad::new(&format!("Node Stranger {round}"), VENDOR, 0x8603).unwrap();
+        let setup = in_phase(&client, "couch", Phase::Held).await;
+        assert_eq!(
+            setup.sources[0].pad.as_deref(),
+            Some("model:1209:8602:Node Assist")
+        );
+        // Long enough for a wrong pad to have been taken, had one been.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let setup = client.setup("couch").unwrap().unwrap();
+        assert!(!setup.sources[0].present, "round {round}: {setup:?}");
+        let stranger = client
+            .list_pads()
+            .unwrap()
+            .into_iter()
+            .find(|pad| pad.product == 0x8603 && pad.connected);
+        assert!(
+            stranger.is_none_or(|pad| pad.setup.is_none()),
+            "round {round}: a stranger was taken into the setup"
+        );
+    }
+    daemon.stop().await;
+}

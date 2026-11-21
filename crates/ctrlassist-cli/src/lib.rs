@@ -67,6 +67,14 @@ pub enum Command {
         /// The setup's name: the profile it runs.
         setup: String,
     },
+    /// Have a running setup take up its profile as it is kept now.
+    Update {
+        /// The setup's name.
+        setup: String,
+        /// Only say what the update would cost; change nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Have a node of a setup select another input or output.
     Select {
         /// The setup's name.

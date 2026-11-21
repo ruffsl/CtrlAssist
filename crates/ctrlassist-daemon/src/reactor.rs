@@ -319,8 +319,9 @@ impl Reactor {
         }
     }
 
-    /// The node to buzz for an `identify`, or why not.
-    fn buzzable(&self, request: &rpc::IdentifyRequest) -> Result<PathBuf, WireError> {
+    /// The node to buzz for an `identify`, or why not; no node for a pad
+    /// a setup holds, which has been buzzed through the input thread.
+    fn buzzable(&self, request: &rpc::IdentifyRequest) -> Result<Option<PathBuf>, WireError> {
         if !(1..=rpc::IDENTIFY_MAX_MS).contains(&request.millis) {
             return Err(WireError::bad_request(format!(
                 "a buzz lasts from 1 to {} ms, not {}",
@@ -329,25 +330,35 @@ impl Reactor {
             )));
         }
         let id = self.book.resolve(&request.pad)?;
-        let node = self.book.node(id).ok_or_else(|| {
-            WireError::refusal(ErrorCode::PadDisconnected, format!("{id} isn't connected"))
-        })?;
+        // A pad that isn't there is said to be that, before anything it
+        // lacks. One a setup holds is reached through the setup.
+        let node = match self.book.user(id) {
+            Some(_) => None,
+            None => Some(self.book.node(id).ok_or_else(|| {
+                WireError::refusal(ErrorCode::PadDisconnected, format!("{id} isn't connected"))
+            })?),
+        };
         if self.book.rumble(id) == Some(false) {
             return Err(WireError::refusal(
                 ErrorCode::PadWithoutRumble,
                 format!("{id} has no rumble to buzz with"),
             ));
         }
-        Ok(node.to_path_buf())
+        let Some(node) = node else {
+            let setup = self.book.user(id).unwrap_or_default();
+            return self.buzz(setup, id, BUZZ, request.millis).map(|()| None);
+        };
+        Ok(Some(node.to_path_buf()))
     }
 
     async fn pad_rpc(&mut self, query: Query) {
         match pad::Incoming::receive(query).await {
             Some(((), pad::Incoming::Identify(request, responder))) => {
                 match self.buzzable(&request) {
-                    Ok(node) => {
+                    Ok(Some(node)) => {
                         self.buzzes.spawn(buzz(node, request.millis, responder));
                     }
+                    Ok(None) => responder.ok(&rpc::Ack {}).await,
                     Err(refusal) => responder.err(&refusal).await,
                 }
             }
