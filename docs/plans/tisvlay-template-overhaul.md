@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** steps 1 to 3 done. The findings: [ecosystem](findings/ecosystem.md), [hiding](findings/hiding.md), [identity](findings/identity.md), [input loop](findings/input-loop.md), [routing graph](findings/routing-graph.md), [zenoh](findings/zenoh.md). Step 4 in progress: [docs/architecture.md](../architecture.md) is drafted and has had its three-lens review, which found design gaps (the helper's request vocabulary and threat model, hiding not dislodging programs that already hold a pad open, feedback effects without duration) and defects in the graph spike (listed in its finding). The review is not yet folded in.
-- **Next action:** settle with the maintainer the questions the review raised, fold the review into the architecture, write the commit-sized build steps into step 5, and stop for approval before building. Two checks need the maintainer at the machine: identifiers across reconnects; and suspend, resume and a Bluetooth drop. Open with the maintainer: how the feedback router models rumble.
+- **Next action:** settle with the maintainer the questions the review raised, fold the review into the architecture, write the commit-sized build steps into step 5, and stop for approval before building. Two checks need the maintainer at the machine: identifiers across reconnects; and suspend, resume and a Bluetooth drop. The re-bind half of hiding is confirmed for a DualSense on USB only; the recipe now also handles a Bluetooth pad and an Xbox pad on USB, to be run before the helper is built.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -116,7 +116,9 @@ One word per thing, here and in everything written from this plan:
 
 **A daemon restart drops its virtual pads, for now.** The game sees a disconnect and the helper restores the hidden pads, so it falls back to the real ones. Keeping virtual pads alive across a restart is an idea, not first-release work.
 
-**When two virtual pads rumble one pad at once, the strongest request wins** on each motor.
+**Rumble is routed as levels, mirroring the kernel.** The router keeps each game's effects and their timing, computes one strong and one weak level per pad, and keeps a single effect on each pad updated to it, as the kernel's own layer for rumble-only pads does. Within one virtual pad, playing effects add and clamp; when two virtual pads rumble one pad at once, the strongest request wins on each motor. The alternatives and the prior art are kept in [ideas/rumble-routing-model.md](../ideas/rumble-routing-model.md).
+
+**Hiding a pad disconnects it from whatever had it open,** when a setup starts and again when it stops. That is accepted: the real pad vanishes from running games and Steam and the virtual one appears, with nothing restarted.
 
 **The switch is an input to the node, not a pad event it happens to see.** In the first release it can be raised by one button named in the profile (default Mode, consumed rather than forwarded), on whichever source the profile names, or by a client through a daemon rpc. Modeling it as a signal means later triggers don't change the node.
 

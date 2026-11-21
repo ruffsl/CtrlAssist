@@ -86,10 +86,12 @@ spike-hiding-root vendor="054c" product="0ce6":
     observe "after the rule is removed"
     echo "Wrote $log"
 
-# Starts Steam if it isn't running, opens the pad's hidraw node as Steam
-# would, hides the pad with the udev rule, re-binds its driver, then
-# restores, logging at each stage what the already-open reader and Steam
-# still see. The pad must be on USB. Asks for the sudo password.
+# Starts Steam if it isn't running, holds the pad open as a game would,
+# hides the pad with the udev rule, re-binds its driver, then restores,
+# logging at each stage what the already-open reader and Steam still see.
+# Works for a HID pad on USB or Bluetooth (re-binds its HID driver) and for
+# a pad with no HID device, such as an Xbox pad on USB (re-binds its USB
+# interface). Pass the pad's vendor and product in hex. Asks for sudo.
 #
 # Does hiding dislodge a program that already has the pad open?
 [group('spike')]
@@ -97,19 +99,39 @@ spike-hiding-dislodge vendor="054c" product="0ce6":
     #!/usr/bin/env bash
     set -euo pipefail
     probe=spikes/hiding/target/debug/probe
-    log=spikes/hiding/target/dislodge.log
+    log=spikes/hiding/target/dislodge-{{ vendor }}-{{ product }}.log
     rule=/run/udev/rules.d/72-ctrlassist-spike.rules
     steam_log=$HOME/.local/share/Steam/logs/controller.txt
     (cd spikes/hiding && cargo build --quiet)
     : > "$log"
     say() { echo "===== $1 =====" | tee -a "$log"; }
-    # The pad's HID device and hidraw node, from its vendor and product.
-    hid=$("$probe" pads | awk -v id="vendor={{ vendor }} product={{ product }}" \
-        'index($0, id) { found = 1 } found && $1 == "hid" { print $2; exit }')
-    hidraw=$("$probe" pads | awk -v hid="$hid" \
-        '$1 == "hid" { found = ($2 == hid) } found && $1 == "node" && $2 == "hidraw" { print $3; exit }')
-    driver=$(basename "$(readlink "/sys/bus/hid/devices/$hid/driver")")
-    echo "pad: hid=$hid hidraw=$hidraw driver=$driver" | tee -a "$log"
+    # One pad's block of `probe pads`, picked by its vendor and product.
+    block=$("$probe" pads | awk -v id="vendor={{ vendor }} product={{ product }}" \
+        '/^pad / { if (found) exit; text = "" } { text = text $0 "\n" } index($0, id) { found = 1 } END { if (found) printf "%s", text }')
+    if [ -z "$block" ]; then
+        echo "no connected pad with vendor {{ vendor }} product {{ product }}" >&2
+        exit 1
+    fi
+    field() { echo "$block" | awk -v key="$1" '$1 == key { print $2; exit }'; }
+    node() { echo "$block" | awk -v kind="$1" '$1 == "node" && $2 == kind { print $3; exit }'; }
+    hid=$(field hid)
+    if [ -n "$hid" ]; then
+        # A HID pad: re-bind its HID driver, and watch its hidraw node.
+        device=$hid
+        bus=hid
+        watch=$(node hidraw)
+        hidraw_rule='SUBSYSTEM=="hidraw", KERNELS=="'$hid'", MODE="0000", GROUP="root", TAG-="uaccess"'
+    else
+        # No HID device: re-bind the USB interface, and watch the event node.
+        interface=$(dirname "$(dirname "$(field syspath)")")
+        device=$(basename "$interface")
+        bus=usb
+        watch=$(node event)
+        hidraw_rule=""
+    fi
+    driver=$(basename "$(readlink "/sys/bus/$bus/devices/$device/driver")")
+    echo "pad: bus=$bus device=$device driver=$driver watching=$watch" | tee -a "$log"
+    echo "$block" | tee -a "$log"
     started_steam=false
     if ! pgrep -x steam > /dev/null; then
         setsid nohup steam -silent > /dev/null 2>&1 < /dev/null &
@@ -120,12 +142,13 @@ spike-hiding-dislodge vendor="054c" product="0ce6":
     steam_mark=$(wc -l < "$steam_log")
     steam_since() {
         tail -n "+$((steam_mark + 1))" "$steam_log" \
-            | grep -E "Local Device Found|type:|Product:|device closed|device opened|Hiding" || true
+            | grep -E "Local Device Found|type:|Product:|device closed|device opened|Hiding" >> "$log" || true
         steam_mark=$(wc -l < "$steam_log")
+        tail -n 8 "$log"
     }
     rebind() {
-        echo "$hid" | sudo tee "/sys/bus/hid/drivers/$driver/unbind" > /dev/null || true
-        echo "$hid" | sudo tee "/sys/bus/hid/drivers/$driver/bind" > /dev/null
+        echo "$device" | sudo tee "/sys/bus/$bus/drivers/$driver/unbind" > /dev/null || echo "unbind failed" | tee -a "$log"
+        echo "$device" | sudo tee "/sys/bus/$bus/drivers/$driver/bind" > /dev/null || echo "bind failed" | tee -a "$log"
         sudo udevadm settle
     }
     restore() {
@@ -134,33 +157,34 @@ spike-hiding-dislodge vendor="054c" product="0ce6":
         rebind
     }
     trap restore EXIT
-    # A reader that holds the node open across everything, as Steam does.
-    "$probe" listen "$hidraw" --millis 40000 --progress >> "$log" 2>&1 &
+    # A reader that holds the node open across everything, as a game does.
+    "$probe" listen "$watch" --millis 40000 --progress >> "$log" 2>&1 &
     reader=$!
     say "before: reader running, Steam's view"
     sleep 4
-    steam_since | tee -a "$log"
-    say "rule installed (nodes denied); is the open reader still receiving?"
+    steam_since
+    say "rule installed (nodes denied); is the open reader still alive?"
     sudo mkdir -p /run/udev/rules.d
     printf '%s\n' \
         'SUBSYSTEM=="input", ATTRS{id/vendor}=="{{ vendor }}", ATTRS{id/product}=="{{ product }}", MODE="0000", GROUP="root", TAG-="uaccess"' \
-        'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="{{ vendor }}", ATTRS{idProduct}=="{{ product }}", MODE="0000", GROUP="root", TAG-="uaccess"' \
+        "$hidraw_rule" \
         | sudo tee "$rule" > /dev/null
     sudo udevadm control --reload
     sudo udevadm trigger --action=add --subsystem-match=input --subsystem-match=hidraw
     sudo udevadm settle
     sleep 6
-    steam_since | tee -a "$log"
+    steam_since
     say "driver re-bound with the rule in place; reader and Steam now?"
     rebind
     sleep 6
-    steam_since | tee -a "$log"
+    steam_since
+    "$probe" pads 2>&1 | grep -c '^pad ' | sed 's/^/pads listed: /' | tee -a "$log"
     "$probe" access 2>&1 | tee -a "$log"
     say "rule removed and driver re-bound; does Steam find the pad again?"
     restore
     trap - EXIT
-    sleep 8
-    steam_since | tee -a "$log"
+    sleep 10
+    steam_since
     "$probe" access 2>&1 | tee -a "$log"
     kill "$reader" 2> /dev/null || true
     if "$started_steam"; then

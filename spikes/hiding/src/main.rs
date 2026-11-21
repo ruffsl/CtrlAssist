@@ -424,7 +424,21 @@ fn listen(node: &Path, millis: u64, progress: bool) -> Result<()> {
         let mut device =
             Device::open(node).with_context(|| format!("opening {}", node.display()))?;
         device.set_nonblocking(true)?;
-        while readable_before(device.as_raw_fd(), deadline)? {
+        loop {
+            // Wake at least once a second so progress is printed while idle.
+            let tick = deadline.min(Instant::now() + Duration::from_secs(1));
+            let ready = readable_before(device.as_raw_fd(), tick)?;
+            let seconds = started.elapsed().as_secs();
+            if progress && seconds > reported {
+                reported = seconds;
+                println!("t={seconds}s events={count}");
+            }
+            if !ready {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                continue;
+            }
             match device.fetch_events() {
                 Ok(events) => {
                     count += events
@@ -432,6 +446,10 @@ fn listen(node: &Path, millis: u64, progress: bool) -> Result<()> {
                         .count();
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) if progress => {
+                    println!("stopped: {e}");
+                    break;
+                }
                 Err(e) => return Err(e).context("reading events"),
             }
         }
