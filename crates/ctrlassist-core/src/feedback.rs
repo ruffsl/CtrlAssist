@@ -1,22 +1,47 @@
-//! Feedback routing: which pads get a virtual pad's effects, and keeping
-//! each pad's effects in line with that as targets change.
+//! Rumble routing, as levels.
 //!
-//! The router decides and remembers; it doesn't touch a device. It turns
-//! requests from a virtual pad into [`Command`]s for the pads, and the
-//! caller reports back which pads accepted an upload so the game can be
-//! answered.
+//! A game uploads effects to a virtual pad and plays them by number. The
+//! router keeps those effects and their timing itself and answers one
+//! question: how hard should each pad's two motors be running right now?
+//! The caller keeps a single effect on each pad set to that level.
+//!
+//! This is what the kernel does for a pad that can only rumble, moved to
+//! where the routing is known. A hand-off part-way through a rumble gives
+//! the new pad the current level and it ends on time; a rumble that has
+//! ended contributes nothing; a pad uses one effect slot however many
+//! games rumble it.
+//!
+//! The router holds no clock. The caller passes the time in milliseconds
+//! and is told when to ask again.
+
+/// Effects a game can hold on one virtual pad at a time, as the kernel
+/// offers for a rumble-only pad.
+pub const EFFECTS: usize = 16;
 
 /// A rumble effect, as a game uploads it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Effect {
-    /// Strong motor magnitude.
+    /// Strong motor strength.
     pub strong: u16,
-    /// Weak motor magnitude.
+    /// Weak motor strength.
+    pub weak: u16,
+    /// How long it runs each time it is played, in milliseconds. Zero
+    /// means until it is stopped.
+    pub length_ms: u16,
+    /// How long after being played it starts, in milliseconds.
+    pub delay_ms: u16,
+}
+
+/// How hard a pad's two motors should run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Level {
+    /// Strong motor strength.
+    pub strong: u16,
+    /// Weak motor strength.
     pub weak: u16,
 }
 
-/// An effect's identity. A game numbers its effects per virtual pad, so
-/// two virtual pads' effects never collide on a pad they share.
+/// An effect's identity: a game numbers its effects per virtual pad.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct EffectKey {
     /// The virtual pad the game uploaded it to.
@@ -25,216 +50,310 @@ pub struct EffectKey {
     pub id: i16,
 }
 
-/// Something to do to a pad.
+/// Why a feedback request was refused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Command {
-    /// Give the pad this effect, replacing any it has under the key.
-    Upload {
-        target: usize,
-        key: EffectKey,
-        effect: Effect,
-    },
-    /// Remove the effect from the pad.
-    Erase { target: usize, key: EffectKey },
-    /// Start the effect.
-    Play { target: usize, key: EffectKey },
-    /// Stop the effect.
-    Stop { target: usize, key: EffectKey },
+#[non_exhaustive]
+pub enum FeedbackError {
+    /// The virtual pad doesn't exist.
+    NoSuchSink,
+    /// The effect was never uploaded, or has been erased.
+    NoSuchEffect,
+    /// The virtual pad already holds as many effects as it can.
+    Full,
 }
 
-/// What to tell the game about an upload.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Reply {
-    /// The effect is in place, or has nowhere it needs to go.
-    Accepted,
-    /// Every pad it was meant for refused it.
-    Rejected,
+impl std::fmt::Display for FeedbackError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NoSuchSink => "the virtual pad doesn't exist",
+            Self::NoSuchEffect => "the effect was never uploaded, or has been erased",
+            Self::Full => "the virtual pad already holds as many effects as it can",
+        })
+    }
 }
 
+impl std::error::Error for FeedbackError {}
+
+#[derive(Clone, Copy)]
+struct Play {
+    started_ms: u64,
+    /// How many times to run.
+    count: u32,
+}
+
+#[derive(Clone, Copy)]
 struct Slot {
-    key: EffectKey,
+    id: i16,
     effect: Effect,
-    playing: bool,
-    /// The pads asked to take the last upload.
-    asked: u32,
-    /// The pads that hold the effect.
-    on: u32,
+    play: Option<Play>,
 }
 
-/// Feedback state for every virtual pad of a graph.
+/// Where a playing effect stands at one instant.
+enum Phase {
+    /// Waiting out its delay; it starts at this time.
+    Waiting(u64),
+    /// Running; `Some` is when this run ends.
+    Running(Option<u64>),
+    /// Every run is over.
+    Finished,
+}
+
+impl Slot {
+    /// The play to carry on with if the effect is replaced at `now_ms`:
+    /// its current run started over, with the runs it has left; or none
+    /// if it has already finished.
+    fn restarted(&self, play: Play, now_ms: u64) -> Option<Play> {
+        let period = u64::from(self.effect.delay_ms) + u64::from(self.effect.length_ms);
+        let done = if self.effect.length_ms == 0 {
+            0
+        } else {
+            now_ms.saturating_sub(play.started_ms) / period
+        };
+        let left = u64::from(play.count)
+            .checked_sub(done)
+            .filter(|left| *left > 0)?;
+        Some(Play {
+            started_ms: now_ms,
+            count: u32::try_from(left).unwrap_or(u32::MAX),
+        })
+    }
+
+    fn phase(&self, play: Play, now_ms: u64) -> Phase {
+        let elapsed = now_ms.saturating_sub(play.started_ms);
+        let delay = u64::from(self.effect.delay_ms);
+        let length = u64::from(self.effect.length_ms);
+        if length == 0 {
+            return if elapsed < delay {
+                Phase::Waiting(play.started_ms + delay)
+            } else {
+                Phase::Running(None)
+            };
+        }
+        let period = delay + length;
+        let run = elapsed / period;
+        if run >= u64::from(play.count) {
+            return Phase::Finished;
+        }
+        let run_start = play.started_ms + run * period;
+        if elapsed % period < delay {
+            Phase::Waiting(run_start + delay)
+        } else {
+            Phase::Running(Some(run_start + period))
+        }
+    }
+}
+
+struct Sink {
+    /// The pads this virtual pad's feedback goes to, as a mask.
+    targets: u32,
+    /// The game's overall gain, where `u16::MAX` is full strength.
+    gain: u16,
+    slots: [Option<Slot>; EFFECTS],
+}
+
+/// Rumble state for every virtual pad of a graph.
 pub struct Router {
-    /// Per virtual pad, the pads its feedback goes to.
-    targets: Vec<u32>,
-    /// The pads that are connected.
-    present: u32,
-    effects: Vec<Slot>,
+    sinks: Vec<Sink>,
+    /// What each pad was last told, or `None` if it must be told again.
+    reported: Vec<Option<Level>>,
 }
 
 impl std::fmt::Debug for Router {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Router")
-            .field("targets", &self.targets)
-            .field("effects", &self.effects.len())
-            .finish_non_exhaustive()
+            .field("sinks", &self.sinks.len())
+            .field("reported", &self.reported)
+            .finish()
     }
 }
 
-fn each(mask: u32, mut action: impl FnMut(usize)) {
-    let mut rest = mask;
-    while rest != 0 {
-        action(rest.trailing_zeros() as usize);
-        rest &= rest - 1;
-    }
+/// The most pads a router serves: targets are a 32-bit mask.
+const MAX_SOURCES: usize = 32;
+
+fn scale(strength: u16, gain: u16) -> u32 {
+    u32::from(strength) * u32::from(gain) / u32::from(u16::MAX)
 }
 
 impl Router {
-    /// A router for this many virtual pads, with no targets yet and every
-    /// pad taken as connected.
+    /// A router for this many virtual pads and pads, with no targets yet
+    /// and every gain at full.
     #[must_use]
-    pub fn new(sinks: usize) -> Self {
+    pub fn new(sinks: usize, sources: usize) -> Self {
         Self {
-            targets: vec![0; sinks],
-            present: u32::MAX,
-            effects: Vec::new(),
+            sinks: (0..sinks)
+                .map(|_| Sink {
+                    targets: 0,
+                    gain: u16::MAX,
+                    slots: [None; EFFECTS],
+                })
+                .collect(),
+            reported: vec![Some(Level::default()); sources.min(MAX_SOURCES)],
         }
     }
 
-    fn slot(&mut self, key: EffectKey) -> Option<&mut Slot> {
-        self.effects.iter_mut().find(|slot| slot.key == key)
+    fn sink(&mut self, sink: usize) -> Result<&mut Sink, FeedbackError> {
+        self.sinks.get_mut(sink).ok_or(FeedbackError::NoSuchSink)
     }
 
-    /// Sets where a virtual pad's feedback goes. Pads that join get its
-    /// effects, started if they are playing; pads that leave have them
-    /// stopped and removed.
-    pub fn retarget(&mut self, sink: usize, targets: u32, out: &mut Vec<Command>) {
-        let old = std::mem::replace(&mut self.targets[sink], targets);
-        let present = self.present;
-        for slot in self.effects.iter_mut().filter(|slot| slot.key.sink == sink) {
-            let key = slot.key;
-            each(targets & !old & present, |target| {
-                out.push(Command::Upload {
-                    target,
-                    key,
-                    effect: slot.effect,
-                });
-                if slot.playing {
-                    out.push(Command::Play { target, key });
-                }
-            });
-            each(old & !targets & slot.on, |target| {
-                if slot.playing {
-                    out.push(Command::Stop { target, key });
-                }
-                out.push(Command::Erase { target, key });
-            });
-            slot.on = (slot.on | (targets & !old & present)) & targets;
+    fn slot(&mut self, key: EffectKey) -> Result<&mut Slot, FeedbackError> {
+        self.sink(key.sink)?
+            .slots
+            .iter_mut()
+            .flatten()
+            .find(|slot| slot.id == key.id)
+            .ok_or(FeedbackError::NoSuchEffect)
+    }
+
+    /// Sets which pads a virtual pad's feedback goes to. Takes effect at
+    /// the next [`poll`](Self::poll); a virtual pad that doesn't exist is
+    /// ignored.
+    pub fn set_targets(&mut self, sink: usize, targets: u32) {
+        if let Ok(sink) = self.sink(sink) {
+            sink.targets = targets;
         }
     }
 
-    /// A game uploads or replaces an effect. Returns the pads asked to
-    /// take it; the caller applies the commands and calls
-    /// [`confirm`](Self::confirm) with the pads that did.
-    pub fn upload(&mut self, key: EffectKey, effect: Effect, out: &mut Vec<Command>) -> u32 {
-        let asked = self.targets[key.sink] & self.present;
-        each(asked, |target| {
-            out.push(Command::Upload {
-                target,
-                key,
-                effect,
-            });
-        });
-        if let Some(slot) = self.slot(key) {
+    /// Sets a virtual pad's overall gain, where `u16::MAX` is full.
+    pub fn set_gain(&mut self, sink: usize, gain: u16) {
+        if let Ok(sink) = self.sink(sink) {
+            sink.gain = gain;
+        }
+    }
+
+    /// A game uploads an effect, or replaces one it uploaded before.
+    ///
+    /// Replacing an effect that is playing restarts its current run from
+    /// now with the new strengths and timing, keeping the runs it has
+    /// left, as the kernel does. Replacing one that has finished does not
+    /// start it again.
+    ///
+    /// This succeeds whether or not any pad can rumble: the game is not
+    /// told its rumble goes nowhere.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FeedbackError::Full`] if the virtual pad has no free
+    /// effect, or [`FeedbackError::NoSuchSink`].
+    pub fn upload(
+        &mut self,
+        key: EffectKey,
+        effect: Effect,
+        now_ms: u64,
+    ) -> Result<(), FeedbackError> {
+        if let Ok(slot) = self.slot(key) {
+            slot.play = slot.play.and_then(|play| slot.restarted(play, now_ms));
             slot.effect = effect;
-            slot.asked = asked;
-        } else {
-            self.effects.push(Slot {
-                key,
-                effect,
-                playing: false,
-                asked,
-                on: 0,
-            });
+            return Ok(());
         }
-        asked
+        let free = self
+            .sink(key.sink)?
+            .slots
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or(FeedbackError::Full)?;
+        *free = Some(Slot {
+            id: key.id,
+            effect,
+            play: None,
+        });
+        Ok(())
     }
 
-    /// Records which pads accepted an upload and says what to tell the
-    /// game. An effect is accepted if any pad took it or none was asked;
-    /// one every pad refused is forgotten. A pad that takes an effect the
-    /// game is already playing, which it didn't hold before, is started.
-    pub fn confirm(&mut self, key: EffectKey, accepted: u32, out: &mut Vec<Command>) -> Reply {
-        let Some(index) = self.effects.iter().position(|slot| slot.key == key) else {
-            return Reply::Rejected;
-        };
-        let slot = &mut self.effects[index];
-        let before = slot.on;
-        slot.on = accepted & slot.asked;
-        if slot.asked != 0 && slot.on == 0 {
-            self.effects.swap_remove(index);
-            return Reply::Rejected;
-        }
-        if slot.playing {
-            each(slot.on & !before, |target| {
-                out.push(Command::Play { target, key });
-            });
-        }
-        Reply::Accepted
+    /// A game removes an effect, stopping it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FeedbackError::NoSuchEffect`] or
+    /// [`FeedbackError::NoSuchSink`].
+    pub fn erase(&mut self, key: EffectKey) -> Result<(), FeedbackError> {
+        let slot = self
+            .sink(key.sink)?
+            .slots
+            .iter_mut()
+            .find(|slot| slot.is_some_and(|slot| slot.id == key.id))
+            .ok_or(FeedbackError::NoSuchEffect)?;
+        *slot = None;
+        Ok(())
     }
 
-    /// A game starts or stops an effect.
-    pub fn play(&mut self, key: EffectKey, playing: bool, out: &mut Vec<Command>) {
-        let present = self.present;
-        if let Some(slot) = self.slot(key) {
-            slot.playing = playing;
-            each(slot.on & present, |target| {
-                out.push(if playing {
-                    Command::Play { target, key }
-                } else {
-                    Command::Stop { target, key }
-                });
-            });
-        }
+    /// A game plays an effect `count` times from now, or stops it with a
+    /// count of zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FeedbackError::NoSuchEffect`] or
+    /// [`FeedbackError::NoSuchSink`].
+    pub fn play(&mut self, key: EffectKey, count: u32, now_ms: u64) -> Result<(), FeedbackError> {
+        self.slot(key)?.play = (count > 0).then_some(Play {
+            started_ms: now_ms,
+            count,
+        });
+        Ok(())
     }
 
-    /// A game removes an effect.
-    pub fn erase(&mut self, key: EffectKey, out: &mut Vec<Command>) {
-        if let Some(index) = self.effects.iter().position(|slot| slot.key == key) {
-            let slot = self.effects.swap_remove(index);
-            each(slot.on & self.present, |target| {
-                out.push(Command::Erase { target, key });
-            });
+    /// Stops and removes everything a virtual pad holds, as when the game
+    /// closes it.
+    pub fn clear(&mut self, sink: usize) {
+        if let Ok(sink) = self.sink(sink) {
+            sink.slots = [None; EFFECTS];
         }
     }
 
-    /// A pad disconnected. Its effects went with it, so there is nothing
-    /// to send.
-    pub fn source_gone(&mut self, source: usize) {
-        self.present &= !(1 << source);
-        for slot in &mut self.effects {
-            slot.on &= !(1 << source);
+    /// A pad reconnected: whatever it was told before is lost, so it is
+    /// told its level again at the next [`poll`](Self::poll).
+    pub fn source_back(&mut self, source: usize) {
+        if let Some(reported) = self.reported.get_mut(source) {
+            *reported = None;
         }
     }
 
-    /// A pad reconnected. It gets back every effect meant for it, started
-    /// if playing.
-    pub fn source_back(&mut self, source: usize, out: &mut Vec<Command>) {
-        let bit = 1 << source;
-        self.present |= bit;
-        for slot in &mut self.effects {
-            if self.targets[slot.key.sink] & bit != 0 {
-                out.push(Command::Upload {
-                    target: source,
-                    key: slot.key,
-                    effect: slot.effect,
-                });
-                if slot.playing {
-                    out.push(Command::Play {
-                        target: source,
-                        key: slot.key,
-                    });
+    /// Reports each pad whose level has changed, and returns when a level
+    /// will next change by itself, if ever. Nothing needs to call this
+    /// again before then unless a request arrives.
+    ///
+    /// Within one virtual pad, playing effects add and clamp, after gain.
+    /// Across virtual pads sharing a pad, the strongest wins on each motor.
+    pub fn poll(&mut self, now_ms: u64, emit: &mut impl FnMut(usize, Level)) -> Option<u64> {
+        let mut levels = [Level::default(); MAX_SOURCES];
+        let mut next: Option<u64> = None;
+        let mut sooner = |at: u64| next = Some(next.map_or(at, |next| next.min(at)));
+
+        for sink in &mut self.sinks {
+            let (mut strong, mut weak) = (0u32, 0u32);
+            for entry in &mut sink.slots {
+                let Some(slot) = entry else { continue };
+                let Some(play) = slot.play else { continue };
+                match slot.phase(play, now_ms) {
+                    Phase::Waiting(until) => sooner(until),
+                    Phase::Running(until) => {
+                        strong += scale(slot.effect.strong, sink.gain);
+                        weak += scale(slot.effect.weak, sink.gain);
+                        if let Some(until) = until {
+                            sooner(until);
+                        }
+                    }
+                    Phase::Finished => slot.play = None,
                 }
-                slot.on |= bit;
+            }
+            let strong = strong.min(u32::from(u16::MAX)) as u16;
+            let weak = weak.min(u32::from(u16::MAX)) as u16;
+            for (source, level) in levels.iter_mut().enumerate() {
+                if sink.targets & (1 << source) != 0 {
+                    level.strong = level.strong.max(strong);
+                    level.weak = level.weak.max(weak);
+                }
             }
         }
+
+        for (source, reported) in self.reported.iter_mut().enumerate() {
+            let level = levels[source];
+            // A pad that just returned and is at rest needs no telling.
+            let stale = reported.map_or(level != Level::default(), |before| before != level);
+            if stale {
+                emit(source, level);
+            }
+            *reported = Some(level);
+        }
+        next
     }
 }

@@ -2,8 +2,8 @@
 //!
 //! Nothing here touches a device. A [`Graph`] is built from a [`GraphSpec`]
 //! and stepped with pad states; it reports what each virtual pad should
-//! change. A [`Router`] decides where a virtual pad's feedback goes and
-//! keeps each pad's effects in line with that.
+//! change, and says which pads a virtual pad's feedback goes to. A
+//! [`Router`] turns the games' rumble effects into one level per pad.
 //!
 //! The model is level-based: a node computes its output state from its
 //! input states and a little state of its own, and the graph emits the
@@ -18,6 +18,6 @@ mod mux;
 
 pub use control::{AXES, BUTTONS, Control, Group, Kind, Layout, PadState, gamepad};
 pub use demux::{DemuxConfig, DemuxFeedback, DemuxMode};
-pub use feedback::{Command, Effect, EffectKey, Reply, Router};
+pub use feedback::{EFFECTS, Effect, EffectKey, FeedbackError, Level, Router};
 pub use graph::{Change, Graph, GraphError, GraphSpec, Input, NodeSpec, SourceSpec};
 pub use mux::{Mode, MuxConfig, MuxFeedback, Rule, Switch};

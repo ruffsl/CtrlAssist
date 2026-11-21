@@ -5,9 +5,9 @@
 
 use ctrlassist_core::gamepad::*;
 use ctrlassist_core::{
-    Command, Control, DemuxConfig, DemuxFeedback, DemuxMode, Effect, EffectKey, Graph, GraphError,
-    GraphSpec, Input, Kind, Layout, Mode, MuxConfig, MuxFeedback, NodeSpec, PadState, Reply,
-    Router, SourceSpec, Switch,
+    Control, DemuxConfig, DemuxFeedback, DemuxMode, EFFECTS, Effect, EffectKey, FeedbackError,
+    Graph, GraphError, GraphSpec, Input, Kind, Layout, Level, Mode, MuxConfig, MuxFeedback,
+    NodeSpec, PadState, Router, SourceSpec, Switch,
 };
 
 const PRIMARY: usize = 0;
@@ -519,110 +519,26 @@ fn whoever_flies_the_stick_owns_its_trigger() {
     assert_eq!(graph.sink(0).get(Control::Axis(3)), 0.9);
 }
 
-// --- feedback ---------------------------------------------------------------
-
-const KEY: EffectKey = EffectKey { sink: 0, id: 0 };
-const RUMBLE: Effect = Effect {
-    strong: 40000,
-    weak: 20000,
-};
+// --- feedback: where it goes -------------------------------------------------
 
 fn bit(source: usize) -> u32 {
     1 << source
 }
 
-/// A router following a graph's first sink.
-fn router_for(graph: &Graph) -> (Router, Vec<Command>) {
-    let mut router = Router::new(2);
-    let mut commands = Vec::new();
-    router.retarget(0, graph.feedback_targets(0), &mut commands);
-    (router, commands)
-}
-
 #[test]
 fn rumble_reaches_both_pads_of_a_priority_mux() {
-    let graph = mux(Mode::Priority);
-    let (mut router, mut commands) = router_for(&graph);
-    let asked = router.upload(KEY, RUMBLE, &mut commands);
-    assert_eq!(asked, bit(PRIMARY) | bit(ASSIST));
-    assert_eq!(router.confirm(KEY, asked, &mut commands), Reply::Accepted);
-    router.play(KEY, true, &mut commands);
-    router.play(KEY, false, &mut commands);
-    router.erase(KEY, &mut commands);
-    let upload = |target| Command::Upload {
-        target,
-        key: KEY,
-        effect: RUMBLE,
-    };
     assert_eq!(
-        commands,
-        [
-            upload(PRIMARY),
-            upload(ASSIST),
-            Command::Play {
-                target: PRIMARY,
-                key: KEY
-            },
-            Command::Play {
-                target: ASSIST,
-                key: KEY
-            },
-            Command::Stop {
-                target: PRIMARY,
-                key: KEY
-            },
-            Command::Stop {
-                target: ASSIST,
-                key: KEY
-            },
-            Command::Erase {
-                target: PRIMARY,
-                key: KEY
-            },
-            Command::Erase {
-                target: ASSIST,
-                key: KEY
-            },
-        ]
+        mux(Mode::Priority).feedback_targets(0),
+        bit(PRIMARY) | bit(ASSIST)
     );
 }
 
 #[test]
-fn toggle_rumbles_only_the_active_pad_and_moves_with_the_switch() {
+fn toggle_rumbles_only_the_active_pad() {
     let mut graph = mux(Mode::Toggle);
-    let (mut router, mut commands) = router_for(&graph);
     assert_eq!(graph.feedback_targets(0), bit(PRIMARY));
-    let asked = router.upload(KEY, RUMBLE, &mut commands);
-    router.confirm(KEY, asked, &mut commands);
-    router.play(KEY, true, &mut commands);
-    commands.clear();
-
     graph.switch(0, &mut |_| {});
-    router.retarget(0, graph.feedback_targets(0), &mut commands);
-    // The playing effect follows the hand-off: started on the pad that
-    // now has control, stopped and removed on the one that gave it up.
-    assert_eq!(
-        commands,
-        [
-            Command::Upload {
-                target: ASSIST,
-                key: KEY,
-                effect: RUMBLE
-            },
-            Command::Play {
-                target: ASSIST,
-                key: KEY
-            },
-            Command::Stop {
-                target: PRIMARY,
-                key: KEY
-            },
-            Command::Erase {
-                target: PRIMARY,
-                key: KEY
-            },
-        ]
-    );
+    assert_eq!(graph.feedback_targets(0), bit(ASSIST));
 }
 
 #[test]
@@ -641,50 +557,7 @@ fn rumble_can_go_to_the_pad_that_is_not_providing_input() {
 fn rumble_can_be_off() {
     let mut config = MuxConfig::new(Mode::Priority, &Layout::gamepad());
     config.feedback = MuxFeedback::None;
-    let graph = mux_graph(config);
-    let (mut router, mut commands) = router_for(&graph);
-    let asked = router.upload(KEY, RUMBLE, &mut commands);
-    assert_eq!(asked, 0);
-    assert_eq!(
-        router.confirm(KEY, asked, &mut commands),
-        Reply::Accepted,
-        "the game is not told its rumble goes nowhere"
-    );
-    router.play(KEY, true, &mut commands);
-    assert!(commands.is_empty());
-}
-
-#[test]
-fn an_upload_is_accepted_if_any_pad_takes_it() {
-    let graph = mux(Mode::Priority);
-    let (mut router, mut commands) = router_for(&graph);
-    let asked = router.upload(KEY, RUMBLE, &mut commands);
-    assert_eq!(
-        router.confirm(KEY, asked & !bit(ASSIST), &mut commands),
-        Reply::Accepted
-    );
-    commands.clear();
-    router.play(KEY, true, &mut commands);
-    assert_eq!(
-        commands,
-        [Command::Play {
-            target: PRIMARY,
-            key: KEY
-        }],
-        "the pad that refused is left alone"
-    );
-}
-
-#[test]
-fn an_upload_every_pad_refuses_is_refused() {
-    let graph = mux(Mode::Priority);
-    let (mut router, mut commands) = router_for(&graph);
-    let asked = router.upload(KEY, RUMBLE, &mut commands);
-    assert_eq!(router.confirm(KEY, 0, &mut commands), Reply::Rejected);
-    commands.clear();
-    router.play(KEY, true, &mut commands);
-    assert!(commands.is_empty(), "a refused effect is forgotten");
-    let _ = asked;
+    assert_eq!(mux_graph(config).feedback_targets(0), 0);
 }
 
 #[test]
@@ -714,39 +587,6 @@ fn demux_rumble_can_be_off() {
 }
 
 #[test]
-fn two_virtual_pads_can_rumble_one_pad_without_colliding() {
-    let graph = demux(DemuxMode::Multicast, 2);
-    let mut router = Router::new(2);
-    let mut commands = Vec::new();
-    router.retarget(0, graph.feedback_targets(0), &mut commands);
-    router.retarget(1, graph.feedback_targets(1), &mut commands);
-    // Two games each upload their own effect 0.
-    let first = EffectKey { sink: 0, id: 0 };
-    let second = EffectKey { sink: 1, id: 0 };
-    router.upload(first, RUMBLE, &mut commands);
-    router.upload(second, Effect { strong: 1, weak: 1 }, &mut commands);
-    router.confirm(first, bit(0), &mut commands);
-    router.confirm(second, bit(0), &mut commands);
-    commands.clear();
-    router.erase(first, &mut commands);
-    router.play(second, true, &mut commands);
-    assert_eq!(
-        commands,
-        [
-            Command::Erase {
-                target: 0,
-                key: first
-            },
-            Command::Play {
-                target: 0,
-                key: second
-            },
-        ],
-        "one game erasing its effect leaves the other's alone"
-    );
-}
-
-#[test]
 fn feedback_follows_one_helper_between_two_players() {
     let mut graph = double_agent();
     // Player one's game rumbles player one and, while the helper is with
@@ -758,50 +598,319 @@ fn feedback_follows_one_helper_between_two_players() {
     assert_eq!(graph.feedback_targets(1), bit(1) | bit(2));
 }
 
+// --- feedback: how hard ------------------------------------------------------
+
+const KEY: EffectKey = EffectKey { sink: 0, id: 0 };
+const FULL: u16 = u16::MAX;
+
+fn rumble(strong: u16, weak: u16, length_ms: u16) -> Effect {
+    Effect {
+        strong,
+        weak,
+        length_ms,
+        delay_ms: 0,
+    }
+}
+
+fn level(strong: u16, weak: u16) -> Level {
+    Level { strong, weak }
+}
+
+/// A router for one virtual pad over the two pads of a mux.
+fn router() -> Router {
+    let mut router = Router::new(1, 2);
+    router.set_targets(0, bit(PRIMARY) | bit(ASSIST));
+    router
+}
+
+/// Polls and returns what was reported, with when to ask again.
+fn poll(router: &mut Router, now_ms: u64) -> (Vec<(usize, Level)>, Option<u64>) {
+    let mut reported = Vec::new();
+    let next = router.poll(now_ms, &mut |source, level| reported.push((source, level)));
+    (reported, next)
+}
+
 #[test]
-fn a_returning_pad_gets_its_effects_back() {
-    let graph = mux(Mode::Priority);
-    let (mut router, mut commands) = router_for(&graph);
-    let asked = router.upload(KEY, RUMBLE, &mut commands);
-    router.confirm(KEY, asked, &mut commands);
-    router.play(KEY, true, &mut commands);
-    commands.clear();
-
-    router.source_gone(ASSIST);
-    router.play(KEY, false, &mut commands);
-    router.play(KEY, true, &mut commands);
+fn a_rumble_runs_for_its_length_then_stops_by_itself() {
+    let mut router = router();
+    router.upload(KEY, rumble(40000, 20000, 500), 0).unwrap();
     assert_eq!(
-        commands,
-        [
-            Command::Stop {
-                target: PRIMARY,
-                key: KEY
-            },
-            Command::Play {
-                target: PRIMARY,
-                key: KEY
-            },
-        ],
-        "nothing is sent to a pad that is gone"
+        poll(&mut router, 0),
+        (vec![], None),
+        "an effect that isn't playing does nothing"
     );
-    commands.clear();
 
-    // Its effects died with its connection, so they are uploaded again,
-    // and the one that is playing is started.
-    router.source_back(ASSIST, &mut commands);
+    router.play(KEY, 1, 1000).unwrap();
+    let on = level(40000, 20000);
     assert_eq!(
-        commands,
-        [
-            Command::Upload {
-                target: ASSIST,
-                key: KEY,
-                effect: RUMBLE
-            },
-            Command::Play {
-                target: ASSIST,
-                key: KEY
-            },
-        ]
+        poll(&mut router, 1000),
+        (vec![(PRIMARY, on), (ASSIST, on)], Some(1500))
+    );
+    assert_eq!(
+        poll(&mut router, 1200),
+        (vec![], Some(1500)),
+        "nothing to say until it ends"
+    );
+    let off = level(0, 0);
+    assert_eq!(
+        poll(&mut router, 1500),
+        (vec![(PRIMARY, off), (ASSIST, off)], None)
+    );
+}
+
+#[test]
+fn a_rumble_without_a_length_runs_until_stopped() {
+    let mut router = router();
+    router.upload(KEY, rumble(FULL, 0, 0), 0).unwrap();
+    router.play(KEY, 1, 0).unwrap();
+    assert_eq!(poll(&mut router, 0).1, None, "there is no time to wait for");
+    assert_eq!(poll(&mut router, 3_600_000).0, vec![]);
+    router.play(KEY, 0, 3_600_000).unwrap();
+    assert_eq!(
+        poll(&mut router, 3_600_000).0,
+        vec![(PRIMARY, level(0, 0)), (ASSIST, level(0, 0))]
+    );
+}
+
+#[test]
+fn a_delay_and_a_repeat_count_are_honored() {
+    let mut router = router();
+    let effect = Effect {
+        strong: 1000,
+        weak: 0,
+        length_ms: 100,
+        delay_ms: 50,
+    };
+    router.upload(KEY, effect, 0).unwrap();
+    router.play(KEY, 2, 0).unwrap();
+    let on = level(1000, 0);
+    let off = level(0, 0);
+    assert_eq!(
+        poll(&mut router, 0),
+        (vec![], Some(50)),
+        "waiting out the delay"
+    );
+    assert_eq!(
+        poll(&mut router, 50),
+        (vec![(PRIMARY, on), (ASSIST, on)], Some(150))
+    );
+    assert_eq!(
+        poll(&mut router, 150),
+        (vec![(PRIMARY, off), (ASSIST, off)], Some(200)),
+        "second delay"
+    );
+    assert_eq!(
+        poll(&mut router, 200),
+        (vec![(PRIMARY, on), (ASSIST, on)], Some(300))
+    );
+    assert_eq!(
+        poll(&mut router, 300),
+        (vec![(PRIMARY, off), (ASSIST, off)], None)
+    );
+}
+
+#[test]
+fn a_hand_off_mid_rumble_gives_the_new_pad_the_level_and_it_ends_on_time() {
+    let mut graph = mux(Mode::Toggle);
+    let mut router = Router::new(1, 2);
+    router.set_targets(0, graph.feedback_targets(0));
+    router.upload(KEY, rumble(30000, 0, 500), 0).unwrap();
+    router.play(KEY, 1, 0).unwrap();
+    assert_eq!(
+        poll(&mut router, 0),
+        (vec![(PRIMARY, level(30000, 0))], Some(500))
+    );
+
+    // 200 ms in, the assist takes over.
+    graph.switch(0, &mut |_| {});
+    router.set_targets(0, graph.feedback_targets(0));
+    assert_eq!(
+        poll(&mut router, 200),
+        (
+            vec![(PRIMARY, level(0, 0)), (ASSIST, level(30000, 0))],
+            Some(500)
+        ),
+        "the rumble moves, and still ends when the game meant it to"
+    );
+    assert_eq!(poll(&mut router, 500), (vec![(ASSIST, level(0, 0))], None));
+}
+
+#[test]
+fn a_rumble_that_ended_is_not_replayed_by_a_later_hand_off() {
+    let mut graph = mux(Mode::Toggle);
+    let mut router = Router::new(1, 2);
+    router.set_targets(0, graph.feedback_targets(0));
+    router.upload(KEY, rumble(30000, 0, 500), 0).unwrap();
+    router.play(KEY, 1, 0).unwrap();
+    poll(&mut router, 0);
+    poll(&mut router, 500);
+
+    graph.switch(0, &mut |_| {});
+    router.set_targets(0, graph.feedback_targets(0));
+    assert_eq!(poll(&mut router, 10_000), (vec![], None));
+}
+
+#[test]
+fn effects_on_one_virtual_pad_add_and_clamp() {
+    let mut router = router();
+    let second = EffectKey { sink: 0, id: 1 };
+    router.upload(KEY, rumble(40000, 100, 0), 0).unwrap();
+    router.upload(second, rumble(40000, 200, 0), 0).unwrap();
+    router.play(KEY, 1, 0).unwrap();
+    router.play(second, 1, 0).unwrap();
+    let (reported, _) = poll(&mut router, 0);
+    assert_eq!(reported[0], (PRIMARY, level(FULL, 300)));
+}
+
+#[test]
+fn the_strongest_virtual_pad_wins_on_a_shared_pad() {
+    // Two games, each on its own virtual pad, rumbling one pad.
+    let mut router = Router::new(2, 1);
+    router.set_targets(0, bit(0));
+    router.set_targets(1, bit(0));
+    let first = EffectKey { sink: 0, id: 0 };
+    let second = EffectKey { sink: 1, id: 0 };
+    router.upload(first, rumble(50000, 1000, 0), 0).unwrap();
+    router.upload(second, rumble(20000, 9000, 0), 0).unwrap();
+    router.play(first, 1, 0).unwrap();
+    router.play(second, 1, 0).unwrap();
+    assert_eq!(
+        poll(&mut router, 0).0,
+        vec![(0, level(50000, 9000))],
+        "each motor takes the larger request"
+    );
+    // One game erasing its effect 0 leaves the other game's effect 0 alone.
+    router.erase(first).unwrap();
+    assert_eq!(poll(&mut router, 1).0, vec![(0, level(20000, 9000))]);
+}
+
+#[test]
+fn gain_scales_a_virtual_pads_rumble() {
+    let mut router = router();
+    router.upload(KEY, rumble(FULL, FULL, 0), 0).unwrap();
+    router.play(KEY, 1, 0).unwrap();
+    router.set_gain(0, FULL / 2);
+    let (reported, _) = poll(&mut router, 0);
+    assert_eq!(reported[0].1, level(FULL / 2, FULL / 2));
+    router.set_gain(0, 0);
+    assert_eq!(poll(&mut router, 1).0[0].1, level(0, 0));
+}
+
+#[test]
+fn replacing_a_playing_effect_changes_it_in_place() {
+    let mut router = router();
+    router.upload(KEY, rumble(10000, 0, 0), 0).unwrap();
+    router.play(KEY, 1, 0).unwrap();
+    poll(&mut router, 0);
+    router.upload(KEY, rumble(60000, 0, 0), 1).unwrap();
+    assert_eq!(
+        poll(&mut router, 1).0[0].1,
+        level(60000, 0),
+        "still playing, at its new strength"
+    );
+}
+
+#[test]
+fn replacing_a_playing_effect_restarts_its_run_as_the_kernel_does() {
+    let mut router = router();
+    router.upload(KEY, rumble(10000, 0, 100), 0).unwrap();
+    router.play(KEY, 1, 0).unwrap();
+    assert_eq!(poll(&mut router, 0).1, Some(100));
+    // 60 ms in, the game updates it: the run starts over from here.
+    router.upload(KEY, rumble(10000, 0, 100), 60).unwrap();
+    assert_eq!(poll(&mut router, 60).1, Some(160));
+}
+
+#[test]
+fn replacing_an_effect_that_finished_does_not_start_it_again() {
+    let mut router = router();
+    router.upload(KEY, rumble(10000, 0, 100), 0).unwrap();
+    router.play(KEY, 1, 0).unwrap();
+    poll(&mut router, 0);
+    router.upload(KEY, rumble(10000, 0, 5000), 100).unwrap();
+    assert_eq!(
+        poll(&mut router, 100),
+        (vec![(PRIMARY, level(0, 0)), (ASSIST, level(0, 0))], None)
+    );
+}
+
+#[test]
+fn a_game_is_not_told_its_rumble_goes_nowhere() {
+    let mut router = Router::new(1, 2);
+    // No targets at all: rumble is off, or no pad can rumble.
+    assert_eq!(router.upload(KEY, rumble(FULL, FULL, 0), 0), Ok(()));
+    assert_eq!(router.play(KEY, 1, 0), Ok(()));
+    assert_eq!(poll(&mut router, 0), (vec![], None));
+}
+
+#[test]
+fn a_virtual_pad_holds_as_many_effects_as_the_kernel_offers() {
+    let mut router = router();
+    for id in 0..EFFECTS as i16 {
+        router
+            .upload(EffectKey { sink: 0, id }, rumble(1, 1, 0), 0)
+            .unwrap();
+    }
+    let extra = EffectKey { sink: 0, id: 99 };
+    assert_eq!(
+        router.upload(extra, rumble(1, 1, 0), 0),
+        Err(FeedbackError::Full)
+    );
+    router.erase(KEY).unwrap();
+    assert_eq!(
+        router.upload(extra, rumble(1, 1, 0), 0),
+        Ok(()),
+        "erasing one frees its place"
+    );
+}
+
+#[test]
+fn requests_about_what_does_not_exist_are_refused_not_fatal() {
+    let mut router = router();
+    let nowhere = EffectKey { sink: 7, id: 0 };
+    assert_eq!(
+        router.upload(nowhere, rumble(1, 1, 0), 0),
+        Err(FeedbackError::NoSuchSink)
+    );
+    assert_eq!(router.play(KEY, 1, 0), Err(FeedbackError::NoSuchEffect));
+    assert_eq!(router.erase(KEY), Err(FeedbackError::NoSuchEffect));
+    router.set_targets(7, 1);
+    router.set_gain(7, 1);
+    router.clear(7);
+    router.source_back(7);
+    assert_eq!(poll(&mut router, 0), (vec![], None));
+}
+
+#[test]
+fn a_returning_pad_is_told_the_current_level_again() {
+    let mut router = router();
+    router.upload(KEY, rumble(30000, 0, 0), 0).unwrap();
+    router.play(KEY, 1, 0).unwrap();
+    poll(&mut router, 0);
+    // The assist drops out and comes back: whatever it held is gone.
+    router.source_back(ASSIST);
+    assert_eq!(
+        poll(&mut router, 5).0,
+        vec![(ASSIST, level(30000, 0))],
+        "only the pad that returned"
+    );
+    // A pad that returns while nothing plays needs no telling.
+    router.play(KEY, 0, 6).unwrap();
+    poll(&mut router, 6);
+    router.source_back(ASSIST);
+    assert_eq!(poll(&mut router, 7).0, vec![]);
+}
+
+#[test]
+fn a_closed_virtual_pad_stops_rumbling() {
+    let mut router = router();
+    router.upload(KEY, rumble(30000, 0, 0), 0).unwrap();
+    router.play(KEY, 1, 0).unwrap();
+    poll(&mut router, 0);
+    router.clear(0);
+    assert_eq!(
+        poll(&mut router, 1).0,
+        vec![(PRIMARY, level(0, 0)), (ASSIST, level(0, 0))]
     );
 }
 
