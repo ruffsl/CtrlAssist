@@ -2,8 +2,9 @@
 
 ## State
 
-- **Status:** steps 1 to 3 done. The findings: [ecosystem](findings/ecosystem.md), [hiding](findings/hiding.md), [identity](findings/identity.md), [input loop](findings/input-loop.md), [routing graph](findings/routing-graph.md), [zenoh](findings/zenoh.md). Step 4 in progress: [docs/architecture.md](../architecture.md) is drafted and has had its three-lens review, which found design gaps (the helper's request vocabulary and threat model, hiding not dislodging programs that already hold a pad open, feedback effects without duration) and defects in the graph spike (listed in its finding). The review is not yet folded in.
-- **Next action:** settle with the maintainer the questions the review raised, fold the review into the architecture, write the commit-sized build steps into step 5, and stop for approval before building. Two checks need the maintainer at the machine: identifiers across reconnects; and suspend, resume and a Bluetooth drop. The re-bind half of hiding is confirmed for a DualSense on USB only; the recipe now also handles a Bluetooth pad and an Xbox pad on USB, to be run before the helper is built.
+- **Status:** steps 1 to 4 done, pending the maintainer's approval of [docs/architecture.md](../architecture.md) and of the build steps under step 5. The architecture has had its three-lens review and stands without the findings, which are deleted by build step 1. Unverified items are in [docs/concerns/](../concerns/README.md); deferred work is in [docs/ideas/](../ideas/README.md).
+- **Next action:** on approval, build step 1. Before build step 6 (the hiding service), the maintainer runs `just spike-hiding-dislodge <vendor> <product>` for a DualShock 4 over Bluetooth and an Xbox pad on USB, and `just spike-hiding-ids "<label>"` for the cases in the pad identity concern.
+- **Naming:** the root helper is called the hiding service in the architecture and `ctrlassist-hider` as a crate, because "helper" also described the assisting player. Older sections of this plan still say helper.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -291,9 +292,58 @@ A check, not a comparison.
    - Verify: `prek run -a` green; `nix develop -c just` lists the recipes.
 2. **Ecosystem survey.** Verify: its done-condition above.
 3. **Spikes,** in the order above, each with its checklist. Verify: each finding's results table and verdict.
-4. **Architecture.** Write `docs/architecture.md` from the findings: crates, processes, threading, data flow, key space, profile format, permissions and packaging. Settle the Provisional section. Triage the open legacy issues into closed-by-design or `docs/ideas/` entries. Replace step 5 with commit-sized build steps, each with its verification. Review with the three lenses (design, correctness of claims, maintainability) before building.
-5. **Build,** in the order the architecture sets. Expected shape: core (promoted from S4, bringing the workspace lint table, the cargo gates and `ci.yml`), device, protocol, daemon, SDK, CLI, tray, then packaging (bringing the release workflows, licensing checks, contributing guide and book) and the first release; then the GUI and the TUI, each under its own plan.
-6. **Retire this plan** into `docs/` per the plans convention, in the last commit before the first release.
+4. **Architecture.** Done: [docs/architecture.md](../architecture.md), reviewed with the three lenses and revised; concerns and ideas written; the legacy issues triaged into ideas or closed by the design (#6 by profiles, #8 by dropping gilrs, #9 by packaging, #10 by the input thread).
+5. **Build.** Commit-sized steps, in slices that can be cut into PRs later. Each step brings its tests and passes the gates that exist when it lands; tooling arrives with the step that first uses it. "VM" is the NixOS virtual machine flake check; "hardware" is a named check at the maintainer's machine; **stop** means wait for the maintainer before going on.
+
+   **Slice A: workspace and core**
+
+   1. `docs: delete the spike findings` — their content is in the architecture, concerns and ideas. Verify: no link into `plans/findings` remains.
+   2. `feat(core): promote the routing graph to ctrlassist-core` — the root workspace (excluding `spikes/`), the workspace lint table and profiles trimmed from TisVlay, the spike moved with `git mv` and renamed, tests as one integration binary, the allocation count as a test, the wide-capacity feature dropped. Brings the `fmt`, `build`, `clippy`, `doc` and `test` recipes and hooks, the nextest config, `docs/build.md` and `docs/conventions.md`, and the crate layout in CLAUDE.md. Deletes `spikes/graph`. Verify: `prek run -a`; 36 tests. **Stop:** review the lint table.
+   3. `fix(core): validate everything a profile can say` — control indices, source and input counts, thresholds, non-numbers; typed errors; ungrouped controls as groups of one; deadzones on mixed groups; selection skipping absent inputs; hat and trigger-button rules stated for the sink. One test per defect listed in the architecture review, and a property test that no valid graph panics.
+   4. `feat(core): level-based rumble routing` — replaces the per-effect router: effects with duration, delay, repeat and gain; one level per pad; add-and-clamp within a sink, strongest across sinks; the next-change time for the caller's timer. The scenario and property tests are rewritten around levels, with a model pad that behaves as a real one does on a refused update. **Stop:** review the core API before anything depends on it.
+   5. `ci: checks, tests and coverage` — `ci.yml`, the instrumented test recipe and coverage ratchet, MSRV, `actionlint`, `zizmor`, dependabot. Verify: the recipes locally; the workflows first run after the repository move.
+
+   **Slice B: device and hiding**
+
+   6. `feat(hider): the hiding service and its client` — wire types in the crate's library; the descriptor-named `hide`, `reopen` and `restore`; the pad checks; rule text from parsed numbers; the re-bind for each driver kind observed; the seat check; records under `/run` and reconciliation; socket and service units. Brings `ctrlassist-test` with fake pads, the VM check, `docs/testing.md`, and the `deny` and `shear` gates. Deletes `spikes/hiding`. Verify: VM (hide, kill the client, restore, reconnect, a non-seat user refused, a keyboard refused, a hostile pad name harmless). Hardware: a DualSense against SDL and a running Steam. **Stop:** read the root code.
+   7. `feat(device): read a pad from a descriptor` — frames, resync after dropped events, kernel-driver layouts, identifiers. Verify: VM with fake pads; tests skip visibly where uinput isn't writable.
+   8. `feat(device): uinput virtual pads` — generic and Xbox identities, the own-output marker, force-feedback requests feeding the router, the packaged uinput and uhid udev rule. Verify: fake pad to virtual pad read back; a seat user in the VM. Hardware: SDL and Steam list both identities.
+   9. `feat(device): the input thread` — epoll, the command queue and wake descriptor, the rumble timer, the real-time request, panic isolation per setup, and the latency bench as a binary. Deletes `spikes/loop`. Verify: a mux end to end in the VM; zero idle wakeups asserted; the bench against the numbers in the architecture. Hardware: rumble reaches a real pad and ends on time.
+   10. `feat(device): hotplug, hold and re-bind` — Verify: a fake pad unplugged and replugged in the VM. Hardware: a Bluetooth drop, and a suspend and resume.
+   11. `feat(device): controller database mappings` — the parser as untrusted-input code with a never-panics property test, and a fake pad with an odd layout. **Stop:** where the database comes from, how it is updated, and its license.
+
+   **Slice C: wire, daemon, CLI**
+
+   12. `feat(protocol): the profile schema and presets` — Verify: the architecture's example profiles as fixtures expanding to the expected graphs; validation errors that say where. **Stop:** the user-facing format.
+   13. `feat: a daemon and CLI that report status` — session configuration, the rpc table, the version check, liveliness, the SDK's client and watcher, `service daemon`, `status`, logging, and the dev recipes. Verify: a wire test on a temporary socket.
+   14. `feat(daemon,cli): pads, identities and identify` — Verify: wire tests with fake pads. Hardware: the buzz.
+   15. `feat(daemon,cli): profiles` — the store with durable writes; validate, put, delete. Verify: wire tests.
+   16. `feat(daemon,cli): setups` — start, stop, update, select; hiding; hold; auto-start; state. Deletes `spikes/zenoh`. Verify: VM end to end, including killing the daemon and finding the pads restored; the bench against the daemon. Hardware: priority, average and toggle in a native game and a Proton game; unplug; suspend. **Stop.**
+   17. `feat(cli): shell completions`.
+
+   **Slice D: tray**
+
+   18. `feat(tray): the tray over the SDK` — Verify: menu tests from fixtures. Hardware: KDE.
+   19. `feat(tray): notifications for hold, re-bind and missing rumble`.
+
+   **Slice E: the two pieces built last**
+
+   20. `feat(device): the DualSense identity` — the uhid pad, data copied and cached through the hiding service, a stable local address, neutral calibration, both rumble layouts, output-report pass-through with replay and reset. Deletes `spikes/identity`. Verify: the emulator against recorded reports. Hardware: a DualSense in SDL, Steam, a native game and a Proton game. May slip to a point release.
+   21. `feat(device): Steam blacklist fallback` — with its record, reconciliation and removal. Verify: tests over real `config.vdf` shapes and a simulated crash. Hardware: Steam without the hiding service. May slip to a point release.
+
+   **Slice F: packaging and release**
+
+   22. `build(nix): package and NixOS module` — units, rules, the real-time limit; the VM check moves onto the module. Hardware: installed on the maintainer's host.
+   23. `build: deb, rpm and Arch packages` — the dist profile, nfpm metadata, a container install test.
+   24. `build(licensing): third-party notices`.
+   25. `ci: release and audit workflows` — Verify: `actionlint` and `zizmor`; a real run needs the repository move.
+   26. `docs(book): user guide with a generated CLI reference` — brings `ctrlassist-docgen`.
+   27. `docs: contributing guide, security policy, issue forms`.
+   28. `docs: retire the rewrite plan`.
+   29. `chore(release): 0.5.0` — the maintainer tags, then runs the NixOS and KDE checklist.
+
+   Still to decide before step 29: whether the SDK is published to crates.io with 0.5.0 or once its API has settled.
+6. **Retire this plan** in build step 28, per the plans convention.
 
 The repository move is the maintainer's, out of band, and gates none of these.
 
