@@ -26,7 +26,7 @@
             }
         },
         {
-            "label": "hider: start (asks for sudo)",
+            "label": "hider: start",
             "type": "shell",
             "command": "just hider-dev",
             "isBackground": true,
@@ -40,7 +40,11 @@
         },
         {
             "label": "all: start",
-            "dependsOn": ["daemon: start", "tray: start"],
+            "dependsOn": [
+                "hider: start",
+                "daemon: start",
+                "tray: start"
+            ],
             "dependsOrder": "parallel",
             "problemMatcher": []
         },
@@ -56,7 +60,10 @@
         },
         {
             "label": "all: restart",
-            "dependsOn": ["all: stop", "all: start"],
+            "dependsOn": [
+                "all: stop",
+                "all: start"
+            ],
             "dependsOrder": "sequence",
             "problemMatcher": []
         }
