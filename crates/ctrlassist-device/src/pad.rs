@@ -388,7 +388,7 @@ impl Pad {
     }
 
     /// Gives the pad its raw HID node, where it has one this is able to
-    /// write to: a DualSense's over USB. From then on the pad's rumble is
+    /// write to: a DualSense's over USB, or a DualShock 4's. From then on the pad's rumble is
     /// written there, and so is what [`pass`](Self::pass) is given.
     ///
     /// # Errors
@@ -401,6 +401,14 @@ impl Pad {
         self.rumble = None;
         self.raw = Some(raw);
         Ok(())
+    }
+
+    /// Whether the pad is one whose raw node this knows how to write to:
+    /// a DualSense on USB, or a DualShock 4.
+    #[must_use]
+    pub fn could_take_output(&self) -> bool {
+        let ids = &self.identifiers;
+        RawOutput::takes(ids.bus, ids.vendor, ids.product)
     }
 
     /// Whether the pad is sent whole output reports.

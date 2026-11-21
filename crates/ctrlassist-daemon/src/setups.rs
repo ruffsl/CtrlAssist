@@ -508,23 +508,20 @@ pub(crate) struct Wanted {
     node: PathBuf,
 }
 
-/// Gives a hidden DualSense on USB its raw node, which only the hiding
-/// service can open: what a game sends a virtual DualSense beyond
-/// rumble, its lights and trigger effects, is written there. Any other
+/// Gives a hidden DualSense on USB, or a hidden DualShock 4, its raw
+/// node, which only the hiding service can open: what a game sends a
+/// virtual DualSense beyond rumble is written there, the whole of it to
+/// a DualSense and the lightbar's color to a DualShock 4. Any other
 /// pad, and one whose raw node isn't to be had, is left to rumble
 /// through the kernel and is sent nothing else.
 fn give_raw(pad: &mut Pad, token: Token, hiding: &Hiding) {
-    let ids = pad.identifiers();
-    let usb = 3;
-    let is_one = (ids.vendor, ids.product) == ctrlassist_device::Identity::DualSense.model()
-        && ids.bus == usb;
-    if !is_one {
+    if !pad.could_take_output() {
         return;
     }
     if let Some(raw) = hiding.ask(|client| client.raw_of(token))
         && let Err(error) = pad.set_raw(raw)
     {
-        warn!(%error, "a DualSense's raw node can't be written to; it gets rumble and nothing else");
+        warn!(%error, "a pad's raw node can't be written to; it gets rumble and nothing else");
     }
 }
 
