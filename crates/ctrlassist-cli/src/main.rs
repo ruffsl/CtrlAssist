@@ -12,10 +12,19 @@ mod status;
 use std::io;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::CompleteEnv;
 use ctrlassist_cli::{Cli, Command, Service};
 
 fn main() -> Result<()> {
+    // Answer completion requests before building a runtime. The dynamic
+    // engine shells back into this program per <TAB>, and the value
+    // completers ask the daemon on a runtime of their own, which would
+    // panic under an ambient one. A normal run (COMPLETE unset) falls
+    // straight through.
+    CompleteEnv::with_factory(Cli::command)
+        .completer("ctrlassist")
+        .complete();
     let cli = Cli::parse();
     let command = match cli.command {
         // The process becomes that service, which builds its own runtime:

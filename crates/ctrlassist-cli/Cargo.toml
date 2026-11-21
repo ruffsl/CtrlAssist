@@ -19,7 +19,10 @@ doc = false
 
 [dependencies]
 anyhow = { workspace = true }
-clap = { workspace = true }
+# unstable-ext: the derive `#[arg(add = …)]` value-candidate attribute
+# maps to Arg::add, which is gated behind it.
+clap = { workspace = true, features = ["unstable-ext"] }
+clap_complete = { workspace = true }
 ctrlassist = { workspace = true }
 ctrlassist-daemon = { workspace = true }
 ctrlassist-protocol = { workspace = true }

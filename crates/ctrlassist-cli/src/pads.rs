@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use ctrlassist::{DaemonClient, Error, StateEvent, StateWatcher, StateWatcherConfig};
+pub(crate) use ctrlassist_cli::printable;
 
 /// Connects to the daemon on `socket` and checks it can be talked to.
 pub(crate) async fn connect(socket: &Path) -> Result<(DaemonClient, StateWatcher)> {
@@ -45,20 +46,6 @@ pub(crate) async fn hydrated(socket: &Path) -> Result<DaemonClient> {
         }
     }
     Ok(client)
-}
-
-/// A pad's own text, made safe to print: it is whatever the pad claims,
-/// and a terminal obeys control characters.
-pub(crate) fn printable(text: &str) -> String {
-    text.chars()
-        .map(|character| {
-            if character.is_control() {
-                '?'
-            } else {
-                character
-            }
-        })
-        .collect()
 }
 
 fn yes_no(value: bool) -> &'static str {

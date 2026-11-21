@@ -446,3 +446,94 @@ async fn a_node_that_selects_is_listed_and_told_what_to_select() {
     assert!(text(&refused.stderr).contains("isn't one of mux's choices"));
     daemon.stop().await;
 }
+
+/// What the shell is offered for the word being typed, as fish asks for
+/// it: each candidate, with what is said about it.
+fn completions(runtime_dir: &Path, words: &[&str]) -> Vec<(String, String)> {
+    let output = Command::new(env!("CARGO_BIN_EXE_ctrlassist"))
+        .env("COMPLETE", "fish")
+        .env("XDG_RUNTIME_DIR", runtime_dir)
+        .args(["--", "ctrlassist"])
+        .args(words)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    text(&output.stdout)
+        .lines()
+        .map(|line| {
+            let (value, about) = line.split_once('\t').unwrap_or((line, ""));
+            (value.to_string(), about.to_string())
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shell_completes_names_from_the_daemon() {
+    const TEST: &str = "the_shell_completes_names_from_the_daemon";
+    if !ctrlassist_test::can_make_pads(TEST) {
+        return;
+    }
+    // Completion can't be told a socket, so the daemon is where a user's
+    // would be, under a runtime directory of the test's own.
+    let (dir, _) = socket();
+    let socket = dir.path().join("ctrlassist").join("zenoh.sock");
+    let _pad = ctrlassist_test::FakePad::new("CLI Tab Pad", 0x1209, 0x7e21).unwrap();
+    let daemon = start(&socket).await;
+    let file = dir.path().join("couch.toml");
+    std::fs::write(
+        &file,
+        "preset = \"priority\"\nprimary = \"model:1209:7e21\"\nassist = \"model:1209:7e22\"\n",
+    )
+    .unwrap();
+    for arguments in [
+        &["profile", "put", file.to_str().unwrap()][..],
+        &["start", "couch"],
+    ] {
+        let done = ctrlassist(&socket, arguments);
+        assert!(done.status.success(), "{}", text(&done.stderr));
+    }
+    let offered = |words: &[&str]| completions(dir.path(), words);
+    let named = |offered: &[(String, String)], value: &str| -> Option<String> {
+        offered
+            .iter()
+            .find(|(candidate, _)| candidate == value)
+            .map(|(_, about)| about.clone())
+    };
+
+    // A profile by name; a setup by name, with its phase; a pad by id,
+    // with its name.
+    assert_eq!(
+        named(&offered(&["profile", "show", ""]), "couch"),
+        Some(String::new())
+    );
+    assert_eq!(
+        named(&offered(&["start", "co"]), "couch"),
+        Some(String::new())
+    );
+    assert_eq!(
+        named(&offered(&["stop", ""]), "couch"),
+        Some("held".to_string())
+    );
+    assert_eq!(
+        named(&offered(&["identify", ""]), "model:1209:7e21:CLI Tab Pad"),
+        Some("CLI Tab Pad".to_string())
+    );
+    // The command's own words complete without the daemon's help.
+    assert!(named(&offered(&["pro"]), "profile").is_some());
+    daemon.stop().await;
+
+    // With no daemon, nothing is offered for a name, and nothing fails.
+    assert_eq!(named(&offered(&["stop", ""]), "couch"), None);
+}
+
+#[test]
+fn the_command_prints_what_registers_its_completions_with_a_shell() {
+    for shell in ["bash", "zsh", "fish"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_ctrlassist"))
+            .env("COMPLETE", shell)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{shell}");
+        assert!(text(&output.stdout).contains("ctrlassist"), "{shell}");
+    }
+}

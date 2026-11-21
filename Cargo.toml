@@ -55,6 +55,9 @@ anyhow = "1"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+# unstable-dynamic: completions that ask the running program, so a pad's
+# id or a profile's name completes from the daemon. As in TisVlay.
+clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
 
 # Raw FFI types, where a C library is called directly
 libc = { version = "0.2", default-features = false }
