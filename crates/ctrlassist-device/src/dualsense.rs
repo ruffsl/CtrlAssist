@@ -1,0 +1,731 @@
+//! A virtual DualSense, made through uhid.
+//!
+//! SDL and Steam read a DualSense through its raw HID node and ignore an
+//! evdev pad carrying its numbers, so passing as one takes a HID device:
+//! the kernel's PlayStation driver binds to it as to the real thing. The
+//! emulator presents a real pad's report descriptor, answers the three
+//! feature reports the driver reads as it binds, turns pad state into
+//! the pad's input report, and reads rumble out of the output reports it
+//! is sent.
+//!
+//! The descriptor and the firmware report are copied from a connected
+//! pad; nothing of them is in this crate. The pairing report carries the
+//! virtual pad's own address, and the calibration is synthesized as
+//! neutral: the pads behind it are calibrated by their own drivers.
+
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::os::fd::{AsFd, BorrowedFd};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use ctrlassist_core::{FeedbackError, Level, PadState, gamepad};
+use rustix::event::{PollFd, PollFlags, poll};
+use rustix::fs::OFlags;
+
+use crate::sink::{OWN_MARKER, Request, hat};
+use crate::{hidraw, hotplug};
+
+/// Sony's vendor number.
+pub(crate) const VENDOR: u16 = 0x054c;
+/// The DualSense's product number.
+pub(crate) const PRODUCT: u16 = 0x0ce6;
+/// The version a DualSense reports over USB, which SDL builds its id of
+/// the pad from.
+const VERSION: u32 = 0x8111;
+/// The name a DualSense reports over USB.
+pub(crate) const NAME: &str = "Sony Interactive Entertainment DualSense Wireless Controller";
+/// The bus type for USB, from linux/input.h.
+const BUS_USB: u16 = 3;
+
+const INPUT_REPORT: u8 = 0x01;
+const INPUT_SIZE: usize = 64;
+const OUTPUT_REPORT: u8 = 0x02;
+const CALIBRATION: u8 = 0x05;
+const CALIBRATION_SIZE: usize = 41;
+const PAIRING: u8 = 0x09;
+const PAIRING_SIZE: usize = 20;
+const FIRMWARE: u8 = 0x20;
+const FIRMWARE_SIZE: usize = 64;
+
+// Event types from linux/uhid.h.
+const UHID_STOP: u32 = 3;
+const UHID_OUTPUT: u32 = 6;
+const UHID_GET_REPORT: u32 = 9;
+const UHID_GET_REPORT_REPLY: u32 = 10;
+const UHID_CREATE2: u32 = 11;
+const UHID_INPUT2: u32 = 12;
+const UHID_SET_REPORT: u32 = 13;
+const UHID_SET_REPORT_REPLY: u32 = 14;
+/// The most data one uhid event carries.
+const UHID_DATA: usize = 4096;
+/// The size of the largest uhid event, `UHID_CREATE2`.
+const UHID_EVENT: usize = 4 + 128 + 64 + 64 + 2 + 2 + 4 + 4 + 4 + 4 + UHID_DATA;
+/// The error a request for a report the emulator doesn't have is given.
+const EIO: u16 = 5;
+
+/// What a virtual DualSense is made from, copied from a connected one.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DualSenseData {
+    /// The pad's report descriptor over USB.
+    pub descriptor: Vec<u8>,
+    /// The pad's firmware report, from which the kernel's driver picks
+    /// how it sends rumble.
+    pub firmware: Vec<u8>,
+}
+
+impl DualSenseData {
+    /// Copies what a virtual DualSense needs from a connected one's raw
+    /// HID node.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the node isn't a DualSense's connected over USB (over
+    /// Bluetooth its descriptor is another one), or can't be read.
+    pub fn read(hidraw: BorrowedFd<'_>) -> io::Result<Self> {
+        let (bus, vendor, product) = hidraw::info(hidraw)?;
+        if (bus, vendor, product) != (BUS_USB, VENDOR, PRODUCT) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a DualSense connected over USB",
+            ));
+        }
+        let data = Self {
+            descriptor: hidraw::descriptor(hidraw)?,
+            firmware: hidraw::feature(hidraw, FIRMWARE, FIRMWARE_SIZE)?,
+        };
+        if data.is_whole() {
+            Ok(data)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the pad's descriptor or firmware report isn't what a DualSense gives",
+            ))
+        }
+    }
+
+    /// Whether a virtual pad can be made from this: a descriptor of a
+    /// size the kernel takes, and a whole firmware report.
+    #[must_use]
+    pub fn is_whole(&self) -> bool {
+        !self.descriptor.is_empty()
+            && self.descriptor.len() <= UHID_DATA
+            && self.firmware.len() == FIRMWARE_SIZE
+            && self.firmware.first() == Some(&FIRMWARE)
+    }
+}
+
+/// An address as the kernel writes one: `aa:bb:cc:dd:ee:ff`.
+pub(crate) fn address_text(address: [u8; 6]) -> String {
+    let [a, b, c, d, e, f] = address;
+    format!("{a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{f:02x}")
+}
+
+/// The pairing report: the pad's address, last byte first.
+fn pairing(address: [u8; 6]) -> [u8; PAIRING_SIZE] {
+    let mut report = [0u8; PAIRING_SIZE];
+    report[0] = PAIRING;
+    for (place, byte) in report[1..7].iter_mut().zip(address.iter().rev()) {
+        *place = *byte;
+    }
+    report
+}
+
+/// A calibration report that changes nothing: no bias, and ranges that
+/// are whole and symmetric, so the driver has nothing to warn of.
+fn calibration() -> [u8; CALIBRATION_SIZE] {
+    // Gyro: three biases, then plus and minus for pitch, yaw and roll,
+    // then the speed either way. Accelerometer: plus and minus for x, y
+    // and z, at the driver's own resolution of 8192 to the g.
+    const VALUES: [i16; 17] = [
+        0, 0, 0, 8839, -8839, 8839, -8839, 8839, -8839, 540, 540, 8192, -8192, 8192, -8192, 8192,
+        -8192,
+    ];
+    let mut report = [0u8; CALIBRATION_SIZE];
+    report[0] = CALIBRATION;
+    for (place, value) in report[1..].as_chunks_mut::<2>().0.iter_mut().zip(VALUES) {
+        *place = value.to_le_bytes();
+    }
+    report
+}
+
+/// A stick's value on the wire: 0 to 255, at rest on 128.
+fn stick(value: f32) -> u8 {
+    (128.0 + value * if value < 0.0 { 128.0 } else { 127.0 })
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
+fn trigger(value: f32) -> u8 {
+    (value * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// The input report a DualSense sends over USB for `state`, with its
+/// touchpad untouched, its sensors at rest and its battery full.
+fn input_report(state: &PadState, sequence: u8) -> [u8; INPUT_SIZE] {
+    let pressed = |control| state.get(control) > 0.0;
+    let bit = |control, bit: u8| if pressed(control) { bit } else { 0 };
+    let mut report = [0u8; INPUT_SIZE];
+    report[0] = INPUT_REPORT;
+    report[1] = stick(state.get(gamepad::LEFT_X));
+    report[2] = stick(state.get(gamepad::LEFT_Y));
+    report[3] = stick(state.get(gamepad::RIGHT_X));
+    report[4] = stick(state.get(gamepad::RIGHT_Y));
+    report[5] = trigger(state.get(gamepad::LEFT_TRIGGER));
+    report[6] = trigger(state.get(gamepad::RIGHT_TRIGGER));
+    report[7] = sequence;
+    // The directional pad as one of eight directions, clockwise from up,
+    // or eight for none.
+    let direction = match (
+        hat(state, gamepad::DPAD_LEFT, gamepad::DPAD_RIGHT),
+        hat(state, gamepad::DPAD_UP, gamepad::DPAD_DOWN),
+    ) {
+        (0, -1) => 0,
+        (1, -1) => 1,
+        (1, 0) => 2,
+        (1, 1) => 3,
+        (0, 1) => 4,
+        (-1, 1) => 5,
+        (-1, 0) => 6,
+        (-1, -1) => 7,
+        _ => 8,
+    };
+    report[8] = direction
+        | bit(gamepad::WEST, 0x10)
+        | bit(gamepad::SOUTH, 0x20)
+        | bit(gamepad::EAST, 0x40)
+        | bit(gamepad::NORTH, 0x80);
+    // The digital trigger buttons follow the trigger axes.
+    report[9] = bit(gamepad::LEFT_BUMPER, 0x01)
+        | bit(gamepad::RIGHT_BUMPER, 0x02)
+        | bit(gamepad::LEFT_TRIGGER, 0x04)
+        | bit(gamepad::RIGHT_TRIGGER, 0x08)
+        | bit(gamepad::SELECT, 0x10)
+        | bit(gamepad::START, 0x20)
+        | bit(gamepad::LEFT_THUMB, 0x40)
+        | bit(gamepad::RIGHT_THUMB, 0x80);
+    report[10] = bit(gamepad::MODE, 0x01);
+    // Neither touch point is in contact.
+    report[33] = 0x80;
+    report[37] = 0x80;
+    // Charged and full.
+    report[53] = 0x2a;
+    report
+}
+
+/// The rumble an output report asks for, if it sets rumble. The driver
+/// marks that in one of two places, by the pad's firmware; the levels are
+/// in the same place either way.
+fn rumble_of(report: &[u8]) -> Option<Level> {
+    let [OUTPUT_REPORT, flags0, _, weak, strong, ..] = *report else {
+        return None;
+    };
+    let flags2 = report.get(39).copied().unwrap_or(0);
+    (flags0 & 0x01 != 0 || flags2 & 0x04 != 0).then(|| Level {
+        strong: u16::from(strong) * 257,
+        weak: u16::from(weak) * 257,
+    })
+}
+
+/// Appends `text` as a fixed-width, zero-terminated field.
+fn field(event: &mut Vec<u8>, text: &str, width: usize) {
+    let mut bytes = text.as_bytes().to_vec();
+    bytes.truncate(width - 1);
+    bytes.resize(width, 0);
+    event.extend_from_slice(&bytes);
+}
+
+/// `UHID_CREATE2`, packed: type u32, name[128], phys[64], uniq[64],
+/// rd_size u16, bus u16, vendor u32, product u32, version u32, country
+/// u32, rd_data[4096].
+fn create2(phys: &str, uniq: &str, descriptor: &[u8]) -> Vec<u8> {
+    let mut event = Vec::with_capacity(UHID_EVENT);
+    event.extend_from_slice(&UHID_CREATE2.to_ne_bytes());
+    field(&mut event, NAME, 128);
+    field(&mut event, phys, 64);
+    field(&mut event, uniq, 64);
+    let size = u16::try_from(descriptor.len().min(UHID_DATA)).unwrap_or(0);
+    event.extend_from_slice(&size.to_ne_bytes());
+    event.extend_from_slice(&BUS_USB.to_ne_bytes());
+    event.extend_from_slice(&u32::from(VENDOR).to_ne_bytes());
+    event.extend_from_slice(&u32::from(PRODUCT).to_ne_bytes());
+    event.extend_from_slice(&VERSION.to_ne_bytes());
+    event.extend_from_slice(&0u32.to_ne_bytes());
+    event.extend_from_slice(&descriptor[..usize::from(size)]);
+    event.resize(UHID_EVENT, 0);
+    event
+}
+
+fn u32_at(bytes: &[u8], at: usize) -> u32 {
+    bytes
+        .get(at..at + 4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map_or(0, u32::from_ne_bytes)
+}
+
+fn u16_at(bytes: &[u8], at: usize) -> u16 {
+    bytes
+        .get(at..at + 2)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map_or(0, u16::from_ne_bytes)
+}
+
+/// What one uhid event asks of the emulator.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Asked {
+    /// The kernel has let the device go.
+    Stop,
+    /// An output report set rumble.
+    Rumble(Level),
+    /// A feature report is wanted: the request's number, and the report's.
+    Get(u32, u8),
+    /// A report was set, which is only to be acknowledged.
+    Set(u32),
+    /// Nothing the emulator acts on.
+    Nothing,
+}
+
+fn asked(event: &[u8]) -> Asked {
+    match u32_at(event, 0) {
+        UHID_STOP => Asked::Stop,
+        // data[4096], then size u16.
+        UHID_OUTPUT => {
+            let size = usize::from(u16_at(event, 4 + UHID_DATA)).min(UHID_DATA);
+            event
+                .get(4..4 + size)
+                .and_then(rumble_of)
+                .map_or(Asked::Nothing, Asked::Rumble)
+        }
+        // id u32, then the report's number.
+        UHID_GET_REPORT => Asked::Get(u32_at(event, 4), event.get(8).copied().unwrap_or(0)),
+        UHID_SET_REPORT => Asked::Set(u32_at(event, 4)),
+        _ => Asked::Nothing,
+    }
+}
+
+/// A virtual DualSense.
+pub(crate) struct Emulator {
+    uhid: File,
+    event_node: PathBuf,
+    held: PadState,
+    sequence: u8,
+    pairing: [u8; PAIRING_SIZE],
+    firmware: [u8; FIRMWARE_SIZE],
+    calibration: [u8; CALIBRATION_SIZE],
+    /// The rumble last asked for, so that a report that changes only a
+    /// light isn't taken for a new level.
+    level: Level,
+    /// Kept between calls so that serving allocates nothing.
+    event: Box<[u8; UHID_EVENT]>,
+}
+
+impl Emulator {
+    /// Creates the pad, answers the driver as it binds, and waits for
+    /// the pad's event node. A driver that binds and then refuses the
+    /// pad, as for an address it already has, lets the pad go, which
+    /// ends the wait with an error.
+    pub(crate) fn create(data: &DualSenseData, address: [u8; 6]) -> io::Result<Self> {
+        let firmware: [u8; FIRMWARE_SIZE] = data
+            .firmware
+            .as_slice()
+            .try_into()
+            .ok()
+            .filter(|_| data.is_whole())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the copied pad's data isn't whole",
+                )
+            })?;
+        // The process and a count tell virtual pads apart in the marker.
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let number = NEXT.fetch_add(1, Ordering::Relaxed);
+        let phys = format!("{OWN_MARKER}{}/hid/{number}", std::process::id());
+        // Listening before the pad is made, so its arrival isn't missed.
+        let watch = udev::MonitorBuilder::new()?
+            .match_subsystem("hid")?
+            .match_subsystem("input")?
+            .listen()?;
+        let uhid = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags((OFlags::NONBLOCK | OFlags::CLOEXEC).bits() as i32)
+            .open("/dev/uhid")?;
+        let mut pad = Self {
+            uhid,
+            event_node: PathBuf::new(),
+            held: PadState::NEUTRAL,
+            sequence: 0,
+            pairing: pairing(address),
+            firmware,
+            calibration: calibration(),
+            level: Level::default(),
+            event: Box::new([0; UHID_EVENT]),
+        };
+        let uniq = address_text(address);
+        pad.uhid
+            .write_all(&create2(&phys, &uniq, &data.descriptor))?;
+        // The driver reads its three feature reports as it binds, then
+        // registers the pad's input devices, and only once it is bound
+        // does the kernel pass on what the pad reports. All of that is
+        // waited for here, as events, however long the kernel takes.
+        let mut bound = false;
+        loop {
+            if bound && !pad.event_node.as_os_str().is_empty() {
+                return Ok(pad);
+            }
+            let mut fds = [
+                PollFd::new(&pad.uhid, PollFlags::IN),
+                PollFd::new(&watch, PollFlags::IN),
+            ];
+            poll(&mut fds, None)?;
+            pad.serve(|_| Ok(()))?;
+            for event in watch.iter() {
+                let device = event.device();
+                let ours = device
+                    .property_value("HID_PHYS")
+                    .is_some_and(|value| value.to_str() == Some(phys.as_str()));
+                if event.event_type() == udev::EventType::Bind && ours {
+                    if device.driver().is_none_or(|driver| driver != "playstation") {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Unsupported,
+                            "the kernel's PlayStation driver didn't take the pad",
+                        ));
+                    }
+                    bound = true;
+                }
+                // The driver gives its input devices the pad's address
+                // and no `phys`; the pad itself is the one of its name
+                // alone, beside its sensors and its touchpad.
+                let node = hotplug::found(&device).filter(|found| {
+                    found.identifiers.address.as_deref() == Some(uniq.as_str())
+                        && found.identifiers.name == NAME
+                });
+                if let Some(found) = node {
+                    pad.event_node = found.node;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn event_node(&self) -> &Path {
+        &self.event_node
+    }
+
+    /// Makes the pad hold `state`: one input report, or none if nothing
+    /// a report says differs.
+    pub(crate) fn write(&mut self, state: &PadState) -> io::Result<()> {
+        if input_report(state, 0) != input_report(&self.held, 0) {
+            self.sequence = self.sequence.wrapping_add(1);
+            let report = input_report(state, self.sequence);
+            // UHID_INPUT2: type u32, size u16, then the report.
+            let mut event = [0u8; 6 + INPUT_SIZE];
+            event[..4].copy_from_slice(&UHID_INPUT2.to_ne_bytes());
+            event[4..6].copy_from_slice(&(INPUT_SIZE as u16).to_ne_bytes());
+            event[6..].copy_from_slice(&report);
+            self.uhid.write_all(&event)?;
+        }
+        self.held = *state;
+        Ok(())
+    }
+
+    fn feature(&self, number: u8) -> Option<&[u8]> {
+        match number {
+            PAIRING => Some(&self.pairing),
+            FIRMWARE => Some(&self.firmware),
+            CALIBRATION => Some(&self.calibration),
+            _ => None,
+        }
+    }
+
+    /// Answers everything the kernel has waiting, passing a change of
+    /// rumble to `handle`. Returns when nothing is left.
+    pub(crate) fn serve(
+        &mut self,
+        mut handle: impl FnMut(Request) -> Result<(), FeedbackError>,
+    ) -> io::Result<()> {
+        loop {
+            match self.uhid.read(self.event.as_mut_slice()) {
+                Ok(0) => return Ok(()),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) => return Err(error),
+            }
+            match asked(self.event.as_slice()) {
+                Asked::Stop => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "the kernel let the virtual pad go",
+                    ));
+                }
+                Asked::Rumble(level) if level != self.level => {
+                    self.level = level;
+                    // Nothing waits on this; a refusal has nowhere to go.
+                    let _ = handle(Request::Level(level));
+                }
+                Asked::Get(id, number) => {
+                    // UHID_GET_REPORT_REPLY: type u32, id u32, err u16,
+                    // size u16, then the report.
+                    let mut reply = [0u8; 12 + FIRMWARE_SIZE];
+                    reply[..4].copy_from_slice(&UHID_GET_REPORT_REPLY.to_ne_bytes());
+                    reply[4..8].copy_from_slice(&id.to_ne_bytes());
+                    let length = match self.feature(number) {
+                        Some(report) => {
+                            reply[10..12].copy_from_slice(&(report.len() as u16).to_ne_bytes());
+                            reply[12..12 + report.len()].copy_from_slice(report);
+                            12 + report.len()
+                        }
+                        None => {
+                            reply[8..10].copy_from_slice(&EIO.to_ne_bytes());
+                            12
+                        }
+                    };
+                    self.uhid.write_all(&reply[..length])?;
+                }
+                Asked::Set(id) => {
+                    // UHID_SET_REPORT_REPLY: type u32, id u32, err u16.
+                    let mut reply = [0u8; 10];
+                    reply[..4].copy_from_slice(&UHID_SET_REPORT_REPLY.to_ne_bytes());
+                    reply[4..8].copy_from_slice(&id.to_ne_bytes());
+                    self.uhid.write_all(&reply)?;
+                }
+                Asked::Rumble(_) | Asked::Nothing => {}
+            }
+        }
+    }
+}
+
+impl AsFd for Emulator {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.uhid.as_fd()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pad_at_rest_is_the_report_a_dualsense_sends_untouched() {
+        let report = input_report(&PadState::NEUTRAL, 7);
+        assert_eq!(report[..11], [1, 128, 128, 128, 128, 0, 0, 7, 8, 0, 0]);
+        // Neither touch point in contact, and a full battery.
+        assert_eq!((report[33], report[37], report[53]), (0x80, 0x80, 0x2a));
+        let rest: Vec<usize> = (11..INPUT_SIZE)
+            .filter(|index| report[*index] != 0)
+            .collect();
+        assert_eq!(rest, [33, 37, 53], "nothing else is set");
+    }
+
+    #[test]
+    fn every_gamepad_control_has_its_place_in_the_report() {
+        let held = |control| input_report(&PadState::NEUTRAL.with(control, 1.0), 0);
+        let face = [
+            (gamepad::WEST, 0x18),
+            (gamepad::SOUTH, 0x28),
+            (gamepad::EAST, 0x48),
+            (gamepad::NORTH, 0x88),
+        ];
+        for (control, byte) in face {
+            assert_eq!(held(control)[8], byte, "{control:?}");
+        }
+        let second = [
+            (gamepad::LEFT_BUMPER, 0x01),
+            (gamepad::RIGHT_BUMPER, 0x02),
+            (gamepad::SELECT, 0x10),
+            (gamepad::START, 0x20),
+            (gamepad::LEFT_THUMB, 0x40),
+            (gamepad::RIGHT_THUMB, 0x80),
+        ];
+        for (control, byte) in second {
+            assert_eq!(held(control)[9], byte, "{control:?}");
+        }
+        assert_eq!(held(gamepad::MODE)[10], 0x01);
+        // A trigger is its axis and its button at once.
+        let left = held(gamepad::LEFT_TRIGGER);
+        assert_eq!((left[5], left[9]), (255, 0x04));
+        let right = held(gamepad::RIGHT_TRIGGER);
+        assert_eq!((right[6], right[9]), (255, 0x08));
+        // The sticks, end to end.
+        let ends = PadState::NEUTRAL
+            .with(gamepad::LEFT_X, -1.0)
+            .with(gamepad::LEFT_Y, 1.0)
+            .with(gamepad::RIGHT_X, 0.5)
+            .with(gamepad::RIGHT_Y, -0.5);
+        assert_eq!(input_report(&ends, 0)[1..5], [0, 255, 192, 64]);
+        assert_eq!(
+            stick(f32::NAN),
+            0,
+            "what isn't a number is an end, not a panic"
+        );
+    }
+
+    #[test]
+    fn the_directional_pad_is_one_of_eight_directions_or_none() {
+        let hat = |held: &[ctrlassist_core::Control]| {
+            let state = held.iter().fold(PadState::NEUTRAL, |state, control| {
+                state.with(*control, 1.0)
+            });
+            input_report(&state, 0)[8]
+        };
+        let (up, right, down, left) = (
+            gamepad::DPAD_UP,
+            gamepad::DPAD_RIGHT,
+            gamepad::DPAD_DOWN,
+            gamepad::DPAD_LEFT,
+        );
+        assert_eq!(hat(&[up]), 0);
+        assert_eq!(hat(&[up, right]), 1);
+        assert_eq!(hat(&[right]), 2);
+        assert_eq!(hat(&[right, down]), 3);
+        assert_eq!(hat(&[down]), 4);
+        assert_eq!(hat(&[down, left]), 5);
+        assert_eq!(hat(&[left]), 6);
+        assert_eq!(hat(&[left, up]), 7);
+        assert_eq!(hat(&[]), 8);
+        assert_eq!(hat(&[left, right]), 8, "opposed directions cancel");
+    }
+
+    #[test]
+    fn rumble_is_read_from_an_output_report_in_either_of_the_driver_s_layouts() {
+        let mut report = [0u8; 63];
+        report[0] = OUTPUT_REPORT;
+        (report[3], report[4]) = (0x40, 0x80);
+        assert_eq!(rumble_of(&report), None, "nothing marks the rumble as set");
+        let level = Level {
+            strong: 0x8080,
+            weak: 0x4040,
+        };
+        report[1] = 0x03;
+        assert_eq!(rumble_of(&report), Some(level), "the older layout");
+        report[1] = 0x02;
+        report[39] = 0x04;
+        assert_eq!(rumble_of(&report), Some(level), "the newer layout");
+        (report[3], report[4]) = (0xff, 0xff);
+        let full = rumble_of(&report).unwrap();
+        assert_eq!((full.strong, full.weak), (u16::MAX, u16::MAX));
+        // Another report, and one cut short.
+        report[0] = 0x31;
+        assert_eq!(rumble_of(&report), None);
+        assert_eq!(rumble_of(&[OUTPUT_REPORT, 0x01]), None);
+        assert_eq!(
+            rumble_of(&[OUTPUT_REPORT, 0x01, 0, 9, 9]).unwrap().strong,
+            9 * 257
+        );
+    }
+
+    #[test]
+    fn the_pairing_report_carries_the_pad_s_own_address_last_byte_first() {
+        let report = pairing([0x02, 0xca, 0x55, 0x10, 0x20, 0x30]);
+        assert_eq!(report[..7], [PAIRING, 0x30, 0x20, 0x10, 0x55, 0xca, 0x02]);
+        assert!(report[7..].iter().all(|byte| *byte == 0));
+        assert_eq!(
+            address_text([0x02, 0xca, 0x55, 0x10, 0x20, 0x30]),
+            "02:ca:55:10:20:30"
+        );
+    }
+
+    /// As the kernel's driver reads it: no bias, and for each axis a
+    /// range that is whole, so nothing is scaled by zero.
+    #[test]
+    fn the_calibration_is_whole_and_changes_nothing() {
+        let report = calibration();
+        assert_eq!(report[0], CALIBRATION);
+        let value = |at: usize| i32::from(i16::from_le_bytes([report[at], report[at + 1]]));
+        assert_eq!((value(1), value(3), value(5)), (0, 0, 0));
+        for axis in 0..3 {
+            let (plus, minus) = (value(7 + axis * 4), value(9 + axis * 4));
+            assert!(plus.abs() + minus.abs() > 0, "gyro axis {axis}");
+            let (plus, minus) = (value(23 + axis * 4), value(25 + axis * 4));
+            // Twice the driver's resolution over the range is one.
+            assert_eq!(plus - minus, 2 * 8192, "accelerometer axis {axis}");
+            assert_eq!(plus - (plus - minus) / 2, 0, "no bias on axis {axis}");
+        }
+        assert!(value(19) + value(21) > 0, "the gyro's speed");
+        assert!(report[35..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn what_the_kernel_asks_is_read_from_its_events() {
+        let event = |kind: u32, fill: &dyn Fn(&mut [u8])| {
+            let mut event = vec![0u8; UHID_EVENT];
+            event[..4].copy_from_slice(&kind.to_ne_bytes());
+            fill(&mut event);
+            event
+        };
+        assert_eq!(asked(&event(UHID_STOP, &|_| {})), Asked::Stop);
+        assert_eq!(asked(&event(2, &|_| {})), Asked::Nothing, "a start");
+        let get = event(UHID_GET_REPORT, &|event| {
+            event[4..8].copy_from_slice(&77u32.to_ne_bytes());
+            event[8] = FIRMWARE;
+        });
+        assert_eq!(asked(&get), Asked::Get(77, FIRMWARE));
+        let set = event(UHID_SET_REPORT, &|event| {
+            event[4..8].copy_from_slice(&78u32.to_ne_bytes());
+        });
+        assert_eq!(asked(&set), Asked::Set(78));
+        let output = event(UHID_OUTPUT, &|event| {
+            event[4..9].copy_from_slice(&[OUTPUT_REPORT, 0x01, 0, 1, 2]);
+            event[4 + UHID_DATA..6 + UHID_DATA].copy_from_slice(&63u16.to_ne_bytes());
+        });
+        let level = Level {
+            strong: 2 * 257,
+            weak: 257,
+        };
+        assert_eq!(asked(&output), Asked::Rumble(level));
+        // An output report that sets a light and not rumble.
+        let light = event(UHID_OUTPUT, &|event| {
+            event[4..6].copy_from_slice(&[OUTPUT_REPORT, 0x00]);
+            event[4 + UHID_DATA..6 + UHID_DATA].copy_from_slice(&63u16.to_ne_bytes());
+        });
+        assert_eq!(asked(&light), Asked::Nothing);
+        assert_eq!(asked(&[]), Asked::Nothing, "an event cut short");
+    }
+
+    #[test]
+    fn the_pad_is_made_as_the_kernel_expects_and_only_from_whole_data() {
+        let data = DualSenseData {
+            descriptor: vec![1, 2, 3],
+            firmware: {
+                let mut firmware = vec![0; FIRMWARE_SIZE];
+                firmware[0] = FIRMWARE;
+                firmware
+            },
+        };
+        assert!(data.is_whole());
+        let event = create2(
+            "ctrlassist/virtual/1/hid/0",
+            "02:00:00:00:00:01",
+            &data.descriptor,
+        );
+        assert_eq!(event.len(), UHID_EVENT);
+        assert_eq!(u32_at(&event, 0), UHID_CREATE2);
+        assert!(event[4..].starts_with(NAME.as_bytes()));
+        assert!(event[4 + 128..].starts_with(b"ctrlassist/virtual/1/hid/0\0"));
+        assert!(event[4 + 192..].starts_with(b"02:00:00:00:00:01\0"));
+        let numbers = 4 + 256;
+        assert_eq!(u16_at(&event, numbers), 3, "the descriptor's size");
+        assert_eq!(u16_at(&event, numbers + 2), BUS_USB);
+        assert_eq!(u32_at(&event, numbers + 4), u32::from(VENDOR));
+        assert_eq!(u32_at(&event, numbers + 8), u32::from(PRODUCT));
+        assert_eq!(event[numbers + 20..numbers + 23], [1, 2, 3]);
+
+        let short = DualSenseData {
+            firmware: vec![FIRMWARE; 3],
+            ..data.clone()
+        };
+        let empty = DualSenseData {
+            descriptor: Vec::new(),
+            ..data.clone()
+        };
+        let other = DualSenseData {
+            firmware: vec![0; FIRMWARE_SIZE],
+            ..data
+        };
+        for broken in [short, empty, other] {
+            assert!(!broken.is_whole());
+            assert!(Emulator::create(&broken, [2, 0, 0, 0, 0, 1]).is_err());
+        }
+    }
+}

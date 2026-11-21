@@ -129,9 +129,12 @@ impl Identifiers {
     /// that would feed the daemon its own output.
     #[must_use]
     pub fn is_own_output(&self) -> bool {
-        self.port
-            .as_deref()
-            .is_some_and(|port| port.starts_with(crate::OWN_MARKER))
+        let marked = |text: &Option<String>, marker: &str| {
+            text.as_deref().is_some_and(|text| text.starts_with(marker))
+        };
+        // A uinput pad by its `phys`. The kernel's PlayStation driver
+        // gives its pads none, so a uhid pad by its address.
+        marked(&self.port, crate::OWN_MARKER) || marked(&self.address, crate::OWN_ADDRESS)
     }
 }
 

@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 
-use ctrlassist_core::{EffectKey, Graph, Level, NodeId, Router, SinkId, SourceId};
+use ctrlassist_core::{Effect, EffectKey, Graph, Level, NodeId, Router, SinkId, SourceId};
 use rustix::event::epoll::{self, EventData, EventFlags};
 use rustix::event::{EventfdFlags, eventfd};
 use rustix::time::{
@@ -32,6 +32,9 @@ const QUEUE: usize = 64;
 /// The most selections reported after one piece of a setup's handling.
 /// A setup with more nodes that select reports the rest after its next.
 const SWITCHED: usize = 8;
+/// The effect a virtual pad that is sent levels holds its level as: a
+/// number no game's effect has.
+const LEVEL_EFFECT: i16 = -1;
 /// The real-time priority asked for: just above ordinary threads.
 const PRIORITY: i32 = 10;
 
@@ -462,6 +465,24 @@ impl Setup {
             Request::Gain(gain) => {
                 router.set_gain(id, gain);
                 Ok(())
+            }
+            // A level is one endless effect of the pad's own, replaced
+            // as the level changes and stopped at none.
+            Request::Level(level) => {
+                let key = EffectKey {
+                    sink: id,
+                    id: LEVEL_EFFECT,
+                };
+                let effect = Effect {
+                    strong: level.strong,
+                    weak: level.weak,
+                    length_ms: 0,
+                    delay_ms: 0,
+                };
+                let on = u32::from(level != Level::default());
+                router
+                    .upload(key, effect, now_ms)
+                    .and_then(|()| router.play(key, on, now_ms))
             }
         });
         if served.is_err() {

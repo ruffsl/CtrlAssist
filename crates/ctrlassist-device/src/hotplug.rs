@@ -59,7 +59,7 @@ fn is_pad(device: &udev::Device) -> bool {
 }
 
 /// The pad a udev event device is, read without opening it.
-fn found(device: &udev::Device) -> Option<Found> {
+pub(crate) fn found(device: &udev::Device) -> Option<Found> {
     if !is_pad(device) {
         return None;
     }

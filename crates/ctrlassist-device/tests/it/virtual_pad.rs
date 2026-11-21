@@ -312,3 +312,108 @@ fn a_pad_without_motors_ignores_rumble() {
     assert!(!pad.can_rumble());
     pad.rumble(Level { strong: 1, weak: 1 }).unwrap();
 }
+
+/// A virtual DualSense is bound by the kernel's PlayStation driver as a
+/// real one is: what is written reads back through the driver's own pad,
+/// and a game's rumble comes back as levels, whichever way the driver
+/// marks it for the pad's firmware.
+#[test]
+fn a_virtual_dualsense_is_a_dualsense_to_the_kernel_s_driver() {
+    const TEST: &str = "a_virtual_dualsense_is_a_dualsense_to_the_kernel_s_driver";
+    if !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    // Made from a copied pad's data and nothing else.
+    assert!(VirtualPad::create(Identity::DualSense).is_err());
+    for (newer, last) in [(false, 0x01u32), (true, 0x02)] {
+        let data = ctrlassist_test::synthetic_dualsense(newer);
+        let address = ctrlassist_device::own_address(0x7e_5700 + last);
+        let mut sink = VirtualPad::dualsense(&data, address).unwrap();
+        assert_eq!(sink.identity(), Identity::DualSense);
+        let node = sink.event_node().to_path_buf();
+        let _ = std::process::Command::new("udevadm").arg("settle").status();
+        let fd: OwnedFd = File::open(&node).unwrap().into();
+        let mut reader = Pad::from_fd(fd).unwrap();
+        let identifiers = reader.identifiers().clone();
+        assert_eq!(
+            (identifiers.vendor, identifiers.product),
+            Identity::DualSense.model()
+        );
+        assert_eq!(
+            identifiers.address.as_deref(),
+            Some(format!("02:ca:55:7e:57:{last:02x}").as_str()),
+            "the driver names the pad by the address it was told"
+        );
+        assert!(reader.is_own_output(), "{identifiers:?}");
+
+        let held = PadState::NEUTRAL
+            .with(gamepad::SOUTH, 1.0)
+            .with(gamepad::NORTH, 1.0)
+            .with(gamepad::LEFT_BUMPER, 1.0)
+            .with(gamepad::START, 1.0)
+            .with(gamepad::MODE, 1.0)
+            .with(gamepad::RIGHT_THUMB, 1.0)
+            .with(gamepad::DPAD_UP, 1.0)
+            .with(gamepad::DPAD_RIGHT, 1.0)
+            .with(gamepad::LEFT_X, 1.0)
+            .with(gamepad::RIGHT_Y, -1.0)
+            .with(gamepad::RIGHT_TRIGGER, 1.0);
+        sink.write(&held).unwrap();
+        let arrived = |frames: &[PadState]| {
+            frames.last().is_some_and(|state| {
+                state.get(gamepad::SOUTH) > 0.0 && state.get(gamepad::RIGHT_TRIGGER) > 0.99
+            })
+        };
+        let frames = read_until(&mut reader, arrived);
+        let read = *frames.last().unwrap();
+        for control in [
+            gamepad::SOUTH,
+            gamepad::NORTH,
+            gamepad::LEFT_BUMPER,
+            gamepad::START,
+            gamepad::MODE,
+            gamepad::RIGHT_THUMB,
+            gamepad::DPAD_UP,
+            gamepad::DPAD_RIGHT,
+            gamepad::LEFT_X,
+            gamepad::RIGHT_TRIGGER,
+        ] {
+            assert!(read.get(control) > 0.99, "{control:?} in {read:?}");
+        }
+        assert!(read.get(gamepad::RIGHT_Y) < -0.99, "{read:?}");
+        for control in [
+            gamepad::EAST,
+            gamepad::WEST,
+            gamepad::DPAD_DOWN,
+            gamepad::SELECT,
+        ] {
+            assert!(read.get(control) <= 0.0, "{control:?} in {read:?}");
+        }
+        assert!(
+            read.get(gamepad::LEFT_Y).abs() < 0.01,
+            "a stick at rest: {read:?}"
+        );
+        // The same state again is nothing new to send.
+        sink.write(&held).unwrap();
+
+        // A game rumbles the pad through the driver, and stops.
+        let game = move || {
+            let mut pad = game_opens(&node);
+            let mut effect = pad.upload_ff_effect(rumble(0x8000, 0x4000, 0, 0)).unwrap();
+            effect.play(1).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            effect.stop().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        };
+        let (requests, ()) = serve_while(&mut sink, game, |_| Ok(()));
+        let on = Level {
+            strong: 0x8080,
+            weak: 0x4040,
+        };
+        assert_eq!(
+            requests,
+            [Request::Level(on), Request::Level(Level::default())],
+            "newer firmware: {newer}"
+        );
+    }
+}

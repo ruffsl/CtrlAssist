@@ -1,5 +1,5 @@
-//! A virtual pad made through uinput: what a game reads in place of the
-//! pads behind it.
+//! A virtual pad: what a game reads in place of the pads behind it. Made
+//! through uinput, or through uhid for an identity games read raw.
 
 use std::ffi::CString;
 use std::io;
@@ -7,7 +7,9 @@ use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use ctrlassist_core::{Control, Effect, FeedbackError, PadState, gamepad};
+use ctrlassist_core::{Control, Effect, FeedbackError, Level, PadState, gamepad};
+
+use crate::dualsense::{self, DualSenseData, Emulator};
 use evdev::uinput::VirtualDevice;
 use evdev::{
     AbsInfo, AbsoluteAxisCode, AttributeSet, BusType, EventSummary, EventType, FFEffectCode,
@@ -19,6 +21,21 @@ use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 /// process: the start of their `phys` string, which uinput lets its
 /// creator set and nothing else on the machine uses.
 pub const OWN_MARKER: &str = "ctrlassist/virtual/";
+
+/// How the daemon's virtual pads made through uhid are told from every
+/// other pad: the start of the address each reports, which is marked as
+/// locally administered, so no pad's maker gave it out. The kernel's
+/// PlayStation driver carries a pad's address to its input devices and
+/// nothing else its creator sets.
+pub const OWN_ADDRESS: &str = "02:ca:55:";
+
+/// The address of the daemon's virtual pad numbered `number`: the
+/// [marker](OWN_ADDRESS), then the number's low three bytes.
+#[must_use]
+pub fn own_address(number: u32) -> [u8; 6] {
+    let [_, a, b, c] = number.to_be_bytes();
+    [0x02, 0xca, 0x55, a, b, c]
+}
 
 /// The most effects a game may hold on one virtual pad.
 const EFFECTS: u32 = ctrlassist_core::EFFECTS as u32;
@@ -32,6 +49,9 @@ pub enum Identity {
     Generic,
     /// An Xbox Series pad, which SDL and Steam recognize by its numbers.
     Xbox,
+    /// A DualSense, which SDL and Steam read through its raw HID node:
+    /// made through uhid from a connected pad's copied data.
+    DualSense,
 }
 
 impl Identity {
@@ -41,6 +61,7 @@ impl Identity {
         match self {
             Self::Generic => "CtrlAssist Virtual Pad",
             Self::Xbox => "Microsoft Xbox Series S|X Controller",
+            Self::DualSense => dualsense::NAME,
         }
     }
 
@@ -51,6 +72,12 @@ impl Identity {
         match self {
             Self::Generic => InputId::new(BusType::BUS_USB, 0x1234, 0x5678, 0x0111),
             Self::Xbox => InputId::new(BusType::BUS_USB, 0x045e, 0x0b12, 0x0507),
+            Self::DualSense => InputId::new(
+                BusType::BUS_USB,
+                dualsense::VENDOR,
+                dualsense::PRODUCT,
+                0x8111,
+            ),
         }
     }
 
@@ -64,7 +91,7 @@ impl Identity {
     /// The highest value of a trigger, as that pad's driver reports it.
     fn trigger_max(self) -> i32 {
         match self {
-            Self::Generic => 255,
+            Self::Generic | Self::DualSense => 255,
             Self::Xbox => 1023,
         }
     }
@@ -94,6 +121,9 @@ pub enum Request {
     },
     /// Scale every effect on this pad; `0xffff` is full strength.
     Gain(u16),
+    /// Run the motors at this level until told otherwise: what a pad
+    /// that is sent levels, not effects, asks.
+    Level(Level),
 }
 
 const BUTTONS: [(KeyCode, Control); 11] = [
@@ -154,18 +184,12 @@ fn trigger(value: f32, max: i32) -> i32 {
     ((value * max as f32).round() as i32).clamp(0, max)
 }
 
-fn hat(state: &PadState, negative: Control, positive: Control) -> i32 {
+pub(crate) fn hat(state: &PadState, negative: Control, positive: Control) -> i32 {
     i32::from(state.get(positive) > 0.0) - i32::from(state.get(negative) > 0.0)
 }
 
-/// A virtual pad.
-///
-/// It is written level-based, as pads are read: [`write`](Self::write)
-/// takes the state the pad should now hold and sends the difference from
-/// what it last held as one report frame. It carries the gamepad's own
-/// controls: eleven buttons, two sticks, two triggers and a hat.
-#[must_use = "dropping a virtual pad removes it, which the game sees as a disconnect"]
-pub struct VirtualPad {
+/// A virtual pad made through uinput.
+struct Uinput {
     device: VirtualDevice,
     identity: Identity,
     event_node: PathBuf,
@@ -174,21 +198,8 @@ pub struct VirtualPad {
     scratch: Vec<InputEvent>,
 }
 
-impl std::fmt::Debug for VirtualPad {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VirtualPad")
-            .field("identity", &self.identity)
-            .finish_non_exhaustive()
-    }
-}
-
-impl VirtualPad {
-    /// Creates a virtual pad and waits for its event node.
-    ///
-    /// # Errors
-    ///
-    /// Fails if uinput can't be opened or the kernel refuses the pad.
-    pub fn create(identity: Identity) -> io::Result<Self> {
+impl Uinput {
+    fn create(identity: Identity) -> io::Result<Self> {
         let keys = AttributeSet::from_iter(BUTTONS.iter().map(|(key, _)| *key));
         // The process and a count tell virtual pads apart in the marker.
         static NEXT: AtomicU32 = AtomicU32::new(0);
@@ -233,31 +244,7 @@ impl VirtualPad {
         })
     }
 
-    /// What it presents itself as.
-    #[must_use]
-    pub fn identity(&self) -> Identity {
-        self.identity
-    }
-
-    /// The pad's event node, which a game opens.
-    #[must_use]
-    pub fn event_node(&self) -> &Path {
-        &self.event_node
-    }
-
-    /// Makes the pad hold `state`, sending what differs from what it
-    /// holds as one report frame, or nothing if nothing differs.
-    ///
-    /// The kernel ends a frame itself once it holds about as many
-    /// changes as the pad has axes, so a write that changes nearly every
-    /// control at once reaches the game as two frames. Both are correct
-    /// states on the way to the one written.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the kernel refuses the write; the pad's held state is
-    /// then unchanged, so the next write sends the difference again.
-    pub fn write(&mut self, state: &PadState) -> io::Result<()> {
+    fn write(&mut self, state: &PadState) -> io::Result<()> {
         self.scratch.clear();
         for (key, control) in BUTTONS {
             let (now, was) = (state.get(control), self.held.get(control));
@@ -304,18 +291,7 @@ impl VirtualPad {
         Ok(())
     }
 
-    /// Answers every request games have waiting, passing each to
-    /// `handle`. Returns when none is left.
-    ///
-    /// A game's upload blocks in the kernel until it is answered, so this
-    /// is called as soon as the pad is readable. What `handle` refuses is
-    /// refused to the game; a request that isn't understood is refused
-    /// too, never left unanswered.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the kernel refuses a read or an answer.
-    pub fn serve(
+    fn serve(
         &mut self,
         mut handle: impl FnMut(Request) -> Result<(), FeedbackError>,
     ) -> io::Result<()> {
@@ -400,9 +376,131 @@ fn errno(refusal: FeedbackError) -> i32 {
     errno.raw_os_error()
 }
 
+enum Kind {
+    Uinput(Uinput),
+    DualSense(Box<Emulator>),
+}
+
+/// A virtual pad.
+///
+/// It is written level-based, as pads are read: [`write`](Self::write)
+/// takes the state the pad should now hold and sends the difference from
+/// what it last held. It carries the gamepad's own controls: eleven
+/// buttons, two sticks, two triggers and a hat.
+#[must_use = "dropping a virtual pad removes it, which the game sees as a disconnect"]
+pub struct VirtualPad {
+    kind: Kind,
+}
+
+impl std::fmt::Debug for VirtualPad {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VirtualPad")
+            .field("identity", &self.identity())
+            .finish_non_exhaustive()
+    }
+}
+
+impl VirtualPad {
+    /// Creates a virtual pad through uinput and waits for its event
+    /// node.
+    ///
+    /// # Errors
+    ///
+    /// Fails if uinput can't be opened or the kernel refuses the pad,
+    /// and for an identity that is made from a copied pad's data; see
+    /// [`dualsense`](Self::dualsense).
+    pub fn create(identity: Identity) -> io::Result<Self> {
+        if identity == Identity::DualSense {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a DualSense is made from a connected one's copied data",
+            ));
+        }
+        Ok(Self {
+            kind: Kind::Uinput(Uinput::create(identity)?),
+        })
+    }
+
+    /// Creates a virtual DualSense through uhid from a connected one's
+    /// copied data, answers the kernel's driver as it binds, and waits
+    /// for the pad's event node. `address` is the pad's own: the driver
+    /// refuses a second pad with an address it already has.
+    ///
+    /// # Errors
+    ///
+    /// Fails if uhid can't be opened, the data isn't whole, or the
+    /// kernel's PlayStation driver doesn't take the pad.
+    pub fn dualsense(data: &DualSenseData, address: [u8; 6]) -> io::Result<Self> {
+        Ok(Self {
+            kind: Kind::DualSense(Box::new(Emulator::create(data, address)?)),
+        })
+    }
+
+    /// What it presents itself as.
+    #[must_use]
+    pub fn identity(&self) -> Identity {
+        match &self.kind {
+            Kind::Uinput(pad) => pad.identity,
+            Kind::DualSense(_) => Identity::DualSense,
+        }
+    }
+
+    /// The pad's event node, which a game opens.
+    #[must_use]
+    pub fn event_node(&self) -> &Path {
+        match &self.kind {
+            Kind::Uinput(pad) => &pad.event_node,
+            Kind::DualSense(pad) => pad.event_node(),
+        }
+    }
+
+    /// Makes the pad hold `state`, sending what differs from what it
+    /// holds as one report frame, or nothing if nothing differs.
+    ///
+    /// On a uinput pad the kernel ends a frame itself once it holds
+    /// about as many changes as the pad has axes, so a write that
+    /// changes nearly every control at once reaches the game as two
+    /// frames. Both are correct states on the way to the one written.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the kernel refuses the write; the pad's held state is
+    /// then unchanged, so the next write sends the difference again.
+    pub fn write(&mut self, state: &PadState) -> io::Result<()> {
+        match &mut self.kind {
+            Kind::Uinput(pad) => pad.write(state),
+            Kind::DualSense(pad) => pad.write(state),
+        }
+    }
+
+    /// Answers every request games have waiting, passing each to
+    /// `handle`. Returns when none is left.
+    ///
+    /// A game's upload blocks in the kernel until it is answered, so this
+    /// is called as soon as the pad is readable. What `handle` refuses is
+    /// refused to the game; a request that isn't understood is refused
+    /// too, never left unanswered.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the kernel refuses a read or an answer.
+    pub fn serve(
+        &mut self,
+        handle: impl FnMut(Request) -> Result<(), FeedbackError>,
+    ) -> io::Result<()> {
+        match &mut self.kind {
+            Kind::Uinput(pad) => pad.serve(handle),
+            Kind::DualSense(pad) => pad.serve(handle),
+        }
+    }
+}
+
 impl AsFd for VirtualPad {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.device.as_fd()
+        match &self.kind {
+            Kind::Uinput(pad) => pad.device.as_fd(),
+            Kind::DualSense(pad) => pad.as_fd(),
+        }
     }
 }
 

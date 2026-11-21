@@ -13,7 +13,7 @@ mod inspect;
 mod pad;
 mod rumble;
 
-pub use hid::FakeHidPad;
+pub use hid::{FakeHidPad, synthetic_dualsense};
 pub use hider::{Asked, FakeHider};
 pub use inspect::{NodeKind, Pad, Reads, can_open, count_reads, pads};
 pub use pad::FakePad;
@@ -81,6 +81,30 @@ pub fn phys_connected(phys: &str) -> bool {
         pads.iter()
             .any(|found| found.identifiers.port.as_deref() == Some(phys))
     })
+}
+
+/// Whether `test` can make a virtual DualSense here: uhid and uinput are
+/// writable. Where it can't, this says so on standard error and the test
+/// should return, unless fake pads are required here.
+///
+/// # Panics
+///
+/// Panics if fake pads are required and can't be made.
+#[must_use]
+pub fn can_make_hid_pads(test: &str) -> bool {
+    use std::io::Write as _;
+    if uhid_available() && uinput_available() {
+        return true;
+    }
+    assert!(
+        !fake_pads_required(),
+        "{test}: /dev/uhid isn't writable, and fake pads are required here"
+    );
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIPPED {test}: /dev/uhid isn't writable here"
+    );
+    false
 }
 
 /// Whether this process may create pads through uhid.

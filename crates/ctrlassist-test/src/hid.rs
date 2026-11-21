@@ -106,3 +106,43 @@ impl FakeHidPad {
         self.uhid.write_all(&event)
     }
 }
+
+/// A report descriptor that declares the reports the kernel's PlayStation
+/// driver exchanges with a DualSense over USB, by number and size, as
+/// vendor-defined data: one input report, one output report and three
+/// feature reports. It is nothing of Sony's; a real pad's descriptor
+/// says what each byte is, which only a program reading the raw node
+/// itself goes by.
+const SYNTHETIC_DUALSENSE: [u8; 55] = [
+    0x06, 0x00, 0xff, // Usage page: vendor-defined.
+    0x09, 0x01, // Usage 1.
+    0xa1, 0x01, // Collection: application.
+    0x15, 0x00, // Logical minimum 0.
+    0x26, 0xff, 0x00, // Logical maximum 255.
+    0x75, 0x08, // Report size: 8 bits.
+    0x85, 0x01, 0x95, 0x3f, 0x09, 0x02, 0x81, 0x02, // Report 1: 63 bytes in.
+    0x85, 0x02, 0x95, 0x3f, 0x09, 0x03, 0x91, 0x02, // Report 2: 63 bytes out.
+    0x85, 0x05, 0x95, 0x28, 0x09, 0x04, 0xb1, 0x02, // Feature 5: 40 bytes.
+    0x85, 0x09, 0x95, 0x13, 0x09, 0x05, 0xb1, 0x02, // Feature 9: 19 bytes.
+    0x85, 0x20, 0x95, 0x3f, 0x09, 0x06, 0xb1, 0x02, // Feature 32: 63 bytes.
+    0xc0, // End of the collection.
+];
+
+/// What a virtual DualSense can be made from where no real one has been
+/// copied: a descriptor of this crate's own, and a
+/// firmware report that says only which way the pad takes rumble, the
+/// newer way if `newer`.
+#[must_use]
+pub fn synthetic_dualsense(newer: bool) -> ctrlassist_device::DualSenseData {
+    let mut firmware = vec![0u8; 64];
+    firmware[0] = 0x20;
+    if newer {
+        // The update version, 2.21, at which the driver changes how it
+        // marks rumble in an output report.
+        firmware[44..46].copy_from_slice(&0x0215u16.to_le_bytes());
+    }
+    ctrlassist_device::DualSenseData {
+        descriptor: SYNTHETIC_DUALSENSE.to_vec(),
+        firmware,
+    }
+}
