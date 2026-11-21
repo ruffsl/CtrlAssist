@@ -97,7 +97,14 @@ pkgs.testers.runNixOSTest {
         machine.sleep(3)
         after = machine.succeed(switches).strip()
         assert before and before == after, f"the idle input thread was scheduled: {before} then {after}"
-        machine.succeed("systemctl stop mux quiet-a")
+
+    with subtest("a pad that is unplugged and plugged in again is read again"):
+        machine.succeed("systemd-run --unit quiet-b2 ctrlassist-fixture fake-pad --name 'Quiet B' --pulse 50")
+        machine.wait_until_succeeds("journalctl -u mux -o cat | grep 'pad back source=1'")
+        out = machine.succeed(f"su -l alice -c 'ctrlassist-fixture read {virtual} --frames 4'")
+        presses = [line.split()[1] for line in out.splitlines() if line.startswith("frame ")]
+        assert len(presses) == 4 and all(x != y for x, y in zip(presses, presses[1:])), out
+        machine.succeed("systemctl stop mux quiet-a quiet-b2")
 
     with subtest("a pad that is unplugged is reported as gone"):
         machine.succeed(f"systemd-run --unit reader ctrlassist-fixture read {node} --frames 1000000")

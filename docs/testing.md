@@ -39,7 +39,7 @@ Each `packaging/nix/test-*.nix` is a NixOS test exposed as a flake check and run
 
 | Check | Asserts |
 |---|---|
-| `device` | With the packaged udev rule: a seat user reads a pad's report frames from a descriptor as pad states; the rule gives uinput and uhid to the seat user and nobody else; a virtual pad of each identity carries what the pad behind it does; the input thread merges two pads into one and is never scheduled while they are silent; an unplugged pad is reported as gone |
+| `device` | With the packaged udev rule: a seat user reads a pad's report frames from a descriptor as pad states; the rule gives uinput and uhid to the seat user and nobody else; a virtual pad of each identity carries what the pad behind it does; the input thread merges two pads into one and is never scheduled while they are silent; a pad unplugged and plugged in again is read again; an unplugged pad is reported as gone |
 | `hider` | The hiding service as packaged, hardening included: a hidden pad is denied and its earlier reader cut off; the other pad of the same model is untouched; the passed descriptor delivers input; a reconnecting pad is never visible; restore, a killed client and a killed service each give the pad back and leave no rule; a user not in front of the machine, a keyboard and a hostile pad name get nowhere; a pad with no driver is restored exactly |
 | `platform` | A seat user can open a pad's event and js nodes, and can't open `/dev/uinput`, `/dev/uhid` or a hidraw node; both kinds of fake pad deliver what they are sent |
 

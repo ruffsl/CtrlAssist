@@ -2,10 +2,10 @@
 
 ## State
 
-- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 9 are done. The maintainer has read the hiding service's root code, and it hid a real DualSense from a running Steam and restored it (2026-11-21; SDL alone was not checked separately).
-- **Next action:** build step 10, hotplug. Build steps 7 to 9 (the pad reader, uinput virtual pads, the input thread) are done.
+- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 10 are done. The maintainer has read the hiding service's root code, and it hid a real DualSense from a running Steam and restored it (2026-11-21; SDL alone was not checked separately).
+- **Next action:** build step 11, controller database mappings. Build steps 7 to 10 (the pad reader, uinput virtual pads, the input thread, hotplug) are done. Re-hiding a returning pad before a game sees it is the hiding service's `reopen`, which the daemon drives in build step 16.
 - **Overnight, 2026-11-21:** the maintainer asked for the marked stops at build steps 11, 12 and 16 to be built through, with each decision made there recorded under "For review" below. Also decided: the controller database is a pinned snapshot in the repository plus a user override file; the `evdev` fix is vendored and soaked here before any upstream PR; the generic identity keeps 0.4.0's numbers until the release.
-- **Hardware checks owed:** `just forward-pad <node>` and `just forward-pad <node> --xbox` (SDL and Steam list each identity); `just bench`; rumble from a game reaching a real pad through a mux, which needs the daemon.
+- **Hardware checks owed:** `just forward-pad <node>` and `just forward-pad <node> --xbox` (SDL and Steam list each identity); `just bench`; rumble from a game reaching a real pad through a mux, a Bluetooth drop, and a suspend and resume, which need the daemon.
 - **Hiding service decisions** (2026-11-21): who is served is TisVlay's desktop-session rule, asked of logind once per connection through its login library; a user switch leaves pads hidden; the socket and records live under `/run/ctrlassist`; the step landed in a few commits with one stop.
 - **Naming:** the root helper is called the hiding service in the architecture and `ctrlassist-hider` as a crate, because "helper" also described the assisting player. Older sections of this plan still say helper.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
@@ -377,7 +377,7 @@ Each becomes a `docs/ideas/` entry at step 4, with the trigger that would bring 
 
 Decisions made while building through a marked stop, for the maintainer's QA. Each says what was chosen and what else was on the table.
 
-None yet.
+- **How a pad is named across reconnects** (build step 10). One name per pad, the most specific thing it reports, written as `address:<uniq>`, `serial:<vendor>:<product>:<serial>`, `port:<vendor>:<product>:<phys>` or `model:<vendor>:<product>:<name>`. The order is the architecture's; the written form is new, and profiles will use it. A pad with no address or serial is the same pad only while it stays in its port, and a uinput pad from other software is known by model alone. Alternative: keep the parts as separate profile keys instead of one string.
 
 ## Deviations
 

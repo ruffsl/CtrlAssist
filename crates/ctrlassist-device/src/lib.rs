@@ -5,13 +5,15 @@
 //! descriptors by the hiding service. A virtual pad is made through
 //! uinput and written the same level-based way pads are read.
 
+mod hotplug;
 mod layout;
 mod pad;
 mod realtime;
 mod sink;
 mod thread;
 
+pub use hotplug::{Change, Found, Monitor, connected};
 pub use layout::{AxisRange, Mapping};
-pub use pad::{Identifiers, Pad, PadError};
+pub use pad::{Identifiers, Pad, PadError, PadId};
 pub use sink::{Identity, OWN_MARKER, Request, VirtualPad};
 pub use thread::{Command, InputThread, Report, SendError, Setup, SetupId};

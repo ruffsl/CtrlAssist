@@ -24,9 +24,9 @@ const ABS_X: u16 = 0x00;
 const BTN_SOUTH: u16 = 0x130;
 const BTN_EAST: u16 = 0x131;
 
-const PRIMARY: SourceId = SourceId(0);
+pub(crate) const PRIMARY: SourceId = SourceId(0);
 const ASSIST: SourceId = SourceId(1);
-const ID: SetupId = SetupId(7);
+pub(crate) const ID: SetupId = SetupId(7);
 
 fn source() -> SourceSpec {
     SourceSpec {
@@ -36,7 +36,7 @@ fn source() -> SourceSpec {
 }
 
 /// Two pads into one virtual pad, the assist outranking the primary.
-fn mux(mode: Mode) -> Graph {
+pub(crate) fn mux(mode: Mode) -> Graph {
     Graph::build(GraphSpec {
         sources: vec![source(), source()],
         nodes: vec![NodeSpec::Mux {
@@ -48,13 +48,13 @@ fn mux(mode: Mode) -> Graph {
     .unwrap()
 }
 
-fn read(fake: &FakePad) -> Pad {
+pub(crate) fn read(fake: &FakePad) -> Pad {
     let fd: OwnedFd = File::open(fake.event_node()).unwrap().into();
     Pad::from_fd(fd).unwrap()
 }
 
 /// A virtual pad, and a reader on it standing in for the game.
-fn sink() -> (VirtualPad, Pad) {
+pub(crate) fn sink() -> (VirtualPad, Pad) {
     let sink = VirtualPad::create(Identity::Generic).unwrap();
     let _ = std::process::Command::new("udevadm").arg("settle").status();
     let fd: OwnedFd = File::open(sink.event_node()).unwrap().into();
@@ -89,7 +89,7 @@ fn rig(mode: Mode) -> Rig {
     }
 }
 
-fn last(frames: &[PadState]) -> PadState {
+pub(crate) fn last(frames: &[PadState]) -> PadState {
     *frames.last().unwrap()
 }
 

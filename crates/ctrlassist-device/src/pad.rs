@@ -73,6 +73,67 @@ pub struct Identifiers {
     pub port: Option<String>,
 }
 
+/// The one name a pad is known by across reconnects: the most specific
+/// thing it reports that stays the same when it is unplugged and
+/// plugged in again.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[non_exhaustive]
+pub enum PadId {
+    /// The pad's own address: the same on any port and any transport.
+    Address(String),
+    /// A model's vendor and product, and this pad's USB serial number.
+    Serial(u16, u16, String),
+    /// A model's vendor and product, and the port it is plugged into: for
+    /// a pad that reports nothing of its own, it is that pad only while
+    /// it stays in that port.
+    Port(u16, u16, String),
+    /// Nothing but a model: any pad of that vendor, product and name.
+    Model(u16, u16, String),
+}
+
+impl std::fmt::Display for PadId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Address(address) => write!(f, "address:{address}"),
+            Self::Serial(vendor, product, serial) => {
+                write!(f, "serial:{vendor:04x}:{product:04x}:{serial}")
+            }
+            Self::Port(vendor, product, port) => {
+                write!(f, "port:{vendor:04x}:{product:04x}:{port}")
+            }
+            Self::Model(vendor, product, name) => {
+                write!(f, "model:{vendor:04x}:{product:04x}:{name}")
+            }
+        }
+    }
+}
+
+impl Identifiers {
+    /// The name this pad is known by across reconnects.
+    #[must_use]
+    pub fn id(&self) -> PadId {
+        if let Some(address) = &self.address {
+            PadId::Address(address.clone())
+        } else if let Some(serial) = &self.serial {
+            PadId::Serial(self.vendor, self.product, serial.clone())
+        } else if let Some(port) = &self.port {
+            PadId::Port(self.vendor, self.product, port.clone())
+        } else {
+            PadId::Model(self.vendor, self.product, self.name.clone())
+        }
+    }
+
+    /// Whether this is one of the daemon's own virtual pads, made by
+    /// this process or any other, which must never be read as a source:
+    /// that would feed the daemon its own output.
+    #[must_use]
+    pub fn is_own_output(&self) -> bool {
+        self.port
+            .as_deref()
+            .is_some_and(|port| port.starts_with(crate::OWN_MARKER))
+    }
+}
+
 fn nonempty(text: Option<&str>) -> Option<String> {
     text.map(str::trim)
         .filter(|text| !text.is_empty())
@@ -191,15 +252,11 @@ impl Pad {
         &self.identifiers
     }
 
-    /// Whether this is one of the daemon's own virtual pads, made by
-    /// this process or any other, which must never be read as a source:
-    /// that would feed the daemon its own output.
+    /// Whether this is one of the daemon's own virtual pads; see
+    /// [`Identifiers::is_own_output`].
     #[must_use]
     pub fn is_own_output(&self) -> bool {
-        self.identifiers
-            .port
-            .as_deref()
-            .is_some_and(|port| port.starts_with(crate::OWN_MARKER))
+        self.identifiers.is_own_output()
     }
 
     /// What the pad held as of its last complete report frame.

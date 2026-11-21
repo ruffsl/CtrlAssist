@@ -5,6 +5,7 @@
 
 #![expect(clippy::unwrap_used, reason = "tests fail loudly")]
 
+mod hotplug;
 mod thread;
 mod virtual_pad;
 

@@ -19,7 +19,9 @@ use ctrlassist_core::gamepad;
 use ctrlassist_core::{
     Graph, GraphSpec, Input, Layout, Mode, MuxConfig, NodeId, NodeSpec, SourceId, SourceSpec,
 };
-use ctrlassist_device::{Identity, InputThread, Pad, Setup, SetupId, VirtualPad};
+use ctrlassist_device::{
+    Change, Identity, InputThread, Monitor, Pad, Report, Setup, SetupId, VirtualPad,
+};
 use ctrlassist_hider::{Client, Hidden};
 use ctrlassist_test::{FakeHidPad, FakePad, NodeKind, can_open, count_reads, pads};
 use rustix::event::{PollFd, PollFlags, poll};
@@ -319,20 +321,47 @@ fn main() -> Result<()> {
             .context("building the graph")?;
             let sink = VirtualPad::create(Identity::Generic).context("creating the virtual pad")?;
             println!("virtual node={}", sink.event_node().display());
-            let setup = Setup::new(
-                graph,
-                vec![Some(open(&primary)?), Some(open(&assist)?)],
-                vec![sink],
-            );
+            // Watching from before the pads are opened, so that one
+            // leaving and returning can't fall between the two.
+            let mut monitor = Monitor::new()?;
+            let pads = [open(&primary)?, open(&assist)?];
+            let ids = pads.each_ref().map(|pad| pad.identifiers().id());
+            let setup = Setup::new(graph, pads.map(Some).into(), vec![sink]);
             let (input, reports) = InputThread::spawn()?;
             println!("realtime={}", input.is_realtime());
             input.send(ctrlassist_device::Command::Start(
                 SetupId(0),
                 Box::new(setup),
             ))?;
-            // Holds until killed, saying what the input thread reports.
+            // Holds until killed, saying what the input thread reports,
+            // and giving a pad that went its place back when it returns.
             for report in reports {
                 println!("report {report:?}");
+                let Report::PadGone { source, .. } = report else {
+                    continue;
+                };
+                let pad = loop {
+                    poll(&mut [PollFd::new(&monitor, PollFlags::IN)], None)?;
+                    let mut back = None;
+                    monitor.read(|change| {
+                        if let Change::Arrived(found) = change
+                            && found.identifiers.id() == ids[source.0]
+                        {
+                            // An arrival from before it left names a node
+                            // that is gone, and doesn't open.
+                            back = open(&found.node).ok().or(back.take());
+                        }
+                    });
+                    if let Some(pad) = back {
+                        break pad;
+                    }
+                };
+                input.send(ctrlassist_device::Command::PadBack {
+                    setup: SetupId(0),
+                    source,
+                    pad: Box::new(pad),
+                })?;
+                println!("pad back source={}", source.0);
             }
             Ok(())
         }

@@ -52,8 +52,10 @@ pub struct SetupId(pub u32);
 pub struct Setup {
     graph: Graph,
     router: Router,
-    /// By source number. None is a pad that is missing.
-    pads: Vec<Option<Pad>>,
+    /// By source number. None is a pad that is missing. Each is boxed so
+    /// that one can leave or return on the input thread without anything
+    /// being allocated or freed there.
+    pads: Vec<Option<Box<Pad>>>,
     /// By sink number.
     sinks: Vec<VirtualPad>,
     /// When a rumble level next changes by itself.
@@ -67,6 +69,7 @@ impl Setup {
     #[must_use]
     pub fn new(graph: Graph, pads: Vec<Option<Pad>>, sinks: Vec<VirtualPad>) -> Self {
         let router = Router::new(sinks.len(), pads.len());
+        let pads = pads.into_iter().map(|pad| pad.map(Box::new)).collect();
         Self {
             graph,
             router,
@@ -79,7 +82,7 @@ impl Setup {
 
     /// The pads, by source number.
     #[must_use]
-    pub fn pads(&self) -> &[Option<Pad>] {
+    pub fn pads(&self) -> &[Option<Box<Pad>>] {
         &self.pads
     }
 
@@ -144,7 +147,7 @@ impl Setup {
     }
 
     /// A pad has something to read. Returns the pad if it has gone.
-    fn pad_ready(&mut self, index: usize, epoll: &OwnedFd) -> Option<Pad> {
+    fn pad_ready(&mut self, index: usize, epoll: &OwnedFd) -> Option<Box<Pad>> {
         let Self {
             graph,
             pads,
@@ -167,13 +170,46 @@ impl Setup {
         match read {
             Ok(()) => None,
             Err(PadError::Gone | PadError::Io(_)) => {
-                let _ = epoll::delete(epoll, &*pad);
+                let _ = epoll::delete(epoll, &**pad);
                 let gone = slot.take();
                 graph.set_present(SourceId(index), false, &mut |_| {});
                 self.write();
                 gone
             }
         }
+    }
+
+    /// A missing pad has returned. It takes its place again holding
+    /// whatever it holds now, and is told the rumble level it missed.
+    /// Returns the pad if the setup has no such place free.
+    fn pad_back(
+        &mut self,
+        index: usize,
+        pad: Box<Pad>,
+        epoll: &OwnedFd,
+        slot: usize,
+    ) -> Option<Box<Pad>> {
+        let free = self.pads.get(index).is_some_and(Option::is_none);
+        if !free
+            || epoll::add(
+                epoll,
+                &*pad,
+                EventData::new_u64(token(slot, PAD, index)),
+                EventFlags::IN,
+            )
+            .is_err()
+        {
+            return Some(pad);
+        }
+        self.graph.set_present(SourceId(index), true, &mut |_| {});
+        self.graph
+            .update(SourceId(index), *pad.state(), &mut |_| {});
+        self.router.source_back(SourceId(index));
+        if let Some(place) = self.pads.get_mut(index) {
+            *place = Some(pad);
+        }
+        self.write();
+        None
     }
 
     /// A game has asked something of a virtual pad.
@@ -255,6 +291,15 @@ pub enum Command {
     Start(SetupId, Box<Setup>),
     /// Stop a setup; it comes back in a [`Report::Stopped`].
     Stop(SetupId),
+    /// Give a running setup back a pad that went missing.
+    PadBack {
+        /// The setup.
+        setup: SetupId,
+        /// Which of its pads.
+        source: SourceId,
+        /// The pad, opened again.
+        pad: Box<Pad>,
+    },
     /// Move a toggle or unicast node to its next input or output.
     Switch {
         /// The setup.
@@ -283,6 +328,16 @@ pub enum Report {
     /// A setup couldn't be started, or failed while running: a virtual
     /// pad refused a write, or its handling panicked. It is handed back.
     Failed(SetupId, Box<Setup>),
+    /// A returning pad couldn't be taken: the setup isn't running, or
+    /// that place in it isn't empty. The pad is handed back.
+    PadRefused {
+        /// The setup.
+        setup: SetupId,
+        /// Which of its pads.
+        source: SourceId,
+        /// The pad.
+        pad: Box<Pad>,
+    },
     /// A pad in a running setup has gone. The setup carries on with the
     /// pad reading as at rest. The pad is handed back to be dropped.
     PadGone {
@@ -491,7 +546,7 @@ impl State {
         &mut self,
         slot: usize,
         now: u64,
-        work: impl FnOnce(&mut Setup, &OwnedFd) -> Option<(SourceId, Pad)>,
+        work: impl FnOnce(&mut Setup, &OwnedFd) -> Option<(SourceId, Box<Pad>)>,
     ) {
         let Some(running) = self.slots.get_mut(slot).and_then(Option::as_mut) else {
             return;
@@ -511,7 +566,7 @@ impl State {
                     self.report(Report::PadGone {
                         setup: id,
                         source,
-                        pad: Box::new(pad),
+                        pad,
                     });
                 }
                 if failed {
@@ -547,6 +602,20 @@ impl State {
                 Command::Stop(id) => {
                     if let Some(slot) = self.slot_of(id) {
                         self.retire(slot, Report::Stopped);
+                    }
+                }
+                Command::PadBack { setup, source, pad } => {
+                    let mut pad = Some(pad);
+                    if let Some(slot) = self.slot_of(setup) {
+                        self.guarded(slot, now, |running, epoll| {
+                            if let Some(back) = pad.take() {
+                                pad = running.pad_back(source.0, back, epoll, slot);
+                            }
+                            None
+                        });
+                    }
+                    if let Some(pad) = pad {
+                        self.report(Report::PadRefused { setup, source, pad });
                     }
                 }
                 Command::Switch { setup, node } => {
