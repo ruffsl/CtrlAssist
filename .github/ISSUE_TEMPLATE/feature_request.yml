@@ -1,0 +1,26 @@
+name: Feature request
+description: Something CtrlAssist could do but doesn't.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: What you're trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should CtrlAssist do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+  - type: input
+    id: pads
+    attributes:
+      label: Controllers and game, if they matter
+      placeholder: Two DualSense pads over Bluetooth, in a Proton game

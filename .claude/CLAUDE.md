@@ -79,7 +79,7 @@ The crates still to come, and what each holds, are in the architecture's Crates 
 
 ## How changes land
 
-Anything beyond a small fix follows a plan in `docs/plans/` ([convention](../docs/plans/README.md)). Plan revisions are committed as they are made, so they read as diffs. A contributing guide arrives with the first release.
+Anything beyond a small fix follows a plan in `docs/plans/` ([convention](../docs/plans/README.md)). Plan revisions are committed as they are made, so they read as diffs. The [contributing guide](../.github/CONTRIBUTING.md) has the same for contributors.
 
 ## Working rules
 

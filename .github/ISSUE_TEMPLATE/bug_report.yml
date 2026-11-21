@@ -1,0 +1,71 @@
+name: Bug report
+description: Something in CtrlAssist doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Found a security problem? Please don't report it here: see the [security policy](https://github.com/CtrlAssist/CtrlAssist/security/policy).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, and what CtrlAssist did. Steps to reproduce help most.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: CtrlAssist version
+      description: Shown by `ctrlassist --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is it installed?
+      options:
+        - Debian / Ubuntu package
+        - Fedora package
+        - Arch package
+        - NixOS module or Nix package
+        - From source
+    validations:
+      required: true
+  - type: textarea
+    id: pads
+    attributes:
+      label: Controllers
+      description: The output of `ctrlassist pads`, and how each is connected (USB, Bluetooth, a dongle).
+      render: text
+  - type: input
+    id: game
+    attributes:
+      label: Game and how it runs
+      description: If the problem shows in a game. Native, Proton, Steam Input on or off, a launcher or a sandbox such as Flatpak.
+      placeholder: Hollow Knight, Proton, Steam Input off
+  - type: input
+    id: desktop
+    attributes:
+      label: Distribution, desktop and session
+      placeholder: Fedora 43, KDE Plasma on Wayland
+  - type: textarea
+    id: state
+    attributes:
+      label: What CtrlAssist says
+      description: The output of `ctrlassist status` and `ctrlassist setups`, and the profile involved (`ctrlassist profile show <name>`).
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >-
+        `journalctl --user -u ctrlassist-daemon -e`, and for a hiding problem `journalctl -u ctrlassist-hider -e`.
+        This is public, so remove anything you'd rather not share, such as a controller's address.
+      render: text
