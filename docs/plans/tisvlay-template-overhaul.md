@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** steps 1 to 4 done, pending the maintainer's approval of [docs/architecture.md](../architecture.md) and of the build steps under step 5. The architecture has had its three-lens review and stands without the findings, which are deleted by build step 1. Unverified items are in [docs/concerns/](../concerns/README.md); deferred work is in [docs/ideas/](../ideas/README.md).
-- **Next action:** on approval, build step 1. Before build step 6 (the hiding service), the maintainer runs `just spike-hiding-dislodge <vendor> <product>` for a DualShock 4 over Bluetooth and an Xbox pad on USB, and `just spike-hiding-ids "<label>"` for the cases in the pad identity concern.
+- **Next action:** on approval, build step 1. Before build step 6 (the hiding service), the maintainer runs `just spike-hiding-dislodge <vendor> <product>` for an Xbox pad on USB (a DualShock 4 over Bluetooth is done, and behaves as the DualSense on USB did), and `just spike-hiding-ids "<label>"` for the cases in the pad identity concern.
 - **Naming:** the root helper is called the hiding service in the architecture and `ctrlassist-hider` as a crate, because "helper" also described the assisting player. Older sections of this plan still say helper.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.

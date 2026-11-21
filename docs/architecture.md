@@ -388,7 +388,8 @@ What each consumer still sees of a pad under each mechanism:
 - Removing a rule does not restore a node's mode; a re-bind recreates the nodes with their defaults.
 - A node is created owned by root with no access for others, and udev applies rules before anything unprivileged can open it, so a returning pad covered by a rule is never visible.
 - After removing the rule and re-binding, Steam found the DualSense again within seconds, with no restart.
-- The re-bind was observed for a DualSense on USB. Bluetooth pads and pads without a HID driver are [not yet observed](concerns/README.md).
+- The re-bind was observed for a DualSense on USB and a DualShock 4 over Bluetooth, with the same result: the open reader was cut off, Steam closed the pad, and after restoring Steam found it again seven seconds later. The Bluetooth pad stayed connected throughout and kept its node numbers. A pad without a HID driver, such as an Xbox pad on USB, is [not yet observed](concerns/README.md).
+- A rule that names the pad's HID device hid one of two connected PlayStation pads and left the other untouched.
 
 ### Permissions on a clean machine
 

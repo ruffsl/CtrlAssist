@@ -1,9 +1,9 @@
-# Hiding by re-bind is observed for one kind of pad only
+# Hiding by re-bind is unobserved for pads without a HID driver
 
-The re-bind half of hiding was run on a DualSense over USB, whose HID driver is `playstation`. A Bluetooth pad's HID device belongs to the Bluetooth daemon and may not come back after an unbind; an Xbox pad on USB has no HID driver and is re-bound at its USB interface.
+The re-bind half of hiding was run on a DualSense over USB and a DualShock 4 over Bluetooth, both under the `playstation` HID driver, and worked the same way on each. An Xbox pad on USB has no HID driver: its `xpad` driver binds to the USB interface, so the re-bind happens at a different place in sysfs and there is no hidraw node. Xbox pads over Bluetooth use yet another driver.
 
-**Risk.** High: it decides whether hiding works for those pads at all.
+**Risk.** High for Xbox pads: it decides whether hiding works for them at all.
 
-**Mitigation.** Run `just spike-hiding-dislodge <vendor> <product>` with a DualShock 4 over Bluetooth and an Xbox pad on USB before the hiding service is built.
+**Mitigation.** Run `just spike-hiding-dislodge <vendor> <product>` with an Xbox pad on USB, and over Bluetooth, before the hiding service is built. The recipe already takes the USB-interface path when a pad has no HID device.
 
-**Closes when.** The recipe has been run for both.
+**Closes when.** The recipe has been run for an Xbox pad on each transport.
