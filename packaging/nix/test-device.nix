@@ -68,6 +68,37 @@ pkgs.testers.runNixOSTest {
             machine.succeed(f"udevadm info {virtual} | grep ID_INPUT_JOYSTICK=1")
             machine.succeed(f"systemctl stop {unit}")
 
+    with subtest("a seat user's input thread merges two pads and sleeps when they do"):
+        # Two pads that send nothing unless told to.
+        machine.succeed("systemd-run --unit quiet-a ctrlassist-fixture fake-pad --name 'Quiet A'")
+        machine.succeed("systemd-run --unit quiet-b ctrlassist-fixture fake-pad --name 'Quiet B' --pulse 50")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 'Quiet' | grep -x 2")
+        machine.succeed("udevadm settle")
+        a = machine.succeed("ctrlassist-fixture pads | grep 'Quiet A' | grep -o 'event=[^: ]*' | cut -d= -f2").strip()
+        b = machine.succeed("ctrlassist-fixture pads | grep 'Quiet B' | grep -o 'event=[^: ]*' | cut -d= -f2").strip()
+        machine.succeed(f"systemd-run --unit mux --uid alice ctrlassist-fixture mux {a} {b}")
+        machine.wait_until_succeeds("journalctl -u mux -o cat | grep '^realtime='")
+        virtual = machine.succeed("journalctl -u mux -o cat | grep -o 'node=.*' | cut -d= -f2").strip()
+        machine.succeed("udevadm settle")
+        # The assist's presses come out of the virtual pad.
+        out = machine.succeed(f"su -l alice -c 'ctrlassist-fixture read {virtual} --frames 4'")
+        presses = [line.split()[1] for line in out.splitlines() if line.startswith("frame ")]
+        assert len(presses) == 4 and all(x != y for x, y in zip(presses, presses[1:])), out
+
+        # With both pads silent, the input thread is never scheduled.
+        machine.succeed("systemctl stop quiet-b")
+        machine.wait_until_succeeds("journalctl -u mux -o cat | grep 'report PadGone'")
+        switches = (
+            "pid=$(systemctl show mux -p MainPID --value); "
+            "for t in /proc/$pid/task/*; do "
+            "if [ \"$(cat $t/comm)\" = input ]; then grep ctxt_switches $t/status | awk '{s+=$2} END {print s}'; fi; done"
+        )
+        before = machine.succeed(switches).strip()
+        machine.sleep(3)
+        after = machine.succeed(switches).strip()
+        assert before and before == after, f"the idle input thread was scheduled: {before} then {after}"
+        machine.succeed("systemctl stop mux quiet-a")
+
     with subtest("a pad that is unplugged is reported as gone"):
         machine.succeed(f"systemd-run --unit reader ctrlassist-fixture read {node} --frames 1000000")
         machine.wait_until_succeeds("journalctl -u reader | grep -c 'frame '")

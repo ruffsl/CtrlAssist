@@ -181,9 +181,10 @@ The input thread is the whole data path, for every setup. It sleeps in `epoll_wa
 
 It is created before the async runtime and shares nothing with it but the queues. Rules that keep it dependable:
 
-- **Nothing on it waits for the control side.** Commands arrive through a lock-free queue. Reports back (a pad read failed, a switch happened, a pad refused rumble) are sent without waiting and dropped if the control side is behind. No input event crosses this boundary except the mirror.
-- **It doesn't log, allocate or free.** A setup's graph is built by the control side and handed over whole; a retired one is handed back to be dropped.
-- **It asks for real-time scheduling** at a low priority with a CPU-time limit, and carries on without it if refused. The daemon's state says which. Real-time scheduling is what makes the latency tail dependable when the machine is saturated.
+- **Nothing on it waits for the control side.** Commands arrive through a bounded queue that is only ever polled, with a wake descriptor. Reports back (a pad read failed, a switch happened, a pad refused rumble) are sent without waiting and dropped if the control side is behind. No input event crosses this boundary except the mirror.
+- **It doesn't log, allocate or free.** A setup (its graph, router, pads and virtual pads) is built by the control side and handed over whole; a retired one, and a pad that has gone, are handed back to be dropped.
+- **One setup's failure is its own.** Each setup's handling is guarded, so a panic or a virtual pad that refuses a write takes that setup down and leaves the others running.
+- **It asks for real-time scheduling** at a low priority, and carries on without it if refused. It sets no CPU-time limit of its own: exceeding one kills the process, and the kernel's limit on real-time threads as a whole already protects the machine. The daemon's state says which. Real-time scheduling is what makes the latency tail dependable when the machine is saturated.
 - **No `println!`,** here or anywhere, as in TisVlay. A write to a closed pipe panics, and a panic in the daemon takes the virtual pads with it.
 
 ### The control side
@@ -443,6 +444,7 @@ Timed between two fake pads and a virtual pad, at 1,000 events a second per pad,
 | | 0.4.0 | 6–9 µs | 548–864 µs | 1.5–2.6 ms | 95–125 |
 
 - Tens of microseconds on an idle machine is the kernel round trip, not the program.
+- The built input thread, with its mux and graph step in the path, measures the same: 28 µs median and 141 µs at the 99th percentile idle; 11 µs and 18 µs with every CPU busy and real-time scheduling granted; no idle wakeups. `just bench` repeats it.
 - The comparison flatters the new loop slightly: it forwarded frames unchanged, where 0.4.0 also ran its mapping and its priority mode. A graph step adds 0.24 to 0.5 µs.
 - gilrs opens pads by path and keeps its controller-database parser private, so it can neither take a descriptor nor lend its mappings.
 

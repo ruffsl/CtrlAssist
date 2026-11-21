@@ -13,6 +13,10 @@ publish.workspace = true
 name = "ctrlassist-fixture"
 path = "src/bin/fixture.rs"
 
+[[bin]]
+name = "ctrlassist-bench"
+path = "src/bin/bench.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }

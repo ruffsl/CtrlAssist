@@ -2,8 +2,10 @@
 
 ## State
 
-- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 8 are done. The maintainer has read the hiding service's root code, and it hid a real DualSense from a running Steam and restored it (2026-11-21; SDL alone was not checked separately).
-- **Next action:** build step 9, the input thread, then on through slice B. Build steps 7 and 8 (the pad reader, uinput virtual pads) are done. The next marked stop is build step 11. Hardware check owed for build step 8: `just forward-pad <node>` and `just forward-pad <node> --xbox`, to see that SDL and Steam list each identity.
+- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 9 are done. The maintainer has read the hiding service's root code, and it hid a real DualSense from a running Steam and restored it (2026-11-21; SDL alone was not checked separately).
+- **Next action:** vendor the `evdev` crate with its `phys` fix, then build step 10, hotplug. Build steps 7 to 9 (the pad reader, uinput virtual pads, the input thread) are done.
+- **Overnight, 2026-11-21:** the maintainer asked for the marked stops at build steps 11, 12 and 16 to be built through, with each decision made there recorded under "For review" below. Also decided: the controller database is a pinned snapshot in the repository plus a user override file; the `evdev` fix is vendored and soaked here before any upstream PR; the generic identity keeps 0.4.0's numbers until the release.
+- **Hardware checks owed:** `just forward-pad <node>` and `just forward-pad <node> --xbox` (SDL and Steam list each identity); `just bench`; rumble from a game reaching a real pad through a mux, which needs the daemon.
 - **Hiding service decisions** (2026-11-21): who is served is TisVlay's desktop-session rule, asked of logind once per connection through its login library; a user switch leaves pads hidden; the socket and records live under `/run/ctrlassist`; the step landed in a few commits with one stop.
 - **Naming:** the root helper is called the hiding service in the architecture and `ctrlassist-hider` as a crate, because "helper" also described the assisting player. Older sections of this plan still say helper.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
@@ -371,6 +373,12 @@ Each becomes a `docs/ideas/` entry at step 4, with the trigger that would bring 
 - **No issue or draft PR yet.** The contributing guide starts from an agreed issue and a draft PR. The maintainer is working locally until the repository moves, so the plan's history is this branch.
 - **A user daemon,** where TisVlay's is a system service with polkit rules.
 
+## For review
+
+Decisions made while building through a marked stop, for the maintainer's QA. Each says what was chosen and what else was on the table.
+
+None yet.
+
 ## Deviations
 
 - **The hiding service passes no hidraw descriptor yet** (build step 6). The architecture has it open a hidraw node for an allowlisted driver. Nothing reads one until the DualSense identity (build step 20), and the path can't be exercised in the virtual machine without Sony's report descriptor, so it lands with that step. The rule denies hidraw nodes now.
@@ -379,5 +387,9 @@ Each becomes a `docs/ideas/` entry at step 4, with the trigger that would bring 
 - **CI opens uinput on its runner** (build step 7), so the pad reader's tests run there and count toward coverage; without that the floor would fail in CI. Like the rest of the workflow, this first runs after the repository move, along with the system libraries the workflow now installs.
 - **Own virtual pads are known by device number, not by a marker in `phys`** (build step 8). The `evdev` crate's call that sets `phys` is refused by the kernel (it declares the wrong request size), and the builder keeps its descriptor private, so the marker can't be set without replacing the crate's uinput setup. The daemon's virtual pads die with it, so remembering their device numbers does the same job. Worth reporting upstream.
 - **The generic identity reports 0.4.0's numbers** (build step 8), USB 1234:5678, because those are what SDL and Steam were seen to adopt. They are the `evdev` crate's sample numbers, not ours; numbers of our own are a question for the release.
+- **No CPU-time limit on the input thread** (build step 9). The architecture asked for one beside real-time scheduling. Exceeding `RLIMIT_RTTIME` kills the process, which would take every virtual pad with it; the kernel's own limit on real-time threads already protects the machine.
+- **The queues are the standard library's bounded channels,** not a lock-free queue crate (build step 9): they are only ever polled from the input thread, never block it, and add no dependency.
+- **The bench no longer times 0.4.0** (build step 9). It runs the input thread in its own process; the comparison is in the architecture. `spikes/zenoh` stays until its step, but its bench recipe went with `spikes/loop`, whose binary it drove.
+- **Panic isolation is untested** (build step 9): nothing in a setup's handling can be made to panic from outside, which is the point, so the guard is exercised only by reading it.
 
 The drafting history is in git.

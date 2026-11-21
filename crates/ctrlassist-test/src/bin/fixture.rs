@@ -16,7 +16,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use ctrlassist_core::gamepad;
-use ctrlassist_device::{Identity, Pad, VirtualPad};
+use ctrlassist_core::{
+    Graph, GraphSpec, Input, Layout, Mode, MuxConfig, NodeId, NodeSpec, SourceId, SourceSpec,
+};
+use ctrlassist_device::{Identity, InputThread, Pad, Setup, SetupId, VirtualPad};
 use ctrlassist_hider::{Client, Hidden};
 use ctrlassist_test::{FakeHidPad, FakePad, NodeKind, can_open, count_reads, pads};
 use rustix::event::{PollFd, PollFlags, poll};
@@ -88,6 +91,9 @@ enum Command {
         #[arg(long)]
         xbox: bool,
     },
+    /// Run the input thread with a priority mux of two pads into one
+    /// virtual pad, until killed. Prints the virtual pad's event node.
+    Mux { primary: PathBuf, assist: PathBuf },
     /// Count reads on a node for a window, printing the count each second
     /// and whether the node was cut off.
     Listen {
@@ -291,6 +297,44 @@ fn main() -> Result<()> {
                     sink.serve(|_| Ok(())).context("serving the virtual pad")?;
                 }
             }
+        }
+        Command::Mux { primary, assist } => {
+            let open = |node: &Path| -> Result<Pad> {
+                let file =
+                    File::open(node).with_context(|| format!("opening {}", node.display()))?;
+                Pad::from_fd(file.into()).context("reading the pad")
+            };
+            let source = || SourceSpec {
+                deadzone: 0.1,
+                layout: Layout::gamepad(),
+            };
+            let graph = Graph::build(GraphSpec {
+                sources: vec![source(), source()],
+                nodes: vec![NodeSpec::Mux {
+                    inputs: vec![Input::Source(SourceId(0)), Input::Source(SourceId(1))],
+                    config: MuxConfig::new(Mode::Priority, &Layout::gamepad()),
+                }],
+                sinks: vec![Input::Node(NodeId(0), 0)],
+            })
+            .context("building the graph")?;
+            let sink = VirtualPad::create(Identity::Generic).context("creating the virtual pad")?;
+            println!("virtual node={}", sink.event_node().display());
+            let setup = Setup::new(
+                graph,
+                vec![Some(open(&primary)?), Some(open(&assist)?)],
+                vec![sink],
+            );
+            let (input, reports) = InputThread::spawn()?;
+            println!("realtime={}", input.is_realtime());
+            input.send(ctrlassist_device::Command::Start(
+                SetupId(0),
+                Box::new(setup),
+            ))?;
+            // Holds until killed, saying what the input thread reports.
+            for report in reports {
+                println!("report {report:?}");
+            }
+            Ok(())
         }
         Command::Listen { node, millis } => {
             let reads = count_reads(

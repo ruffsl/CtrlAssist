@@ -39,10 +39,10 @@ Each `packaging/nix/test-*.nix` is a NixOS test exposed as a flake check and run
 
 | Check | Asserts |
 |---|---|
-| `device` | With the packaged udev rule: a seat user reads a pad's report frames from a descriptor as pad states; the rule gives uinput and uhid to the seat user and nobody else; a virtual pad of each identity carries what the pad behind it does; an unplugged pad is reported as gone |
+| `device` | With the packaged udev rule: a seat user reads a pad's report frames from a descriptor as pad states; the rule gives uinput and uhid to the seat user and nobody else; a virtual pad of each identity carries what the pad behind it does; the input thread merges two pads into one and is never scheduled while they are silent; an unplugged pad is reported as gone |
 | `hider` | The hiding service as packaged, hardening included: a hidden pad is denied and its earlier reader cut off; the other pad of the same model is untouched; the passed descriptor delivers input; a reconnecting pad is never visible; restore, a killed client and a killed service each give the pad back and leave no rule; a user not in front of the machine, a keyboard and a hostile pad name get nowhere; a pad with no driver is restored exactly |
 | `platform` | A seat user can open a pad's event and js nodes, and can't open `/dev/uinput`, `/dev/uhid` or a hidraw node; both kinds of fake pad deliver what they are sent |
 
 ## Hardware checks
 
-What no virtual machine has is checked by hand on real pads, through the real service: `just hider-dev` runs the hiding service from the build tree as root, and `just hide-pad <node>` hides a pad through it and holds it hidden until Ctrl-C. `ctrlassist-hider check <node>` prints what the service makes of a node without changing anything. `just forward-pad <node>` puts a virtual pad in front of a real one, to see what Steam and SDL make of each identity.
+What no virtual machine has is checked by hand on real pads, through the real service: `just hider-dev` runs the hiding service from the build tree as root, and `just hide-pad <node>` hides a pad through it and holds it hidden until Ctrl-C. `ctrlassist-hider check <node>` prints what the service makes of a node without changing anything. `just bench` times the input path. `just forward-pad <node>` puts a virtual pad in front of a real one, to see what Steam and SDL make of each identity.

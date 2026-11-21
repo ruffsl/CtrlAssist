@@ -191,6 +191,16 @@ hide-pad node:
     cargo build --quiet --package ctrlassist-test
     target/debug/ctrlassist-fixture hide {{ node }} --socket {{ hider_dev_socket }} --control target/hide-pad
 
+# Two fake pads through the input thread's mux to a virtual pad, at 1,000
+# events a second each. Compare with the table in docs/architecture.md.
+#
+# Time the input path, idle and with every CPU busy
+[group('hardware')]
+bench seconds="10":
+    cargo build --quiet --release --package ctrlassist-test
+    target/release/ctrlassist-bench --seconds {{ seconds }}
+    target/release/ctrlassist-bench --seconds {{ seconds }} --load "$(nproc)"
+
 # Pass the pad's event node, and `--xbox` for the Xbox identity. Needs
 # uinput, which the packaged udev rule or Steam's own gives the seat user.
 # Ctrl-C removes the virtual pad.
@@ -200,42 +210,3 @@ hide-pad node:
 forward-pad node *flags:
     cargo build --quiet --package ctrlassist-test
     target/debug/ctrlassist-fixture forward {{ node }} {{ flags }}
-
-# --- Spikes --------------------------------------------------------------
-
-# Needs the legacy binary: `git worktree add ../legacy-0.4 legacy/0.4`, then
-# `nix develop -c cargo build --release` inside it.
-#
-# Time the new loop (with and without real-time scheduling) and the legacy binary, idle and loaded
-[group('spike')]
-spike-loop-bench legacy="../legacy-0.4/target/release/ctrlassist" runs="3":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    (cd spikes/loop && cargo build --release --quiet)
-    bench=spikes/loop/target/release/loopspike
-    for load in 0 "$(nproc)"; do
-        for _ in $(seq {{ runs }}); do
-            "$bench" bench --target ours --load "$load"
-            "$bench" bench --target ours --rt --load "$load"
-            "$bench" bench --target legacy --legacy-bin {{ legacy }} --load "$load"
-        done
-    done
-
-# Time the input loop alone, inside a zenoh daemon with an idle client, and with a mirror subscriber
-[group('spike')]
-spike-zenoh-bench runs="3":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    (cd spikes/loop && cargo build --release --quiet)
-    (cd spikes/zenoh && cargo build --release --quiet)
-    bench=spikes/loop/target/release/loopspike
-    daemon=$PWD/spikes/zenoh/target/release/zspike
-    for load in 0 "$(nproc)"; do
-        for rt in "" "--rt"; do
-            for _ in $(seq {{ runs }}); do
-                "$bench" bench --target ours $rt --load "$load"
-                "$bench" bench --target ours $rt --load "$load" --exe "$daemon" --with "$daemon watch"
-                "$bench" bench --target ours $rt --load "$load" --exe "$daemon" --with "$daemon watch" --with "$daemon watch --mirror"
-            done
-        done
-    done
