@@ -27,6 +27,15 @@ The plan's rule was: every scenario passes through the executor without a specia
 
 **Controls** are a kind and an index (`Button(n)`, `Axis(n)`), with the gamepad names as constants over that space. A pad state is a fixed-size value: 64 buttons as a bit set and 16 axes. That is what keeps a step allocation-free, and it is a capacity, not a vocabulary: raising it changes two constants.
 
+Both capacities were measured (`cargo run --release --features wide --example bench`):
+
+| Capacity | Two-pad mux | Demux feeding two muxes | Share of the loop's median |
+|---|---|---|---|
+| 64 buttons, 16 axes | 153–198 ns | 326 ns | about 1% |
+| 128 buttons, 32 axes | 477–528 ns | 982 ns | 2–4% |
+
+Doubling the capacity roughly triples a step, because the step walks every button and axis position rather than only the ones in use. Either is small beside the kernel round trip. Recommendation: keep 64 and 16, which covers gamepads, wheels and ordinary flight sticks, and raise it when a pad that needs more turns up; if it is raised, the walks should first be changed to visit only the positions that are set.
+
 **Groups and rules.** A layout arranges a pad's controls into groups, each with a kind (stick, trigger, button, hat). A mux applies one rule per group:
 
 | Rule | Meaning |

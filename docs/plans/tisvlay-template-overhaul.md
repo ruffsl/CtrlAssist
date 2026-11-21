@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding ([findings/hiding.md](findings/hiding.md)), identity ([findings/identity.md](findings/identity.md)) and input loop ([findings/input-loop.md](findings/input-loop.md)) spikes are done and accepted; the routing graph spike has its finding, [findings/routing-graph.md](findings/routing-graph.md), awaiting review. Two checks still need the maintainer at the machine: identifiers across reconnects, and suspend, resume and a Bluetooth drop.
-- **Next action:** after that review, the last spike: zenoh beside the input loop.
+- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding ([findings/hiding.md](findings/hiding.md)), identity ([findings/identity.md](findings/identity.md)) and input loop ([findings/input-loop.md](findings/input-loop.md)) spikes are done and accepted; the routing graph spike has its finding, [findings/routing-graph.md](findings/routing-graph.md), done and accepted, with the pad state capacity measured both ways and awaiting the maintainer's choice. Two checks still need the maintainer at the machine: identifiers across reconnects, and suspend, resume and a Bluetooth drop.
+- **Next action:** the last spike, zenoh beside the input loop; then step 4, the architecture document and its three-lens review.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -105,6 +105,10 @@ One word per thing, here and in everything written from this plan:
 **A mode is a merge rule per group.** Legacy priority mode already had an exception (triggers aren't owned; the larger value wins), so the routing graph spike models each mux mode as a table of rules over the same machinery (owned, largest, blended, switched) and reports whether that expresses all three without special cases.
 
 **On a switch, the virtual pad takes the incoming pad's state.** What both pads hold stays down with no blip, what only the outgoing pad held goes up, and analog values step to the incoming value. After any switch the sink equals the active source, which is an invariant the tests check.
+
+**A game's rumble upload is answered leniently.** It is told the effect is accepted if any target pad took it, and also when rumble is switched off; it is refused only when every pad asked refused it. A game that insists on rumble then still runs when one pad lacks it.
+
+**A profile names a pad by address or by model.** By address when it must be that exact pad, which is what a client records when a setup is created; by model ("any DualSense") when any will do, which is what makes a profile shareable between machines.
 
 **The switch is an input to the node, not a pad event it happens to see.** In the first release it can be raised by one button named in the profile (default Mode, consumed rather than forwarded), on whichever source the profile names, or by a client through a daemon rpc. Modeling it as a signal means later triggers don't change the node.
 

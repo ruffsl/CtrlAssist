@@ -74,7 +74,7 @@ impl Demux {
 
     pub(crate) fn step(&mut self, mut input: PadState, outputs: &mut [PadState]) {
         if let Some(Control::Button(button)) = self.config.switch {
-            let bit = 1u64 << button;
+            let bit = (1 as crate::control::ButtonBits) << button;
             let down = input.buttons() & bit != 0;
             *input.buttons_mut() &= !bit;
             if down && !self.switch_down {

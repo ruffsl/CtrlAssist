@@ -9,6 +9,10 @@ license = "Apache-2.0"
 # or serialization code, and is meant to become the core crate.
 [dependencies]
 
+[features]
+# Twice the pad state capacity, to measure what it costs.
+wide = []
+
 [dev-dependencies]
 proptest = "1"
 

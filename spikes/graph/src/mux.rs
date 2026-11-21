@@ -160,7 +160,7 @@ impl Mux {
             button: Control::Button(button),
         }) = self.config.switch
         {
-            let bit = 1u64 << button;
+            let bit = (1 as crate::control::ButtonBits) << button;
             let mut down = false;
             for (index, state) in inputs.iter_mut().enumerate() {
                 if input.is_none_or(|input| input == index) {

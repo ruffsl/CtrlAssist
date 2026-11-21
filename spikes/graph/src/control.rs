@@ -1,9 +1,26 @@
 //! Controls, pad state and groups.
 
 /// Axes a pad state can hold.
+#[cfg(not(feature = "wide"))]
 pub const AXES: usize = 16;
 /// Buttons a pad state can hold.
+#[cfg(not(feature = "wide"))]
 pub const BUTTONS: usize = 64;
+#[cfg(not(feature = "wide"))]
+pub(crate) type ButtonBits = u64;
+#[cfg(not(feature = "wide"))]
+pub(crate) type AxisBits = u16;
+
+/// Axes a pad state can hold.
+#[cfg(feature = "wide")]
+pub const AXES: usize = 32;
+/// Buttons a pad state can hold.
+#[cfg(feature = "wide")]
+pub const BUTTONS: usize = 128;
+#[cfg(feature = "wide")]
+pub(crate) type ButtonBits = u128;
+#[cfg(feature = "wide")]
+pub(crate) type AxisBits = u32;
 
 /// One control on a pad, by kind and index.
 ///
@@ -50,7 +67,7 @@ pub mod gamepad {
 /// Everything a pad holds at one instant.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct PadState {
-    buttons: u64,
+    buttons: ButtonBits,
     axes: [f32; AXES],
 }
 
@@ -65,7 +82,7 @@ impl PadState {
     pub fn set(&mut self, control: Control, value: f32) {
         match control {
             Control::Button(index) => {
-                let bit = 1u64 << (usize::from(index) % BUTTONS);
+                let bit = (1 as ButtonBits) << (usize::from(index) % BUTTONS);
                 if value > 0.0 {
                     self.buttons |= bit;
                 } else {
@@ -88,7 +105,7 @@ impl PadState {
     pub fn get(&self, control: Control) -> f32 {
         match control {
             Control::Button(index) => {
-                if self.buttons & (1u64 << (usize::from(index) % BUTTONS)) == 0 {
+                if self.buttons & ((1 as ButtonBits) << (usize::from(index) % BUTTONS)) == 0 {
                     0.0
                 } else {
                     1.0
@@ -98,11 +115,11 @@ impl PadState {
         }
     }
 
-    pub(crate) fn buttons(&self) -> u64 {
+    pub(crate) fn buttons(&self) -> ButtonBits {
         self.buttons
     }
 
-    pub(crate) fn buttons_mut(&mut self) -> &mut u64 {
+    pub(crate) fn buttons_mut(&mut self) -> &mut ButtonBits {
         &mut self.buttons
     }
 
@@ -119,8 +136,8 @@ impl PadState {
 /// three, a flight grip's axes with its trigger and hat, or one lone button.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Group {
-    pub(crate) buttons: u64,
-    pub(crate) axes: u16,
+    pub(crate) buttons: ButtonBits,
+    pub(crate) axes: AxisBits,
 }
 
 impl Group {
@@ -130,8 +147,8 @@ impl Group {
         let mut group = Self::default();
         for control in controls {
             match *control {
-                Control::Button(index) => group.buttons |= 1u64 << (usize::from(index) % BUTTONS),
-                Control::Axis(index) => group.axes |= 1u16 << (usize::from(index) % AXES),
+                Control::Button(index) => group.buttons |= (1 as ButtonBits) << (usize::from(index) % BUTTONS),
+                Control::Axis(index) => group.axes |= (1 as AxisBits) << (usize::from(index) % AXES),
             }
         }
         group
