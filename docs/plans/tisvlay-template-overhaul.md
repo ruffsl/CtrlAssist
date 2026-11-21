@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** plan under maintainer review. No implementation has started.
-- **Next action:** step 1 (clean slate and minimal scaffold), once the maintainer approves the plan.
+- **Status:** plan approved by the maintainer; step 1 in progress.
+- **Next action:** step 1 (clean slate and minimal scaffold), then step 2 (ecosystem survey), stopping when its finding is written.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -86,7 +86,9 @@ One word per thing, here and in everything written from this plan:
 
 **Disconnects hold and re-bind.** When a pad in a setup drops, the virtual pad stays alive so the game never sees a disconnect, the missing pad's inputs go neutral, the other pad keeps working, and the same pad is re-bound and re-hidden when it returns. A notification says what happened.
 
-**Virtual pad identity offers both** copying a pad and picking a built-in identity. How faithful an identity can be is S5's question.
+**Virtual pad identity offers both** copying a pad and picking a built-in identity. How faithful an identity can be, and what a virtual pad presents by default, are S5's questions.
+
+**Setups start manually, with optional auto-start.** A client starts a setup. A profile may also be marked to start by itself once the daemon is up and all of its pads are connected.
 
 **Clients are built in the order CLI, tray, GUI, TUI.** The GUI is Slint, following TisVlay. The TUI uses ratatui and comes last because TisVlay has none to pattern it on; the `archive/feature/tui` tag holds an earlier draft worth reading first. Each can mirror live pad state, which the daemon publishes on change and only while something subscribes.
 
@@ -97,6 +99,8 @@ One word per thing, here and in everything written from this plan:
 ## Provisional, pending spikes
 
 **Whether the privileged helper is needed,** and what it does. Games run as the same user as the daemon, so a group or ACL rule can't admit the daemon while excluding the game, which leaves a grab and Steam's blacklist as the unprivileged mechanisms, both partial. InputPlumber hides pads with runtime udev rules, which needs root. S1 decides between: unprivileged mechanisms are enough and no helper ships; the helper applies the hiding; or, where InputPlumber is present, hiding is delegated to it.
+
+**User-facing names.** The engine keeps the legacy words (mux, demux, and their modes) in code and profiles. What clients call the presets and the two roles is open until the CLI is designed at step 4. The proposal on the table: roles "player" and "helper" in place of primary and assist; presets "assist" (priority), "blend" (average), "take turns" (toggle), "switch" (unicast) and "mirror" (multicast).
 
 **Pads are identified by a stable hardware ID,** falling back to vendor and product plus port, then name. S1 records which identifiers are actually stable.
 
@@ -200,7 +204,7 @@ Order: the survey, then S1 and S5, then S2, then S4, then S3. S5 precedes S4 bec
 - [ ] Record what feedback a uhid sink delivers (output reports) and what it needs installed (`/dev/uhid` access).
 - [ ] Write the finding.
 
-*Verdict:* uinput only, uhid for named identities, or uhid throughout. uhid is kept for an identity only if it is detected as that pad with correct glyphs and working rumble where uinput is not.
+*Verdict:* uinput only, uhid for named identities, or uhid throughout, and which identity is the default when a profile names none. uhid is kept for an identity only if it is detected as that pad with correct glyphs and working rumble where uinput is not.
 
 *Feeds:* identity, feedback's representation, the reserved motion, touch and LED kinds, the udev rules.
 
