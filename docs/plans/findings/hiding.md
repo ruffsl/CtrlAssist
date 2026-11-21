@@ -75,7 +75,7 @@ From the two pads connected:
 
 - **`uniq` is the pad's own address on both transports here,** and Steam keys its per-pad configuration by the same value (`configset_DS0c27564fbd14.vdf`, `configset_1c965aa135da.vdf`). It is the candidate for the stable hardware ID.
 - **`ID_SERIAL` and `ID_PATH` are not identifiers:** one is the model name, the other is the port, and neither exists over Bluetooth.
-- **A uinput pad has an empty `uniq`,** and Steam invents a serial for it from its IDs. The daemon's own virtual pads need a marker of their own to be recognizable as sources to exclude; a `uniq` value is the obvious place.
+- **A uinput pad has an empty `uniq`,** and Steam invents a serial for it from its IDs. The daemon's own virtual pads need a marker of their own to be recognizable as sources to exclude. uinput offers no way to set `uniq`, but it can set the `phys` string, so that is the place.
 - **A Bluetooth pad is a uhid device.** The DualShock 4's parent in sysfs is `/devices/virtual/misc/uhid`: the Bluetooth daemon creates it through the same interface the identity spike will try. So "under uhid" does not mean "virtual", and the reverse check (is this one of ours?) has to use the marker.
 
 Not yet known: whether `uniq` is the same for one pad over USB and over Bluetooth, whether it survives a reconnect unchanged, and what an Xbox pad reports.

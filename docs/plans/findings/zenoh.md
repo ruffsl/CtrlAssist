@@ -4,9 +4,9 @@ Measured 2026-11-21 on the development host with `spikes/zenoh/` and the loop sp
 
 ## Verdict
 
-**zenoh stays.** A zenoh session in the same process does not disturb the input thread.
+**zenoh stays, with real-time scheduling doing more work than first thought.** On an idle host, and under load with real-time scheduling, a zenoh session in the same process does not disturb the input thread. Under saturating load without real-time scheduling the zenoh daemon had bad runs more often than the loop alone.
 
-The plan's rule was that the input thread's latency and wakeup numbers fall within the run-to-run spread the loop spike recorded. They do, with one case that needed more runs to tell (below).
+The plan's rule was that the input thread's latency and wakeup numbers fall within the run-to-run spread the loop spike recorded. They do in every condition but that last one (below).
 
 ## Setup
 
@@ -31,18 +31,21 @@ No frame was lost in any run.
 - **The input thread never wakes when idle,** with zenoh in the process or not. The rest of the daemon wakes about three times a second with a client attached, which is zenoh keeping its link alive. Legacy woke about a hundred times a second.
 - **Latency is unchanged** on an idle host and under load with real-time scheduling.
 - **Memory goes from 3 MB to 11 MB** resident.
-- **The stripped binary is about the same size** as the loop alone (10 MB against 9.6 MB), most of both being the standard library and clap.
+- **The stripped binary grows from 1.1 MB to 10 MB.** zenoh and tokio are nearly all of the difference.
 
 ### Loaded, without real-time scheduling
 
-This is the one case where three runs didn't settle it: the zenoh daemon's p99 was around 830 µs in two of three runs, against 9–10 µs for the loop alone. Eight more runs of each:
+This is the one case that is not within the loop's own spread. Counting every run of this condition, the first three and eight more:
 
-| Case | p99 across eight runs | Runs with p99 above 100 µs |
-|---|---|---|
-| loop alone | 8, 8, 9, 11, 11, 11, 11, 932 µs | 1 |
-| zenoh, idle client | 9, 9, 11, 12, 14, 14, 29, 830 µs | 1 |
+| Case | Runs | Runs with p99 above 100 µs | p99 in those runs |
+|---|---|---|---|
+| loop alone | 11 | 1 | 932 µs |
+| zenoh, idle client | 11 | 3 | 829, 830, 832 µs |
+| zenoh, mirror subscribed | 3 | 2 | 881, 1,004 µs |
 
-Both have an occasional bad run, and at the same rate. With every CPU saturated and no real-time priority, whether the input thread is descheduled for a millisecond now and then is the scheduler's luck, not zenoh's doing. This strengthens the loop finding's recommendation rather than weakening this one: real-time scheduling is what makes the tail dependable, and with it the zenoh daemon's worst frame in 30,000 was 34 µs.
+In one of the zenoh runs the median itself was 824 µs: the input thread spent the whole run a scheduling slice behind. With every CPU saturated and no real-time priority, the input thread is at the scheduler's mercy either way, but the numbers suggest it fares worse with zenoh's threads in the process. Eleven runs is too few to say how much worse.
+
+What is not in doubt is the remedy: with real-time scheduling the zenoh daemon's worst frame in 30,000 was 34 µs. So real-time scheduling matters more for the daemon than the loop finding implied, and a machine that refuses it should be told plainly in the daemon's status.
 
 ## The mirror
 
@@ -66,6 +69,6 @@ A CLI verb that opens a session, makes one rpc and exits, three runs: the sessio
 
 ## What this changes in the plan
 
-- zenoh for the control plane is confirmed.
+- zenoh for the control plane is confirmed, with the caveat above.
 - The mirror publishes the latest state when the last publish completes, not every frame.
 - The daemon's status reports whether real-time scheduling was granted, since without it the tail under load is not dependable.

@@ -14,7 +14,7 @@ The plan's rule was: every scenario passes through the executor without a specia
 | Property tests | 4, each also run at 20,000 random cases |
 | Allocations while stepping | 0 in 2,000,000 steps, counted by the benchmark's allocator |
 | Cost of a step | 154–199 ns for a two-pad mux; 325 ns for a demux feeding two muxes |
-| Next to the input loop | The loop's end-to-end median is 26,000–34,000 ns, so a step is under 1% of it |
+| Next to the input loop | The loop's end-to-end median is 26,000–34,000 ns, so a step is about 1% of it |
 | Non-gamepad source | A flight stick whose grip is one group of three axes and seven buttons merged correctly with no change to the nodes |
 
 ## The model
@@ -82,6 +82,20 @@ The cases the plan listed:
 **A bug the property test found.** Re-uploading an effect that is already playing, when a pad that had refused it now accepts, left that pad holding the effect but silent. The fix is that confirming an upload starts the effect on any pad that newly holds it while the game believes it is playing. No scenario I had written would have caught it.
 
 **Not modeled yet:** gain and autocenter; a pad's limit on the number of effects (a pad refusing for lack of room is handled as any refusal, but the router doesn't budget slots); and the pass-through of whole output reports between like pads, which uses the same targets but is opaque bytes the device crate forwards.
+
+## Defects found in review, to fix when the spike is promoted
+
+The architecture review read the code and found these. None changes the verdict; all must be fixed, with a test each, before anything is built on the crate.
+
+- **A profile can panic the step.** Control indices wrap silently (button 64 reads as button 0), shifts by a source or button index are unchecked, and `Graph::build` validates neither those nor thresholds. Since a panic on the input thread takes every virtual pad, building a graph must reject anything that could, and that must be a tested invariant.
+- **Effects carry no duration,** only two magnitudes, and a playing flag that is never cleared when a finite effect ends. A hand-off or reconnect would replay a rumble that finished long ago.
+- **A re-upload every pad refuses leaves the old effect playing** on the pads, forgotten by the router, so the game's stop and erase go nowhere. The property test's model pad hid this by dropping the effect on a refused update, which a real pad doesn't.
+- **A pad that refused an effect is asked again** on the next retarget or return and assumed to accept.
+- **Controls in no group always follow the first input,** even in toggle mode with another input selected, which breaks "the sink equals the selected pad" for them.
+- **A source's deadzone skips groups that mix axes and buttons,** such as the flight grip.
+- **A mux takes at most eight inputs,** and source masks are 32 bits; "any number" overstated it.
+- **A selected input that is gone leaves the virtual pad at rest** in toggle and unicast, with the default switch button on the missing pad. Selection should skip absent inputs.
+- **Controls with no rest position** (a throttle lever, a wheel) are "active" forever under distance-from-zero, and relative controls can't be expressed as levels. The model as built is sound for gamepads; the flight-stick test merges two identical sticks, not a stick with a gamepad.
 
 ## Profile format, drafted
 

@@ -34,7 +34,7 @@ So feedback is two things, as the plan's provisional note anticipated: an effect
 - **Answering the driver's questions.** On binding, the kernel read three feature reports (pairing info, firmware version, calibration), all answered from the captured copies. The pairing report holds the pad's address; the spike gave the copy a different one, since the driver is understood to refuse a second pad with a known address (not tested).
 - **Sony's report descriptor and feature reports as data.** The spike read them from the connected pad at run time. Shipping an identity that works with no real DualSense attached means carrying that data in the project. Other open-source projects do; whether this one may, and in what form, is a question for the maintainer.
 - **`/dev/uhid` access,** which a clean machine doesn't give a seat user (see the hiding finding), so the packages' udev rule must grant it.
-- **No bindgen dependency if the events are laid out by hand,** as both spikes do. The uhid protocol is nine event types.
+- **No bindgen dependency if the events are laid out by hand,** as both spikes do. The uhid protocol is a dozen event types, of which the spike uses nine.
 
 On a clean machine the virtual DualSense's hidraw node would be closed to games, as a real one's is there, and they would read its evdev node instead. That node comes from the kernel's own driver, so it has the right name, IDs and layout either way.
 

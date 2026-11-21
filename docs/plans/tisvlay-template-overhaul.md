@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 to 3 done. The findings: [ecosystem](findings/ecosystem.md), [hiding](findings/hiding.md), [identity](findings/identity.md), [input loop](findings/input-loop.md), [routing graph](findings/routing-graph.md), [zenoh](findings/zenoh.md). Step 4 in progress: [docs/architecture.md](../architecture.md) is drafted and under its three-lens review. Two checks still need the maintainer at the machine: identifiers across reconnects, and suspend, resume and a Bluetooth drop.
-- **Next action:** fold the review into the architecture, write the commit-sized build steps into step 5, and stop for the maintainer's approval before building.
+- **Status:** steps 1 to 3 done. The findings: [ecosystem](findings/ecosystem.md), [hiding](findings/hiding.md), [identity](findings/identity.md), [input loop](findings/input-loop.md), [routing graph](findings/routing-graph.md), [zenoh](findings/zenoh.md). Step 4 in progress: [docs/architecture.md](../architecture.md) is drafted and has had its three-lens review, which found design gaps (the helper's request vocabulary and threat model, hiding not dislodging programs that already hold a pad open, feedback effects without duration) and defects in the graph spike (listed in its finding). The review is not yet folded in.
+- **Next action:** settle with the maintainer the questions the review raised, fold the review into the architecture, write the commit-sized build steps into step 5, and stop for approval before building. Three checks need the maintainer at the machine: identifiers across reconnects; suspend, resume and a Bluetooth drop; and hiding a pad that Steam already has open.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -109,6 +109,10 @@ One word per thing, here and in everything written from this plan:
 **A game's rumble upload is answered leniently.** It is told the effect is accepted if any target pad took it, and also when rumble is switched off; it is refused only when every pad asked refused it. A game that insists on rumble then still runs when one pad lacks it.
 
 **A profile names a pad by address or by model.** By address when it must be that exact pad, which is what a client records when a setup is created; by model ("any DualSense") when any will do, which is what makes a profile shareable between machines.
+
+**Pad state holds 64 buttons and 16 axes.** Measured against 128 and 32, which costs about three times as much per step. Raising it later means first changing the step to visit only the positions in use.
+
+**A daemon restart drops its virtual pads, for now.** The game sees a disconnect and the helper restores the hidden pads, so it falls back to the real ones. Keeping virtual pads alive across a restart is an idea, not first-release work.
 
 **The switch is an input to the node, not a pad event it happens to see.** In the first release it can be raised by one button named in the profile (default Mode, consumed rather than forwarded), on whichever source the profile names, or by a client through a daemon rpc. Modeling it as a signal means later triggers don't change the node.
 
