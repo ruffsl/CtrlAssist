@@ -471,7 +471,9 @@ Timed between two fake pads and a virtual pad, at 1,000 events a second per pad,
 
 ### zenoh beside the input thread
 
-With a zenoh router in the same process, the input thread still made no wakeups when idle, and its latency was unchanged on an idle machine and under load with real-time scheduling (worst frame 34 µs). The rest of the daemon woke about three times a second and used about 8 MB more memory; the stripped binary grew from 1 MB to 10 MB. With every CPU busy and no real-time scheduling, the daemon had a bad run (p99 near 1 ms) in 3 of 11 runs against 1 of 11 for the loop alone. A one-shot client call took 5 to 6 ms from opening its session to the reply.
+The built daemon, timed through a setup of its own beside its zenoh session, measures as the input thread alone does: 36 µs median and 150 µs at the 99th percentile on an idle machine; 8 µs and 16 µs with every CPU busy and real-time scheduling granted; no idle wakeups. `just bench-daemon` repeats it.
+
+Before it was built: with a zenoh router in the same process, the input thread still made no wakeups when idle, and its latency was unchanged on an idle machine and under load with real-time scheduling (worst frame 34 µs). The rest of the daemon woke about three times a second and used about 8 MB more memory; the stripped binary grew from 1 MB to 10 MB. With every CPU busy and no real-time scheduling, the daemon had a bad run (p99 near 1 ms) in 3 of 11 runs against 1 of 11 for the loop alone. A one-shot client call took 5 to 6 ms from opening its session to the reply.
 
 ### Rumble in the kernel
 

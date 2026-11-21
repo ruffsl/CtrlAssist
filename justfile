@@ -260,6 +260,17 @@ bench seconds="10":
     target/release/ctrlassist-bench --seconds {{ seconds }}
     target/release/ctrlassist-bench --seconds {{ seconds }} --load "$(nproc)"
 
+# The same measurement with the input thread inside a daemon, which the
+# bench runs as a child with a profile over its two fake pads: what the
+# control plane beside the input thread costs it.
+#
+# Time the input path through the daemon, idle and with every CPU busy
+[group('hardware')]
+bench-daemon seconds="10":
+    cargo build --quiet --release --package ctrlassist-test --package ctrlassist-cli
+    target/release/ctrlassist-bench --seconds {{ seconds }} --daemon target/release/ctrlassist
+    target/release/ctrlassist-bench --seconds {{ seconds }} --daemon target/release/ctrlassist --load "$(nproc)"
+
 # Pass the pad's event node, and `--xbox` for the Xbox identity. Needs
 # uinput, which the packaged udev rule or Steam's own gives the seat user.
 # Ctrl-C removes the virtual pad.
