@@ -267,9 +267,10 @@ fn quick_entries(view: &View, quick: &Quick) -> Vec<Entry> {
             .into_iter()
             .flatten()
             .all(|pad| pickable(view, pad, None).0);
-    // What a running `quick` takes as it runs is applied as it is
-    // picked; only another identity waits here for a click.
-    let waiting = view.kept_quick().is_none_or(|kept| quick.restarts(&kept));
+    // Every pick is applied to a running `quick` as it is made, so
+    // there is something to restart only if that didn't happen: the
+    // picks then differ from the profile as kept.
+    let waiting = view.kept_quick().is_none_or(|kept| kept != *quick);
     let (verb, ready) = match (running, waiting) {
         (false, _) => ("Start", ready),
         (true, true) => ("Restart", ready),

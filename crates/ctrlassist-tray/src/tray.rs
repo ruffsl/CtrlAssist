@@ -32,13 +32,31 @@ pub enum Action {
     Identify(String),
     /// Stop remembering a pad.
     Forget(String),
-    /// Keep this TOML as the profile `quick`, and run it.
+    /// Keep this TOML as the profile `quick`, and run it: started if it
+    /// isn't running, and if it is, changed as it runs or restarted.
     Quick(String),
-    /// Keep this TOML as the profile `quick`, and have the running
-    /// `quick` take it if it can as it runs.
-    QuickApply(String),
     /// End the tray.
     Quit,
+}
+
+impl Action {
+    /// The action in a few words, for the log.
+    #[must_use]
+    pub fn named(&self) -> String {
+        match self {
+            Self::Start(name) => format!("start {name}"),
+            Self::Stop(name) => format!("stop {name}"),
+            Self::Select {
+                setup,
+                node,
+                choice,
+            } => format!("select {choice} at {node} of {setup}"),
+            Self::Identify(pad) => format!("identify {pad}"),
+            Self::Forget(pad) => format!("forget {pad}"),
+            Self::Quick(_) => format!("keep and run `{}` as picked", quick::NAME),
+            Self::Quit => "quit".to_string(),
+        }
+    }
 }
 
 /// The tray's state: what it shows, and where its clicks go.
@@ -72,7 +90,6 @@ impl PadTray {
         let action = match command {
             Command::Quick(edit) => {
                 self.quick_settled = true;
-                let waits = matches!(edit, Edit::Identity(_));
                 match edit {
                     Edit::Primary(pad) => self.quick.primary = Some(pad),
                     Edit::Assist(pad) => self.quick.assist = Some(pad),
@@ -81,24 +98,25 @@ impl PadTray {
                     Edit::AutoStart(on) => self.quick.auto_start = on,
                     Edit::Rumble(rumble) => self.quick.rumble = rumble,
                 }
-                // A running `quick` takes everything but another
-                // identity as it runs, so a pick is applied as it is
-                // made, on the identity it runs with: one picked and
-                // still waiting isn't slipped in with it.
+                // A pick is applied to a running `quick` as it is made.
+                // All but another identity it takes as it runs; that
+                // one restarts it, which a game sees as its pad going
+                // and another coming.
                 let running = self.view.setup(quick::NAME).is_some();
-                let live = self
-                    .view
-                    .kept_quick()
-                    .filter(|_| running && !waits)
-                    .and_then(|kept| self.quick.onto(&kept).profile());
-                if let Some(toml) = live {
-                    let _ = self.actions.send(Action::QuickApply(toml));
+                match self.quick.profile().filter(|_| running) {
+                    Some(toml) => Action::Quick(toml),
+                    None => return,
                 }
-                return;
             }
             Command::QuickStart => match self.quick.profile() {
                 Some(toml) => Action::Quick(toml),
                 None => return,
+            },
+            // Starting `quick` starts what is picked, not what was last
+            // kept, where the picks make a profile.
+            Command::Start(name) if name == quick::NAME => match self.quick.profile() {
+                Some(toml) => Action::Quick(toml),
+                None => Action::Start(name),
             },
             Command::Start(name) => Action::Start(name),
             Command::Stop(name) => Action::Stop(name),
@@ -357,6 +375,34 @@ mod tests {
             unreachable!("two pads are a profile")
         };
         assert!(toml.contains("identity = \"xbox\""), "{toml}");
+
+        // Starting `quick` itself starts what is picked.
+        tray.activate(Command::Start(quick::NAME.into()));
+        assert_eq!(clicked.try_recv().unwrap(), Action::Quick(toml));
+        assert_eq!(
+            Action::Quick(String::new()).named(),
+            "keep and run `quick` as picked"
+        );
+        let select = Action::Select {
+            setup: "couch".into(),
+            node: "mux".into(),
+            choice: "assist".into(),
+        };
+        assert_eq!(select.named(), "select assist at mux of couch");
+        let named: Vec<String> = [
+            Action::Start("a".into()),
+            Action::Stop("a".into()),
+            Action::Identify("p".into()),
+            Action::Forget("p".into()),
+            Action::Quit,
+        ]
+        .iter()
+        .map(Action::named)
+        .collect();
+        assert_eq!(
+            named,
+            ["start a", "stop a", "identify p", "forget p", "quit"]
+        );
 
         for (command, action) in [
             (Command::Start("desk".into()), Action::Start("desk".into())),

@@ -325,44 +325,70 @@ impl Setups {
     }
 }
 
-/// How a setup's pads are kept from games.
+/// How a setup's pads are kept from games: through the hiding service
+/// where it is there, one request at a time, and by a grab on each pad
+/// where it isn't.
 #[derive(Debug)]
-pub(crate) enum Hiding {
-    /// Through the hiding service, one request at a time.
-    Service(Mutex<Client>),
-    /// By a grab on each pad, where the service isn't there.
-    Grab,
+pub(crate) struct Hiding {
+    /// Where the service listens; none where there is none to look for.
+    socket: Option<PathBuf>,
+    /// The connection, once the service has been found.
+    client: Mutex<Option<Client>>,
 }
 
 impl Hiding {
-    /// Connects to the hiding service at `socket`, or settles for grabs.
+    /// Connects to the hiding service at `socket`, or settles for grabs
+    /// until it is found there.
     pub(crate) fn find(socket: &Path) -> Self {
-        match Client::connect(socket) {
-            Ok(client) => Self::Service(Mutex::new(client)),
-            Err(error) => {
-                info!(socket = %socket.display(), %error, "the hiding service isn't there; a setup's pads will be grabbed, which hides them from most games but not from a program that reads them some other way");
-                Self::Grab
-            }
+        let hiding = Self {
+            socket: Some(socket.to_path_buf()),
+            client: Mutex::new(None),
+        };
+        if hiding.mechanism() == payload::Hiding::Grab {
+            info!(socket = %socket.display(), "the hiding service isn't there; a setup's pads will be grabbed, which hides them from most games but not from a program that reads them some other way. It is looked for again each time it is needed");
+        }
+        hiding
+    }
+
+    /// Hiding with no service to look for.
+    #[cfg(test)]
+    pub(crate) fn grab() -> Self {
+        Self {
+            socket: None,
+            client: Mutex::new(None),
         }
     }
 
-    /// The mechanism, for the daemon's state.
+    /// The connection to the service, made now if there is none and the
+    /// service is there: a daemon may start before the service does.
+    fn client(&self) -> std::sync::MutexGuard<'_, Option<Client>> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("nothing panics while the hiding service's client is held");
+        if client.is_none()
+            && let Some(socket) = &self.socket
+            && let Ok(found) = Client::connect(socket)
+        {
+            info!(socket = %socket.display(), "the hiding service is there");
+            *client = Some(found);
+        }
+        client
+    }
+
+    /// The mechanism, for the daemon's state: the service if it is
+    /// there now.
     pub(crate) fn mechanism(&self) -> payload::Hiding {
-        match self {
-            Self::Service(_) => payload::Hiding::Service,
-            Self::Grab => payload::Hiding::Grab,
+        match *self.client() {
+            Some(_) => payload::Hiding::Service,
+            None => payload::Hiding::Grab,
         }
     }
 
     /// Asks one thing of the hiding service, if it is there.
     fn ask<T>(&self, ask: impl FnOnce(&Client) -> Result<T, ctrlassist_hider::Error>) -> Option<T> {
-        let Self::Service(client) = self else {
-            return None;
-        };
-        let client = client
-            .lock()
-            .expect("nothing panics while the hiding service's client is held");
-        ask(&client)
+        let client = self.client();
+        ask(client.as_ref()?)
             .inspect_err(|error| warn!(%error, "the hiding service didn't do as asked"))
             .ok()
     }
@@ -673,9 +699,7 @@ impl Reactor {
         let is_one = (ids.vendor, ids.product) == ctrlassist_device::Identity::DualSense.model()
             && ids.bus == usb
             && !found.is_own_output();
-        let wanted = is_one
-            && self.copied.dualsense().is_none()
-            && matches!(*self.hiding, Hiding::Service(_));
+        let wanted = is_one && self.copied.dualsense().is_none();
         if !wanted {
             return;
         }
@@ -1588,6 +1612,12 @@ impl Reactor {
 
     /// Work done off the reactor has come back.
     pub(crate) async fn done(&mut self, done: Done) {
+        self.done_inner(done).await;
+        // Whatever was done may have found the hiding service.
+        self.publish_hiding().await;
+    }
+
+    async fn done_inner(&mut self, done: Done) {
         match done {
             Done::Started {
                 name,
@@ -1847,7 +1877,7 @@ mod tests {
             profiles,
             Arc::new(input),
             Database::parse(""),
-            Hiding::Grab,
+            Hiding::grab(),
             crate::copied::Copied::open(&dir.path().join("state")),
         );
         let client = zenoh::open(bootstrap::client_config(&socket).unwrap())

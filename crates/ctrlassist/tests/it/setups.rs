@@ -331,6 +331,38 @@ async fn without_the_hiding_service_a_setup_s_pads_are_grabbed() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_hiding_service_that_starts_after_the_daemon_is_found_when_it_is_needed() {
+    const TEST: &str = "a_hiding_service_that_starts_after_the_daemon_is_found_when_it_is_needed";
+    if !can_make_pads(TEST) {
+        return;
+    }
+    let _primary = FakePad::new("Late Primary", VENDOR, 0x8b01).unwrap();
+    let _assist = FakePad::new("Late Assist", VENDOR, 0x8b02).unwrap();
+    let (_dir, socket) = socket();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    let hiding = |client: &DaemonClient| client.daemon_state().unwrap().unwrap().hiding;
+    assert_eq!(hiding(&client), ctrlassist::Hiding::Grab);
+
+    // The service comes up only now. The next setup's pads are hidden
+    // through it, and the daemon says that is how pads are hidden.
+    let hider = ctrlassist_test::FakeHider::listen(&socket.with_file_name("hider.sock")).unwrap();
+    client
+        .put_profile("couch", &priority(0x8b01, 0x8b02))
+        .await
+        .unwrap();
+    client.start_setup("couch").await.unwrap();
+    in_phase(&client, "couch", Phase::Running).await;
+    assert_eq!(asked(&hider).len(), 2, "{:?}", hider.asked());
+    eventually("the daemon never said it found the service", async || {
+        hiding(&client) == ctrlassist::Hiding::Service
+    })
+    .await;
+    client.stop_setup("couch").await.unwrap();
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored() {
     use ctrlassist_test::Asked;
     const TEST: &str = "with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored";

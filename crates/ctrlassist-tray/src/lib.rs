@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use ctrlassist::{DaemonClient, StateWatcher, StateWatcherConfig};
 use tokio::sync::{Notify, mpsc};
-use tracing::warn;
+use tracing::{info, warn};
 
 pub use desktop::{TrayOptions, run};
 
@@ -127,6 +127,9 @@ pub(crate) async fn act(
     quit: Arc<Notify>,
 ) {
     while let Some(action) = clicked.recv().await {
+        // Said as it is taken up, so that a click that led nowhere can
+        // be told from one that was never made.
+        info!(action = action.named(), "an action from the menu");
         let (what, outcome) = match action {
             Action::Quit => {
                 quit.notify_one();
@@ -160,10 +163,6 @@ pub(crate) async fn act(
                 format!("Couldn't start `{}`", quick::NAME),
                 quick_start(&daemon, &toml).await,
             ),
-            Action::QuickApply(toml) => (
-                format!("Couldn't change `{}`", quick::NAME),
-                quick_apply(&daemon, &toml).await,
-            ),
         };
         if let Err(error) = outcome {
             warn!(%error, what, "an action from the menu failed");
@@ -186,16 +185,6 @@ async fn quick_start(daemon: &DaemonClient, toml: &str) -> ctrlassist::Result<()
             outcome => outcome,
         }
     }
-}
-
-/// Keeps `toml` as the profile `quick` and has the running `quick` take
-/// it, if that needs no restart: a restart waits for a click.
-async fn quick_apply(daemon: &DaemonClient, toml: &str) -> ctrlassist::Result<()> {
-    daemon.put_profile(quick::NAME, toml).await?;
-    if !daemon.update_setup(quick::NAME, false).await? {
-        daemon.update_setup(quick::NAME, true).await?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -358,14 +347,30 @@ mod tests {
             .await;
         rig.shows("primary: Tray Primary").await;
         assert_eq!(node(&*rig.tray.lock().await), before);
-        // Another identity is another virtual pad, which waits.
+        // Another identity is another virtual pad: picking it restarts
+        // the setup at once, with nothing more to click.
         let identity = |identity| Command::Quick(Edit::Identity(identity));
         rig.click(identity(ctrlassist_protocol::profile::Identity::Xbox))
             .await;
-        let menu = outline(&rig.tray.lock().await.entries());
-        assert!(menu.contains("\n  Restart as `quick`"), "{menu}");
+        // Another pad, though the kernel may give it the node the old
+        // one had.
+        rig.shows("virtual: xbox at event").await;
+        let menu = rig.shows("- Running as `quick`").await;
+        assert!(menu.contains("quick (running) >"), "{menu}");
         rig.click(identity(ctrlassist_protocol::profile::Identity::Generic))
             .await;
+        rig.shows("virtual: generic at event").await;
+        // Stopped, the profile's own Start runs what is picked now, not
+        // what was last kept.
+        rig.click(Command::Stop("quick".into())).await;
+        rig.shows("quick >\n  Start\n").await;
+        rig.click(identity(ctrlassist_protocol::profile::Identity::Xbox))
+            .await;
+        rig.click(Command::Start("quick".into())).await;
+        rig.shows("virtual: xbox at event").await;
+        rig.click(identity(ctrlassist_protocol::profile::Identity::Generic))
+            .await;
+        rig.shows("virtual: generic at event").await;
 
         // The toggle's holder is in the menu, and a click hands over.
         let menu = rig.shows("(o) primary").await;

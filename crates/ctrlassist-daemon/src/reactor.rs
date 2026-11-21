@@ -96,6 +96,8 @@ pub(crate) struct Reactor {
     pub(crate) copied: Copied,
     /// Whether a connected pad is being copied now.
     pub(crate) copying: bool,
+    /// The daemon's own state, as last published.
+    pub(crate) state: Option<payload::Daemon>,
     /// The pads that connected while another was being copied, to try
     /// if that one can't be: a pad another program has hidden can't.
     pub(crate) candidates: Vec<Found>,
@@ -166,7 +168,34 @@ impl Reactor {
             buzzes: JoinSet::new(),
             copied,
             copying: false,
+            state: None,
             candidates: Vec::new(),
+        }
+    }
+
+    /// Publishes the daemon's own state.
+    pub(crate) async fn publish_daemon(&mut self, state: payload::Daemon) -> zenoh::Result<()> {
+        self.publish(keys::daemon(), &state).await?;
+        self.state = Some(state);
+        Ok(())
+    }
+
+    /// Says how pads are hidden now, if that isn't what was last said:
+    /// the hiding service may be found after the daemon started.
+    pub(crate) async fn publish_hiding(&mut self) {
+        let hiding = Arc::clone(&self.hiding);
+        let Ok(now) = tokio::task::spawn_blocking(move || hiding.mechanism()).await else {
+            return;
+        };
+        let Some(state) = self.state.clone().filter(|state| state.hiding != now) else {
+            return;
+        };
+        let state = payload::Daemon {
+            hiding: now,
+            ..state
+        };
+        if let Err(error) = self.publish_daemon(state).await {
+            warn!(%error, "publishing the daemon's state failed");
         }
     }
 

@@ -31,7 +31,7 @@ Right after installing, log out and back in once.
 Look at the last line of the tray menu, or the daemon's log from when it started.
 
 - **Hiding: service** means controllers are truly hidden while an arrangement runs. If the game still shows one, it was probably started before the arrangement; restart the game.
-- **Hiding: grab** means the hiding service wasn't reachable when the daemon started, so controllers are only grabbed. Most games then see just the virtual controller, but a program that reads controllers its own way still sees the real ones. Steam does this for PlayStation controllers. Check `systemctl status ctrlassist-hider.socket`, then restart the daemon: it looks for the service once, when it starts.
+- **Hiding: grab** means the hiding service hasn't been reachable, so controllers are only grabbed. Most games then see just the virtual controller, but a program that reads controllers its own way still sees the real ones. Steam does this for PlayStation controllers. Check `systemctl status ctrlassist-hider.socket`. The daemon looks for the service again each time an arrangement starts, so once the service is there, stop and start the arrangement.
 
 ## "no virtual pad can be made"
 

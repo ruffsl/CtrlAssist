@@ -214,7 +214,7 @@ impl Daemon {
         // identity needs uinput, for the pad itself or to read it back.
         let uinput = OpenOptions::new().write(true).open("/dev/uinput").is_ok();
         let published = async {
-            reactor.publish(keys::daemon(), &state).await?;
+            reactor.publish_daemon(state.clone()).await?;
             reactor.publish_identities().await?;
             reactor.publish_pads().await?;
             reactor.publish_profiles().await
