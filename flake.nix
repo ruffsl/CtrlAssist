@@ -63,6 +63,8 @@
             pkg-config
             prek
             rust
+            # sdl2-jstest: what an SDL game lists, for the hiding spike
+            sdl-jstest
             typos
             udev
           ];

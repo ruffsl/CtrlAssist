@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3 in progress: the hiding, permissions and identification spike.
-- **Next action:** finish that spike and stop when its finding is written.
+- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding spike has its finding, [findings/hiding.md](findings/hiding.md), awaiting maintainer review; two of its checks need the maintainer at the machine (listed in the finding).
+- **Next action:** after that review, the virtual pad identity spike.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -183,13 +183,13 @@ Order: the survey, then S1 and S5, then S2, then S4, then S3. S5 precedes S4 bec
 
 *Question:* can an unprivileged daemon make a pad absent to games, and what must the packages install?
 
-- [ ] For each mechanism (evdev grab; Steam's blacklist; SDL's ignore-devices hint per launch; runtime udev rules as InputPlumber uses, applied by a privileged helper; others from the survey) and each consumer (Steam's controller settings, an SDL test tool run natively, and raw evdev and joydev readers; a Proton game is left to a later check), record: absent, present but silent, or visible.
-- [ ] For each mechanism, record what remains after the daemon is killed without cleanup, and after the pad reconnects.
-- [ ] Record Steam's behavior by start order (daemon first, Steam first) and whether a change needs a Steam restart.
-- [ ] In a clean NixOS VM with no Steam or Sunshine rules, defined as a flake check the way TisVlay defines its VM test, with fake pads created through uinput: what a seat user can open among `/dev/uinput`, `/dev/uhid` and the pads' event and hidraw nodes.
-- [ ] Record what cooperating with a running InputPlumber would take: what it does to a pad CtrlAssist wants, and whether its D-Bus API can hide one on request.
-- [ ] Record which identifiers stay stable for an Xbox pad and a DualShock or DualSense across reconnects, over USB and Bluetooth.
-- [ ] Write the finding.
+- [x] For each mechanism (evdev grab; Steam's blacklist; SDL's ignore-devices hint per launch; node permissions and a runtime udev rule set by root) and each consumer (Steam, read from its controller log; an SDL test tool run natively on both of its backends; raw evdev and joydev readers), record: absent, present but silent, or visible. A Proton game is left to a later check.
+- [x] For each mechanism, record what remains after the daemon is killed without cleanup, and after the pad reconnects.
+- [x] Record Steam's behavior by start order and whether a change needs a Steam restart.
+- [x] In a clean NixOS VM with no Steam or Sunshine rules, defined as a flake check, with fake pads created through uinput and uhid: what a seat user can open among `/dev/uinput`, `/dev/uhid` and the pads' event, js and hidraw nodes.
+- [ ] The root mechanism against SDL on a real pad (needs the maintainer's `sudo`).
+- [ ] Record which identifiers stay stable for an Xbox pad and a DualShock or DualSense across reconnects, over USB and Bluetooth (recorded for the two pads connected; the reconnect and transport comparison needs the maintainer).
+- [x] Write the finding.
 
 *Verdict:* a mechanism qualifies as the default only if it reaches "absent" for Steam Input and for a native SDL game, and leaves nothing behind after a kill. If no unprivileged mechanism qualifies, the helper ships, and the finding specifies the smallest interface it needs and what it costs to package.
 
