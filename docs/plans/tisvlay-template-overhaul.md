@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding ([findings/hiding.md](findings/hiding.md)) and identity ([findings/identity.md](findings/identity.md)) spikes are done and accepted; the input loop spike has its finding, [findings/input-loop.md](findings/input-loop.md), awaiting review. Two checks still need the maintainer at the machine: identifiers across reconnects, and suspend, resume and a Bluetooth drop.
-- **Next action:** after that review, the routing graph spike.
+- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding ([findings/hiding.md](findings/hiding.md)) and identity ([findings/identity.md](findings/identity.md)) spikes are done and accepted; the input loop spike has its finding, [findings/input-loop.md](findings/input-loop.md), done and accepted. Two checks still need the maintainer at the machine: identifiers across reconnects, and suspend, resume and a Bluetooth drop.
+- **Next action:** the routing graph spike, once two questions about its node API are settled with the maintainer: how a mode decides a control is active, and how far the switch binding goes.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -93,6 +93,10 @@ One word per thing, here and in everything written from this plan:
 **A DualSense identity is copied from a connected pad, never shipped.** Its report descriptor and feature reports are read from a real DualSense and cached per pad in the user's state directory, so the identity is offered only to someone who has had one connected, and nothing of Sony's is carried in the repository.
 
 **Feedback routes rumble everywhere and passes the rest through between like pads.** Rumble is translated between the two forms (force-feedback requests on uinput, output reports on uhid). When the sink and the source are the same kind of pad, the whole output report passes through, so LEDs and trigger effects work; between unlike pads they are dropped.
+
+**Pads are read directly through evdev, on one epoll thread** ([findings/input-loop.md](findings/input-loop.md)). gilrs leaves the dependency set: it opens pads by path, so it can't take the descriptors the helper hands over, and its loop wakes about a hundred times a second when idle where the new one never does. The first release includes its own parser for SDL's controller database, so pads outside the Xbox and PlayStation families, which gilrs used to normalize, keep working.
+
+**The input thread asks for real-time scheduling and degrades quietly.** If the kernel refuses, the daemon runs normally and its status says which. Packages raise the limit where they can; rtkit is not used.
 
 **The legacy words stay, for users too:** primary and assist for the roles; mux with priority, average and toggle; demux with unicast and multicast. Two alternative families were tried and read worse: these are precise, already paired, already in the README and issues, and "assist" is the project's name. Clients add a one-line description beside each, since the mode names are jargon to a newcomer.
 
