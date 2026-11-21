@@ -26,7 +26,7 @@ Why a rewrite rather than a migration:
 
 ## Decided
 
-**Repository.** Transfer `ruffsl/CtrlAssist` to `CtrlAssist/CtrlAssist` (stars, issues, releases and LFS objects carry over; old URLs redirect). Do it first, since CI checks, environments and trusted publishing are keyed to the owner. The rewrite lands on `main` in the same repo: one commit removes the legacy tree, and `v0.4.0` plus a `legacy/0.4` branch keep it reachable.
+**Repository.** Transfer `ruffsl/CtrlAssist` to `CtrlAssist/CtrlAssist` (stars, issues, releases and LFS objects carry over; old URLs redirect). The maintainer does this out of band, and no local work waits on it: development runs on this branch through to completion, files are written against the final `CtrlAssist/CtrlAssist` URLs and app ID from the start, and everything that needs GitHub (CI runs, required checks, environments, trusted publishing, Read the Docs, Codecov) is switched on by the maintainer afterward. Until then the gates are the local ones, `prek run -a` and `just check`, and workflows are linted but not run. The rewrite lands on `main` in the same repo: one commit removes the legacy tree, and `v0.4.0` plus a `legacy/0.4` branch keep it reachable.
 
 **App ID** is `io.github.ctrlassist.CtrlAssist`.
 
@@ -104,6 +104,16 @@ The rewrite targets similar functionality, not identical. Curated with the maint
 | Saved settings | Last-used tray choices in `config.toml` | Daemon-owned profiles describing a graph |
 | Per-control split (#53) | Not implemented | Expressible in a profile; no preset in the first release |
 
+## Ecosystem survey
+
+The legacy dependency set was chosen a year ago and hasn't been revisited, and the Rust input ecosystem moves quickly. Before the spikes pick their building blocks, survey it and write the result to `docs/` as a finding:
+
+- **Legacy dependencies:** for each (`gilrs`, `evdev`, `udev`, `ksni`, `notify-rust`, `ashpd`, `fs2`, `dirs`, `signal-hook`, `parking_lot`, `env_logger`), the current release, what changed since the pinned version (gilrs's changelog especially), maintenance state, and whether TisVlay already uses it or a replacement.
+- **Alternatives by goal:** evdev and uinput access; hidraw and uhid; controller mapping databases (SDL's and others); HID report descriptors and ready-made controller emulation, PlayStation above all; device hotplug (udev bindings against pure-Rust netlink or inotify); epoll-style loops that sit well beside tokio; ratatui and its widget ecosystem; graph or dataflow crates worth borrowing from for S4.
+- **Prior art:** how InputPlumber, Steam Input, SDL and similar tools solve hiding, identity and routing, and under which licenses, so the spikes test known approaches rather than rediscover them.
+
+Each candidate records its release date and source so the survey can be re-checked later. The survey chooses nothing by itself: it gives each spike its candidate list, and a spike may compare two candidates where the choice isn't obvious.
+
 ## Spikes
 
 Each is an independent workspace under `spikes/`, measured on the maintainer's hardware, and ends in `docs/` as a finding. The legacy 0.4.0 binary is the baseline where a comparison applies.
@@ -167,21 +177,23 @@ S1, S4 and S5 are independent and can run in parallel. S3 builds on S2.
 
 ## Steps
 
-1. **Move the repository.** Maintainer: open a tracking issue, transfer the repo, update the local remote, enable private vulnerability reporting.
+1. **Move the repository.** Maintainer, out of band and at any point: transfer the repo, update the local remote, enable private vulnerability reporting, then switch on what the workflows need. Not a prerequisite for any later step.
 2. **Clean slate and scaffold.** On this branch:
    - `chore: remove the legacy tree` (after creating `legacy/0.4`), keeping `LICENSE`, the artwork and this plan.
    - `build: workspace scaffold from the TisVlay template`: exact-pinned toolchain, flake dev shell, `justfile`, `prek.toml`, `.config/`, workspace lint table and profiles, an empty `crates/`, and `spikes/` excluded from the workspace.
    - `ci: pipeline from the TisVlay template`: `ci.yml`, `pr-title.yml`, `audit.yml`, dependabot; SHA-pinned.
    - `docs: contributing guide, conventions, plans convention, CLAUDE.md`, with the docs skeleton (`architecture.md` as a stub, `ideas/`, `concerns/`, `bugs/`).
-   - Verify: `prek run -a` and CI green on the empty workspace.
-3. **Spikes S1 to S5,** each a series of commits ending in its finding.
-4. **Architecture.** Write `docs/architecture.md` from the findings: crates, processes, data flow, key space, profile format, packaging and permissions. Replace step 5 with commit-sized build steps. Review before building.
-5. **Build,** in the order the architecture sets. Expected shape: core, device, protocol, daemon, SDK, CLI, tray, packaging and the first release; then the GUI and the TUI, each under its own plan.
+   - Verify: `prek run -a` green on the empty workspace; `actionlint` and `zizmor` clean on the workflows, which first run after the move.
+3. **Ecosystem survey,** ending in its finding.
+4. **Spikes S1 to S5,** each a series of commits ending in its finding.
+5. **Architecture.** Write `docs/architecture.md` from the findings: crates, processes, data flow, key space, profile format, packaging and permissions. Replace step 6 with commit-sized build steps. Review before building.
+6. **Build,** in the order the architecture sets. Expected shape: core, device, protocol, daemon, SDK, CLI, tray, packaging and the first release; then the GUI and the TUI, each under its own plan.
 
 Open legacy issues that the rewrite doesn't close are moved to `docs/ideas/` in step 2.
 
 ## Deviations
 
+- **Fifth draft.** Added the ecosystem survey ahead of the spikes, since the legacy dependencies are a year stale. The repository move no longer gates anything: the maintainer does it out of band and local work runs to completion without GitHub.
 - **Fourth draft.** A round of maintainer questions settled the crate naming, zenoh, presets over a graph, disconnect handling, pad identification, the client order (adding a ratatui TUI), the first release's contents and its single verified environment. The feature table became goals. New: spike S5 on virtual pad identity, and the event model scope section answering whether to design for wheels and HOTAS now.
 - **Third draft.** The maintainer confirmed the user daemon with thin clients, Flatpak as a second tier, and the general graph, which moved to Decided. S3 shrank from an IPC comparison to a co-existence check, since performance matters on the data path and that never leaves the daemon.
 - **Second draft.** The first draft (previous commit) was a phased, behavior-preserving migration: scaffolding around the existing crate, then a crate split, packaging, a daemon, a GUI, with CLI compatibility kept through an in-process daemon mode. The maintainer's review replaced it with a clean-slate rewrite planned architecture-first: compatibility isn't wanted, piecemeal migration invites churn, and the performance and process-layout questions need spikes before the crates are drawn.
