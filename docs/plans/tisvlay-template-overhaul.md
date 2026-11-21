@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding spike is done and accepted ([findings/hiding.md](findings/hiding.md)); one check still needs the maintainer at the machine (identifiers across reconnects).
-- **Next action:** the virtual pad identity spike, stopping when its finding is written.
+- **Status:** steps 1 and 2 done ([findings/ecosystem.md](findings/ecosystem.md)). Step 3: the hiding spike is done and accepted ([findings/hiding.md](findings/hiding.md)), with one check still needing the maintainer (identifiers across reconnects); the identity spike has its finding, [findings/identity.md](findings/identity.md), awaiting review.
+- **Next action:** after that review, the input loop spike.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
 - **Hardware on the development host:** Xbox and DualShock/DualSense pads, Steam. No wheel or HOTAS.
@@ -199,11 +199,11 @@ Order: the survey, then S1 and S5, then S2, then S4, then S3. S5 precedes S4 bec
 
 *Background:* SDL reads DualShock and DualSense pads through hidraw by default, and Steam is believed to as well. A uinput pad carrying Sony's IDs has no HID device behind it; a uhid pad does, and the kernel's PlayStation driver can bind to it. InputPlumber emulates a DualSense this way.
 
-- [ ] Build a uinput virtual pad with a DualSense's copied IDs, and a uhid one replaying a real DualSense's report descriptor.
-- [ ] For each, record what Steam's controller settings and an SDL test tool report: detected as what, button glyphs, layout correctness, rumble, and whether gyro, touchpad and LEDs pass.
-- [ ] Repeat for an Xbox identity.
-- [ ] Record what feedback a uhid sink delivers (output reports) and what it needs installed (`/dev/uhid` access).
-- [ ] Write the finding.
+- [x] Build a uinput virtual pad with a DualSense's copied IDs, and a uhid one replaying a real DualSense's report descriptor.
+- [x] For each, record what Steam and an SDL test tool report: detected as what, and rumble. Layout under real input, glyphs, gyro, touchpad and LEDs were not exercised and are listed in the finding.
+- [x] Repeat for an Xbox identity (virtual only; no Xbox pad was connected).
+- [x] Record what feedback a uhid sink delivers (output reports) and what it needs installed (`/dev/uhid` access).
+- [x] Write the finding.
 
 *Verdict:* uinput only, uhid for named identities, or uhid throughout, and which identity is the default when a profile names none. uhid is kept for an identity only if it is detected as that pad with correct glyphs and working rumble where uinput is not.
 
