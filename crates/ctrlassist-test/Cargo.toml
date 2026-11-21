@@ -16,6 +16,7 @@ path = "src/bin/fixture.rs"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+ctrlassist-hider = { workspace = true }
 evdev = { workspace = true }
 rustix = { workspace = true, features = ["event", "fs"] }
 udev = { workspace = true }

@@ -4,6 +4,6 @@ The re-bind half of hiding was run on a DualSense over USB, a DualShock 4 over B
 
 **Risk.** Low to medium: two drivers and both transports behaved alike, so a third is likely to, but a pad whose driver doesn't re-bind cleanly couldn't be hidden from programs that already have it open.
 
-**Mitigation.** `just spike-hiding-dislodge <vendor> <product>` works for any connected pad. The hiding service reports a pad it couldn't re-bind, and the setup says the pad may still be visible.
+**Mitigation.** `just hider-dev` and `just hide-pad <node>` hide any connected pad through the real service, and say whether its readers were cut off. The hiding service reports a pad it couldn't re-bind, and the setup says the pad may still be visible.
 
 **Closes when.** The recipe has been run for an Xbox pad over Bluetooth.

@@ -19,11 +19,17 @@ publish = false
 
 # Every dependency is declared once here and inherited by the crates.
 [workspace.dependencies]
+# Internal crates. Unpublished ones are path-only.
+ctrlassist-hider = { path = "crates/ctrlassist-hider" }
+
 # Errors
 anyhow = "1"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+
+# Raw FFI types, where a C library is called directly
+libc = { version = "0.2", default-features = false }
 
 # The kernel's input interfaces
 evdev = "0.13"

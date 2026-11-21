@@ -223,11 +223,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctrlassist-hider"
+version = "0.5.0"
+dependencies = [
+ "libc",
+ "rustix",
+ "udev",
+]
+
+[[package]]
 name = "ctrlassist-test"
 version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
+ "ctrlassist-hider",
  "evdev",
  "rustix",
  "udev",

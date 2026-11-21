@@ -13,6 +13,8 @@ Cargo.toml                    # workspace root: one version, the lint table, the
 crates/
   ctrlassist-core/            # the routing model: controls, pad state, groups, mux and
                               # demux nodes, the graph, the feedback router. No dependencies.
+  ctrlassist-hider/           # the hiding service: its wire types and client as a library,
+                              # and the root binary
   ctrlassist-test/            # fake pads made through uinput and uhid, and the
                               # ctrlassist-fixture binary the VM checks drive
 spikes/                       # throwaway workspaces, each deleted by the build step that
@@ -25,7 +27,9 @@ docs/
   plans/                      # the plan in flight
   concerns/, ideas/           # one doc per item; each README.md is its index
 packaging/
-  nix/                        # the fixture package and the VM checks (test-*.nix)
+  nix/                        # crate.nix (one crate's binaries as a package) and the
+                              # VM checks (test-*.nix)
+  systemd/                    # the hiding service's socket and service units
   licensing/                  # deny.toml: license policy and the one-version gate
 .claude/CLAUDE.md             # this file
 ```

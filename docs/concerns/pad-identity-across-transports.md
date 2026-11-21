@@ -4,6 +4,6 @@ The kernel's `uniq` value was the pad's own address on a DualSense over USB and 
 
 **Risk.** Medium: a pad whose address changes or is empty falls back to model and port, and a profile naming it by address stops matching.
 
-**Mitigation.** Run `just spike-hiding-ids "<label>"` for the DualSense over Bluetooth and after a replug, and for an Xbox pad on USB and Bluetooth.
+**Mitigation.** Run `ctrlassist-hider check <node>`, which prints the identity the service reads, for the DualSense over Bluetooth and after a replug, and for an Xbox pad on USB and Bluetooth.
 
 **Closes when.** The identifiers are recorded for those cases.

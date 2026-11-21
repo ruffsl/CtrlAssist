@@ -2,8 +2,9 @@
 
 ## State
 
-- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 5 (slice A) are done, and the core API is approved.
-- **Next action:** slice B, starting with build step 6, the hiding service, stopping there for a read of the root code. One question is open with the maintainer: how the hiding service decides who may use it (the proposal is TisVlay's rule for a desktop session, asked of logind once per connection through its login library).
+- **Status:** steps 1 to 4 done and approved by the maintainer. Step 5, the build, is under way: build steps 1 to 5 (slice A) are done and the core API is approved; build step 6, the hiding service, is built and passes its virtual machine check.
+- **Next action:** the maintainer reads the root code (`crates/ctrlassist-hider/src`, about 900 lines, and `packaging/systemd`) and runs the hardware check: `just hider-dev`, then `just hide-pad <node>` for a DualSense with Steam running and with an SDL game listing pads. Then build step 7.
+- **Hiding service decisions** (2026-11-21): who is served is TisVlay's desktop-session rule, asked of logind once per connection through its login library; a user switch leaves pads hidden; the socket and records live under `/run/ctrlassist`; the step landed in a few commits with one stop.
 - **Naming:** the root helper is called the hiding service in the architecture and `ctrlassist-hider` as a crate, because "helper" also described the assisting player. Older sections of this plan still say helper.
 - **Branch:** `feat/rewrite`, one linear campaign branch. Nothing is pushed.
 - **Template source:** the maintainer's TisVlay checkout. Record the TisVlay commit copied from in each commit that copies from it.
@@ -372,4 +373,8 @@ Each becomes a `docs/ideas/` entry at step 4, with the trigger that would bring 
 
 ## Deviations
 
-None yet. The drafting history is in git.
+- **The hiding service passes no hidraw descriptor yet** (build step 6). The architecture has it open a hidraw node for an allowlisted driver. Nothing reads one until the DualSense identity (build step 20), and the path can't be exercised in the virtual machine without Sony's report descriptor, so it lands with that step. The rule denies hidraw nodes now.
+- **The Steam-driving dislodge recipe went with `spikes/hiding`** (build step 6). It ran the spike's probe. Its replacements, `just hider-dev` and `just hide-pad`, go through the real service; starting Steam and reading what it lists is by hand.
+- **`ctrlassist-hider` depends on `libc`** as well as `rustix` and `udev` (build step 6): the login library is C, and its strings are freed with `free`.
+
+The drafting history is in git.

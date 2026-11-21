@@ -216,25 +216,26 @@ No unprivileged mechanism makes a pad absent to games ([what the platform does](
 
 ### The hiding service's protocol
 
-The service listens on a system Unix socket. Its vocabulary is small on purpose:
+The service listens on a system Unix socket, `/run/ctrlassist/hider.sock`, that systemd holds and starts it from. Each request and each reply is one message on a sequenced-packet socket, so there is no framing; descriptors travel beside them. Its vocabulary is small on purpose:
 
 | Request | Carries | Does |
 |---|---|---|
-| hide | an open descriptor on the pad's event node | Checks the pad, installs the rule, re-binds the driver, opens the new nodes, returns their descriptors and a token. |
-| reopen | a token | After the pad has reconnected: returns fresh descriptors. The rule already covered the new nodes. |
+| hide | an open descriptor on the pad's event node | Checks the pad, installs the rule, re-binds the driver, opens the new event node, returns its descriptor and a token. |
+| reopen | a token | After the pad has reconnected: returns a fresh descriptor. The rule already covered the new nodes. |
 | restore | a token | Removes the rule, re-binds the driver. |
 | (connection closes) | | Restores everything that connection hid. |
 
 - **A pad is named by a descriptor the caller already holds, never a path or a name.** The service takes the device number from the descriptor and finds the pad from that. Possession proves the caller could already read that pad, so for event nodes the service grants nothing new.
 - **It refuses anything that isn't a pad the seat user could open:** the device must be classified as a joystick, must not be classified as a keyboard or mouse, and must carry the seat-access tag.
-- **No string from a device reaches a rule.** A pad's name and address are chosen by whoever created it, and a seat user can create devices. Rule text is built only from numbers the service parsed itself.
-- **A hidraw node is opened only for a pad whose kernel driver is on a short built-in list.** On a stock machine hidraw is closed to users, so this is the one thing the service grants that the user didn't have; the list starts with the PlayStation driver, which the DualSense identity needs.
+- **No string from a device reaches a rule unchecked.** A pad's name and address are chosen by whoever created it, and a seat user can create devices. Rule text is built only from numbers the service parsed itself, plus an address or a serial number that has exactly the expected shape; one that doesn't is left out, and the rule matches the model alone. The kernel names written to sysfs for a re-bind are checked the same way.
+- **It remembers what a pad is, never where.** A pad that reconnects while hidden comes back under new kernel names, so its nodes and its driver binding are looked up each time they are needed.
+- **A hidraw node is opened only for a pad whose kernel driver is on a short built-in list.** On a stock machine hidraw is closed to users, so this is the one thing the service grants that the user didn't have; the list starts with the PlayStation driver, which the DualSense identity needs. This arrives with that identity; until then the service denies hidraw nodes and passes none.
 - **One user at a time.** A pad hidden for one user is refused to another.
-- **Who may connect:** a user with an active session on the seat, checked by user ID when the connection is made. A user without one (lingering, or logged in remotely) is refused.
+- **Who is served:** the user whose session is in front on a seat, where that session is a person at the machine: class `user`, graphical, not remote. This is TisVlay's rule, and it never asks whether a session is "active", because an SSH login reports that it is. Anyone may connect; the check is made once per connection, by the peer's user ID, against logind through its login library, with no D-Bus connection. A client that later leaves the foreground, as on a user switch, keeps what it has hidden.
 
 What this defends: another user's session, and the rest of the system, against a process of the seat user. It does not defend the seat user against their own processes; a game running as that user can already read the pads and talk to the daemon.
 
-**Cleanup hangs on the connection.** The kernel reports the daemon's connection closing even when the daemon is killed. For the service's own failure, each rule's original mode and group are recorded under `/run` before the rule is written, reconciled when the service starts, and cleared by its unit when it stops. `/run` is emptied at boot, which bounds the worst case.
+**Cleanup hangs on the connection.** The kernel reports the daemon's connection closing even when the daemon is killed. For the service's own failure, what each rule hides is recorded under `/run/ctrlassist/hidden` before the rule is written: the pad's identity, and for a pad with no driver to re-bind, its nodes' modes and owners. The records are reconciled when the service starts and by its unit when it stops, however it stopped, and are read back as warily as a device is. `/run` is emptied at boot, which bounds the worst case.
 
 **Reconnects are driven by the daemon.** Its udev monitor sees the pad return and asks for `reopen`, so the service has no event loop of its own.
 

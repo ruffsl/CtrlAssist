@@ -36,7 +36,7 @@ Build and clippy use the test profile, so the tests reuse what they compiled.
 
 - **Drafts and docs-only changes run only `checks`;** marking a pull request ready starts the rest.
 - **One instrumented build.** `just test-ci` routes clippy, nextest and the doc tests through cargo-llvm-cov's environment, so they share a target directory instead of compiling twice.
-- **Coverage has a floor,** `cov_baseline_lines` in the justfile. `just test-ci` fails below it. Raise it when coverage rises (`just cov` prints the figure); never lower it.
+- **Coverage has a floor,** `cov_baseline_lines` in the justfile. `just test-ci` fails below it. Raise it when coverage rises (`just cov` prints the figure); never lower it. Two things are kept out of the figure because only the virtual machine checks can run them: `ctrlassist-test`, and the hiding service's root-only files.
 - **Actions are pinned to a commit,** with the release in a comment, and Dependabot proposes updates to both after a one-week cooldown.
 
 ## Toolchain

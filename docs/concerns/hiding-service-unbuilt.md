@@ -1,9 +1,9 @@
-# The hiding service is proven as commands, not as a process
+# The hiding service has met fake pads only
 
-Everything the hiding service does was done by hand with root commands: the rule, the re-bind, the restore. Passing descriptors over a socket, the seat check, the checks on what counts as a pad, cleanup when a connection closes, and reconciliation after its own crash exist only on paper.
+The hiding service is built and passes its virtual machine check: hide, reconnect, restore, a killed client, its own death, and the refusals. Every pad in that check is a fake one, on drivers the kernel gives fake pads. The service has not yet hidden a real pad from a running Steam or an SDL game, and its root code has not been read by the maintainer.
 
-**Risk.** High: every step after it assumes pads arrive as descriptors.
+**Risk.** Medium: every step after it assumes pads arrive as descriptors. The mechanism itself was run by hand on three real pads, so what is unproven is this code doing it, not the idea.
 
-**Mitigation.** It is built early, with a virtual machine test that hides, kills, restores and reconnects, and a review of the root code before anything depends on it.
+**Mitigation.** `just hider-dev` and `just hide-pad <node>` run the real service against a real pad; see [testing](../testing.md#hardware-checks).
 
-**Closes when.** The service passes its virtual machine test and a real pad check against Steam and SDL.
+**Closes when.** A DualSense hidden through the service disappears from Steam and SDL and returns on restore, and the root code has been read.

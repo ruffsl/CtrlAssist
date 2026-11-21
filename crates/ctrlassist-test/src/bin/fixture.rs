@@ -6,12 +6,16 @@
     reason = "this binary's output is what the test scripts read"
 )]
 
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::Read;
+use std::os::fd::AsFd;
+use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use ctrlassist_hider::{Client, Hidden};
 use ctrlassist_test::{FakeHidPad, FakePad, NodeKind, can_open, count_reads, pads};
 
 fn parse_hex(text: &str) -> Result<u16, std::num::ParseIntError> {
@@ -55,6 +59,17 @@ enum Command {
     /// List pads, one per line: name, uniq, vendor:product, then each node
     /// with whether the caller can open it.
     Pads,
+    /// Ask the hiding service to hide the pad at `node`, then hold the
+    /// connection and take orders from files in `control`: `reopen`,
+    /// `restore` or `count` appearing there is carried out, and the
+    /// outcome written beside it as `<order>.done`.
+    Hide {
+        node: PathBuf,
+        #[arg(long)]
+        socket: PathBuf,
+        #[arg(long)]
+        control: PathBuf,
+    },
     /// Count reads on a node for a window, printing the count each second
     /// and whether the node was cut off.
     Listen {
@@ -75,6 +90,71 @@ fn hold(pulse: u64, mut edge: impl FnMut(bool) -> std::io::Result<()>) -> Result
             edge(pressed)?;
             sleep(Duration::from_millis(pulse));
         }
+    }
+}
+
+/// How many reads the service's descriptor yields in half a second.
+fn count_from(hidden: &Hidden) -> Result<usize> {
+    let mut file = File::from(hidden.event.try_clone()?);
+    let mut buffer = [0u8; 4096];
+    let mut count = 0;
+    for _ in 0..50 {
+        // The descriptor is non-blocking: a read with nothing waiting
+        // returns at once.
+        while matches!(file.read(&mut buffer), Ok(read) if read > 0) {
+            count += 1;
+        }
+        sleep(Duration::from_millis(10));
+    }
+    Ok(count)
+}
+
+fn hide(node: &Path, socket: &Path, control: &Path) -> Result<()> {
+    std::fs::create_dir_all(control)?;
+    let done = |order: &str, outcome: String| -> Result<()> {
+        // Written whole, then renamed, so a reader never sees half of it.
+        println!("{order}: {outcome}");
+        let partial = control.join(format!("{order}.partial"));
+        std::fs::write(&partial, outcome)?;
+        std::fs::rename(partial, control.join(format!("{order}.done")))?;
+        Ok(())
+    };
+    let client = Client::connect(socket).context("connecting to the hiding service")?;
+    // The pad is named by a descriptor this process could open itself.
+    let pad = File::open(node).with_context(|| format!("opening {}", node.display()))?;
+    let mut hidden = match client.hide(pad.as_fd()) {
+        Ok(hidden) => hidden,
+        Err(error) => return done("hide", format!("refused: {error}")),
+    };
+    drop(pad);
+    done(
+        "hide",
+        format!("ok token={} dislodged={}", hidden.token.0, hidden.dislodged),
+    )?;
+    loop {
+        for order in ["reopen", "restore", "count"] {
+            let trigger = control.join(order);
+            if !trigger.exists() {
+                continue;
+            }
+            std::fs::remove_file(&trigger)?;
+            let outcome = match order {
+                "reopen" => match client.reopen(hidden.token) {
+                    Ok(again) => {
+                        hidden = again;
+                        "ok".to_string()
+                    }
+                    Err(error) => format!("refused: {error}"),
+                },
+                "restore" => match client.restore(hidden.token) {
+                    Ok(()) => "ok".to_string(),
+                    Err(error) => format!("refused: {error}"),
+                },
+                _ => format!("reads={}", count_from(&hidden)?),
+            };
+            done(order, outcome)?;
+        }
+        sleep(Duration::from_millis(50));
     }
 }
 
@@ -134,6 +214,11 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Hide {
+            node,
+            socket,
+            control,
+        } => hide(&node, &socket, &control),
         Command::Listen { node, millis } => {
             let reads = count_reads(
                 &node,
