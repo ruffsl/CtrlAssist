@@ -218,6 +218,19 @@ stop-all:
 cli *args:
     cargo run --quiet --profile {{ _dev_profile }} --bin ctrlassist -- --socket "{{ socket }}" {{ args }}
 
+# It also gates: `--fail` stops on any crate whose license `about.toml`
+# doesn't accept, so a dependency that brings a new license is noticed
+# when it arrives, not when a package is built.
+#
+# Write the third-party license bundle the packages ship
+[group('check')]
+licenses-html:
+    cargo about generate \
+        --config packaging/licensing/about.toml \
+        --workspace --all-features --locked --fail \
+        packaging/licensing/about.html.hbs \
+        -o packaging/licensing/THIRD-PARTY-LICENSES.html
+
 # --- Packaging -----------------------------------------------------------
 
 # The oldest glibc the packaged binaries run on. 2.34 covers Debian 12,
@@ -254,17 +267,17 @@ completions:
 
 # Build the .deb
 [group('package')]
-package-deb: completions package-build
+package-deb: licenses-html completions package-build
     cargo nfpm package -p ctrlassist-cli --no-build --profile dist --target {{ _package_triple }} -f deb
 
 # Build the .rpm
 [group('package')]
-package-rpm: completions package-build
+package-rpm: licenses-html completions package-build
     cargo nfpm package -p ctrlassist-cli --no-build --profile dist --target {{ _package_triple }} -f rpm
 
 # Build the Arch package
 [group('package')]
-package-archlinux: completions package-build
+package-archlinux: licenses-html completions package-build
     cargo nfpm package -p ctrlassist-cli --no-build --profile dist --target {{ _package_triple }} -f archlinux
 
 # Build the .deb, the .rpm and the Arch package
@@ -291,7 +304,9 @@ _package_checks := '''
         /usr/lib/modules-load.d/ctrlassist.conf \
         /usr/share/bash-completion/completions/ctrlassist \
         /usr/share/zsh/site-functions/_ctrlassist \
-        /usr/share/fish/vendor_completions.d/ctrlassist.fish
+        /usr/share/fish/vendor_completions.d/ctrlassist.fish \
+        /usr/share/doc/ctrlassist/NOTICE \
+        /usr/share/doc/ctrlassist/THIRD-PARTY-LICENSES.html
     do test -s "$file" || { echo "missing: $file"; exit 1; }; done
     echo "installed and working"
 '''
@@ -316,9 +331,12 @@ package-test: package-all
     }
     checks={{ quote(_package_checks) }}
     try debian:12 'apt-get update -qq && apt-get install -y -qq /dist/ctrlassist_*.deb >/dev/null'
-    try ubuntu:22.04 'apt-get update -qq && apt-get install -y -qq /dist/ctrlassist_*.deb >/dev/null'
+    # Ubuntu's image tells dpkg to leave out /usr/share/doc; a real
+    # install doesn't, so that is lifted before installing.
+    try ubuntu:22.04 'rm -f /etc/dpkg/dpkg.cfg.d/excludes && apt-get update -qq && apt-get install -y -qq /dist/ctrlassist_*.deb >/dev/null'
     try fedora:latest 'dnf install -y -q /dist/ctrlassist-*.rpm >/dev/null'
-    try archlinux:latest 'pacman -U --noconfirm /dist/ctrlassist-*.pkg.tar.zst >/dev/null'
+    # Arch's image does the same through pacman's NoExtract.
+    try archlinux:latest "sed -i '/^NoExtract/d' /etc/pacman.conf && pacman -U --noconfirm /dist/ctrlassist-*.pkg.tar.zst >/dev/null"
 
 # --- Maintenance ---------------------------------------------------------
 

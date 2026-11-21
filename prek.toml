@@ -21,6 +21,7 @@ hooks = [
 repo = "local"
 hooks = [
     { id = "deny", name = "deny", language = "system", entry = "just deny", files = '(Cargo\.toml|Cargo\.lock|packaging/licensing/deny\.toml)$', pass_filenames = false, priority = 0 },
+    { id = "licenses-html", name = "licenses-html", language = "system", entry = "just licenses-html", files = '(Cargo\.toml|Cargo\.lock|packaging/licensing/about\.(toml|html\.hbs))$', pass_filenames = false, priority = 0 },
     { id = "shear", name = "shear", language = "system", entry = "just shear", files = '(\.rs|Cargo\.toml)$', pass_filenames = false, priority = 0 },
     { id = "typos", name = "typos", language = "system", entry = "just typos", always_run = true, pass_filenames = false, priority = 0 },
     { id = "actionlint", name = "actionlint", language = "system", entry = "just actionlint", files = '^\.github/workflows/', pass_filenames = false, priority = 0 },

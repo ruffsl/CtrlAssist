@@ -146,6 +146,8 @@
             # interpreter, as a plain build from this shell would. nfpm is
             # the packager cargo-nfpm calls.
             cargo-auditable
+            # Writes the third-party license bundle (`just licenses-html`).
+            cargo-about
             cargoNfpm
             cargo-zigbuild
             zig

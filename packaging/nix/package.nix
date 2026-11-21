@@ -7,6 +7,7 @@
   pkg-config,
   udev,
   installShellFiles,
+  cargo-about,
   # Cargo profile for the shipped binaries. `release` builds fastest, for
   # hosts that compile it themselves (the module's default package); the
   # flake's own package passes `dist`, the smaller profile (Cargo.toml has
@@ -30,6 +31,7 @@ rustPlatform.buildRustPackage {
       ../../.cargo
       ../../crates
       ../../vendor
+      ../../packaging/licensing
       ../../packaging/systemd
       ../../packaging/udev
     ];
@@ -44,12 +46,24 @@ rustPlatform.buildRustPackage {
   doCheck = false;
 
   nativeBuildInputs = [
+    # Writes the third-party license bundle in preBuild.
+    cargo-about
     pkg-config
     # Provides installShellCompletion, used in postInstall.
     installShellFiles
   ];
   # libudev, and libsystemd for the hiding service's session check.
   buildInputs = [ udev ];
+
+  # cargo-about reads only the vendored sources, so it runs in the
+  # sandbox with no network.
+  preBuild = ''
+    cargo about generate \
+      --config packaging/licensing/about.toml \
+      --workspace --all-features --locked --fail \
+      packaging/licensing/about.html.hbs \
+      -o packaging/licensing/THIRD-PARTY-LICENSES.html
+  '';
 
   # The units name /usr/bin, right for a deb or an rpm; here they are
   # pointed at this package. `--replace-fail` fails the build if a unit's
@@ -68,6 +82,9 @@ rustPlatform.buildRustPackage {
       --replace-fail /usr/bin/ $out/bin/
 
     install -Dm0644 packaging/udev/70-ctrlassist.rules -t $out/lib/udev/rules.d/
+
+    install -Dm0644 packaging/licensing/NOTICE -t $out/share/doc/ctrlassist/
+    install -Dm0644 packaging/licensing/THIRD-PARTY-LICENSES.html -t $out/share/doc/ctrlassist/
 
     # Shell completions: what registers the command with each shell,
     # printed by the command itself. The registration calls back a bare

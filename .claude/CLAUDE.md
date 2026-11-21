@@ -58,7 +58,9 @@ packaging/
   udev/                       # the rule that gives the seat user uinput and uhid
   scripts/, modules-load/     # what the deb, rpm and Arch packages run at install and
                               # removal, and the modules they have loaded at boot
-  licensing/                  # deny.toml: license policy and the one-version gate
+  licensing/                  # deny.toml (license policy and the one-version gate),
+                              # about.toml and its template (the third-party license
+                              # bundle the packages ship), and NOTICE
 .vscode/tasks.json            # editor tasks that start, stop and restart the dev stack
 .claude/CLAUDE.md             # this file
 ```
