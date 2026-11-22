@@ -94,6 +94,8 @@ Identify from the Pads pane buzzed the maintainer's DualSense, which a running s
 
 **The CLI has no preset flags to move,** which an earlier line of this plan assumed: profiles go in as files. Making one from flags is [an idea](../ideas/profile-new.md). The schema's users in this plan are the window and the tray.
 
+**The Profiles pane, further** (2026-11-21). New asks a name and opens the form on a draft the window holds; the first moment its picks make a profile the daemon keeps it is put, and from then on each change applies at once; a draft left unfinished is dropped on leaving it, after a confirm. A change to a profile whose setup runs is applied to the setup at once and never asks, restart or not, as the tray's quick menu does. A profile in the full form shows its text read-only, with what the daemon finds wrong with it, its Start, Duplicate and Delete, and a button that shows its file. The tray's quick menu keeps to the presets of two pads, its labels and choices from the served fields.
+
 ## What is copied, replaced and new
 
 | TisVlay | Here |
