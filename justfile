@@ -365,14 +365,19 @@ package-all: package-deb package-rpm package-archlinux
 # What each container is asked after installing its package: the command
 # runs on that distribution's glibc and finds its libraries, says there is
 # no daemon, and completes its own words; the hiding service runs and
-# refuses what isn't a pad; and everything the package ships is in place.
+# refuses what isn't a pad; the window's binary runs as far as saying its
+# release, which is before it loads the libraries it draws with; and
+# everything the package ships is in place.
 _package_checks := '''
     set -eu
     ctrlassist --version
     ctrlassist status --json 2>/dev/null | grep -q '"alive":false'
     COMPLETE=fish ctrlassist -- ctrlassist pro | grep -q profile
     ctrlassist-hider check /dev/null | grep -q refused
+    ctrlassist-gui --version
     for file in \
+        /usr/share/applications/io.github.ctrlassist.Gui.desktop \
+        /usr/share/dbus-1/services/io.github.ctrlassist.Gui.service \
         /usr/lib/systemd/system/ctrlassist-hider.socket \
         /usr/lib/systemd/system/ctrlassist-hider.service \
         /usr/lib/systemd/user/ctrlassist-daemon.service \
@@ -413,8 +418,10 @@ package-test: package-all
     # install doesn't, so that is lifted before installing.
     try ubuntu:22.04 'rm -f /etc/dpkg/dpkg.cfg.d/excludes && apt-get update -qq && apt-get install -y -qq /dist/ctrlassist_*.deb >/dev/null'
     try fedora:latest 'dnf install -y -q /dist/ctrlassist-*.rpm >/dev/null'
-    # Arch's image does the same through pacman's NoExtract.
-    try archlinux:latest "sed -i '/^NoExtract/d' /etc/pacman.conf && pacman -U --noconfirm /dist/ctrlassist-*.pkg.tar.zst >/dev/null"
+    # Arch's image does the same through pacman's NoExtract, and comes
+    # with no package database, which the window's libraries are
+    # resolved from.
+    try archlinux:latest "sed -i '/^NoExtract/d' /etc/pacman.conf && pacman -Sy --noconfirm >/dev/null && pacman -U --noconfirm /dist/ctrlassist-*.pkg.tar.zst >/dev/null"
 
 sbom_dir := "target/sbom"
 
@@ -424,7 +431,7 @@ sbom_dir := "target/sbom"
 # build is. cargo-cyclonedx works from cargo metadata, not the build, so
 # `just sbom-check` compares them with the built binaries. It writes one
 # file per workspace binary next to each crate's Cargo.toml, so the recipe
-# keeps the shipped two and deletes the rest. SOURCE_DATE_EPOCH (the
+# keeps the shipped three and deletes the rest. SOURCE_DATE_EPOCH (the
 # commit time) makes reruns identical, but it also makes cargo-cyclonedx
 # leave out the serial number, which actions/attest requires of a
 # CycloneDX SBOM. So each gets a name-based UUID (v5) for its commit,
@@ -441,7 +448,7 @@ sbom:
         --describe binaries --target {{ _package_triple }} \
         --format json --spec-version 1.5
     commit=$(git rev-parse HEAD)
-    for shipped in ctrlassist-cli/ctrlassist ctrlassist-hider/ctrlassist-hider; do
+    for shipped in ctrlassist-cli/ctrlassist ctrlassist-hider/ctrlassist-hider ctrlassist-gui-app/ctrlassist-gui; do
         crate=${shipped%/*} bin=${shipped#*/}
         generated=crates/$crate/${bin}_bin.cdx.json
         version=$(jq -r .metadata.component.version "$generated")

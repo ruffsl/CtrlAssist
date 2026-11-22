@@ -118,6 +118,10 @@
           package = self.packages.${system}.default;
           module = self.nixosModules.default;
         };
+        checks.gui = pkgs.callPackage ./packaging/nix/test-gui.nix {
+          package = self.packages.${system}.default;
+          module = self.nixosModules.default;
+        };
 
         # Every tool a `just` recipe or prek hook calls comes from here, so
         # the checks run the same for everyone. A tool joins this list in
