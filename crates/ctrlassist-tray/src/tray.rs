@@ -143,7 +143,7 @@ impl PadTray {
     /// notch add up to one, so a finer wheel or a touchpad moves the
     /// mark as far as a plain wheel does. What was turned is dropped
     /// when the wheel turns the other way, and when it has been still
-    /// for [`WHEEL_PAUSE`].
+    /// for a third of a second.
     pub fn turn(&mut self, delta: i32, now: Instant) {
         let paused = self
             .turned
