@@ -1,6 +1,7 @@
 //! What the tray shows: a snapshot of the SDK's mirror, and what changed
 //! between two of them that a person should be told.
 
+use ctrlassist::form::Field;
 use ctrlassist::{DaemonState, Hiding, Identity, Pad, Phase, Profile, Setup};
 
 use crate::notify::Category;
@@ -25,6 +26,9 @@ pub struct View {
     pub setups: Vec<Setup>,
     /// What a virtual pad can present itself as.
     pub identities: Vec<Identity>,
+    /// A preset's fields, as the daemon serves them: what quick start
+    /// has to choose from. Empty until the daemon has said.
+    pub fields: Vec<Field>,
 }
 
 /// Something to tell the person at the machine.
@@ -72,7 +76,7 @@ impl View {
         self.profiles
             .iter()
             .find(|profile| profile.name == quick::NAME)
-            .and_then(|profile| Quick::from_profile(&profile.toml))
+            .and_then(|profile| Quick::from_profile(&self.fields, &profile.toml))
     }
 
     /// The pad known by `id`, if the daemon knows one.
@@ -337,6 +341,7 @@ pub(crate) mod tests {
             profiles: vec![profile("couch", None), profile("desk", None)],
             setups: couch_is.map(couch).into_iter().collect(),
             identities: Vec::new(),
+            fields: ctrlassist::form::fields(),
         }
     }
 

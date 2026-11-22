@@ -8,7 +8,7 @@ use ksni::{ToolTip, Tray};
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::menu::{self, Command, Edit, Entry};
+use crate::menu::{self, Command, Entry};
 use crate::quick::{self, Quick};
 use crate::state::View;
 
@@ -90,34 +90,29 @@ impl PadTray {
         let action = match command {
             Command::Quick(edit) => {
                 self.quick_settled = true;
-                match edit {
-                    Edit::Primary(pad) => self.quick.primary = Some(pad),
-                    Edit::Assist(pad) => self.quick.assist = Some(pad),
-                    Edit::Mode(mode) => self.quick.mode = mode,
-                    Edit::Identity(identity) => self.quick.identity = identity,
-                    Edit::AutoStart(on) => self.quick.auto_start = on,
-                    Edit::Rumble(rumble) => self.quick.rumble = rumble,
-                }
+                self.quick.set(&edit.key, &edit.value);
                 // A pick is applied to a running `quick` as it is made.
                 // All but another identity it takes as it runs; that
                 // one restarts it, which a game sees as its pad going
                 // and another coming.
                 let running = self.view.setup(quick::NAME).is_some();
-                match self.quick.profile().filter(|_| running) {
+                match self.quick.profile(&self.view.fields).filter(|_| running) {
                     Some(toml) => Action::Quick(toml),
                     None => return,
                 }
             }
-            Command::QuickStart => match self.quick.profile() {
+            Command::QuickStart => match self.quick.profile(&self.view.fields) {
                 Some(toml) => Action::Quick(toml),
                 None => return,
             },
             // Starting `quick` starts what is picked, not what was last
             // kept, where the picks make a profile.
-            Command::Start(name) if name == quick::NAME => match self.quick.profile() {
-                Some(toml) => Action::Quick(toml),
-                None => Action::Start(name),
-            },
+            Command::Start(name) if name == quick::NAME => {
+                match self.quick.profile(&self.view.fields) {
+                    Some(toml) => Action::Quick(toml),
+                    None => Action::Start(name),
+                }
+            }
             Command::Start(name) => Action::Start(name),
             Command::Stop(name) => Action::Stop(name),
             Command::Select {
@@ -311,6 +306,7 @@ mod tests {
     use ctrlassist::Hiding;
 
     use super::*;
+    use crate::menu::Edit;
     use crate::state::tests::view;
 
     fn tray(phase: Option<Phase>) -> (PadTray, mpsc::UnboundedReceiver<Action>) {
@@ -362,14 +358,12 @@ mod tests {
     #[test]
     fn a_click_is_an_action_and_a_quick_choice_stays_in_the_tray() {
         let (mut tray, mut clicked) = tray(None);
-        tray.activate(Command::Quick(Edit::Primary("address:dualsense".into())));
+        tray.activate(Command::Quick(Edit::set("primary", "address:dualsense")));
         tray.activate(Command::QuickStart);
         assert!(clicked.try_recv().is_err(), "one pad isn't a profile yet");
         assert!(tray.quick_settled);
-        tray.activate(Command::Quick(Edit::Assist("address:8bitdo".into())));
-        tray.activate(Command::Quick(Edit::Identity(
-            ctrlassist_protocol::profile::Identity::Xbox,
-        )));
+        tray.activate(Command::Quick(Edit::set("assist", "address:8bitdo")));
+        tray.activate(Command::Quick(Edit::set("identity", "xbox")));
         tray.activate(Command::QuickStart);
         let Ok(Action::Quick(toml)) = clicked.try_recv() else {
             unreachable!("two pads are a profile")
@@ -465,8 +459,9 @@ mod toolkit_tests {
             "{asked:?}"
         );
         // The quick-start choices changed where they are kept.
-        assert!(tray.quick_settled && tray.quick.auto_start);
-        assert_eq!(tray.quick.assist.as_deref(), Some("serial:xbox"));
+        assert!(tray.quick_settled);
+        assert_eq!(tray.quick.values["auto-start"], "true");
+        assert_eq!(tray.quick.values["assist"], "serial:xbox");
 
         // With no StatusNotifier host the tray stays, for its notifications.
         assert!(tray.watcher_offline(ksni::OfflineReason::No));

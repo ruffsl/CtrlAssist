@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** decisions settled with the maintainer on 2026-11-21; the build is under way. Build steps 1 to 7 are done: the window opens with its sidebar and five empty panes, is steered by keys, with couch mode, follows the daemon, and its Reload asks the daemon to reread its files.
-- **Next action:** build step 8 is part done: presets take `rumble`, and the daemon serves a preset's fields. The Profiles pane and its form are built. Still owed in it: the tray's quick menu from the served fields. Of build step 9, the tray's notification switches and the service that serves them are built, with the SDK's client for them; the daemon's settings and the Settings pane are still owed.
+- **Next action:** build steps 1 to 8 are done. Of build step 9, the tray's notification switches and the service that serves them are built, with the SDK's client for them; the daemon's settings and the Settings pane are still owed.
 - **Branch:** `feat/rewrite`, with the rewrite. Nothing is pushed.
 - **Template:** TisVlay at `5ddc2c0d` (`crates/tisvlay-gui`, `crates/tisvlay-gui-app`, `crates/tisvlay-icons`, `docs/gui/`).
 
@@ -204,6 +204,7 @@ Each is a commit or a few, with the gates run and the TisVlay commit named. Orde
 - **Which switch a notification answers to.** Four were asked for, and the tray says more kinds of thing than four. Started and stopped are one switch. Held, running again, failed, the warnings as a setup starts (pads only grabbed, a pad without rumble) and the daemon stopping or coming back are together the trouble switch: the maintainer wasn't asked where the daemon's going belongs, and turning trouble off silences it. A pad of a setup connecting or leaving isn't said as a pad, since the setup says it as held and running again. Two kinds are new with the switches: a setup started or stopped, and a pad connected or left.
 - **The tray's settings file isn't reread by the window's Reload yet.** The tray has the rpc and the SDK the call; the button asks only the daemon until the Settings pane is built. The book says to restart the tray after a hand edit, which is true either way.
 - **A wire error code was added,** `settings-unreadable`, for a settings file that is missing or isn't settings when a reload is asked.
+- **The tray's quick menu is the served form** (build step 8, 2026-11-22). Its choices are a form's values and its entries are made from the fields by their kind, so the tray names no preset, identity or rumble choice of its own; it offers the presets that have two pad fields. The wording changed with that, to the served labels: `Preset: Priority` where it said `Mode: priority`, `Identity: Generic`, `Rumble goes to: Both pads`, and `Start by itself` where it said "when both are connected". The preset is listed first, as the fields are. One thing the tray still knows by key is `identity`, to grey out an identity the daemon says it can't make now. The book's quick start follows the new wording.
 - **`just gui-start` names the package,** `-p ctrlassist-gui-app`, where TisVlay's doesn't: the window isn't in `default-members` until the packaging step puts it in the package.
 
 ## Deviations

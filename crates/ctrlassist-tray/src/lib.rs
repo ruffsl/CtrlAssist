@@ -61,6 +61,8 @@ fn snapshot(daemon: &DaemonClient) -> View {
         profiles: daemon.list_profiles().unwrap_or_default(),
         setups: daemon.list_setups().unwrap_or_default(),
         identities: daemon.list_identities().unwrap_or_default(),
+        // Asked for by the loop that follows the daemon, not mirrored.
+        fields: Vec::new(),
     }
 }
 
@@ -72,8 +74,19 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
     // first, so a tray started without a daemon has nothing to say of it.
     let mut was_alive: Option<bool> = None;
     let mut started = false;
+    // A preset's fields, asked once of each daemon that comes.
+    let mut fields = Vec::new();
     loop {
-        let view = snapshot(&daemon);
+        let mut view = snapshot(&daemon);
+        if !view.alive {
+            fields.clear();
+        } else if fields.is_empty() {
+            match daemon.preset_form().await {
+                Ok(served) => fields = served,
+                Err(error) => warn!(%error, "the daemon didn't say what a preset's fields are"),
+            }
+        }
+        view.fields.clone_from(&fields);
         let alive = view.alive;
         let news = handle
             .update(move |tray| {
@@ -84,8 +97,9 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
                     !tray.view.setups.is_empty(),
                 ));
                 // The quick-start choices start out as whatever the kept
-                // `quick` profile was written from.
-                if view.hydrated && !tray.quick_settled {
+                // `quick` profile was written from, which takes the
+                // fields to read.
+                if view.hydrated && !view.fields.is_empty() && !tray.quick_settled {
                     tray.quick_settled = true;
                     if let Some(kept) = view.kept_quick() {
                         tray.quick = kept;
@@ -324,10 +338,16 @@ mod tests {
         assert!(menu.contains("Hiding: grab"), "{menu}");
 
         // Two pads, picked from the menu, then started.
-        rig.click(Command::Quick(Edit::Primary(id("Tray Primary", 0x8701))))
-            .await;
-        rig.click(Command::Quick(Edit::Assist(id("Tray Assist", 0x8702))))
-            .await;
+        rig.click(Command::Quick(Edit::set(
+            "primary",
+            &id("Tray Primary", 0x8701),
+        )))
+        .await;
+        rig.click(Command::Quick(Edit::set(
+            "assist",
+            &id("Tray Assist", 0x8702),
+        )))
+        .await;
         let menu = outline(&rig.tray.lock().await.entries());
         assert!(menu.contains("Primary: Tray Primary >"), "{menu}");
         assert!(menu.contains("\n  Start as `quick`"), "{menu}");
@@ -344,32 +364,47 @@ mod tests {
         // pad it has: nothing waits for a click.
         let node = |tray: &PadTray| tray.view.setup("quick").unwrap().sinks[0].node.clone();
         let before = node(&*rig.tray.lock().await);
-        rig.click(Command::Quick(Edit::Mode(
-            ctrlassist_protocol::profile::MuxMode::Toggle,
-        )))
-        .await;
+        rig.click(Command::Quick(Edit::set("preset", "toggle")))
+            .await;
         let menu = rig.shows("Has control >").await;
         assert!(menu.contains("- Running as `quick`"), "{menu}");
         assert_eq!(node(&*rig.tray.lock().await), before);
         // So is another pad: the two change parts, and back.
-        rig.click(Command::Quick(Edit::Primary(id("Tray Assist", 0x8702))))
-            .await;
-        assert!(
-            rig.tray.lock().await.quick.profile().is_none(),
-            "one pad as both parts is no profile, and nothing is asked"
-        );
-        rig.click(Command::Quick(Edit::Assist(id("Tray Primary", 0x8701))))
-            .await;
+        rig.click(Command::Quick(Edit::set(
+            "primary",
+            &id("Tray Assist", 0x8702),
+        )))
+        .await;
+        {
+            let tray = rig.tray.lock().await;
+            assert!(
+                tray.quick.profile(&tray.view.fields).is_none(),
+                "one pad as both parts is no profile, and nothing is asked"
+            );
+        }
+        rig.click(Command::Quick(Edit::set(
+            "assist",
+            &id("Tray Primary", 0x8701),
+        )))
+        .await;
         rig.shows("primary: Tray Assist").await;
-        rig.click(Command::Quick(Edit::Assist(id("Tray Assist", 0x8702))))
-            .await;
-        rig.click(Command::Quick(Edit::Primary(id("Tray Primary", 0x8701))))
-            .await;
+        rig.click(Command::Quick(Edit::set(
+            "assist",
+            &id("Tray Assist", 0x8702),
+        )))
+        .await;
+        rig.click(Command::Quick(Edit::set(
+            "primary",
+            &id("Tray Primary", 0x8701),
+        )))
+        .await;
         rig.shows("primary: Tray Primary").await;
         assert_eq!(node(&*rig.tray.lock().await), before);
         // Another identity is another virtual pad: picking it restarts
         // the setup at once, with nothing more to click.
-        let identity = |identity| Command::Quick(Edit::Identity(identity));
+        let identity = |identity: ctrlassist_protocol::profile::Identity| {
+            Command::Quick(Edit::set("identity", identity.as_str()))
+        };
         rig.click(identity(ctrlassist_protocol::profile::Identity::Xbox))
             .await;
         // Another pad, though the kernel may give it the node the old
@@ -456,16 +491,20 @@ mod tests {
         let _assist = FakePad::new("Tray Kept Assist", 0x1209, 0x8712).unwrap();
         let mut rig = rig().await;
         rig.shows("Pads (").await;
-        rig.click(Command::Quick(Edit::Primary(id(
-            "Tray Kept Primary",
-            0x8711,
-        ))))
+        rig.click(Command::Quick(Edit::set(
+            "primary",
+            &id("Tray Kept Primary", 0x8711),
+        )))
         .await;
-        rig.click(Command::Quick(Edit::Assist(id("Tray Kept Assist", 0x8712))))
+        rig.click(Command::Quick(Edit::set(
+            "assist",
+            &id("Tray Kept Assist", 0x8712),
+        )))
+        .await;
+        rig.click(Command::Quick(Edit::set("rumble", "primary")))
             .await;
-        rig.click(Command::Quick(Edit::Rumble(quick::Rumble::Primary)))
+        rig.click(Command::Quick(Edit::set("auto-start", "true")))
             .await;
-        rig.click(Command::Quick(Edit::AutoStart(true))).await;
         rig.click(Command::QuickStart).await;
         rig.shows("quick (running) >").await;
 
@@ -507,7 +546,7 @@ mod tests {
         }
         let menu = outline(&later.lock().await.entries());
         assert!(menu.contains("Primary: Tray Kept Primary >"), "{menu}");
-        assert!(menu.contains("Rumble goes to: primary only >"), "{menu}");
+        assert!(menu.contains("Rumble goes to: Primary only >"), "{menu}");
         assert!(menu.contains("[x] Start by itself"), "{menu}");
     }
 

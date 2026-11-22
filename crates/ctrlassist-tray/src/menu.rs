@@ -2,10 +2,10 @@
 //! choices. Nothing here knows the desktop: the tray turns these entries
 //! into its toolkit's items, and tests read them as an outline.
 
+use ctrlassist::form::{Field, Kind, PRESET};
 use ctrlassist::{Phase, Setup};
-use ctrlassist_protocol::profile::{Identity, MuxMode};
 
-use crate::quick::{self, MODES, Quick, Rumble, mode_label, rumble_label};
+use crate::quick::{self, Quick};
 use crate::state::View;
 
 /// What activating an entry asks for.
@@ -37,21 +37,25 @@ pub enum Command {
     Quit,
 }
 
-/// One change to the quick-start choices.
+/// One change to the quick-start choices: a field of the preset form,
+/// and what it is set to.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Edit {
-    /// The primary pad, by id.
-    Primary(String),
-    /// The assist pad, by id.
-    Assist(String),
-    /// The mode.
-    Mode(MuxMode),
-    /// The virtual pad's identity.
-    Identity(Identity),
-    /// Whether it starts by itself.
-    AutoStart(bool),
-    /// Who feels rumble.
-    Rumble(Rumble),
+pub struct Edit {
+    /// The field's key.
+    pub key: String,
+    /// Its new value, as a profile writes it.
+    pub value: String,
+}
+
+impl Edit {
+    /// Sets the field `key` to `value`.
+    #[must_use]
+    pub fn set(key: &str, value: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            value: value.to_string(),
+        }
+    }
 }
 
 /// One of a radio group's options.
@@ -191,9 +195,9 @@ fn phase_label(phase: Phase) -> &'static str {
     phase.as_str()
 }
 
-/// Whether a pad can be picked in quick start: connected, not the other
-/// choice, and in no setup but quick start's own.
-fn pickable(view: &View, id: &str, other: Option<&String>) -> (bool, String) {
+/// Whether a pad can be picked in quick start: connected, not picked
+/// for another part, and in no setup but quick start's own.
+fn pickable(view: &View, id: &str, taken: &[&str]) -> (bool, String) {
     let Some(pad) = view.pad(id) else {
         return (false, id.to_string());
     };
@@ -203,141 +207,132 @@ fn pickable(view: &View, id: &str, other: Option<&String>) -> (bool, String) {
     }
     match pad.setup.as_deref() {
         Some(setup) if setup != quick::NAME => (false, format!("{name} (in {setup})")),
-        _ => (other.map(String::as_str) != Some(id), name),
+        _ => (!taken.contains(&id), name),
     }
 }
 
-fn pad_radio(
-    view: &View,
-    chosen: Option<&String>,
-    other: Option<&String>,
-    edit: fn(String) -> Edit,
-) -> Entry {
+/// A pad field: the known pads to pick from, with the one picked.
+fn pad_entry(view: &View, quick: &Quick, field: &Field) -> Entry {
+    let picked = quick.values.get(&field.key).map(String::as_str);
+    // A pad picked for another part can't be picked for this one.
+    let taken: Vec<&str> = quick
+        .pads(&view.fields)
+        .into_iter()
+        .filter(|(key, _)| *key != field.key)
+        .map(|(_, pad)| pad)
+        .collect();
     let choices: Vec<Choice> = view
         .pads
         .iter()
         .map(|pad| {
-            let (enabled, label) = pickable(view, &pad.id, other);
+            let (enabled, label) = pickable(view, &pad.id, &taken);
             Choice {
                 label,
                 enabled,
-                command: Command::Quick(edit(pad.id.clone())),
+                command: Command::Quick(Edit::set(&field.key, &pad.id)),
             }
         })
         .collect();
-    let selected = chosen.and_then(|chosen| view.pads.iter().position(|pad| pad.id == *chosen));
-    Entry::Radio { choices, selected }
+    let selected = picked.and_then(|picked| view.pads.iter().position(|pad| pad.id == picked));
+    sub(
+        format!(
+            "{}: {}",
+            field.label,
+            picked.map_or("not chosen", |pad| view.pad_name(pad))
+        ),
+        vec![Entry::Radio { choices, selected }],
+    )
 }
 
-fn quick_entries(view: &View, quick: &Quick) -> Vec<Entry> {
-    let name_of = |pad: Option<&String>| {
-        pad.map_or("not chosen", |pad| view.pad_name(pad))
-            .to_string()
+/// A field of choices: each by its label, with the one it stands at.
+fn choice_entry(
+    view: &View,
+    quick: &Quick,
+    field: &Field,
+    choices: &[ctrlassist::form::Choice],
+) -> Entry {
+    // Of the presets, the ones quick start offers.
+    let offered: Vec<&ctrlassist::form::Choice> = if field.key == PRESET {
+        quick::presets(&view.fields)
+    } else {
+        choices.iter().collect()
     };
-    let radio = |choices: Vec<(String, bool, Edit)>, selected: Option<usize>| Entry::Radio {
-        choices: choices
-            .into_iter()
-            .map(|(label, enabled, edit)| Choice {
-                label,
-                enabled,
-                command: Command::Quick(edit),
+    let stands_at = if field.key == PRESET {
+        quick.preset(&view.fields)
+    } else {
+        quick.value(field)
+    };
+    let selected = offered.iter().position(|choice| choice.value == stands_at);
+    let label = selected.map_or(stands_at, |at| offered[at].label.as_str());
+    let radio = Entry::Radio {
+        choices: offered
+            .iter()
+            .map(|choice| Choice {
+                label: choice.label.clone(),
+                // An identity the daemon says it can't make now can't
+                // be picked.
+                enabled: field.key != "identity"
+                    || view
+                        .identities
+                        .iter()
+                        .find(|known| known.id == choice.value)
+                        .is_none_or(|known| known.available),
+                command: Command::Quick(Edit::set(&field.key, &choice.value)),
             })
             .collect(),
         selected,
     };
-    let identities: Vec<(String, bool, Edit)> = Identity::ALL
-        .into_iter()
-        .map(|identity| {
-            // One the daemon says it can't make now can't be picked.
-            let available = view
-                .identities
-                .iter()
-                .find(|known| known.id == identity.as_str())
-                .is_none_or(|known| known.available);
-            (
-                identity.as_str().to_string(),
-                available,
-                Edit::Identity(identity),
-            )
+    sub(format!("{}: {label}", field.label), vec![radio])
+}
+
+fn quick_entries(view: &View, quick: &Quick) -> Vec<Entry> {
+    // What there is to choose is the daemon's to say.
+    if view.fields.is_empty() {
+        return vec![said("Waiting for the daemon to say what can be chosen")];
+    }
+    let preset = quick.preset(&view.fields);
+    let mut entries: Vec<Entry> = view
+        .fields
+        .iter()
+        .filter(|field| field.applies_to(preset))
+        .filter_map(|field| match &field.kind {
+            Kind::Pad => Some(pad_entry(view, quick, field)),
+            Kind::Choice { choices } => Some(choice_entry(view, quick, field, choices)),
+            Kind::Switch => {
+                let checked = quick.value(field) == "true";
+                Some(Entry::Check {
+                    label: field.label.clone(),
+                    checked,
+                    command: Command::Quick(Edit::set(&field.key, &(!checked).to_string())),
+                })
+            }
+            // No preset quick start offers has another kind of field.
+            _ => None,
         })
         .collect();
     let running = view.setup(quick::NAME).is_some();
-    let ready = quick.profile().is_some()
-        && [&quick.primary, &quick.assist]
+    let ready = quick.profile(&view.fields).is_some()
+        && quick
+            .pads(&view.fields)
             .into_iter()
-            .flatten()
-            .all(|pad| pickable(view, pad, None).0);
+            .all(|(_, pad)| pickable(view, pad, &[]).0);
     // Every pick is applied to a running `quick` as it is made, so
     // there is something to restart only if that didn't happen: the
     // picks then differ from the profile as kept.
-    let waiting = view.kept_quick().is_none_or(|kept| kept != *quick);
+    let waiting = view
+        .kept_quick()
+        .is_none_or(|kept| kept.text(&view.fields) != quick.text(&view.fields));
     let (verb, ready) = match (running, waiting) {
         (false, _) => ("Start", ready),
         (true, true) => ("Restart", ready),
         (true, false) => ("Running", false),
     };
-    let start = format!("{verb} as `{}`", quick::NAME);
-    vec![
-        sub(
-            format!("Primary: {}", name_of(quick.primary.as_ref())),
-            vec![pad_radio(
-                view,
-                quick.primary.as_ref(),
-                quick.assist.as_ref(),
-                Edit::Primary,
-            )],
-        ),
-        sub(
-            format!("Assist: {}", name_of(quick.assist.as_ref())),
-            vec![pad_radio(
-                view,
-                quick.assist.as_ref(),
-                quick.primary.as_ref(),
-                Edit::Assist,
-            )],
-        ),
-        sub(
-            format!("Mode: {}", mode_label(quick.mode)),
-            vec![radio(
-                MODES
-                    .into_iter()
-                    .map(|mode| (mode_label(mode).to_string(), true, Edit::Mode(mode)))
-                    .collect(),
-                MODES.iter().position(|mode| *mode == quick.mode),
-            )],
-        ),
-        sub(
-            format!("Identity: {}", quick.identity.as_str()),
-            vec![radio(
-                identities,
-                Identity::ALL
-                    .iter()
-                    .position(|identity| *identity == quick.identity),
-            )],
-        ),
-        sub(
-            format!("Rumble goes to: {}", rumble_label(quick.rumble)),
-            vec![radio(
-                Rumble::ALL
-                    .into_iter()
-                    .map(|rumble| (rumble_label(rumble).to_string(), true, Edit::Rumble(rumble)))
-                    .collect(),
-                Rumble::ALL
-                    .iter()
-                    .position(|rumble| *rumble == quick.rumble),
-            )],
-        ),
-        Entry::Check {
-            label: "Start by itself when both are connected".to_string(),
-            checked: quick.auto_start,
-            command: Command::Quick(Edit::AutoStart(!quick.auto_start)),
-        },
-        Entry::Separator,
-        Entry::Item {
-            label: start,
-            command: ready.then_some(Command::QuickStart),
-        },
-    ]
+    entries.push(Entry::Separator);
+    entries.push(Entry::Item {
+        label: format!("{verb} as `{}`", quick::NAME),
+        command: ready.then_some(Command::QuickStart),
+    });
+    entries
 }
 
 fn pad_entries(view: &View) -> Vec<Entry> {
@@ -487,11 +482,25 @@ mod tests {
     use crate::state::tests::{profile, view};
 
     fn quick() -> Quick {
-        Quick {
-            primary: Some("address:dualsense".to_string()),
-            assist: Some("address:8bitdo".to_string()),
-            ..Quick::default()
-        }
+        let mut quick = Quick::default();
+        quick.set("primary", "address:dualsense");
+        quick.set("assist", "address:8bitdo");
+        quick
+    }
+
+    /// What quick start offers is the daemon's to say: until it has,
+    /// there is nothing to choose and nothing to start.
+    #[test]
+    fn quick_start_waits_for_the_daemon_to_say_what_can_be_chosen() {
+        let mut unsaid = view(None, Hiding::Service);
+        unsaid.fields.clear();
+        let menu = outline(&menu(&unsaid, &quick()));
+        assert!(
+            menu.contains(
+                "Quick start >\n  - Waiting for the daemon to say what can be chosen\nPads"
+            ),
+            "{menu}"
+        );
     }
 
     /// The whole menu, as the maintainer's mockup has it: a toggle held
@@ -515,6 +524,10 @@ desk >
   Start
 ---
 Quick start >
+  Preset: Priority >
+    (o) Priority
+    ( ) Average
+    ( ) Toggle
   Primary: DualSense >
     (o) - DualSense (in couch)
     ( ) - 8BitDo Pro 2
@@ -523,19 +536,15 @@ Quick start >
     ( ) - DualSense (in couch)
     (o) 8BitDo Pro 2
     ( ) - Xbox pad (not connected)
-  Mode: priority >
-    (o) priority
-    ( ) average
-    ( ) toggle
-  Identity: generic >
-    (o) generic
-    ( ) xbox
-    ( ) dualsense
-  Rumble goes to: both pads >
-    (o) both pads
-    ( ) primary only
-    ( ) assist only
-  [ ] Start by itself when both are connected
+  Identity: Generic >
+    (o) Generic
+    ( ) Xbox
+    ( ) DualSense
+  Rumble goes to: Both pads >
+    (o) Both pads
+    ( ) Primary only
+    ( ) Assist only
+  [ ] Start by itself
   ---
   - Start as `quick`
 Pads (2 connected) >
@@ -646,6 +655,6 @@ Quit tray
             available: false,
         }];
         let menu = outline(&menu(&view, &quick()));
-        assert!(menu.contains("    (o) generic\n    ( ) - xbox\n"), "{menu}");
+        assert!(menu.contains("    (o) Generic\n    ( ) - Xbox\n"), "{menu}");
     }
 }
