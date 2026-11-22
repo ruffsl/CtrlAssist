@@ -54,6 +54,12 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 
 **The preset form is rendered from one served schema.** `ctrlassist-protocol` describes a preset's fields once, the daemon serves it, and the window renders it with TisVlay's schema form. The tray's quick menu and the CLI can move to the same description afterwards.
 
+**The application id is `io.github.ctrlassist.Gui`.** It names the desktop file, the D-Bus activation name and the window. It reads as a GitHub organization named `ctrlassist`, where the repository is expected to move.
+
+**One package, as TisVlay.** `ctrlassist-gui` ships in the same package as the rest, in every format.
+
+**A profile may name a known pad that isn't plugged in.** The form's role pickers list every known pad, the absent ones marked as such; the profile saves, and starting it waits for the pad, as the daemon already does for a source that names an exact pad.
+
 ## What is copied, replaced and new
 
 | TisVlay | Here |
@@ -74,13 +80,11 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 
 ## Open questions
 
-1. **The application id** the desktop file, the D-Bus name and the window carry. TisVlay's is `org.tisvlay.Gui`; nothing in CtrlAssist fixes one yet.
-2. **Which options the settings rpc holds.** Candidates: starting at login, the Steam blacklist fallback. Each is asked before the pane is built.
-3. **Whether the tray and the CLI move to the served schema in this plan** or after it.
-4. **Roles in the form when a pad isn't plugged in.** Whether a profile may name a known pad that is absent, and how the form shows it.
-5. **Reload.** TisVlay's sidebar has a Reload button for hand-edited state files. Whether CtrlAssist's daemon has the same need (profiles are files it watches or not).
-6. **The live view's spike**: what it must show before the step is designed (sampling at a display rate, only while a client asks, from a copy the input thread writes without waiting).
-7. **Packaging.** Whether the GUI is in the one package or its own, so a headless install doesn't pull in a toolkit; and the license bundle, which TisVlay pins a cargo-about release for because of Slint's license files.
+1. **Which options the settings rpc holds.** Candidates: starting at login, the Steam blacklist fallback. Each is asked before the pane is built.
+2. **Whether the tray and the CLI move to the served schema in this plan** or after it.
+3. **Reload.** TisVlay's sidebar has a Reload button for hand-edited state files. Whether CtrlAssist's daemon has the same need (profiles are files it watches or not).
+4. **The live view's spike**: what it must show before the step is designed (sampling at a display rate, only while a client asks, from a copy the input thread writes without waiting).
+5. **The license bundle,** which TisVlay pins a cargo-about release for because of Slint's license files.
 
 ## Steps
 
