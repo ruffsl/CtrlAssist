@@ -1,0 +1,84 @@
+import { Theme } from "../theme.slint";
+
+// How usable a service is from this GUI. Rust computes it once per
+// service from liveliness plus the service's reported release, and the
+// sidebar dot, the About pane's status circle and its version chip all
+// render from it, so the three can never disagree.
+//
+// The encoding is shape for presence and color for usability: a filled
+// dot is a running service, a hollow one an absent service; green is
+// usable, amber usable with a patch-release difference, red unusable.
+export enum ServiceHealth {
+    // Not running (the CLI: not found on PATH).
+    offline,
+    // Running, but on a release this GUI can't talk to (a different
+    // major.minor); the version banner says so too.
+    incompatible,
+    // Running and compatible, on a different patch release.
+    skew,
+    // Running on this GUI's release, or running with its release not
+    // read yet (no evidence against it).
+    ok,
+}
+
+export global Health {
+    // Strong color: the sidebar dot.
+    public pure function color(health: ServiceHealth) -> brush {
+        if health == ServiceHealth.ok {
+            return Theme.success;
+        }
+        if health == ServiceHealth.skew {
+            return Theme.warn;
+        }
+        return Theme.danger;
+    }
+
+    // Soft fill: the About pane's status circle.
+    public pure function soft(health: ServiceHealth) -> brush {
+        if health == ServiceHealth.ok {
+            return Theme.success-soft;
+        }
+        if health == ServiceHealth.skew {
+            return Theme.warn-soft;
+        }
+        return Theme.danger-soft;
+    }
+
+    // Text on the soft fill.
+    public pure function text(health: ServiceHealth) -> brush {
+        if health == ServiceHealth.ok {
+            return Theme.success-text;
+        }
+        if health == ServiceHealth.skew {
+            return Theme.warn-text;
+        }
+        return Theme.danger-text;
+    }
+
+    // `Chip` tone for a version chip.
+    public pure function tone(health: ServiceHealth) -> string {
+        if health == ServiceHealth.ok {
+            return "success";
+        }
+        if health == ServiceHealth.skew {
+            return "warn";
+        }
+        return "danger";
+    }
+
+    // Sidebar dot glyph: filled while the service runs.
+    public pure function dot(health: ServiceHealth) -> string {
+        return health == ServiceHealth.offline ? "○" : "●";
+    }
+
+    // Status-circle glyph.
+    public pure function mark(health: ServiceHealth) -> string {
+        if health == ServiceHealth.ok {
+            return "✓";
+        }
+        if health == ServiceHealth.offline {
+            return "✗";
+        }
+        return "!";
+    }
+}

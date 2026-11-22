@@ -28,6 +28,11 @@ crates/
                               # snapshot, uinput virtual pads, the input thread, hotplug
   ctrlassist-docgen/          # writes the user guide's generated pages (the CLI
                               # reference) from the code they document
+  ctrlassist-gui/             # the settings window's compiled Slint UI (ui/*.slint):
+                              # tokens, theme, widgets and the shell (lib name
+                              # ctrlassist_gui_ui)
+  ctrlassist-gui-app/         # the code that drives the window, its tests and the
+                              # ctrlassist-gui binary (lib name ctrlassist_gui)
   ctrlassist-hider/           # the hiding service: its wire types and client as a library,
                               # and the root binary
   ctrlassist-protocol/        # what the daemon and its clients agree on: the profile
@@ -56,7 +61,8 @@ docs/
 packaging/
   nix/                        # package.nix and module.nix (CtrlAssist as installed on
                               # NixOS), crate.nix (one crate's binaries, for the VM
-                              # checks' fixture) and the VM checks (test-*.nix)
+                              # checks' fixture), the VM checks (test-*.nix), and the
+                              # pinned tools: slint-lsp, slint-viewer, cargo-about
   systemd/                    # the hiding service's socket and service units, and
                               # the daemon's and the tray's user units
   udev/                       # the rule that gives the seat user uinput and uhid
@@ -73,6 +79,7 @@ The crates still to come, and what each holds, are in the architecture's Crates 
 
 ## References
 
+- **The GUI plan** ([docs/plans/gui.md](../docs/plans/gui.md)) holds the settings window's decisions and build steps; its State section says which is next.
 - **The plan** is the source of truth for decisions and order of work. When work departs from it, record what changed and why in its Deviations section, in the same commit.
 - **TisVlay** ([github.com/TisVlay/TisVlay](https://github.com/TisVlay/TisVlay), usually checked out at `~/ws/lgtv/orlgtv`) is the template for tooling, lint policy, CI, docs layout, release flow and code conventions. Stay aligned with it wherever that makes sense, so an improvement in one project carries to the other: copy from it and trim, don't re-derive or restyle, and name the TisVlay commit copied from in the commit message. Its `.claude/CLAUDE.md`, `docs/conventions.md`, `docs/build.md` and `docs/testing.md` say how things are done there.
 - **The legacy version** (0.4.0) is at the `v0.4.0` tag and the `legacy/0.4` branch. It is a reference for what users could do, not a compatibility target and not a design to follow. Build it from a `git worktree`; it carries its own flake.

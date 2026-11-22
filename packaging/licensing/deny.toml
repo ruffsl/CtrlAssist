@@ -38,6 +38,20 @@ exceptions = [
     # parser); Apache-2.0 with LLVM's linking exception, which only widens
     # what Apache-2.0 already allows.
     { name = "ar_archive_writer", allow = ["Apache-2.0 WITH LLVM-exception"] },
+    # Slint, the settings window's toolkit, under its royalty-free
+    # license, which a desktop application qualifies for and which asks
+    # for attribution: the About pane and the license bundle carry it.
+    # TisVlay's list.
+    { name = "slint", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "slint-build", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "slint-macros", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-backend-selector", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-backend-winit", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-common", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-compiler", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-core", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-core-macros", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
+    { name = "i-slint-renderer-femtovg", allow = ["LicenseRef-Slint-Royalty-free-2.0"] },
 ]
 
 [bans]
@@ -60,6 +74,26 @@ skip = [
     { crate = "toml@0.9.12", reason = "zenoh-config (under zenoh-ext's unstable feature) pins toml 0.9; the workspace is on 1.x" },
     { crate = "toml_datetime@0.7.5", reason = "toml 0.9 counterpart (zenoh-config)" },
     { crate = "winnow@0.7.15", reason = "toml 0.9 counterpart (zenoh-config)" },
+
+    # These come with Slint 1.19, the settings window's toolkit, whose pin
+    # is TisVlay's, and so are its skips. Re-audit them together when
+    # Slint or winit moves.
+
+    # winit 0.30 (Slint's `unstable-winit-030` backend) pins SCTK 0.19
+    # and with it calloop 0.13, which keeps rustix 0.38 and thiserror 1
+    # beside the rest of the tree's rustix 1 and thiserror 2.
+    { crate = "rustix", reason = "winit's SCTK 0.19 path keeps rustix 0.38" },
+    { crate = "linux-raw-sys", reason = "rustix 0.38 counterpart" },
+    { crate = "thiserror", reason = "winit's SCTK 0.19 path keeps thiserror 1" },
+    { crate = "thiserror-impl", reason = "thiserror's proc-macro counterpart" },
+    { crate = "tiny-skia", reason = "Slint's resvg is on 0.12; sctk-adwaita (SCTK 0.19 path) on 0.11" },
+    { crate = "tiny-skia-path", reason = "tiny-skia counterpart" },
+    { crate = "smol_str", reason = "winit and Slint's compiler each pin their own" },
+    { crate = "itertools@0.14.0", reason = "zenoh 1.10 pins itertools 0.14; Slint and femtovg are on 0.15" },
+    { crate = "smithay-client-toolkit@0.19.2", reason = "winit 0.30's sctk-adwaita pins SCTK 0.19; Slint's smithay-clipboard is on 0.20" },
+    { crate = "calloop@0.13.0", reason = "SCTK 0.19 counterpart (winit)" },
+    { crate = "calloop-wayland-source@0.3.0", reason = "SCTK 0.19 counterpart (winit)" },
+    { crate = "miniz_oxide@0.8.9", reason = "png 0.18 (Slint's image stack) pins miniz_oxide 0.8; the rest of the tree is on 0.9" },
 ]
 
 [advisories]

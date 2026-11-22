@@ -1,0 +1,25 @@
+[package]
+name = "ctrlassist-gui"
+description = "CtrlAssist's settings window: the compiled Slint UI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Only the generated UI lives here (ui/*.slint → `include_modules!`), so it
+# depends on nothing but slint and compiles alongside the zenoh/SDK chain;
+# ctrlassist-gui-app drives it. Slint takes the gettext domain from this
+# package's name, which is why the UI — not the app — is `ctrlassist-gui`.
+[lib]
+name = "ctrlassist_gui_ui"
+path = "src/lib.rs"
+
+[dependencies]
+slint = { workspace = true }
+
+[build-dependencies]
+slint-build = "=1.19.0"
+
+[lints]
+workspace = true

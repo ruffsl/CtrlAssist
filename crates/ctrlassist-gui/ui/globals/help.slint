@@ -1,0 +1,397 @@
+// Contextual-help popover, rendered as an in-window overlay (NOT a
+// Slint PopupWindow). A PopupWindow steals focus (→ hover flicker),
+// can't read the window size (→ no edge-aware placement), and its
+// focus grab made a clicked-open bubble undismissable. An overlay at
+// the AppWindow root sidesteps all three: it escapes the detail's
+// clipping ScrollView, sees the window size for placement, and never
+// grabs focus.
+//
+// Triggers (ContextualHelpButton, IconBtn) don't render the bubble.
+// They push their content + absolute anchor geometry to the `Help`
+// global; a single `HelpOverlay` at the root reads it and draws the
+// bubble — centered over the anchor, shifted to stay on screen, and
+// flipped below when there's no room above.
+
+import { ScrollView } from "std-widgets.slint";
+import { OverlayAnchor, OverlayIds } from "overlay.slint";
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+import { Nav } from "nav.slint";
+
+export global Help {
+    // Active request (empty `text` ⇒ nothing shown).
+    in-out property <string> text;
+    in-out property <OverlayAnchor> anchor;
+    // The region (in window coords) the bubble is confined to — the
+    // originating ScrollView's viewport, pushed by that ScrollView. So
+    // an anchor scrolled past the viewport edge pins the bubble to the
+    // ScrollView's edge, not the window's, keeping it clear of chrome
+    // outside the scroll area (header, sidebar). `width == 0` ⇒ unset,
+    // fall back to the whole window.
+    in-out property <OverlayAnchor> clip;
+    // Which trigger owns the active request (so a trigger only closes
+    // its own help, and a re-click toggles the right one).
+    in-out property <int> owner;
+    // Click-latched (persists until dismissed) vs transient hover.
+    in-out property <bool> pinned;
+    // The owning trigger's live hover (post-delay) and the bubble's own
+    // hover — either keeps a transient (unpinned) help open. Moving from
+    // the glyph onto the bubble to read it must not dismiss it.
+    in-out property <bool> requester-hovered;
+    in-out property <bool> bubble-hovered;
+    // Bumped on scroll / window-resize so the owning button re-pushes
+    // its live `anchor` (the overlay then re-clamps). Read lazily in the
+    // buttons' change handlers — not a geometry property itself — so it
+    // never forces an `absolute-position` read during layout.
+    in-out property <int> reposition-tick;
+
+    out property <bool> shown: root.text != ""
+        && (root.pinned || root.requester-hovered || root.bubble-hovered);
+
+    // Menu on a stop: the "i" of that stop's row toggles its help (a
+    // profile field row, which has none, passes the request on to its
+    // section's "i"). The buttons observe `menu-tick`.
+    in-out property <int> menu-row;
+    in-out property <int> menu-tick;
+    public function menu-toggle(row: int) {
+        root.menu-row = row;
+        root.menu-tick += 1;
+    }
+
+    // Shared setup for a new request (hover or click). Resets the
+    // per-request state — crucially the `clip` back to the whole-window
+    // fallback — then stores the new content + anchor. A ScrollView only
+    // re-establishes `clip` for an anchor inside it (set-clip-if-inside,
+    // on the next shown-change), so a request whose anchor sits outside
+    // every ScrollView (the header Reload tip, the sidebar) must start
+    // from "no clip" rather than inherit the previous in-ScrollView
+    // bubble's region. This is the open-time counterpart to dismiss().
+    function begin-request(id: int, t: string, a: OverlayAnchor) {
+        root.owner = id;
+        root.text = t;
+        root.anchor = a;
+        // Start each request with a clean bubble-hover flag: a
+        // `visible: false` bubble doesn't emit `has-hover = false`, so a
+        // stale `true` from a prior bubble could otherwise keep this one
+        // latched open after the pointer has left.
+        root.bubble-hovered = false;
+        root.clip = { x: 0, y: 0, width: 0, height: 0 };
+        // Re-run every ScrollView's containment check against the new
+        // anchor, so the clip is recomputed even on a pin→pin handoff
+        // where `shown` never transitions (no shown-change to fire it).
+        root.reposition-tick += 1;
+    }
+
+    // Transient hover open; never overrides a pinned bubble.
+    public function hover-open(id: int, t: string, a: OverlayAnchor) {
+        if (!root.pinned) {
+            root.begin-request(id, t, a);
+            root.requester-hovered = true;
+        }
+    }
+    public function hover-close(id: int) {
+        if (root.owner == id && !root.pinned) {
+            root.requester-hovered = false;
+        }
+    }
+
+    // Click toggle: re-clicking the same trigger dismisses; otherwise
+    // pin this trigger's help open.
+    public function toggle(id: int, t: string, a: OverlayAnchor) {
+        if (root.pinned && root.owner == id) {
+            root.dismiss();
+        } else {
+            root.begin-request(id, t, a);
+            root.pinned = true;
+            root.requester-hovered = false;
+        }
+    }
+
+    // Confine the live bubble to `rect` (a ScrollView's viewport, in
+    // window coords) — but only while a bubble is shown AND its anchor
+    // lies inside `rect`, so a ScrollView only clips bubbles that
+    // actually originate within it (a trigger in the pane's header or
+    // another pane keeps the whole-window fallback). Call from a
+    // ScrollView's show/reposition handlers. Reads no geometry itself —
+    // the caller passes its own post-layout rect.
+    public function set-clip-if-inside(rect: OverlayAnchor) {
+        if (root.shown
+            && root.anchor.x >= rect.x
+            && root.anchor.y >= rect.y
+            && root.anchor.x <= rect.x + rect.width
+            && root.anchor.y <= rect.y + rect.height) {
+            root.clip = rect;
+        }
+    }
+
+    public function dismiss() {
+        root.pinned = false;
+        root.requester-hovered = false;
+        root.bubble-hovered = false;
+        root.text = "";
+        // Clear the owner too, so no stale trigger reads as the owner
+        // between bubbles (every owner check is paired with `shown`
+        // today, but a bare `owner` read would otherwise misattribute).
+        root.owner = 0;
+        // Reset the clip so the next bubble (which may not live in a
+        // ScrollView) falls back to the whole window until its own
+        // ScrollView, if any, re-pushes a region.
+        root.clip = { x: 0, y: 0, width: 0, height: 0 };
+    }
+}
+
+// =============================================================================
+// HelpTrigger — shared, non-visual help-bubble trigger machinery.
+// =============================================================================
+//
+// Embed inside a help affordance (the "i" glyph, an IconBtn) sized to
+// fill it (`width: 100%; height: 100%`) so its `absolute-position`
+// tracks the affordance. The host's TouchArea forwards hover/click to
+// the public functions. All the id / live-anchor / hover-timer logic
+// lives here so each host is a thin wrapper and the rollout adds help
+// with one embed, not a copy of ~30 lines.
+//
+// Anchor is re-pushed off the scroll/resize tick — never `changed
+// anchor`, which would evaluate `absolute-position` during layout and
+// trip a reentrant layout-cache panic; the tick fires post-layout.
+//
+// Toggletip-specific focus-out/Escape dismissal stays in the host
+// (`ContextualHelpButton`). Focus belongs to the host too (a
+// `Focusable` for the controls a remote reaches), never to the trigger,
+// so a tip adds no stop of its own. The host reads `pinned-mine`.
+export component HelpTrigger inherits Rectangle {
+    in property <string> text;
+    in property <duration> delay: 700ms;
+    // Is the live bubble ours? `active` for styling; `pinned-mine` for
+    // the host's focus-out dismissal.
+    out property <bool> active: Help.shown && Help.owner == root.id;
+    out property <bool> pinned-mine: Help.pinned && Help.owner == root.id;
+
+    property <int> id;
+    init => {
+        self.id = OverlayIds.claim();
+    }
+    property <OverlayAnchor> anchor: {
+        x: self.absolute-position.x,
+        y: self.absolute-position.y,
+        width: self.width,
+        height: self.height,
+    };
+    property <int> reposition-mirror: Help.reposition-tick;
+    changed reposition-mirror => {
+        if (root.active) {
+            Help.anchor = root.anchor;
+        }
+    }
+
+    // Forwarded by the host's TouchArea.
+    public function hover-enter() {
+        if (root.text != "") {
+            timer.running = true;
+        }
+    }
+    public function hover-leave() {
+        timer.running = false;
+        Help.hover-close(root.id);
+    }
+    // Host convenience: forward a `has-hover` change in one call, so each
+    // bespoke call site reads `changed has-hover => { t.set-hover(self.has-hover); }`
+    // instead of re-coding the enter/leave branch.
+    public function set-hover(h: bool) {
+        if (h) {
+            self.hover-enter();
+        } else {
+            self.hover-leave();
+        }
+    }
+    public function toggle() {
+        Help.toggle(root.id, root.text, root.anchor);
+    }
+
+    timer := Timer {
+        interval: root.delay;
+        running: false;
+        triggered() => {
+            self.running = false;
+            Help.hover-open(root.id, root.text, root.anchor);
+        }
+    }
+}
+
+// The bubble body: a shadowed, bordered card with a wrapped paragraph.
+// Fixed width so text wraps; height flows. An outer transparent inset
+// gives the drop shadow room.
+component HelpBubble inherits Rectangle {
+    in property <string> text;
+    // Cap on the text column. The bubble shrinks BELOW this to fit
+    // short text, and only grows to (and wraps at) the cap for long
+    // text — so a one-liner gets a snug box, not a fixed-width one.
+    in property <length> max-text-width: 320px;
+    property <length> pad: 10px;   // card inner padding, each side
+    property <length> inset: 8px;  // shadow breathing room, each side
+
+    // Slint reports a word-wrap Text's preferred-width as its NoWrap
+    // (natural single-line) width, so `col.preferred-width` is the
+    // widest line in the content. Fit the column to it, clamped to the
+    // cap; the Texts then wrap within `text-w` only once it has to
+    // clamp. (Same result as Qt's hidden 1-line measuring Text, native.)
+    property <length> text-w: min(col.preferred-width, root.max-text-width);
+
+    width: root.text-w + root.pad * 2 + root.inset * 2;
+    height: card.height + root.inset * 2;
+
+    card := Rectangle {
+        x: root.inset;
+        y: root.inset;
+        width: root.text-w + root.pad * 2;
+        height: col.preferred-height + root.pad * 2;
+        background: Theme.surface;
+        border-color: Theme.border;
+        border-width: Design.border-thin;
+        border-radius: Design.radius-card;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: Theme.drop-shadow;
+        drop-shadow-offset-y: 4px;
+
+        col := VerticalLayout {
+            x: root.pad;
+            y: root.pad;
+            width: root.text-w;
+            spacing: Design.gap-tight;
+            if root.text != "": Text {
+                text: root.text;
+                wrap: word-wrap;
+                width: 100%;
+                color: Theme.text;
+                font-size: Design.font-helper;
+            }
+        }
+    }
+}
+
+// Rendered once at the AppWindow root. Fills the window so it can read
+// the window size and place the bubble edge-aware.
+export component HelpOverlay inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    visible: Help.shown;
+
+    property <length> margin: 8px;
+    property <length> gap: 6px;
+
+    // Clamp region: the originating ScrollView's viewport (Help.clip)
+    // when set, else the whole window. Confining to the ScrollView keeps
+    // a scrolled-away bubble from riding up over the header / sidebar.
+    property <bool> has-clip: Help.clip.width > 0;
+    property <length> clip-x: root.has-clip ? Help.clip.x : 0;
+    property <length> clip-y: root.has-clip ? Help.clip.y : 0;
+    property <length> clip-w: root.has-clip ? Help.clip.width : root.width;
+    property <length> clip-h: root.has-clip ? Help.clip.height : root.height;
+
+    // Centered over the anchor, clamped into the clip region.
+    property <length> anchor-cx: Help.anchor.x + Help.anchor.width / 2;
+    property <length> place-x: clamp(
+        root.anchor-cx - bubble.width / 2,
+        root.clip-x + root.margin,
+        max(root.clip-x + root.margin, root.clip-x + root.clip-w - bubble.width - root.margin));
+    // Above the anchor if it fits within the region, else flip below;
+    // then clamp into the region so a scrolled-off anchor pins the
+    // bubble to the region's edge rather than the window's.
+    property <bool> room-above: Help.anchor.y - bubble.height - root.gap >= root.clip-y + root.margin;
+    property <length> raw-y: root.room-above
+        ? Help.anchor.y - bubble.height - root.gap
+        : Help.anchor.y + Help.anchor.height + root.gap;
+    // A bubble taller than the clip region would collapse the y-clamp
+    // range (lo == hi) and pin to the region top, covering the anchor.
+    // Fall back to the window for the vertical clamp so it stays fully
+    // visible (a bubble taller than the scroll viewport is degenerate).
+    property <bool> y-fits-region: root.clip-h >= bubble.height + root.margin * 2;
+    property <length> bound-y: root.y-fits-region ? root.clip-y : 0;
+    property <length> bound-h: root.y-fits-region ? root.clip-h : root.height;
+    property <length> place-y: clamp(
+        root.raw-y,
+        root.bound-y + root.margin,
+        max(root.bound-y + root.margin, root.bound-y + root.bound-h - bubble.height - root.margin));
+
+    // No full-window scrim: a Slint TouchArea can't catch clicks while
+    // passing hover through, so a scrim would freeze the cursor over
+    // every control (including other info buttons) until dismissed —
+    // pseudo-modal, unlike KDE's non-modal popup. Instead the overlay
+    // intercepts nothing but the bubble itself, so the cursor stays
+    // live everywhere. A pinned bubble is dismissed by re-clicking its
+    // (highlighted) "i" or switching to another.
+    bubble := HelpBubble {
+        x: root.place-x;
+        y: root.place-y;
+        text: Help.text;
+
+        // Keep an unpinned bubble open while the pointer is on it.
+        TouchArea {
+            changed has-hover => {
+                Help.bubble-hovered = self.has-hover;
+            }
+        }
+    }
+}
+
+// =============================================================================
+// HelpScrollView — a ScrollView that confines help bubbles to its viewport.
+// =============================================================================
+//
+// Drop-in replacement for a pane's scrollable body when it hosts help
+// affordances (ContextualHelpButton / IconBtn tips). It bumps the
+// reposition tick on scroll and pushes its viewport rect to Help.clip —
+// gated (via set-clip-if-inside) to bubbles anchored INSIDE it — so a
+// scrolled-away anchor pins the bubble to the scroll edge, not the
+// window (which would ride up over the header / sidebar). Encapsulates
+// the wiring every scrollable pane would otherwise re-solder.
+//
+// Pins content-width to visible-width (no horizontal scroll — the pane
+// convention). absolute-position is read only in these post-layout
+// handlers, never eagerly (which would trip the layout-cache panic).
+export component HelpScrollView inherits ScrollView {
+    content-width: self.visible-width;
+    changed content-y => {
+        Help.reposition-tick += 1;
+    }
+
+    // Keep a margin around the focused stop (`Nav.reveal`), on top of
+    // Slint's own edge-to-edge reveal of the item. Only for a stop
+    // inside this view's area: the one detail view at a time, not a
+    // list's. Reading `absolute-position` here, in a change handler,
+    // never forces it during layout.
+    property <int> reveal-mirror: Nav.reveal-tick;
+    changed reveal-mirror => {
+        if (Nav.reveal-x < self.absolute-position.x
+            || Nav.reveal-x >= self.absolute-position.x + self.width) {
+            return;
+        }
+        self.keep-in-view(Nav.reveal-y - self.absolute-position.y, Nav.reveal-height);
+    }
+    function keep-in-view(top: length, height: length) {
+        if (self.content-height <= self.visible-height) {
+            return;
+        }
+        if (top < Design.scroll-margin) {
+            self.content-y = min(0px, self.content-y + (Design.scroll-margin - top));
+        } else if (top + height > self.visible-height - Design.scroll-margin) {
+            self.content-y = max(self.visible-height - self.content-height,
+                self.content-y - (top + height - (self.visible-height - Design.scroll-margin)));
+        }
+    }
+    property <bool> help-shown-mirror: Help.shown;
+    property <int> reposition-mirror: Help.reposition-tick;
+    // Push this ScrollView's post-layout viewport rect to Help;
+    // set-clip-if-inside ignores anchors outside it. absolute-position
+    // is read only here (a change handler), never eagerly.
+    function push-clip() {
+        Help.set-clip-if-inside({ x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height });
+    }
+    changed help-shown-mirror => {
+        self.push-clip();
+    }
+    changed reposition-mirror => {
+        self.push-clip();
+    }
+    @children
+}

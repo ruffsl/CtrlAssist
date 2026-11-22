@@ -1,0 +1,744 @@
+// AppWindow root.
+//
+// Architecture:
+//   - Cross-pane callbacks live on globals (`Daemon`): components call
+//     e.g. `Daemon.reload-config()` directly instead of forwarding
+//     through every parent.
+//   - Theming follows `Palette.color-scheme` (live xdg-desktop-portal),
+//     no app-level appearance toggle.
+//   - Animations: see `widgets.slint` (`PulseDot`, `SpinnerArc`) and the per-call-site `animate background { ... }`
+//     hover transitions.
+
+import { VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Design } from "design.slint";
+import { Focusable, InlineError } from "widgets.slint";
+import { Daemon } from "globals/daemon.slint";
+import { Clipboard } from "globals/clipboard.slint";
+import { Errors } from "globals/errors.slint";
+import { Icons } from "globals/icons.slint";
+import { Toast, ToastView } from "globals/toast.slint";
+import { Help, HelpOverlay, HelpTrigger } from "globals/help.slint";
+import { Nav } from "globals/nav.slint";
+import { Couch } from "globals/couch.slint";
+import { Health, ServiceHealth } from "globals/health.slint";
+import { Select, SelectOverlay } from "globals/select.slint";
+
+export { Theme, Daemon, Clipboard, Errors, Icons, Toast, Help, ServiceHealth, Nav, Couch }
+
+export enum Pane {
+    pads,
+    setups,
+    profiles,
+    settings,
+    about,
+}
+
+// Sidebar entry. Optional `icon` (a freedesktop-resolved symbolic
+// SVG loaded from the user's icon theme — see `icon_theme::load_symbolic_icon`)
+// renders left-of-label, tinted to white when selected and
+// `Theme.sidebar-text` otherwise. If the icon failed to resolve the
+// `image` property is empty and Slint draws nothing in its slot —
+// the layout degrades to label-only without surrounding rework.
+// A pane that isn't built yet: its name, where its content will be.
+component EmptyPane inherits Rectangle {
+    in property <string> title;
+    VerticalLayout {
+        padding: Design.pad-pane;
+        padding-top: Design.pad-pane-top;
+        alignment: start;
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: Design.font-title-2;
+            font-weight: 600;
+        }
+    }
+}
+
+component SidebarItem inherits Focusable {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    column: 0;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    // The pane follows focus along the rail, and only the active item
+    // is a Tab stop, so Tab (or Up and Down, which step the rail in the
+    // shell) never switches panes on the way somewhere else. Return or
+    // Space on the item enters its pane, as Right does; a click only
+    // switches.
+    tab-stop: root.selected;
+    focus-in => {
+        if (!root.selected) {
+            root.clicked();
+        }
+    }
+    activated => {
+        if (!root.selected) {
+            root.clicked();
+        }
+        if (Nav.focus-visible) {
+            Nav.request-column(1);
+        }
+    }
+
+    height: Design.size-sidebar-item;
+    // The selected fill snaps with the focus ring, which follows the
+    // same key; only the hover fades, on a layer under the ring.
+    background: root.selected ? Theme.sidebar-selected : transparent;
+    border-radius: 5px;
+    Rectangle {
+        z: -1;
+        border-radius: root.border-radius;
+        background: root.hovered && !root.selected ? Theme.sidebar-hover : transparent;
+        animate background { duration: 150ms; }
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 10px;
+        spacing: 8px;
+        alignment: start;
+        VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                width: 16px;
+                height: 16px;
+                colorize: root.selected ? white : Theme.sidebar-text;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.label;
+                color: root.selected ? white : Theme.sidebar-text;
+                font-size: Design.font-body;
+                font-weight: root.selected ? 600 : 500;
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "CtrlAssist";
+    preferred-width: 720px;
+    preferred-height: 480px;
+    // Couch mode scales the whole UI on top of the display's scale, so
+    // a maximized window can be smaller in logical pixels than the
+    // desk minimum; the minimum relaxes rather than overflowing the
+    // screen.
+    min-width: Couch.active ? 480px : 720px;
+    min-height: Couch.active ? 320px : 480px;
+
+    // Left from a list goes to the sidebar; Left from a detail goes to
+    // its list, or to the sidebar on a single-column pane. Right from
+    // the sidebar goes to the pane's first stop (its list's selected
+    // row, or the first control); a row handles Right itself by
+    // opening its detail. The pane that exists answers the request.
+    function jump-left() -> bool {
+        if (Nav.column == 0) {
+            return false;
+        }
+        if (Nav.column == 1 || root.single-column) {
+            root.focus-active-sidebar-item();
+            return true;
+        }
+        Nav.request-column(1);
+        return true;
+    }
+    // The panes with no list: Left from them goes to the sidebar. All of
+    // them, until a pane with a list is built.
+    property <bool> single-column: true;
+    function jump-right() -> bool {
+        if (Nav.column != 0) {
+            return false;
+        }
+        Nav.request-column(1);
+        return true;
+    }
+
+    // A column request for the sidebar (a dialog closing over it): the
+    // panes answer the other columns.
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 0) {
+            Nav.column-served = Nav.column-tick;
+            root.focus-active-sidebar-item();
+        }
+    }
+
+    // An anchor request nobody served (its focusable is gone, or the
+    // stop wasn't one) falls back to its column. The focusables answer
+    // in the same change pass as this handler, in no set order, so the
+    // check waits a tick.
+    property <int> anchor-mirror: Nav.anchor-tick;
+    changed anchor-mirror => {
+        anchor-fallback.running = true;
+    }
+    anchor-fallback := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if (Nav.anchor-served != Nav.anchor-tick) {
+                Nav.request-column(Nav.anchor-column);
+            }
+        }
+    }
+
+    // Focus was lost (its item was hidden or destroyed, and Slint ran
+    // no handler for the key that just arrived): put it back on the
+    // column it was in, where the pane picks the stop.
+    public function restore-focus() {
+        if (Nav.column == 0) {
+            root.focus-active-sidebar-item();
+        } else {
+            Nav.focus-visible = true;
+            Nav.request-column(Nav.column == 1 ? 1 : 2);
+        }
+    }
+
+    // Up and Down inside the focused region: the sidebar steps its
+    // items and Reload as a rail, a list steps its own stops, and the
+    // detail steps its rows (Rust walks the Tab order to the next
+    // row's first stop). All three stop at their ends; Right or Return
+    // enters the next column.
+    function step-focus(forward: bool) {
+        if (Nav.column == 0 && root.rail-step(forward)) {
+            return;
+        }
+        if (Nav.column == 1) {
+            Nav.request-list-step(forward);
+            return;
+        }
+        Nav.row-step(forward);
+    }
+    // Left and Right that no control used: along the detail's row
+    // first, then across the columns.
+    function horizontal-step(forward: bool) -> bool {
+        if (Nav.column == 2 && Nav.stop-step(forward)) {
+            return true;
+        }
+        return forward ? root.jump-right() : root.jump-left();
+    }
+    // The sidebar's order, defined once in `pane-index` and `pane-at`:
+    // the rail's steps, couch mode's Tab cycle and the launch focus all
+    // read it. The items themselves are named only in
+    // `focus-pane-item` and `focused-pane-index`. Reload sits past the
+    // last pane, on the rail but outside the cycle.
+    pure function pane-index(p: Pane) -> int {
+        return p == Pane.pads ? 0 : p == Pane.setups ? 1 : p == Pane.profiles ? 2 : p == Pane.settings ? 3 : 4;
+    }
+    pure function pane-at(i: int) -> Pane {
+        return i <= 0 ? Pane.pads : i == 1 ? Pane.setups : i == 2 ? Pane.profiles : i == 3 ? Pane.settings : Pane.about;
+    }
+    function focus-pane-item(p: Pane) {
+        if (p == Pane.pads) {
+            pads-item.focus();
+        } else if (p == Pane.setups) {
+            setups-item.focus();
+        } else if (p == Pane.profiles) {
+            profiles-item.focus();
+        } else if (p == Pane.settings) {
+            settings-item.focus();
+        } else {
+            about-item.focus();
+        }
+    }
+    // The index of the pane item that has focus; -1 for none.
+    function focused-pane-index() -> int {
+        return pads-item.focused ? root.pane-index(Pane.pads)
+            : setups-item.focused ? root.pane-index(Pane.setups)
+            : profiles-item.focused ? root.pane-index(Pane.profiles)
+            : settings-item.focused ? root.pane-index(Pane.settings)
+            : about-item.focused ? root.pane-index(Pane.about)
+            : -1;
+    }
+    function rail-step(forward: bool) -> bool {
+        if (reload.focused) {
+            if (!forward) {
+                root.focus-pane-item(Pane.about);
+            }
+            return true;
+        }
+        if (root.focused-pane-index() < 0) {
+            return false;
+        }
+        // The rail stops at both ends: Up on the first pane and Down
+        // past Reload do nothing.
+        if (!forward) {
+            if (root.focused-pane-index() > 0) {
+                root.focus-pane-item(root.pane-at(root.focused-pane-index() - 1));
+            }
+        } else if (root.focused-pane-index() < root.pane-index(Pane.about)) {
+            root.focus-pane-item(root.pane-at(root.focused-pane-index() + 1));
+        } else if (reload.enabled) {
+            reload.focus();
+        }
+        return true;
+    }
+    // A list step nobody served (no list stop has focus, or the wizard's
+    // last row was passed) steps the Tab order instead, a tick later
+    // for the same reason as the anchor fallback.
+    property <int> list-step-mirror: Nav.list-step-tick;
+    changed list-step-mirror => {
+        list-step-fallback.running = true;
+    }
+    list-step-fallback := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if (Nav.list-step-served != Nav.list-step-tick) {
+                Nav.step(Nav.list-step-forward);
+            }
+        }
+    }
+
+    // Escape, past the surfaces that take it themselves (a select's
+    // list, a dialog, an editing field, an entered slider or spin box,
+    // a pinned help button, a rename): one level out per press. A help
+    // bubble closes first; the detail goes
+    // to its list row (from any of its stops) and a list to the active
+    // sidebar item; the sidebar goes back through a click-through, and
+    // with none left closes the window in couch mode. A desktop's
+    // Escape on the sidebar does nothing.
+    function escape() -> bool {
+        if (Help.shown) {
+            Help.dismiss();
+            return true;
+        }
+        if (Nav.column != 0) {
+            return root.jump-left();
+        }
+        if (Nav.click-through-back) {
+            root.nav-back();
+            return true;
+        }
+        if (Couch.active) {
+            Nav.close();
+            return true;
+        }
+        return false;
+    }
+
+    // Couch mode's Tab: the next or previous pane, with focus on its
+    // sidebar item.
+    function cycle-pane(forward: bool) {
+        root.navigate(forward
+            ? (root.active-pane == Pane.about ? Pane.pads : root.pane-at(root.pane-index(root.active-pane) + 1))
+            : (root.active-pane == Pane.pads ? Pane.about : root.pane-at(root.pane-index(root.active-pane) - 1)));
+        root.focus-active-sidebar-item();
+    }
+
+    // Re-activation (a second launch handing off to this window) in
+    // couch mode: only when nothing of ours has focus, so a dialog or a
+    // field being edited keeps it.
+    public function focus-on-reactivation() {
+        if (nav-scope.owns-focus) {
+            root.focus-active-sidebar-item();
+        }
+    }
+    // Put keyboard focus on the sidebar item of the active pane, with
+    // the ring showing: couch mode's launch and re-activation state, so
+    // a remote user sees where they are before pressing anything.
+    public function focus-active-sidebar-item() {
+        root.focus-pane-item(root.active-pane);
+        Nav.focus-visible = true;
+    }
+
+    in property <bool> daemon-available: false;
+    // Up, but its state hasn't all arrived yet.
+    in property <bool> daemon-loading: false;
+    // Presence plus release compatibility, for the footer dots. The
+    // `*-available` flags above stay presence only.
+    in property <ServiceHealth> daemon-health: ServiceHealth.offline;
+    in property <ServiceHealth> tray-health: ServiceHealth.offline;
+    in-out property <Pane> active-pane: Pane.pads;
+    // Navigating panes retires any open help bubble: the owning info
+    // button is gone (or no longer hovered/focused), so its own
+    // hover-leave / focus-out dismiss can't fire — without this the
+    // bubble would linger over the new pane.
+    changed active-pane => {
+        Help.dismiss();
+    }
+    // Resizing moves the help anchor; nudge the overlay to re-read it
+    // (the window's own width/height are safe to observe — unlike a
+    // child's absolute-position).
+    changed width => {
+        Help.reposition-tick += 1;
+    }
+    changed height => {
+        Help.reposition-tick += 1;
+    }
+
+    // Browser-style history navigation (Alt+Left/Right, mouse back/forward).
+    // `navigate` is the single choke point for pane changes (sidebar +
+    // Rust click-throughs); `nav-back` / `nav-forward` replay the
+    // Rust-owned history. `nav-enabled` keeps the shortcuts inert while
+    // a flow that owns the view is open; none does yet.
+    callback navigate(Pane);
+    callback nav-back();
+    callback nav-forward();
+    out property <bool> nav-enabled: true;
+    forward-focus: nav-scope;
+
+    // Sidebar glyphs — Rust resolves these against the user's
+    // freedesktop icon theme at startup (see `icon_theme.rs`). Empty
+    // images render as blank, so missing names degrade to
+    // label-only without errors.
+    in property <image> pads-icon;
+    in property <image> setups-icon;
+    in property <image> profiles-icon;
+    in property <image> settings-icon;
+    in property <image> about-icon;
+
+    nav-scope := FocusScope {
+        // Whether this scope is the focus item, kept across the window's
+        // own activation changes (which take and give back focus with
+        // `window-activation`), for `focus-on-reactivation`.
+        property <bool> owns-focus;
+        focus-gained(reason) => { self.owns-focus = true; }
+        focus-lost(reason) => {
+            if (reason != FocusReason.window-activation) {
+                self.owns-focus = false;
+            }
+        }
+        // The window's initial focus (`forward-focus`) and the home of
+        // global key handling, not a stop: a Tab stop here is invisible
+        // and inert, and Shift+Tab from the first control would land on
+        // it instead of wrapping. Clicking the background still focuses
+        // it, which is how a click away dismisses a pinned help bubble.
+        focus-on-tab-navigation: false;
+        // The capture phase sees a key before the focused control does.
+        //
+        // - A navigation key reveals the focus ring on whatever ends up
+        //   focused; a pointer press on a control hides it again.
+        // - Up and Down always step inside the focused region, taken
+        //   here so a text field's caret moves don't keep them, except
+        //   while a select's list is open and owns them.
+        capture-key-pressed(event) => {
+            Nav.key-seen += 1;
+            if (event.text == Key.Tab || event.text == Key.Backtab
+                || event.text == Key.UpArrow || event.text == Key.DownArrow
+                || event.text == Key.LeftArrow || event.text == Key.RightArrow
+                || event.text == Key.Return || event.text == " ") {
+                Nav.focus-visible = true;
+            }
+            // An arrow while this scope itself has focus (a fresh
+            // window, a click on empty background): back to the column
+            // focus was in, not a walk from stale state.
+            if (self.has-focus && !event.modifiers.alt && !event.modifiers.control
+                && (event.text == Key.UpArrow || event.text == Key.DownArrow
+                    || event.text == Key.LeftArrow || event.text == Key.RightArrow)) {
+                root.restore-focus();
+                return accept;
+            }
+            if (!Select.open && !event.modifiers.alt && !event.modifiers.control
+                && (event.text == Key.DownArrow || event.text == Key.UpArrow)) {
+                root.step-focus(event.text == Key.DownArrow);
+                return accept;
+            }
+            // A value control that isn't entered would use Left and
+            // Right itself; while it's idle they walk its row instead.
+            if (Nav.value-idle && !event.modifiers.alt && !event.modifiers.control
+                && (event.text == Key.LeftArrow || event.text == Key.RightArrow)) {
+                root.horizontal-step(event.text == Key.RightArrow);
+                return accept;
+            }
+            // Menu (a gamepad's Square) toggles the focused row's help
+            // without moving focus, taken here so a text field's context
+            // menu never sees it.
+            if (event.text == Key.Menu) {
+                Help.menu-toggle(Nav.focus-row);
+                return accept;
+            }
+            reject
+        }
+        // Keys no child took. Alt+Left/Right is the browser-style history
+        // nav; a text input that consumes Alt+arrow (word-jump) wins
+        // first, so we don't steal keys mid-edit, and `nav-enabled`
+        // covers the modal/edit flows that don't hold key focus. A bare
+        // Left or Right, which a slider, a spin box or an editing field
+        // would have used, walks the detail's row, then jumps columns:
+        // sidebar, list, detail. In couch mode Tab and Shift+Tab cycle
+        // the panes, as console menus do with the shoulder buttons; a
+        // dialog, which cycles its own controls, takes them first, and a
+        // Tab Rust synthesized for an arrow is left to Slint's traversal.
+        key-pressed(event) => {
+            if (root.nav-enabled && event.modifiers.alt && event.text == Key.LeftArrow) {
+                root.nav-back();
+                return accept;
+            }
+            if (root.nav-enabled && event.modifiers.alt && event.text == Key.RightArrow) {
+                root.nav-forward();
+                return accept;
+            }
+            if (!event.modifiers.alt && !event.modifiers.control
+                && (event.text == Key.LeftArrow || event.text == Key.RightArrow)) {
+                return root.horizontal-step(event.text == Key.RightArrow) ? accept : reject;
+            }
+            if (Couch.active && !Nav.synthesizing
+                && (event.text == Key.Tab || event.text == Key.Backtab)) {
+                root.cycle-pane(event.text == Key.Tab && !event.modifiers.shift);
+                return accept;
+            }
+            if (event.text == Key.Escape && !event.modifiers.alt && !event.modifiers.control) {
+                return root.escape() ? accept : reject;
+            }
+            return reject;
+        }
+
+        HorizontalBox {
+            width: 100%;
+            height: 100%;
+            padding: 0;
+            spacing: 0;
+
+            // Sidebar
+            Rectangle {
+                width: Design.width-sidebar;
+                background: Theme.sidebar;
+
+                VerticalBox {
+                    padding: Design.gap-stack;
+                    spacing: 2px;
+
+                    Text {
+                        text: "CtrlAssist";
+                        font-size: 16px;
+                        font-weight: 700;
+                        color: Theme.sidebar-text;
+                        letter-spacing: 0.2px;
+                        horizontal-alignment: center;
+                        height: Design.size-sidebar-item;
+                        vertical-alignment: center;
+                    }
+
+                    pads-item := SidebarItem {
+                        icon: root.pads-icon;
+                        label: @tr("Pads");
+                        selected: root.active-pane == Pane.pads;
+                        accessible-id: "sidebar-pads";
+                        clicked => { root.navigate(Pane.pads); }
+                    }
+                    setups-item := SidebarItem {
+                        icon: root.setups-icon;
+                        label: @tr("Setups");
+                        selected: root.active-pane == Pane.setups;
+                        accessible-id: "sidebar-setups";
+                        clicked => { root.navigate(Pane.setups); }
+                    }
+                    profiles-item := SidebarItem {
+                        icon: root.profiles-icon;
+                        label: @tr("Profiles");
+                        selected: root.active-pane == Pane.profiles;
+                        accessible-id: "sidebar-profiles";
+                        clicked => { root.navigate(Pane.profiles); }
+                    }
+                    settings-item := SidebarItem {
+                        icon: root.settings-icon;
+                        label: @tr("Settings");
+                        selected: root.active-pane == Pane.settings;
+                        accessible-id: "sidebar-settings";
+                        clicked => { root.navigate(Pane.settings); }
+                    }
+                    about-item := SidebarItem {
+                        icon: root.about-icon;
+                        label: @tr("About");
+                        selected: root.active-pane == Pane.about;
+                        accessible-id: "sidebar-about";
+                        clicked => { root.navigate(Pane.about); }
+                    }
+
+                    // Spacer pushes status to bottom
+                    Rectangle { vertical-stretch: 1; }
+
+                    // Reload config — power-user action. The daemon rereads
+                    // its files from disk; useful only when someone edited
+                    // one outside the GUI. Sits above
+                    // the service status block it acts on.
+                    reload := Focusable {
+                        height: 28px;
+                        column: 0;
+                        enabled: root.daemon-available;
+                        background: reload.hovered && root.daemon-available
+                            ? Theme.sidebar-hover
+                            : transparent;
+                        border-radius: 5px;
+                        animate background { duration: 150ms; }
+
+                        accessible-label: @tr("Reload config files");
+                        accessible-id: "sidebar-reload";
+                        activated => {
+                            Daemon.reload-config();
+                        }
+                        hover-changed(hovering) => {
+                            reload-help.set-hover(hovering);
+                        }
+
+                        HorizontalLayout {
+                            width: 100%;
+                            height: 100%;
+                            spacing: Design.gap-tight;
+                            alignment: center;
+                            VerticalLayout {
+                                alignment: center;
+                                Image {
+                                    source: Icons.reload;
+                                    width: 16px;
+                                    height: 16px;
+                                    colorize: root.daemon-available
+                                        ? Theme.sidebar-text
+                                        : Theme.sidebar-text-dim;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: @tr("Reload");
+                                    color: root.daemon-available
+                                        ? Theme.sidebar-text
+                                        : Theme.sidebar-text-dim;
+                                    font-size: Design.font-caption;
+                                }
+                            }
+                        }
+
+                        // Hover hint: "Reload" alone doesn't convey the
+                        // from-disk power-user scope.
+                        reload-help := HelpTrigger {
+                            width: 100%;
+                            height: 100%;
+                            text: @tr("Reload the daemon's files from disk — applies edits made outside the app.");
+                        }
+                    }
+
+                    // Footer status block — two peer indicators (Daemon /
+                    // Tray) grouped together and centered within
+                    // the sidebar. Each dot renders its service's health:
+                    // filled while it runs, colored by whether this GUI
+                    // can use it. Each row is a single left-aligned Text
+                    // (dot glyph + label), so the dots naturally share an
+                    // x-coord (the row's left edge); wrapping the whole
+                    // VerticalLayout in a centered HorizontalLayout shifts
+                    // the block into the middle of the sidebar without
+                    // disturbing per-row layout.
+                    HorizontalLayout {
+                        alignment: center;
+                        padding-bottom: Design.gap-stack;
+                        VerticalLayout {
+                            spacing: 2px;
+                            horizontal-stretch: 0;
+                            Text {
+                                text: Health.dot(root.daemon-health) + " " + @tr("Daemon");
+                                color: Health.color(root.daemon-health);
+                                font-size: Design.font-caption;
+                                horizontal-alignment: left;
+                            }
+                            Text {
+                                text: Health.dot(root.tray-health) + " " + @tr("Tray");
+                                color: Health.color(root.tray-health);
+                                font-size: Design.font-caption;
+                                horizontal-alignment: left;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Content area
+            VerticalLayout {
+                horizontal-stretch: 1;
+
+                // App-level version banner: a service on a release this
+                // GUI can't talk to. Above every pane; it clears when the service restarts.
+                if Errors.version.title != "" || Errors.version.message != "": VerticalLayout {
+                    padding: Design.gap-stack;
+                    padding-bottom: 0;
+                    InlineError {
+                        title: Errors.version.title;
+                        message: Errors.version.message;
+                        dismissable: false;
+                    }
+                }
+
+                // App-level reload banner: a state file the sidebar's
+                // Reload couldn't apply. Above every pane, since the button belongs to no pane.
+                if Errors.reload.title != "" || Errors.reload.message != "": VerticalLayout {
+                    padding: Design.gap-stack;
+                    padding-bottom: 0;
+                    InlineError {
+                        title: Errors.reload.title;
+                        message: Errors.reload.message;
+                        message-font-family: Theme.mono-font;
+                        dismissed => {
+                            Errors.reload = { kind: "", tone: "", title: "", message: "", action-label: "" };
+                        }
+                    }
+                }
+
+                // Each pane is positioned absolutely within this Rectangle.
+                // Slint Rectangles don't lay out children, so panes must
+                // bind width / height to the parent explicitly.
+                Rectangle {
+                    background: Theme.surface-alt;
+                    vertical-stretch: 1;
+
+                    if root.active-pane == Pane.pads: EmptyPane {
+                        width: 100%;
+                        height: 100%;
+                        title: @tr("Pads");
+                    }
+                    if root.active-pane == Pane.setups: EmptyPane {
+                        width: 100%;
+                        height: 100%;
+                        title: @tr("Setups");
+                    }
+                    if root.active-pane == Pane.profiles: EmptyPane {
+                        width: 100%;
+                        height: 100%;
+                        title: @tr("Profiles");
+                    }
+                    if root.active-pane == Pane.settings: EmptyPane {
+                        width: 100%;
+                        height: 100%;
+                        title: @tr("Settings");
+                    }
+                    if root.active-pane == Pane.about: EmptyPane {
+                        width: 100%;
+                        height: 100%;
+                        title: @tr("About");
+                    }
+                }
+            }
+        }
+    }
+
+    // Top-center toast — declared after the HorizontalBox so it
+    // renders on top of the panes. Positioned by `x`/`y` rather than
+    // a layout because we want it to float over the chrome (titlebar
+    // edge included), not inside the sidebar+pane split. Auto-clears
+    // via Rust-side timer (see `toast::show_toast`).
+    ToastView {
+        x: (root.width - self.width) / 2;
+        y: 24px;
+    }
+
+    // Contextual-help bubble overlay. Rendered last (top-most) and at
+    // the window root so it escapes the panes' clipping ScrollView and
+    // can place itself against the window bounds. Driven by the `Help`
+    // global; see globals/help.slint.
+    HelpOverlay { }
+
+    // Flip-aware dropdown overlay for ThemedSelect. Also root-level and
+    // top-most so it escapes pane clipping and stays on-screen (flips up
+    // near the window bottom); see globals/select.slint.
+    SelectOverlay { }
+}

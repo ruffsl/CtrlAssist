@@ -41,3 +41,109 @@ accepted = ["MPL-2.0"]
 # linking exception.
 [ar_archive_writer]
 accepted = ["Apache-2.0 WITH LLVM-exception"]
+
+# Slint, the settings window's toolkit, under its royalty-free license.
+# The `clarify` blocks feed each crate's `LICENSES/` text into the bundle,
+# which needs a cargo-about that honors `license_files` for `LicenseRef-*`
+# licenses: packaging/nix/cargo-about.nix pins one that does. One that
+# doesn't drops the text with only a warning. TisVlay's blocks.
+
+[slint]
+accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
+[slint.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+
+[[slint.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[slint-build]
+accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
+[slint-build.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+
+[[slint-build.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[slint-macros]
+accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
+[slint-macros.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+
+[[slint-macros.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-backend-selector]
+accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
+[i-slint-backend-selector.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+
+[[i-slint-backend-selector.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-backend-winit]
+accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
+[i-slint-backend-winit.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+
+[[i-slint-backend-winit.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-common]
+accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
+[i-slint-common.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+
+[[i-slint-common.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-compiler]
+accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
+[i-slint-compiler.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+
+[[i-slint-compiler.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-core]
+accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
+[i-slint-core.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+
+[[i-slint-core.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-core-macros]
+accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
+[i-slint-core-macros.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+
+[[i-slint-core-macros.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-renderer-femtovg]
+accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
+[i-slint-renderer-femtovg.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+
+[[i-slint-renderer-femtovg.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"

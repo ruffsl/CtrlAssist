@@ -1,0 +1,24 @@
+// Couch mode: the layout for a TV across the room, driven by a remote.
+// Rust decides `active` from the preference and the session (the
+// `couch` module), applies the window side (maximized, the scale on top
+// of the compositor's) and persists the preference the Settings pane
+// edits through the callbacks. The panes read `active` for what changes
+// in the layout and the keys.
+export global Couch {
+    /// The 10-foot layout is on.
+    in-out property <bool> active;
+    /// The preference: "auto" (follow the session), "on" or "off".
+    in-out property <string> mode: "auto";
+    /// The scale on top of the display's own, in percent. The value
+    /// here is a placeholder: Rust sets it from the preference, whose
+    /// default is the `couch` module's, before the window shows.
+    in-out property <int> scale-percent: 140;
+    /// The scale's bounds, in percent: the Settings control's, and what
+    /// Rust clamps a hand-edited file's value to. Defined here once.
+    out property <int> scale-min-percent: 100;
+    out property <int> scale-max-percent: 250;
+    /// The user picked a mode in Settings.
+    callback mode-changed(string);
+    /// The user set a scale in Settings.
+    callback scale-changed(int);
+}

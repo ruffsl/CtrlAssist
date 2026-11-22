@@ -1,0 +1,160 @@
+// Keyboard-navigation state shared by the shell and the focusable
+// widgets.
+//
+// `focus-visible` decides whether the focused control draws its ring:
+// a navigation key (Tab, the arrows, Return, Space) turns it on in the
+// shell's key handling, a pointer press on a control turns it off. So
+// a mouse user never sees rings trail their clicks, while a remote or
+// keyboard user always sees where focus is.
+//
+// Up and Down step through the Tab order. Slint has no "focus next"
+// call, so the shell's capture handler asks Rust through `step` to
+// synthesize a Tab or Backtab; `synthesizing` marks that key so the
+// shell's own Tab handling (couch mode's pane cycle) lets it through.
+//
+// Left and Right jump between the three columns, sidebar, list and
+// detail, with explicit focus targets. Every focusable reports its
+// column on focus-in, and `request-column` asks the pane that exists
+// to focus a column's first stop (a pane observes `column-tick`).
+export global Nav {
+    in-out property <bool> focus-visible: false;
+
+    /// The column of the focused control: 0 the sidebar, 1 a list, 2
+    /// the detail or a single-column pane.
+    in-out property <int> column: 0;
+    /// Synthesize a Tab (true) or Backtab (false): Rust dispatches it.
+    callback step(bool);
+    /// Set around the synthesized key so the shell doesn't treat it as
+    /// a Tab of its own.
+    in-out property <bool> synthesizing: false;
+
+    /// The column a pane was last asked to focus, and the request
+    /// counter a pane observes. Every answerer marks the request served:
+    /// a list created by the same change that made the request (the
+    /// wizard closing) sees no tick change, so it checks `column-served`
+    /// in its `init` instead, and an old request left unmarked would
+    /// pull focus into the next list created. A request for the sidebar
+    /// (target 0) is the shell's alone.
+    in-out property <int> column-target: 0;
+    in-out property <int> column-tick: 0;
+    in-out property <int> column-served: 0;
+    public function request-column(target: int) {
+        self.column-target = target;
+        self.column-tick += 1;
+    }
+
+    /// Counts every key the shell's capture handler sees. Slint runs no
+    /// handler at all once the focused item is gone, so a key that
+    /// doesn't move this count arrived with no focus: Rust then asks
+    /// the shell to restore focus to the last column.
+    in-out property <int> key-seen: 0;
+
+    /// Up and Down inside a list. The shell asks through
+    /// `request-list-step`; the list stop that has focus (a row, a "+")
+    /// answers by moving focus to its neighbor and marks the request
+    /// served, and the shell falls back to the Tab order a tick later
+    /// when none does (past the wizard's last row lies its address
+    /// field). The rail steps in the shell itself.
+    in-out property <int> list-step-tick: 0;
+    in-out property <bool> list-step-forward: true;
+    in-out property <int> list-step-served: 0;
+    public function request-list-step(forward: bool) {
+        self.list-step-forward = forward;
+        self.list-step-tick += 1;
+    }
+
+    /// Focus anchors. Every stop reports its focus-in through
+    /// `stop-focused`, which counts it; a focusable keeps the count as
+    /// its anchor. A dialog records the anchor and column at open and
+    /// asks for them back on close through `request-anchor`: the
+    /// focusable holding the anchor focuses itself and marks the
+    /// request served, and the shell falls back to the column when
+    /// none does (the opener is gone, or wasn't a focusable).
+    in-out property <int> focus-seq: 0;
+    /// The focused stop's `accessible-id` (a focusable's; empty for the
+    /// rest), the anchor that survives a pane's re-creation: history
+    /// back finds the stop that clicked through by it, since the count
+    /// names an instance the pane switch destroyed.
+    in-out property <string> focus-id;
+    public function stop-focused(column: int, row: int, id: string) {
+        self.column = column;
+        self.focus-row = row;
+        self.focus-id = id;
+        self.focus-seq += 1;
+        // A new stop isn't an idle value control until it says so.
+        self.value-idle = false;
+    }
+
+    /// Rows (docs/gui/remote-navigation.md). A detail row takes
+    /// an id from `next-row-id` as it's created and hands it to its
+    /// stops, which report it with their column on focus-in; 0 is a
+    /// stop in no row (a dialog's button, a pane that isn't a form),
+    /// which steps as a row of its own. The steps run in Rust, as
+    /// walks along the Tab order: `row-step` to the previous or next
+    /// row's first stop, `stop-step` to the previous or next stop of
+    /// the same row, false when there is none so the shell jumps
+    /// columns instead.
+    in-out property <int> row-counter: 0;
+    public function next-row-id() -> int {
+        self.row-counter += 1;
+        return self.row-counter;
+    }
+    in-out property <int> focus-row: 0;
+    callback row-step(bool);
+    callback stop-step(bool) -> bool;
+    /// A focused value control (a slider, a spin box) that hasn't been
+    /// entered, in couch mode: Left and Right walk its row instead of
+    /// adjusting it, so the shell takes them before the control.
+    in-out property <bool> value-idle: false;
+
+    /// Scrolling to the focused stop. Slint brings the focused item
+    /// alone into view, edge to edge; the stop reports its window
+    /// rectangle here on focus-in as well, and the pane's scroll view
+    /// (`HelpScrollView`) keeps `Design.scroll-margin` around it, so
+    /// the row's label and neighbors, and a group's title when landing
+    /// on its first row, show too.
+    in-out property <length> reveal-x;
+    in-out property <length> reveal-y;
+    in-out property <length> reveal-height;
+    in-out property <int> reveal-tick: 0;
+    public function reveal(x: length, y: length, height: length) {
+        self.reveal-x = x;
+        self.reveal-y = y;
+        self.reveal-height = height;
+        self.reveal-tick += 1;
+    }
+    /// Both reports of a stop taking focus in one call: where it is,
+    /// for the walks and the anchors, and its window rectangle, for
+    /// the scroll margin.
+    public function stop-focused-at(column: int, row: int, id: string, x: length, y: length, height: length) {
+        self.stop-focused(column, row, id);
+        self.reveal(x, y, height);
+    }
+
+    /// Escape's last levels (docs/gui/remote-navigation.md). Rust
+    /// keeps the history: this is whether the current page was reached
+    /// through a click-through (a profile pencil, a "used by" link), so
+    /// Escape on the sidebar goes back to it. With nothing to go back
+    /// to, Escape on the sidebar closes the window in couch mode
+    /// through `close`.
+    in-out property <bool> click-through-back: false;
+    callback close();
+    in-out property <int> anchor-seq: 0;
+    in-out property <string> anchor-id;
+    in-out property <int> anchor-column: 0;
+    in-out property <int> anchor-tick: 0;
+    in-out property <int> anchor-served: 0;
+    public function request-anchor(seq: int, id: string, column: int) {
+        self.anchor-seq = seq;
+        self.anchor-id = id;
+        self.anchor-column = column;
+        self.anchor-tick += 1;
+    }
+    /// Whether the request names a stop: by the count, for an instance
+    /// that still exists, or by the id, for one re-created with its
+    /// pane (history back).
+    public pure function anchor-matches(anchor: int, id: string) -> bool {
+        return (self.anchor-seq == anchor && anchor >= 0)
+            || (self.anchor-id != "" && self.anchor-id == id);
+    }
+}

@@ -1,0 +1,8 @@
+// Daemon-scoped callbacks. Bound by Rust via
+// `app.global::<Daemon>().on_X(...)`. Pane components call
+// `Daemon.X(...)` directly, with no forwarding through AppWindow.
+
+export global Daemon {
+    /// Reread the daemon's files from disk.
+    callback reload-config();
+}

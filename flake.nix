@@ -93,6 +93,11 @@
           ];
         };
 
+        # slint-lsp and slint-viewer at the workspace's Slint version,
+        # which nixpkgs' may trail.
+        packages.slint-lsp = pkgs.callPackage ./packaging/nix/slint-lsp.nix { };
+        packages.slint-viewer = pkgs.callPackage ./packaging/nix/slint-viewer.nix { };
+
         # CtrlAssist as it is installed, in the smaller profile.
         packages.default = pkgs.callPackage ./packaging/nix/package.nix {
           cargoProfile = "dist";
@@ -128,6 +133,10 @@
               hash = "sha256-PpflbxUL6/xwqeHw2OhPLcB1fi0VLbItzhdYkLqZuP0=";
             };
             cargoNfpm = pkgs.callPackage (import "${cargoNfpmSrc}/nix/package.nix") { };
+            # What the settings window loads at run time, which a build
+            # doesn't link; the dev shell puts it on LD_LIBRARY_PATH so
+            # `cargo run` and the tests find it.
+            slintRuntimeLibs = pkgs.callPackage ./packaging/nix/slint-runtime.nix { };
           in
           pkgs.mkShell {
           packages = with pkgs; [
@@ -147,7 +156,8 @@
             # the packager cargo-nfpm calls.
             cargo-auditable
             # Writes the third-party license bundle (`just licenses-html`).
-            cargo-about
+            # The pinned one, which keeps the Slint crates' license text.
+            (pkgs.callPackage ./packaging/nix/cargo-about.nix { })
             cargoNfpm
             cargo-zigbuild
             zig
@@ -207,12 +217,21 @@
             shellcheck
             # sdl2-jstest: what an SDL game lists, for hardware checks of hiding
             sdl-jstest
+            # The settings window's UI files: slint-lsp for the editor's
+            # completion and live preview, slint-viewer to check and
+            # render them without the app, both at the workspace's Slint
+            # version.
+            self.packages.${system}.slint-lsp
+            self.packages.${system}.slint-viewer
             # TOML formatter (`just fmt`; config in .config/tombi.toml)
             tombi
             typos
             udev
             zizmor
-          ];
+          ]
+          ++ slintRuntimeLibs;
+
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath slintRuntimeLibs;
 
           LLVM_COV = "${llvmPkgs.bintools-unwrapped}/bin/llvm-cov";
           LLVM_PROFDATA = "${llvmPkgs.bintools-unwrapped}/bin/llvm-profdata";

@@ -186,6 +186,9 @@ config_dir := env("CTRLASSIST_CONFIG_DIR", justfile_directory() / "target/dev-co
 # RELEASE=true runs optimized builds.
 _dev_profile := if env("RELEASE", "false") == "true" { "release" } else { "test" }
 _daemon_log := "info,ctrlassist_daemon=debug,ctrlassist_protocol=debug,zenoh=warn"
+_gui_log := "info,ctrlassist_gui=debug,slint=warn,winit=warn"
+gui_mcp := env("GUI_MCP", "true")
+gui_live := env("GUI_LIVE", "true")
 
 # With `just hider-dev` running in another terminal, a setup's pads are
 # hidden through it; without, they are grabbed.
@@ -203,19 +206,52 @@ daemon-start:
 tray-start:
     cargo run --profile {{ _dev_profile }} --bin ctrlassist -- service tray --socket "{{ socket }}"
 
+# GUI_MCP and GUI_LIVE (both on unless set to "false") build with
+# Slint's MCP server, on http://127.0.0.1:9315/mcp, and with live
+# preview, which reloads ui/*.slint from disk on every save without a
+# rebuild. Both are features of the slint dependency passed on the
+# command line, so a plain build never carries them. The test profile
+# keeps the element ids the MCP server needs (ctrlassist-gui's build.rs).
+#
+# Start the settings window against the dev daemon
+[group('dev')]
+gui-start:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env_prefix=(RUST_LOG="{{ _gui_log }}")
+    features=()
+    if [ "{{ gui_mcp }}" = "true" ]; then
+        env_prefix+=(SLINT_MCP_PORT=9315)
+        features+=("slint/mcp")
+    fi
+    if [ "{{ gui_live }}" = "true" ]; then
+        env_prefix+=(SLINT_LIVE_PREVIEW=1)
+        features+=("slint/live-preview")
+    fi
+    feature_arg=()
+    if [ "${#features[@]}" -gt 0 ]; then
+        feature_arg=(--features "$(IFS=,; echo "${features[*]}")")
+    fi
+    # `env`, since bash doesn't take assignments out of an array
+    # expansion as environment assignments.
+    env "${env_prefix[@]}" \
+        cargo run -p ctrlassist-gui-app "${feature_arg[@]}" --profile {{ _dev_profile }} --bin ctrlassist-gui -- \
+            --socket "{{ socket }}"
+
 # The hiding service from `just hider-dev` runs as root and is left
 # alone: Ctrl-C in its own terminal stops it.
 #
-# Kill the dev daemon and tray
+# Kill the dev daemon, tray and settings window
 [group('dev')]
 stop-all:
     # Matched on the dev build's path, so an installed daemon keeps running.
     -pkill -f 'target/(debug|release)/ctrlassist service (daemon|tray)'
+    -pkill -f 'target/(debug|release)/ctrlassist-gui'
     # SIGTERM returns at once; wait until the processes are gone so a
     # start that follows can't race the exit. The daemon stops its setups
     # and restores their pads on the way out. Five seconds at most, so a
     # stuck process can't wedge the recipe.
-    @timeout 5 sh -c 'while pgrep -f "target/(debug|release)/ctrlassist service (daemon|tray)" > /dev/null; do sleep 0.1; done' || true
+    @timeout 5 sh -c 'while pgrep -f "target/(debug|release)/(ctrlassist service (daemon|tray)|ctrlassist-gui)" > /dev/null; do sleep 0.1; done' || true
 
 # Run the CLI against the dev daemon, such as `just cli status`
 [group('dev')]

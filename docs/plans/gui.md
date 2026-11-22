@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** decisions settled with the maintainer on 2026-11-21; the build is under way.
-- **Next action:** build step 1.
+- **Status:** decisions settled with the maintainer on 2026-11-21; the build is under way. Build steps 1 and 2 are done: the window opens with its sidebar and five empty panes.
+- **Next action:** build step 3, keys and couch mode.
 - **Branch:** `feat/rewrite`, with the rewrite. Nothing is pushed.
 - **Template:** TisVlay at `5ddc2c0d` (`crates/tisvlay-gui`, `crates/tisvlay-gui-app`, `crates/tisvlay-icons`, `docs/gui/`).
 
@@ -112,8 +112,9 @@ Each is a commit or a few, with the gates run and the TisVlay commit named. Orde
 
 ## For review
 
-Nothing yet.
+- **What the empty shell holds** (build step 2). All of TisVlay's widgets, tokens and theme, and the globals the widgets and the shell reach (`Nav`, `Couch`, `Help`, `Select`, `Toast`, `Errors`, `Health`, `Icons`, `Clipboard`, `Overlay`), came in at once, since `widgets.slint` and `main.slint` import them; the Rust behind navigation, couch mode and help follows in their steps, and until then those globals' callbacks do nothing. The key handling written in Slint (the rail, the pane following focus) already works and is tested. The footer shows the daemon and the tray as absent until the state step. The access banner (TisVlay's socket group) isn't copied: the daemon's socket is the user's own.
+- **`just gui-start` names the package,** `-p ctrlassist-gui-app`, where TisVlay's doesn't: the window isn't in `default-members` until the packaging step puts it in the package.
 
 ## Deviations
 
-Nothing yet.
+- **Build steps 1 and 2 landed as one commit.** The project's rule is that a tool joins in the commit that first gives it something to do, and the Slint tools in the flake have nothing to do before there is a `.slint` file.

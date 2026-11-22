@@ -1,0 +1,47 @@
+// Action-glyph icons resolved from the user's freedesktop icon
+// theme (Breeze on KDE, Adwaita on GNOME, hicolor as fallback).
+// Rust loads each at startup via `icon_theme::load_symbolic_icon` and pushes
+// them here so any component can reference them without prop
+// drilling through pane / row layouts.
+//
+// Distinct from the per-pane icons on `AppWindow` (pads-icon /
+// setups-icon / etc.) which are sidebar-specific. Distinct from
+// `Clipboard.copy-icon` which is paired with its `copy(string)`
+// callback. Action icons here are decoupled from any specific
+// callback — they're just glyphs.
+
+export global Icons {
+    in property <image> shutdown;
+    in property <image> edit;
+    /// Confirm / commit (✓). Used by the INFO group's Save button.
+    in property <image> save;
+    /// Discard / dismiss (✗). Used by the INFO group's Cancel
+    /// button and as the dismiss glyph in inline error banners.
+    in property <image> cancel;
+    /// Folder-open glyph. Used by the About pane's COMPONENTS
+    /// rows to reveal each peer's config file in the file manager.
+    in property <image> folder_open;
+    /// Reload glyph (circular arrow). Used by the sidebar's
+    /// "Reload daemon config" affordance. Matches the `view-refresh`
+    /// icon the Tray uses for the same action — both clients invoke
+    /// the reload rpc.
+    in property <image> reload;
+    /// Copy / duplicate glyph (`edit-copy`). Distinct from
+    /// `Clipboard.copy-icon`, which carries the same visual but is
+    /// paired with the clipboard-write plumbing; this slot exists
+    /// for "duplicate this thing" affordances that don't write to
+    /// the clipboard.
+    in property <image> copy;
+    /// Delete glyph (trash can). Used for destructive actions whose
+    /// affordance reads as "throw away", e.g. the Profiles-pane
+    /// Delete button.
+    in property <image> delete;
+    /// Contextual-help glyph (the "i"-in-a-circle). Used by the
+    /// `ContextualHelpButton` toggletip that documents settings-row
+    /// options. Matches the icon KDE's own help button uses.
+    in property <image> info;
+    /// External-link glyph (`open-link-symbolic`). Leads the label on
+    /// `UriBtn`s that launch a URL (About pane's "Report issue" /
+    /// "View source") to signal the action leaves the app.
+    in property <image> open_link;
+}

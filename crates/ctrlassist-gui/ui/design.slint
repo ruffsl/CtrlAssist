@@ -1,0 +1,70 @@
+// Design tokens — sizing, spacing, typography.
+//
+// Parallel to `theme.slint` (which holds color tokens). This file
+// contains theme-independent metric tokens. Same naming convention as
+// Theme: short, role-based identifiers; the consumer references
+// `Design.token-name` without caring which value it resolves to.
+//
+// Typography ramp follows Fluent 2's pattern (title-1/2/3 + section +
+// body/meta/helper/caption/mini) — multiple title levels rather than a
+// single "page title." See https://fluent2.microsoft.design/typography
+//
+// When adding a new token: prefer reusing an existing one before
+// introducing a new value. New tokens belong to the smallest set that
+// still expresses intent at the call site.
+
+export global Design {
+    // -- Spacing --
+    out property <length> pad-pane: 24px;          // pane horizontal padding
+    out property <length> pad-pane-top: 28px;      // pane top padding (titles)
+    out property <length> pad-header-top: 18px;    // detail-header padding-top (above pad-row-band)
+    out property <length> pad-body-top: 20px;      // detail-body ScrollView padding-top
+    out property <length> pad-card: 14px;          // Group / card body padding
+    out property <length> gap-pane: 16px;          // between Groups in a pane
+    out property <length> gap-row: 14px;           // between row siblings (label+control)
+    out property <length> gap-meta: 10px;          // between secondary-row text spans (descriptor / Used-by middots)
+    out property <length> gap-form: 4px;           // helper text below control
+    out property <length> gap-stack: 8px;          // related vertical items
+    out property <length> gap-tight: 6px;          // chip rows, status pairs
+    out property <length> gap-block: 12px;         // body rows in a card / dialog
+
+    // -- Component sizing --
+    out property <length> size-input: 32px;        // buttons, inputs, comboboxes
+    out property <length> size-sidebar-item: 36px;
+    out property <length> size-tile-sm: 28px;      // vendor tile in list rows
+    out property <length> size-tile-md: 40px;      // vendor tile in detail header
+    out property <length> size-status-dot: 6px;
+    out property <length> size-glyph: 14px;         // action-icon glyph in buttons
+    out property <length> size-card-header: 24px;   // card title-band height — reserves room for an action IconBtn so headers with and without actions stay the same height (cards never shift when actions are added)
+    out property <length> scroll-margin: 56px;      // kept in view around a focused stop as a pane scrolls to it: its row's neighbors, and a group's title band when landing on its first row
+
+    // -- Layout widths --
+    out property <length> width-sidebar: 110px;
+    out property <length> width-master: 160px;     // TVs master list
+    out property <length> width-label-col: 75px;            // TVs-pane FormRow label column (short labels)
+    out property <length> width-label-col-profile: 140px;   // Profiles-pane field-row label column (longer labels)
+    out property <length> width-input-min: 120px;           // Minimum width shared by themed inputs (ThemedSelect, ThemedSpinBox) so a ComboBox and a SpinBox in the same column render one width
+    out property <length> width-readout-col: 36px; // slider value readout
+
+    // -- Borders / radii --
+    out property <length> radius-control: 4px;     // buttons, inputs, dropdowns
+    out property <length> radius-card: 6px;        // Groups, modals
+    out property <length> radius-pill: 10px;       // chips
+    out property <length> border-thin: 1px;
+    out property <length> ring-width: 2px;         // keyboard-focus ring stroke
+    out property <length> ring-offset: 3px;        // gap between a control and its ring
+
+    // -- Opacity --
+    out property <float> opacity-disabled: 0.4;    // dimmed disabled controls
+
+    // -- Typography (Fluent-style ramp) --
+    out property <length> font-title-1: 28px;      // hero title (About splash)
+    out property <length> font-title-2: 24px;      // pane titles
+    out property <length> font-title-3: 20px;      // section / modal titles
+    out property <length> font-section: 18px;      // sub-section headings
+    out property <length> font-body: 13px;         // default
+    out property <length> font-meta: 12.5px;       // form labels
+    out property <length> font-helper: 12px;       // descriptions
+    out property <length> font-caption: 11.5px;    // status, captions
+    out property <length> font-mini: 11px;         // chip labels
+}
