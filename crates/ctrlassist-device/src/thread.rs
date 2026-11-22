@@ -2,7 +2,9 @@
 //!
 //! It sleeps in `epoll_wait` with no timeout over every pad, every
 //! virtual pad, one wake descriptor and one timer, and makes no wakeups
-//! while idle. Everything it works on is built elsewhere and handed over
+//! while idle, but for a virtual pad that passes as one which reports all
+//! the time, and so must itself: a virtual DualSense wakes it 250 times a
+//! second for as long as it exists. Everything it works on is built elsewhere and handed over
 //! whole, and what it retires is handed back, so that it neither
 //! allocates nor frees, and it never waits for the side that commands it.
 
@@ -34,6 +36,9 @@ const QUEUE: usize = 64;
 /// The most selections reported after one piece of a setup's handling.
 /// A setup with more nodes that select reports the rest after its next.
 const SWITCHED: usize = 8;
+/// How often a virtual pad that reports all the time does: a
+/// DualSense's own rate on USB, 250 times a second.
+const BEAT_MS: u64 = 4;
 /// The effect a virtual pad that is sent levels holds its level as: a
 /// number no game's effect has.
 const LEVEL_EFFECT: i16 = -1;
@@ -180,8 +185,11 @@ pub struct Setup {
     pads: Vec<Option<Box<Pad>>>,
     /// By sink number.
     sinks: Vec<VirtualPad>,
-    /// When a rumble level next changes by itself.
+    /// When a rumble level next changes by itself, or a virtual pad
+    /// that reports all the time is next due.
     next_ms: Option<u64>,
+    /// When the virtual pads that report all the time next do.
+    beat_ms: u64,
     /// Each node's selection as last reported, by node number.
     selected: Vec<Option<usize>>,
     /// The rumble level the games want of each pad, by source number.
@@ -216,6 +224,7 @@ impl Setup {
             pads,
             sinks,
             next_ms: None,
+            beat_ms: 0,
             selected,
             wanted,
             buzz,
@@ -563,8 +572,22 @@ impl Setup {
             buzz,
             passed,
             taps,
+            beat_ms,
+            failed,
             ..
         } = self;
+        // A virtual pad that passes as one that reports all the time
+        // does so too. This is the one thing that wakes the thread with
+        // nothing to carry, and only while such a pad exists.
+        let beats = sinks.iter().any(VirtualPad::beats);
+        if beats && now_ms >= *beat_ms {
+            for sink in sinks.iter_mut() {
+                if sink.beat().is_err() {
+                    *failed = true;
+                }
+            }
+            *beat_ms = now_ms + BEAT_MS;
+        }
         for (index, sink) in sinks.iter_mut().enumerate() {
             let targets = graph.feedback_targets(SinkId(index));
             router.set_targets(SinkId(index), targets);
@@ -618,6 +641,9 @@ impl Setup {
             if let (Some(Some(pad)), Some(level)) = (pads.get_mut(index), wanted.get(index)) {
                 let _ = pad.rumble(*level);
             }
+        }
+        if beats {
+            *next_ms = Some(next_ms.map_or(*beat_ms, |next| next.min(*beat_ms)));
         }
     }
 

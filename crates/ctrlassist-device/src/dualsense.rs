@@ -609,7 +609,10 @@ impl Emulator {
         // The process and a count tell virtual pads apart in the marker.
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let number = NEXT.fetch_add(1, Ordering::Relaxed);
-        let phys = format!("{OWN_MARKER}{}/hid/{number}", std::process::id());
+        // It ends as a real pad's does on USB, where the pad is the fourth
+        // interface of its device: Wine takes a raw HID device's interface
+        // number from there, and a program may look for the pad by it.
+        let phys = format!("{OWN_MARKER}{}/hid/{number}/input3", std::process::id());
         // Listening before the pad is made, so its arrival isn't missed.
         let watch = udev::MonitorBuilder::new()?
             .match_subsystem("hid")?
@@ -738,6 +741,22 @@ impl Emulator {
     /// The last output report a game sent, if any ever came.
     pub(crate) fn last_output(&self) -> Option<&[u8]> {
         self.sent.then_some(self.output.as_slice())
+    }
+
+    /// Sends the report the pad holds once more, as a real pad does all
+    /// the time: it reports some 250 times a second whether or not
+    /// anything changed, and a program that opens it takes a pad that
+    /// says nothing in its first moments for one that can't be sent
+    /// rumble.
+    pub(crate) fn beat(&mut self) -> io::Result<()> {
+        self.sequence = self.sequence.wrapping_add(1);
+        let mut report = input_report(&self.held, self.sequence);
+        report[28..32].copy_from_slice(&sensor_time());
+        let mut event = [0u8; 6 + INPUT_SIZE];
+        event[..4].copy_from_slice(&UHID_INPUT2.to_ne_bytes());
+        event[4..6].copy_from_slice(&(INPUT_SIZE as u16).to_ne_bytes());
+        event[6..].copy_from_slice(&report);
+        self.uhid.write_all(&event)
     }
 
     fn feature(&self, number: u8) -> Option<&[u8]> {

@@ -23,7 +23,7 @@ A game that saw both the real controllers and the virtual one would get every pr
 
 ## Latency
 
-One thread carries all input. It sleeps until a controller has something to say, does the combining, writes the result, and sleeps again; it makes no wake-ups while nothing is pressed. Measured between a real controller and the virtual one, the round trip is tens of microseconds, which is the system's own cost rather than CtrlAssist's.
+One thread carries all input. It sleeps until a controller has something to say, does the combining, writes the result, and sleeps again; it makes no wake-ups while nothing is pressed. The one exception is a virtual DualSense: a real one reports 250 times a second whether or not anything is pressed, and games count on that, so a virtual one does the same for as long as it exists. Measured between a real controller and the virtual one, the round trip is tens of microseconds, which is the system's own cost rather than CtrlAssist's.
 
 That thread asks for real-time scheduling at a low priority, which keeps its latency steady when every CPU is busy. The packages allow this by letting users' services ask for real-time scheduling up to priority 10. Without it everything works the same, a little less evenly under load.
 

@@ -852,3 +852,57 @@ fn a_buzz_outranks_a_game_s_rumble_and_then_gives_the_pad_back_to_it() {
     game.join().unwrap();
     assert_eq!(levels().len(), 3);
 }
+
+/// A virtual DualSense reports all the time, as a real one does, with
+/// nothing changing behind it: a program that opens a pad of that kind
+/// and hears nothing takes it for one it can't rumble, or for gone.
+#[test]
+fn a_virtual_dualsense_in_a_setup_reports_all_the_time() {
+    const TEST: &str = "a_virtual_dualsense_in_a_setup_reports_all_the_time";
+    if !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    let primary = FakePad::new("Thread Beat Primary", 0x1209, 0x5eed).unwrap();
+    let data = ctrlassist_test::synthetic_dualsense(true);
+    let sink = VirtualPad::dualsense(&data, ctrlassist_device::own_address(0x7e_5b01)).unwrap();
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    let raw = ctrlassist_test::raw_node_of(sink.event_node()).unwrap();
+    if !ctrlassist_test::can_open(&raw, false) {
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED {TEST}: a DualSense's raw node isn't this user's to open here"
+        );
+        return;
+    }
+    let graph = Graph::build(GraphSpec {
+        sources: vec![source()],
+        nodes: vec![],
+        sinks: vec![Input::Source(PRIMARY)],
+    })
+    .unwrap();
+    let setup = Setup::new(graph, vec![Some(read(&primary))], vec![sink]);
+    let (thread, _reports) = InputThread::spawn().unwrap();
+    thread.send(Command::Start(ID, Box::new(setup))).unwrap();
+
+    // A second of what the pad says, with no pad behind it touched.
+    use std::io::Read as _;
+    let mut reader = File::open(&raw).unwrap();
+    let started = std::time::Instant::now();
+    let (mut reports, mut last) = (0u32, [0u8; 64]);
+    let mut sequences = std::collections::BTreeSet::new();
+    while started.elapsed() < std::time::Duration::from_secs(1) {
+        let mut report = [0u8; 64];
+        assert_eq!(reader.read(&mut report).unwrap(), 64);
+        // The same state each time, told apart by its count and the time
+        // its sensors were read.
+        assert_eq!(report[..7], [1, 128, 128, 128, 128, 0, 0]);
+        sequences.insert(report[7]);
+        assert_ne!(report[28..32], last[28..32], "the sensor clock moves");
+        last = report;
+        reports += 1;
+    }
+    // A real one reports 250 times a second; a busy machine may lose some.
+    assert!(reports >= 150, "{reports} reports in a second");
+    assert!(sequences.len() >= 100, "{} counts", sequences.len());
+}

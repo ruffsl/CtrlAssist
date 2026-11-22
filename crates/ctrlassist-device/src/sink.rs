@@ -528,6 +528,26 @@ impl VirtualPad {
         }
     }
 
+    /// Whether the pad it passes as reports all the time, changed or
+    /// not, and so this one must: see [`beat`](Self::beat).
+    #[must_use]
+    pub fn beats(&self) -> bool {
+        matches!(self.kind, Kind::DualSense(_))
+    }
+
+    /// Sends what the pad holds once more, for a pad that
+    /// [reports all the time](Self::beats); nothing for any other.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the kernel refuses the write.
+    pub fn beat(&mut self) -> io::Result<()> {
+        match &mut self.kind {
+            Kind::Uinput(_) => Ok(()),
+            Kind::DualSense(pad) => pad.beat(),
+        }
+    }
+
     /// The last output report a game sent a virtual DualSense, if any
     /// ever came.
     #[must_use]
