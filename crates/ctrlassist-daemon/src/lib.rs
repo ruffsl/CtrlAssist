@@ -201,6 +201,7 @@ impl Daemon {
             .await
             .context("looking for the hiding service")?;
         let mechanism = hiding.mechanism();
+        let hider_version = hiding.service_release();
         let mut reactor = Reactor::new(
             session.clone(),
             Book::new(known),
@@ -242,6 +243,7 @@ impl Daemon {
             realtime,
             hiding: mechanism,
             config: paths.config.display().to_string(),
+            hider_version,
         };
         // Whether this process may make a virtual pad at all: every
         // identity needs uinput, for the pad itself or to read it back.

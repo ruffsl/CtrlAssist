@@ -30,6 +30,9 @@ pub struct Snapshot {
     /// Whether the hiding service hides setups' pads, or they are only
     /// grabbed; unknown until the daemon's own state has arrived.
     pub hidden: Option<bool>,
+    /// The hiding service's release, as the daemon passes it on; none
+    /// with no service, or from one too old to say.
+    pub hider: Option<String>,
     /// Where it keeps the user's files, when it says.
     pub config: String,
     /// Whether its input thread has real-time scheduling.
@@ -65,6 +68,7 @@ impl Snapshot {
             hydrated: daemon.is_hydrated(),
             version: daemon.service_info().map(|info| info.version),
             hidden: state.as_ref().map(|state| state.hiding == Hiding::Service),
+            hider: state.as_ref().and_then(|state| state.hider_version.clone()),
             config: state
                 .as_ref()
                 .map(|state| state.config.clone())
@@ -95,11 +99,12 @@ impl Snapshot {
     }
 
     /// The hiding service's health, as the daemon finds it: absent with
-    /// no daemon to ask, and while the daemon hasn't said.
+    /// no daemon to ask, and while the daemon hasn't said; judged by
+    /// its release where it says one.
     #[must_use]
     pub fn hider_health(&self) -> ServiceHealth {
         match (self.available, self.hidden) {
-            (true, Some(true)) => ServiceHealth::Ok,
+            (true, Some(true)) => health(true, self.hider.as_deref()),
             _ => ServiceHealth::Offline,
         }
     }
@@ -117,6 +122,7 @@ impl Snapshot {
         app.set_daemon_loading(self.available && !self.hydrated);
         app.set_daemon_health(self.daemon_health());
         app.set_hider_health(self.hider_health());
+        app.set_hider_version(SharedString::from(self.hider.clone().unwrap_or_default()));
         app.set_daemon_version(SharedString::from(self.version.clone().unwrap_or_default()));
         app.set_daemon_config(SharedString::from(self.config.as_str()));
         app.set_daemon_realtime(self.realtime);

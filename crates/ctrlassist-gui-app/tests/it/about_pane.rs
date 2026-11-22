@@ -50,6 +50,7 @@ fn a_running_daemon_says_its_release_its_files_and_how_pads_are_hidden() {
         daemon_config: "/home/someone/.config/ctrlassist".to_string(),
         daemon_realtime: true,
         hider: ServiceHealth::Ok,
+        hider_version: VERSION.to_string(),
         tray: ServiceHealth::Ok,
         tray_version: VERSION.to_string(),
         cli_version: VERSION.to_string(),
@@ -60,7 +61,16 @@ fn a_running_daemon_says_its_release_its_files_and_how_pads_are_hidden() {
     assert_eq!(daemon.tip, "Same release as this window");
     assert_eq!(daemon.config_path, "/home/someone/.config/ctrlassist");
     assert!(!daemon.description.contains("real-time"));
-    assert_eq!(row(&all, "hider").chip, "hiding");
+    assert_eq!(row(&all, "hider").chip.as_str(), format!("v{VERSION}"));
+    assert_eq!(row(&all, "hider").friendly_name, "Hiding");
+    assert_eq!(row(&all, "gui").friendly_name, "GUI");
+    // A hiding service from before it could be asked its release.
+    let old = rows(&Parts {
+        hider_version: String::new(),
+        ..parts.clone()
+    });
+    assert_eq!(row(&old, "hider").chip, "—");
+    assert!(row(&old, "hider").tip.contains("too old to say"));
     assert_eq!(row(&all, "tray").chip.as_str(), format!("v{VERSION}"));
     assert_eq!(row(&all, "cli").health, ServiceHealth::Ok);
 
@@ -86,7 +96,7 @@ fn a_running_daemon_says_its_release_its_files_and_how_pads_are_hidden() {
     });
     assert!(row(&worse, "daemon").tip.contains("can't talk"));
     assert!(row(&worse, "daemon").description.contains("real-time"));
-    assert_eq!(row(&worse, "hider").chip, "not running");
+    assert_eq!(row(&worse, "hider").chip, "offline");
     assert_eq!(row(&worse, "tray").chip, "offline");
     assert!(row(&worse, "hider").tip.contains("only grabbed"));
     let cli = row(&worse, "cli");
@@ -120,6 +130,7 @@ fn the_pane_shows_the_rows_the_window_holds() {
         hydrated: true,
         version: Some(VERSION.to_string()),
         hidden: Some(true),
+        hider: Some(VERSION.to_string()),
         config: "/somewhere".to_string(),
         realtime: true,
         tray_available: true,
@@ -129,7 +140,7 @@ fn the_pane_shows_the_rows_the_window_holds() {
     .show(&app);
     let rows: Vec<AboutComponentRow> = app.get_about_components().iter().collect();
     assert_eq!(row(&rows, "daemon").config_path, "/somewhere");
-    assert_eq!(row(&rows, "hider").chip, "hiding");
+    assert_eq!(row(&rows, "hider").chip.as_str(), format!("v{VERSION}"));
     assert_eq!(row(&rows, "tray").health, ServiceHealth::Ok);
     assert_eq!(app.get_tray_health(), ServiceHealth::Ok);
 }

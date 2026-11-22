@@ -89,6 +89,9 @@ pub struct Parts {
     pub daemon_realtime: bool,
     /// The hiding service's health, as the daemon finds it.
     pub hider: ServiceHealth,
+    /// Its release, as the daemon passes it on; empty from a service
+    /// too old to say.
+    pub hider_version: String,
     /// The tray's health, as the daemon reports it.
     pub tray: ServiceHealth,
     /// Its release, when one is connected.
@@ -107,6 +110,7 @@ impl Parts {
             daemon_config: app.get_daemon_config().to_string(),
             daemon_realtime: app.get_daemon_realtime(),
             hider: app.get_hider_health(),
+            hider_version: app.get_hider_version().to_string(),
             tray: app.get_tray_health(),
             tray_version: app.get_tray_version().to_string(),
             cli_version: app.get_cli_version().to_string(),
@@ -159,22 +163,34 @@ pub fn rows(parts: &Parts) -> Vec<AboutComponentRow> {
         tip: release_tip(parts.daemon, &parts.daemon_version),
         config_path: parts.daemon_config.clone(),
     };
-    // The hiding service has no release a client can read and no files
-    // of the user's: it is there, hiding pads, or it isn't.
+    // The hiding service is the daemon's to report, being its only
+    // client, and has no files of the user's.
     let hider = Cells {
-        version: String::new(),
+        version: parts.hider_version.clone(),
         health: parts.hider,
-        chip: match (online(parts.daemon), online(parts.hider)) {
-            (false, _) => "unknown".to_string(),
-            (true, true) => "hiding".to_string(),
-            (true, false) => "not running".to_string(),
+        chip: match (
+            online(parts.daemon),
+            online(parts.hider),
+            parts.hider_version.as_str(),
+        ) {
+            (false, _, _) => "unknown".to_string(),
+            (true, false, _) => "offline".to_string(),
+            (true, true, "") => "—".to_string(),
+            (true, true, version) => format!("v{version}"),
         },
-        tip: match (online(parts.daemon), online(parts.hider)) {
-            (false, _) => "Only the daemon can say, and it isn't running".to_string(),
-            (true, true) => "A setup's pads are hidden from games".to_string(),
-            (true, false) => {
+        tip: match (
+            online(parts.daemon),
+            online(parts.hider),
+            parts.hider_version.as_str(),
+        ) {
+            (false, _, _) => "Only the daemon can say, and it isn't running".to_string(),
+            (true, false, _) => {
                 "A setup's pads are only grabbed: a program that reads a pad some other way, as Steam reads a PlayStation pad, still sees it".to_string()
             }
+            (true, true, "") => {
+                "Hiding pads, but from a release too old to say which: restart it after an upgrade".to_string()
+            }
+            (true, true, version) => release_tip(parts.hider, version),
         },
         config_path: String::new(),
     };

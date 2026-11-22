@@ -91,6 +91,11 @@ enum Command {
         #[arg(long)]
         control: PathBuf,
     },
+    /// Ask the hiding service its release, and print it.
+    Version {
+        #[arg(long)]
+        socket: PathBuf,
+    },
     /// Ask the hiding service for a pad's raw HID node, and say what it
     /// answered.
     Raw {
@@ -302,6 +307,14 @@ fn main() -> Result<()> {
             socket,
             control,
         } => hide(&node, &socket, &control),
+        Command::Version { socket } => {
+            let client = Client::connect(&socket).context("connecting to the hiding service")?;
+            match client.version() {
+                Ok(release) => println!("version: {release}"),
+                Err(error) => println!("version: refused: {error}"),
+            }
+            Ok(())
+        }
         Command::Raw { node, socket } => {
             let client = Client::connect(&socket).context("connecting to the hiding service")?;
             let pad = File::open(&node).with_context(|| format!("opening {}", node.display()))?;

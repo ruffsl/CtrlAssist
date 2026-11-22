@@ -12,7 +12,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::JoinHandle;
 
-use ctrlassist_hider::{Client, Error, Refusal, Reply, Request, Token, receive, send};
+use ctrlassist_hider::{
+    Client, Error, Refusal, Reply, Request, Token, pack_release, receive, send,
+};
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, accept, bind, listen, socket};
 
 /// A socket path no other test uses.
@@ -79,6 +81,7 @@ fn every_request_and_reply_survives_the_wire() {
         Request::Restore(Token(u32::MAX)),
         Request::Raw,
         Request::RawOf(Token(9)),
+        Request::Version,
     ] {
         assert_eq!(Request::decode(&request.encode()), Some(request));
     }
@@ -121,6 +124,37 @@ fn what_is_not_a_message_is_not_decoded() {
         &[200, 0, 0, 0, 0, 0],
     ] {
         assert_eq!(Reply::decode(bytes), None, "{bytes:?}");
+    }
+}
+
+/// The service says its release in the room a reply has for a token. A
+/// service from before it could be asked refuses, as it does anything
+/// it doesn't understand.
+#[test]
+fn the_service_s_release_travels_where_a_token_goes() {
+    let (path, service) = stand_in(|connection| {
+        let (request, fds) = next(&connection);
+        assert_eq!(request, Request::Version);
+        assert!(fds.is_empty());
+        let packed = pack_release("12.34.56-rc.1+build");
+        send(connection.as_fd(), &ok(packed, false).encode(), &[]).unwrap();
+        let (request, _) = next(&connection);
+        assert_eq!(request, Request::Version);
+        let refused = Reply::refused(Refusal::BadRequest);
+        send(connection.as_fd(), &refused.encode(), &[]).unwrap();
+    });
+    let client = Client::connect(&path).unwrap();
+    assert_eq!(client.version().unwrap(), "12.34.56");
+    assert!(matches!(
+        client.version(),
+        Err(Error::Refused(Refusal::BadRequest))
+    ));
+    service.join().unwrap();
+
+    // The largest that fits, and what doesn't or isn't a release.
+    assert_eq!(pack_release("4095.1023.1023"), u32::MAX);
+    for not in ["", "1.2", "1.2.3.4", "one.2.3", "4096.0.0", "0.1024.0"] {
+        assert_eq!(pack_release(not), 0, "{not}");
     }
 }
 

@@ -190,14 +190,21 @@ impl Reactor {
     /// the hiding service may be found after the daemon started.
     pub(crate) async fn publish_hiding(&mut self) {
         let hiding = Arc::clone(&self.hiding);
-        let Ok(now) = tokio::task::spawn_blocking(move || hiding.mechanism()).await else {
+        let found =
+            tokio::task::spawn_blocking(move || (hiding.mechanism(), hiding.service_release()));
+        let Ok((now, release)) = found.await else {
             return;
         };
-        let Some(state) = self.state.clone().filter(|state| state.hiding != now) else {
+        let Some(state) = self
+            .state
+            .clone()
+            .filter(|state| state.hiding != now || state.hider_version != release)
+        else {
             return;
         };
         let state = payload::Daemon {
             hiding: now,
+            hider_version: release,
             ..state
         };
         if let Err(error) = self.publish_daemon(state).await {

@@ -240,8 +240,10 @@ Duplicate and Show its file moved from the PRESET card's caption to the header, 
 **Smaller things from using the window** (2026-11-22, the maintainer's).
 
 - **Stop asks nothing.** A profile's Stop is done as pressed, where it opened a dialog first: Start beside it undoes it. Update that restarts, Delete and dropping changes still ask.
-- **About's rows are named as TisVlay's:** "Hiding" for the hiding service and "GUI" for the window. The hiding service's chip is to read its release as the other rows' do; it has none a client can read yet, which is open.
+- **About's rows are named as TisVlay's:** "Hiding" for the hiding service and "GUI" for the window. The hiding service's chip reads its release as the other rows' do, from the version request below.
 - **Settings has NOTIFY ME WHEN above COUCH MODE,** and the notifications card no longer says where its file is kept. The file is beside the daemon's, whose folder About's Daemon row opens.
+
+**The hiding service says its release** (2026-11-22, the maintainer's choice of route). TisVlay has nothing to copy: each of its services is a peer on the session that serves `info`, as the daemon and the tray do here, and it has no root helper. The hiding service is kept off the session on purpose, so it gained a request on its own wire, `version`, whose reply carries the release packed into the token's 32 bits. The daemon asks on finding the service and publishes it as `hider_version` in its state; About's Hiding row shows it as a chip and judges it against the window's release, so a service left running from before an upgrade shows as a mismatch. A service too old to be asked shows as running with no release. Putting the root service on the session, and showing the daemon's release in its place, were both turned down.
 
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 

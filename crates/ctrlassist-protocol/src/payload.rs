@@ -17,6 +17,11 @@ pub struct Daemon {
     /// that doesn't say.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub config: String,
+    /// The hiding service's release, while it is there and says: the
+    /// daemon is its only client, so only the daemon can. None with no
+    /// service, or from one too old to be asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hider_version: Option<String>,
 }
 
 /// How the pads of a running setup are kept from games.

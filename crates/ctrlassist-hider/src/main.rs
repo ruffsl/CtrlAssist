@@ -19,7 +19,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::ExitCode;
 
-use ctrlassist_hider::{Refusal, Reply, Request, Token, receive, send};
+use ctrlassist_hider::{Refusal, Reply, Request, Token, pack_release, receive, send};
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::net::sockopt::socket_peercred;
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, accept, bind, listen, socket};
@@ -70,6 +70,14 @@ fn serve(connections: &mut [Connection], index: usize, next_token: &mut u32) -> 
         return true;
     }
     match Request::decode(&buffer[..length]) {
+        Some(Request::Version) => {
+            let answer = Reply {
+                refusal: None,
+                token: Token(pack_release(env!("CARGO_PKG_VERSION"))),
+                dislodged: false,
+            };
+            reply(&connections[index], answer, None);
+        }
         Some(Request::Hide) => {
             let Some(descriptor) = fds.first() else {
                 refuse(&connections[index], Refusal::BadRequest);

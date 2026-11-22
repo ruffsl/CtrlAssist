@@ -117,6 +117,12 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"ctrlassist-hider check {keyboard} | grep 'refused'")
         machine.succeed("ctrlassist-hider check /dev/null | grep 'refused'")
 
+    with subtest("the service says its release to the user in front, and nobody else"):
+        version = f"ctrlassist-fixture version --socket {SOCKET}"
+        told = machine.succeed(f"su -l alice -c '{version}'").strip()
+        assert told == "version: ${hider.version}", told
+        assert "isn't the user in front" in machine.succeed(version)
+
     with subtest("a raw node is opened only for the kinds of pad the service names"):
         raw = f"ctrlassist-fixture raw {pads()[A]['event'][0]} --socket {SOCKET}"
         told = machine.succeed(f"su -l alice -c '{raw}'")

@@ -26,7 +26,7 @@ use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, connect, socket};
 
 pub use wire::{Refusal, Token};
 #[doc(hidden)]
-pub use wire::{Reply, Request, receive, send};
+pub use wire::{Reply, Request, pack_release, receive, send};
 
 /// Where the service listens when installed.
 pub const SOCKET_PATH: &str = "/run/ctrlassist/hider.sock";
@@ -128,6 +128,17 @@ impl Client {
             Some(refusal) => Err(Error::Refused(refusal)),
             None => Ok((reply, fds)),
         }
+    }
+
+    /// The service's release, as `major.minor.patch`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the service refuses, as one from before it could be
+    /// asked does, or the connection breaks.
+    pub fn version(&self) -> Result<String, Error> {
+        let (reply, _) = self.ask(Request::Version, None)?;
+        Ok(wire::unpack_release(reply.token.0))
     }
 
     fn hidden(reply: Reply, fds: Vec<OwnedFd>) -> Result<Hidden, Error> {

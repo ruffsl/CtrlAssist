@@ -366,6 +366,9 @@ export component AppWindow inherits Window {
     // The hiding service, as the daemon finds it: without it a setup's
     // pads are grabbed, not hidden.
     in property <ServiceHealth> hider-health: ServiceHealth.offline;
+    // Its release, as the daemon passes it on; empty from one that
+    // doesn't say.
+    in-out property <string> hider-version;
     // The tray, as the daemon reports it: a client can't see another.
     in property <ServiceHealth> tray-health: ServiceHealth.offline;
     in-out property <string> tray-version;

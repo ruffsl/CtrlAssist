@@ -103,6 +103,11 @@ fn serve(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>) {
         }
         let mut pass = None;
         let reply = match Request::decode(&buffer[..length]) {
+            Some(Request::Version) => Reply {
+                refusal: None,
+                token: Token(ctrlassist_hider::pack_release(env!("CARGO_PKG_VERSION"))),
+                dislodged: false,
+            },
             Some(Request::Hide) => match fds.first().and_then(pad_of) {
                 Some((node, id)) => {
                     note(Asked::Hide(id.to_string()));

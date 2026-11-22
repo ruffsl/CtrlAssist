@@ -98,6 +98,39 @@ pub enum Request {
     Raw,
     /// Open the raw HID node of a pad this connection has hidden.
     RawOf(Token),
+    /// Say the service's release, which the reply carries where a token
+    /// goes, packed by [`pack_release`]. A service from before this
+    /// request refuses it as one it doesn't understand.
+    Version,
+}
+
+/// A release, `major.minor.patch`, as the 32 bits a reply has room for:
+/// twelve for the major and ten for each of the others. Anything after
+/// the patch, such as a pre-release tag, doesn't travel. Zero for text
+/// that isn't a release, which no release packs to but `0.0.0`.
+#[must_use]
+pub fn pack_release(release: &str) -> u32 {
+    let core = release.split(['-', '+']).next().unwrap_or_default();
+    let mut parts = core.split('.').map(str::parse::<u32>);
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch)), None)
+            if major < 1 << 12 && minor < 1 << 10 && patch < 1 << 10 =>
+        {
+            major << 20 | minor << 10 | patch
+        }
+        _ => 0,
+    }
+}
+
+/// The release [`pack_release`] packed.
+#[must_use]
+pub(crate) fn unpack_release(packed: u32) -> String {
+    format!(
+        "{}.{}.{}",
+        packed >> 20,
+        (packed >> 10) & 0x3ff,
+        packed & 0x3ff
+    )
 }
 
 impl Request {
@@ -113,6 +146,7 @@ impl Request {
             Self::Restore(token) => (3, token.0),
             Self::Raw => (4, 0),
             Self::RawOf(token) => (5, token.0),
+            Self::Version => (6, 0),
         };
         let token = token.to_le_bytes();
         [opcode, token[0], token[1], token[2], token[3]]
@@ -131,6 +165,7 @@ impl Request {
             3 => Some(Self::Restore(token)),
             4 => Some(Self::Raw),
             5 => Some(Self::RawOf(token)),
+            6 => Some(Self::Version),
             _ => None,
         }
     }

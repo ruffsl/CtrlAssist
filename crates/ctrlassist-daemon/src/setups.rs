@@ -377,6 +377,9 @@ pub(crate) struct Hiding {
     socket: Option<PathBuf>,
     /// The connection, once the service has been found.
     client: Mutex<Option<Client>>,
+    /// The found service's release, as it said on being found; none
+    /// from one too old to be asked.
+    release: Mutex<Option<String>>,
 }
 
 impl Hiding {
@@ -386,6 +389,7 @@ impl Hiding {
         let hiding = Self {
             socket: Some(socket.to_path_buf()),
             client: Mutex::new(None),
+            release: Mutex::new(None),
         };
         if hiding.mechanism() == payload::Hiding::Grab {
             info!(socket = %socket.display(), "the hiding service isn't there; a setup's pads will be grabbed, which hides them from most games but not from a program that reads them some other way. It is looked for again each time it is needed");
@@ -399,6 +403,7 @@ impl Hiding {
         Self {
             socket: None,
             client: Mutex::new(None),
+            release: Mutex::new(None),
         }
     }
 
@@ -413,10 +418,25 @@ impl Hiding {
             && let Some(socket) = &self.socket
             && let Ok(found) = Client::connect(socket)
         {
-            info!(socket = %socket.display(), "the hiding service is there");
+            let release = found.version().ok();
+            info!(socket = %socket.display(), ?release, "the hiding service is there");
+            *self.release() = release;
             *client = Some(found);
         }
         client
+    }
+
+    fn release(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+        self.release
+            .lock()
+            .expect("nothing panics while the hiding service's release is held")
+    }
+
+    /// The found service's release, for the daemon's state: none with
+    /// no service, or from one too old to say.
+    pub(crate) fn service_release(&self) -> Option<String> {
+        let found = self.client().is_some();
+        self.release().clone().filter(|_| found)
     }
 
     /// The mechanism, for the daemon's state: the service if it is

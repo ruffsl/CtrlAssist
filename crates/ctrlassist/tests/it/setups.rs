@@ -394,6 +394,11 @@ async fn a_hiding_service_that_starts_after_the_daemon_is_found_when_it_is_neede
         hiding(&client) == ctrlassist::Hiding::Service
     })
     .await;
+    // And which release of it, which the service says on being found.
+    assert_eq!(
+        client.daemon_state().unwrap().unwrap().hider_version,
+        Some(env!("CARGO_PKG_VERSION").to_string())
+    );
     client.stop_setup("couch").await.unwrap();
 
     // The service is restarted: the connection the daemon had is gone.
