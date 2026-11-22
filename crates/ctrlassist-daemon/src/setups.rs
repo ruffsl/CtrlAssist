@@ -388,10 +388,18 @@ impl Hiding {
 
     /// Asks one thing of the hiding service, if it is there.
     fn ask<T>(&self, ask: impl FnOnce(&Client) -> Result<T, ctrlassist_hider::Error>) -> Option<T> {
-        let client = self.client();
-        ask(client.as_ref()?)
-            .inspect_err(|error| warn!(%error, "the hiding service didn't do as asked"))
-            .ok()
+        let mut client = self.client();
+        let outcome = ask(client.as_ref()?);
+        if let Err(error) = &outcome {
+            warn!(%error, "the hiding service didn't do as asked");
+        }
+        // A connection that broke is given up: the service restores what
+        // was hidden through it, and it is looked for again when next
+        // needed, as a service that was restarted is found.
+        if matches!(outcome, Err(ctrlassist_hider::Error::Io(_))) {
+            *client = None;
+        }
+        outcome.ok()
     }
 
     /// Restores each pad named, once what read them has been dropped.

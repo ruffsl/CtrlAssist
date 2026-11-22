@@ -395,6 +395,25 @@ async fn a_hiding_service_that_starts_after_the_daemon_is_found_when_it_is_neede
     })
     .await;
     client.stop_setup("couch").await.unwrap();
+
+    // The service is restarted: the connection the daemon had is gone.
+    // The first thing asked of it finds that out, and the daemon goes
+    // back to grabbing until the service is found again, which the next
+    // setup to start does.
+    drop(hider);
+    let hider = ctrlassist_test::FakeHider::listen(&socket.with_file_name("hider.sock")).unwrap();
+    client.start_setup("couch").await.unwrap();
+    in_phase(&client, "couch", Phase::Running).await;
+    client.stop_setup("couch").await.unwrap();
+    let before = asked(&hider).len();
+    client.start_setup("couch").await.unwrap();
+    in_phase(&client, "couch", Phase::Running).await;
+    let hides = asked(&hider)[before..]
+        .iter()
+        .filter(|asked| matches!(asked, ctrlassist_test::Asked::Hide(_)))
+        .count();
+    assert_eq!(hides, 2, "{:?}", hider.asked());
+    client.stop_setup("couch").await.unwrap();
     daemon.stop().await;
 }
 

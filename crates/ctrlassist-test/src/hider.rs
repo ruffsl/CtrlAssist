@@ -40,6 +40,8 @@ pub enum Asked {
 pub struct FakeHider {
     path: PathBuf,
     asked: Arc<Mutex<Vec<Asked>>>,
+    /// The client being served, to hang up on as the stand-in goes.
+    client: Arc<Mutex<Option<OwnedFd>>>,
     serving: Option<JoinHandle<()>>,
 }
 
@@ -209,10 +211,12 @@ impl FakeHider {
         bind(&listener, &SocketAddrUnix::new(path)?)?;
         listen(&listener, 4)?;
         let asked = Arc::new(Mutex::new(Vec::new()));
+        let client = Arc::new(Mutex::new(None));
         let serving = std::thread::Builder::new()
             .name("fake-hider".into())
             .spawn({
                 let asked = Arc::clone(&asked);
+                let client = Arc::clone(&client);
                 move || {
                     while let Ok(connection) = accept(&listener) {
                         // An empty message is the stand-in's own, asking
@@ -227,6 +231,9 @@ impl FakeHider {
                         if stop {
                             return;
                         }
+                        if let Ok(mut held) = client.lock() {
+                            *held = connection.try_clone().ok();
+                        }
                         serve(&connection, &asked);
                     }
                 }
@@ -234,6 +241,7 @@ impl FakeHider {
         Ok(Self {
             path: path.to_path_buf(),
             asked,
+            client,
             serving: Some(serving),
         })
     }
@@ -262,8 +270,13 @@ impl Drop for FakeHider {
         {
             let _ = shutdown(&stopper, Shutdown::Write);
         }
-        // Not joined: it may still be serving a client, and ends when
-        // that client goes.
+        // A service that stops hangs up on its client, which is how the
+        // client finds out.
+        if let Ok(mut held) = self.client.lock()
+            && let Some(client) = held.take()
+        {
+            let _ = shutdown(&client, Shutdown::Both);
+        }
         drop(self.serving.take());
         let _ = std::fs::remove_file(&self.path);
     }
