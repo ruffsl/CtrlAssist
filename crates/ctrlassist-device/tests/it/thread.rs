@@ -902,7 +902,11 @@ fn a_virtual_dualsense_in_a_setup_reports_all_the_time() {
         last = report;
         reports += 1;
     }
-    // A real one reports 250 times a second; a busy machine may lose some.
-    assert!(reports >= 150, "{reports} reports in a second");
-    assert!(sequences.len() >= 100, "{} counts", sequences.len());
+    // One every 10 ms with nothing else to send; a busy machine may
+    // lose some.
+    assert!(
+        (70..=110).contains(&reports),
+        "{reports} reports in a second"
+    );
+    assert!(sequences.len() >= 70, "{} counts", sequences.len());
 }

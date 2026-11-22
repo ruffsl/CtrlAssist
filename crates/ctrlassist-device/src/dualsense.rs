@@ -255,6 +255,21 @@ fn input_report(state: &PadState, sequence: u8) -> [u8; INPUT_SIZE] {
     report
 }
 
+/// The longest a virtual DualSense goes without a report. A real one
+/// reports every 4 ms on USB. SDL2 reads once, for 16 ms, as it opens a
+/// DualSense, and one that says nothing then gets no rumble: under
+/// Proton, 12 opens of 12 found the pad at 8, 12 and 16 ms, and 9 and 10
+/// of 12 at 20 and 33. Ten leaves room, and is what inputtino sends.
+const BEAT_MS: u64 = 10;
+
+/// Now, on the clock the input thread tells time by.
+fn monotonic_ms() -> u64 {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    (now.tv_sec as u64)
+        .saturating_mul(1000)
+        .saturating_add(now.tv_nsec as u64 / 1_000_000)
+}
+
 /// The time the pad's sensors were read, as the report carries it: a
 /// count of thirds of a microsecond that wraps. A real pad's never
 /// stands still.
@@ -563,6 +578,8 @@ pub(crate) struct Emulator {
     event_node: PathBuf,
     held: PadState,
     sequence: u8,
+    /// When it last sent an input report, on the monotonic clock.
+    reported_ms: u64,
     pairing: [u8; PAIRING_SIZE],
     firmware: [u8; FIRMWARE_SIZE],
     calibration: [u8; CALIBRATION_SIZE],
@@ -628,6 +645,7 @@ impl Emulator {
             event_node: PathBuf::new(),
             held: PadState::NEUTRAL,
             sequence: 0,
+            reported_ms: 0,
             pairing: pairing(address),
             firmware,
             calibration: calibration(),
@@ -709,6 +727,7 @@ impl Emulator {
             event[4..6].copy_from_slice(&(INPUT_SIZE as u16).to_ne_bytes());
             event[6..].copy_from_slice(&report);
             self.uhid.write_all(&event)?;
+            self.reported_ms = monotonic_ms();
         }
         self.held = *state;
         Ok(())
@@ -743,12 +762,17 @@ impl Emulator {
         self.sent.then_some(self.output.as_slice())
     }
 
-    /// Sends the report the pad holds once more, as a real pad does all
-    /// the time: it reports some 250 times a second whether or not
-    /// anything changed, and a program that opens it takes a pad that
-    /// says nothing in its first moments for one that can't be sent
-    /// rumble.
-    pub(crate) fn beat(&mut self) -> io::Result<()> {
+    /// Sends the report the pad holds once more if it has sent none for
+    /// [`BEAT_MS`], and says when it is next due. A real pad reports all
+    /// the time, changed or not, and a program that opens one and hears
+    /// nothing in its first moments takes it for a pad that can't be
+    /// sent rumble.
+    pub(crate) fn beat(&mut self, now_ms: u64) -> io::Result<u64> {
+        let due = self.reported_ms.saturating_add(BEAT_MS);
+        if now_ms < due {
+            return Ok(due);
+        }
+        self.reported_ms = now_ms;
         self.sequence = self.sequence.wrapping_add(1);
         let mut report = input_report(&self.held, self.sequence);
         report[28..32].copy_from_slice(&sensor_time());
@@ -756,7 +780,8 @@ impl Emulator {
         event[..4].copy_from_slice(&UHID_INPUT2.to_ne_bytes());
         event[4..6].copy_from_slice(&(INPUT_SIZE as u16).to_ne_bytes());
         event[6..].copy_from_slice(&report);
-        self.uhid.write_all(&event)
+        self.uhid.write_all(&event)?;
+        Ok(now_ms.saturating_add(BEAT_MS))
     }
 
     fn feature(&self, number: u8) -> Option<&[u8]> {

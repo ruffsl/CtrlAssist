@@ -528,23 +528,19 @@ impl VirtualPad {
         }
     }
 
-    /// Whether the pad it passes as reports all the time, changed or
-    /// not, and so this one must: see [`beat`](Self::beat).
-    #[must_use]
-    pub fn beats(&self) -> bool {
-        matches!(self.kind, Kind::DualSense(_))
-    }
-
-    /// Sends what the pad holds once more, for a pad that
-    /// [reports all the time](Self::beats); nothing for any other.
+    /// For a virtual pad that passes as one which reports all the time,
+    /// changed or not: sends what it holds once more if it has been
+    /// quiet for its period at `now_ms`, on the monotonic clock, and
+    /// says when it would next be due. Nothing, and `None`, for any
+    /// other.
     ///
     /// # Errors
     ///
     /// Fails if the kernel refuses the write.
-    pub fn beat(&mut self) -> io::Result<()> {
+    pub fn beat(&mut self, now_ms: u64) -> io::Result<Option<u64>> {
         match &mut self.kind {
-            Kind::Uinput(_) => Ok(()),
-            Kind::DualSense(pad) => pad.beat(),
+            Kind::Uinput(_) => Ok(None),
+            Kind::DualSense(pad) => pad.beat(now_ms).map(Some),
         }
     }
 
