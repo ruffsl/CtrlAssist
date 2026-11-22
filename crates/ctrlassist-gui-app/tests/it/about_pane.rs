@@ -5,9 +5,8 @@ use ctrlassist_gui::about::{Parts, refresh, rows};
 use ctrlassist_gui::state::Snapshot;
 use ctrlassist_gui::{AboutComponentRow, AppWindow, Pane, ServiceHealth};
 use ctrlassist_protocol::VERSION;
-use slint::ComponentHandle;
 
-use crate::support::{find_by_accessible_id, settle};
+use crate::support::find_by_accessible_id;
 
 fn row<'a>(rows: &'a [AboutComponentRow], name: &str) -> &'a AboutComponentRow {
     rows.iter()
@@ -100,13 +99,14 @@ fn the_pane_shows_the_rows_the_window_holds() {
     i_slint_backend_testing::init_no_event_loop();
     let app = AppWindow::new().expect("the window builds on the testing backend");
     refresh(&app);
+    // Not shown: a shown window's tree leaves out what its scroll view
+    // clips, and the notices link is at the pane's foot.
     app.set_active_pane(Pane::About);
-    app.show().expect("the testing backend shows a window");
-    settle();
     for id in [
         "about-brand-link",
         "about-version-chip",
         "about-issue-button",
+        "about-notices-button",
     ] {
         assert!(find_by_accessible_id(&app, id).is_some(), "{id}");
     }

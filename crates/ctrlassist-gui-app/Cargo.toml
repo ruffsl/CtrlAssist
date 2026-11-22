@@ -27,6 +27,7 @@ ctrlassist-icons = { workspace = true }
 ctrlassist-protocol = { workspace = true }
 serde = { workspace = true }
 slint = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
@@ -37,7 +38,6 @@ zbus = { workspace = true }
 # Pinned with slint: its API has no semver promise.
 i-slint-backend-testing = "=1.19.0"
 ctrlassist-device = { workspace = true }
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

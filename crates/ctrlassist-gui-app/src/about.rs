@@ -29,6 +29,51 @@ const _: () = assert!(
     "ctrlassist-gui-app's manifest must declare `repository`"
 );
 
+/// The third-party license bundle as this build had it: what
+/// `build.rs` copied from the tree, for a build with no installed copy
+/// to open.
+const NOTICES_HTML: &str = include_str!(concat!(env!("OUT_DIR"), "/THIRD-PARTY-LICENSES.html"));
+
+/// Where the packages install the bundle.
+const NOTICES_HTML_FHS: &str = "/usr/share/doc/ctrlassist/THIRD-PARTY-LICENSES.html";
+
+/// An installed copy of the bundle, if there is one: at the usual
+/// path, or under the prefix this binary runs from
+/// (`<prefix>/bin/ctrlassist-gui`, `<prefix>/share/doc/ctrlassist`),
+/// which covers a Nix store path and an install under `/usr/local`.
+fn installed_notices_path() -> Option<std::path::PathBuf> {
+    let fhs = std::path::PathBuf::from(NOTICES_HTML_FHS);
+    if fhs.exists() {
+        return Some(fhs);
+    }
+    let exe = std::env::current_exe().ok()?;
+    let prefix = exe.parent()?.parent()?;
+    let beside = prefix.join("share/doc/ctrlassist/THIRD-PARTY-LICENSES.html");
+    beside.exists().then_some(beside)
+}
+
+/// Opens the bundle in the user's browser: the installed copy, or the
+/// embedded one written to a file made for it.
+fn open_notices_html() -> anyhow::Result<()> {
+    if let Some(installed) = installed_notices_path() {
+        webbrowser::open(&installed.to_string_lossy())?;
+        return Ok(());
+    }
+    // Made with a random name and exclusively, so nothing can be put in
+    // its place first; kept, since the browser reads it after this
+    // returns. The system clears its temporary directory in its own
+    // time.
+    use std::io::Write as _;
+    let mut file = tempfile::Builder::new()
+        .prefix("ctrlassist-third-party-licenses-")
+        .suffix(".html")
+        .tempfile()?;
+    file.write_all(NOTICES_HTML.as_bytes())?;
+    let (_, path) = file.keep()?;
+    webbrowser::open(&path.to_string_lossy())?;
+    Ok(())
+}
+
 /// What the rows are made from.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Parts {
@@ -284,6 +329,11 @@ pub(crate) fn wire(app: &AppWindow) {
         );
     });
     app.on_report_issue_clicked(|| open("the issue tracker", &format!("{REPO_URL}/issues")));
+    app.on_view_notices_clicked(|| {
+        if let Err(error) = open_notices_html() {
+            warn!(%error, "couldn't open the third-party notices");
+        }
+    });
     app.on_open_config_folder(|path| {
         let path = path.to_string();
         tokio::spawn(async move {

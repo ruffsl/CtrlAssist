@@ -222,6 +222,7 @@ export component AboutPane inherits Rectangle {
     callback view-source-clicked();
     callback view-release-clicked();
     callback report-issue-clicked();
+    callback view-notices-clicked();
     callback open-config-folder(string);
 
     background: Theme.surface-alt;
@@ -397,6 +398,16 @@ export component AboutPane inherits Rectangle {
                         font-size: Design.font-helper;
                         wrap: word-wrap;
                         vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    // It opens a page in the browser, so it reads as a
+                    // link, not a button.
+                    UriBtn {
+                        text: @tr("View third-party notices");
+                        tip: @tr("Open third-party notices");
+                        icon: Icons.open-link;
+                        accessible-id: "about-notices-button";
+                        clicked => { root.view-notices-clicked(); }
                     }
                 }
 
