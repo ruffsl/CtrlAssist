@@ -352,8 +352,9 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                         .iter()
                         .map(|sink| ProfileOutputRow {
                             name: SharedString::from(crate::status::capitalized(&sink.name)),
-                            identity: SharedString::from(crate::status::identity(
-                                sink.identity.as_str(),
+                            // A row's own word, so with a capital.
+                            identity: SharedString::from(crate::status::capitalized(
+                                crate::status::identity(sink.identity.as_str()),
                             )),
                             node: SharedString::from(
                                 setup

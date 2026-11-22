@@ -216,7 +216,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
         .iter()
         .map(|output| format!("{} {} {}", output.name, output.identity, output.node))
         .collect();
-    assert_eq!(outputs, ["Virtual generic event31"]);
+    assert_eq!(outputs, ["Virtual Generic event31"]);
 
     // How each is, in a word, for the list and the chip.
     let said = |name: &str| {
