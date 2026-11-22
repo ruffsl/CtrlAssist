@@ -78,6 +78,8 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 
 **CtrlAssist's icon is the theme's `input-gaming`,** for the window, the desktop entry and the About header: what the tray uses, and no artwork to ship.
 
+**Answered, 2026-11-21, on the About pane and the pads list.** The tray is made visible to clients now, with a presence token and its release, ahead of its notification switches, so its row and its sidebar dot are real. The third-party notices button opens the installed bundle, and in a source build the one committed at `packaging/licensing/THIRD-PARTY-LICENSES.html`, embedded; no cargo-about run in a build script. In the diagnostic bundle a pad's address keeps its vendor half and masks the rest, the same way everywhere, with a short tag to tell pads apart. The Pads pane lists connected pads first, then the remembered ones dimmed.
+
 ## What is copied, replaced and new
 
 | TisVlay | Here |
