@@ -264,7 +264,7 @@ Found while building it, for review:
 - **Start is not part of a pick.** Quick start's last row wrote the picks and started them; a pick is now kept at once, and Start is the profile's own. A managed profile still starts by itself when its pads are picked and there.
 - **The window keeps its drafts** for a new profile, which is held until its first change and then put, where it was held until it was a whole profile. A kept profile with pads to choose reads "Not set up".
 - **`quick` as already kept** on a machine is left as an ordinary profile; nothing renames it.
-- **Not run:** the whole suite and the daemon VM check, with Steam open.
+- **Run and not run:** the daemon VM check passes, on the installed package with the real hiding service. The whole suite has not run, with Steam open.
 
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
