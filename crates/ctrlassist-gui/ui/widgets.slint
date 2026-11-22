@@ -2452,7 +2452,8 @@ export component NameInputDialog inherits Rectangle {
 // A pad's tile: its maker's mark in the maker's color, as a TV's tile is
 // in TisVlay; a pad of a maker with no mark gets a gamepad on the chip
 // color. `maker` is Rust's word for the maker, from the pad's vendor
-// number: "sony", "microsoft", "nintendo", "8bitdo", "valve", or empty.
+// number: "sony", "microsoft", "nintendo", "8bitdo", "valve", or empty;
+// or "ctrlassist", for a virtual pad that presents itself as its own.
 export component PadTile inherits Rectangle {
     in property <string> maker;
     in property <length> tile-size: Design.size-tile-sm;
@@ -2465,13 +2466,15 @@ export component PadTile inherits Rectangle {
     border-radius: 5px;
 
     property <bool> is-known: maker == "sony" || maker == "microsoft" || maker == "nintendo"
-        || maker == "8bitdo" || maker == "valve";
+        || maker == "8bitdo" || maker == "valve" || maker == "ctrlassist";
 
     property <brush> maker-color: maker == "sony" ? Theme.maker-sony
               : maker == "microsoft" ? Theme.maker-microsoft
               : maker == "nintendo" ? Theme.maker-nintendo
               : maker == "8bitdo" ? Theme.maker-8bitdo
               : maker == "valve" ? Theme.maker-valve
+              // CtrlAssist's own virtual pad: the window's accent.
+              : maker == "ctrlassist" ? Theme.accent
               : Theme.chip;
     background: root.outlined ? transparent : root.maker-color;
     border-width: root.outlined ? 1.5px : is-known ? 0 : Design.border-thin;
@@ -2483,6 +2486,7 @@ export component PadTile inherits Rectangle {
             : root.maker == "microsoft" ? "XB"
             : root.maker == "nintendo" ? "NS"
             : root.maker == "8bitdo" ? "8B"
+            : root.maker == "ctrlassist" ? "CA"
             : "SD";
         // On no fill the mark is the text's own color, which reads in
         // both modes where a maker's dark color wouldn't.

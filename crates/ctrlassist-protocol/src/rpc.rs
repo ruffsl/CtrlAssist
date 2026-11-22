@@ -16,10 +16,31 @@ pub struct PadRequest {
     pub pad: String,
 }
 
+/// What a setup's virtual pad goes by where a pad is named: the prefix,
+/// then the setup's name, a slash, and the virtual pad's name in the
+/// setup's profile. No real pad's name starts so.
+pub const VIRTUAL_PAD: &str = "virtual:";
+
+/// The name of the virtual pad `sink` of the setup `setup`.
+#[must_use]
+pub fn virtual_pad(setup: &str, sink: &str) -> String {
+    format!("{VIRTUAL_PAD}{setup}/{sink}")
+}
+
+/// Reads a [`virtual_pad`] name into its setup and its virtual pad;
+/// nothing for any other name.
+#[must_use]
+pub fn parse_virtual_pad(name: &str) -> Option<(&str, &str)> {
+    name.strip_prefix(VIRTUAL_PAD)?.split_once('/')
+}
+
 /// Asks a pad to buzz, so a person can tell which one it is.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct IdentifyRequest {
-    /// The pad, named as in a [`PadRequest`].
+    /// The pad, named as in a [`PadRequest`]; or a setup's virtual pad,
+    /// by its [`virtual_pad`] name, which is rumbled as a game would
+    /// rumble it, so that the pads behind it buzz as the setup's profile
+    /// sends it.
     pub pad: String,
     /// How long to buzz, in milliseconds: from 1 to [`IDENTIFY_MAX_MS`].
     pub millis: u32,

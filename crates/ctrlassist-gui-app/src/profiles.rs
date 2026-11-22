@@ -393,8 +393,25 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 })
                 .unwrap_or_default();
             let no_outputs = outputs.is_empty();
+            // The mode as the served field labels it.
+            let mode_label = match &values {
+                None => "Written by hand".to_string(),
+                Some(_) => known
+                    .fields
+                    .iter()
+                    .find(|field| field.key == form::PRESET)
+                    .and_then(|field| match &field.kind {
+                        Kind::Choice { choices } => {
+                            choices.iter().find(|choice| choice.value == preset)
+                        }
+                        _ => None,
+                    })
+                    .map(|choice| choice.label.clone())
+                    .unwrap_or_default(),
+            };
             ProfileRow {
                 shape: SharedString::from(shape),
+                mode_label: SharedString::from(mode_label),
                 word: SharedString::from(word),
                 word_tone: SharedString::from(word_tone),
                 note: SharedString::from(note),

@@ -335,7 +335,7 @@ impl Setups {
             .map(|(name, _)| name.clone())
     }
 
-    fn setup(&self, name: &str) -> Option<payload::Setup> {
+    pub(crate) fn setup(&self, name: &str) -> Option<payload::Setup> {
         let entry = self.entries.get(name)?;
         Some(payload::Setup {
             name: name.to_string(),

@@ -16,7 +16,7 @@ use slint::{ComponentHandle, Model as _, SharedString};
 
 use crate::support::{activate_shown, find_by_accessible_id, settle};
 
-const COUCH: &str = "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\nidentity = \"xbox\"\n";
+const COUCH: &str = "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\nidentity = \"xbox\"\nhide = \"grab\"\n";
 const FULL: &str = include_str!("../../../ctrlassist-protocol/tests/it/fixtures/full.toml");
 
 fn pad(id: &str, name: &str, connected: bool) -> Pad {
@@ -488,7 +488,7 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
     activate_shown(&app, "dialog-confirm");
     activate_shown(&app, "profiles-update");
     activate_shown(&app, "profiles-pad-assist");
-    activate_shown(&app, "profiles-pad-Primary");
+    activate_shown(&app, "profiles-pad-primary");
     assert!(find_by_accessible_id(&app, "profiles-select-mux").is_some());
     assert_eq!(
         *asked.borrow(),
@@ -546,11 +546,20 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
     // has nothing to reset.
     let reset = asked.clone();
     pane.on_reset_field(move |name, key| reset.borrow_mut().push(format!("reset {name} {key}")));
-    assert!(enabled("profiles-reset-identity"));
+    assert!(enabled("profiles-reset-hide"));
     assert!(!enabled("profiles-reset-rumble"));
     assert!(find_by_accessible_id(&app, "profiles-reset-primary").is_none());
-    activate_shown(&app, "profiles-reset-identity");
-    assert_eq!(asked.borrow().last().unwrap(), "reset couch identity");
+    activate_shown(&app, "profiles-reset-hide");
+    assert_eq!(asked.borrow().last().unwrap(), "reset couch hide");
+    // The identity is the virtual pad's row's, which ends in the one
+    // slot an input's row has: it has no reset.
+    assert!(find_by_accessible_id(&app, "profiles-field-identity").is_some());
+    assert!(find_by_accessible_id(&app, "profiles-reset-identity").is_none());
+    // The header says the mode, not the pads.
+    let mode = find_by_accessible_id(&app, "profiles-mode")
+        .and_then(|text| text.accessible_label())
+        .unwrap_or_default();
+    assert_eq!(mode, "Priority");
 }
 
 /// A dropdown opens with its cursor on the current choice, the second
@@ -651,7 +660,7 @@ fn a_profile_s_pad_and_a_pad_s_profile_are_a_click_apart_and_back_returns() {
     assert_eq!(profile_shown(), "quick");
 
     // From that profile's header to its assist.
-    activate_shown(&app, "profiles-pad-Assist");
+    activate_shown(&app, "profiles-pad-assist");
     assert_eq!(app.get_active_pane(), Pane::Pads);
     assert_eq!(pad_shown(), "Wireless Controller");
 

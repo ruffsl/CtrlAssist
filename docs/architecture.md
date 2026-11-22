@@ -343,7 +343,7 @@ zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the d
 | `ctrlassist/rpc/profile/{validate,put,delete}` | rpc | check a profile and say where it is wrong; write one |
 | `ctrlassist/rpc/profile/schema` | rpc | a preset's fields, for a client's form: each one's key, label, help, kind, choices, default, the presets it belongs to, and the card a form shows it in. A client renders them and writes the profile; the daemon checks it like any other |
 | `ctrlassist/rpc/setup/{start,stop,update,select}` | rpc | run a profile; stop it; have it take up its profile as kept now, or ask what that would cost, replying live or disruptive; select a node's input |
-| `ctrlassist/rpc/pad/{identify,forget}` | rpc | buzz a pad so the user can tell which is which; drop a remembered pad |
+| `ctrlassist/rpc/pad/{identify,forget}` | rpc | buzz a pad so the user can tell which is which, or rumble a setup's virtual pad, named `virtual:<setup>/<sink>`, as a game would, so the pads behind it buzz as the profile sends it on; drop a remembered pad |
 
 Key segments marked `<id>` are derived by the daemon, never taken raw from a pad's or a profile's name, since those are free text. A pad's segment is a hash of the id it is known by, so a client can work it out too; an rpc that names a pad takes that id, the segment, a bare address, or a model when only one known pad is of it.
 

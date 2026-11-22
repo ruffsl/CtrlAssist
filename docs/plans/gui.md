@@ -212,6 +212,14 @@ Duplicate and Show its file moved from the PRESET card's caption to the header, 
 - **OUTPUTS has a row for each virtual pad,** as INPUTS has for each pad: its name with Connected or Disconnected under it, by whether its profile runs; the Identity dropdown as the first row's control, a preset's virtual pads being all of one identity; and a pencil that opens the virtual pad in Pads while it exists.
 - **The cards' label column is 110 wide,** 30 less than TisVlay's profile rows: an output's row ends in two slots, a reset and a pencil, which didn't fit beside a dropdown at the window's default width. The dropdowns gained the room.
 
+**More from using the window** (2026-11-22, the maintainer's).
+
+- **An output's row has no reset,** so it ends in the one slot an input's row does and the two cards' dropdowns line up. The identity goes back to its default by picking it.
+- **A virtual pad goes by the name a game sees it under,** "CtrlAssist Virtual Pad" or the name of the pad it presents itself as, in the list and in its header, with the profile that makes it and its node under that, as a real pad's row has its setup and its tag.
+- **CtrlAssist's own virtual pad has a tile of its own:** "CA", outlined in the window's accent. One that presents itself as another maker's pad keeps that maker's mark in outline.
+- **A profile's header says its mode,** "Mode: Toggle", or that it is written by hand, where it listed the pads it uses: their names overran the line, and the INPUTS card has them.
+- **Identify works on a virtual pad.** The daemon's `identify` takes a setup's virtual pad by the name `virtual:<setup>/<sink>` and rumbles it on its own node as a game would, as it buzzes a free pad on that pad's node; what reaches the pads behind it is then the profile's doing, which shows who is mapped to it, who feels rumble, and who has control of a toggle. The command takes the same name. Tried on the maintainer's desktop from the command line, with `quick` running.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps

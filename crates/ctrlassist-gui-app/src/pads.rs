@@ -72,10 +72,11 @@ pub fn rows(
 }
 
 /// The id a virtual pad's row goes by: the profile that makes it and
-/// its name there. No real pad's id starts so.
+/// its name there, as the daemon's `identify` takes it. No real pad's
+/// id starts so.
 #[must_use]
 pub fn virtual_id(profile: &str, sink: &str) -> String {
-    format!("virtual:{profile}/{sink}")
+    ctrlassist_protocol::rpc::virtual_pad(profile, sink)
 }
 
 /// A row for each virtual pad of a running profile, by profile and then
@@ -95,29 +96,26 @@ fn virtual_rows(setups: &[Setup], identities: &[ctrlassist::Identity]) -> Vec<Pa
                 .node
                 .as_deref()
                 .map(|node| node.rsplit('/').next().unwrap_or(node).to_string());
-            // One virtual pad goes by its profile's name; several, by
-            // that and their own.
-            let name = if setup.sinks.len() == 1 {
-                setup.name.clone()
-            } else {
-                format!("{} · {}", setup.name, sink.name)
-            };
+            // It goes by the name a game sees it under, as a real pad
+            // does; which profile's it is, is said under that.
+            let name = known.map_or_else(|| identity.clone(), |known| known.name.clone());
             let (word, tone) = status::of(&setup.name, None, std::slice::from_ref(setup), &[]);
             PadRow {
                 is_virtual: true,
                 key: SharedString::from(key_of(&id)),
                 id: SharedString::from(id),
                 name: SharedString::from(name),
+                // A pad that presents itself as nobody else's is
+                // CtrlAssist's own.
                 maker: SharedString::from(match sink.identity.as_str() {
                     "xbox" => "microsoft",
                     "dualsense" => "sony",
-                    _ => "",
+                    _ => "ctrlassist",
                 }),
-                word: SharedString::from(match &node {
-                    Some(node) => format!("{identity} · {node}"),
-                    None => identity.clone(),
-                }),
+                word: SharedString::from(format!("In {}", setup.name)),
                 tone: SharedString::from(if node.is_some() { "success" } else { "neutral" }),
+                // What tells it from another of its kind: its node.
+                tag: SharedString::from(node.clone().unwrap_or_default()),
                 model: SharedString::from(known.map_or_else(String::new, |known| {
                     format!("{:04x}:{:04x}", known.vendor, known.product)
                 })),

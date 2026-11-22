@@ -437,8 +437,7 @@ component PadDetail inherits Rectangle {
                             nav-row: root.status-row;
                             text: @tr("Identify");
                             icon: Icons.identify;
-                            enabled: root.daemon-available && root.pad.connected && root.pad.rumble != "No"
-                                && !root.pad.is-virtual;
+                            enabled: root.daemon-available && root.pad.connected && root.pad.rumble != "No";
                             accessible-id: root.id-prefix + "pads-identify";
                             clicked => { Pads.identify(root.pad.id); }
                         }
@@ -446,7 +445,7 @@ component PadDetail inherits Rectangle {
                             horizontal-stretch: 1;
                             alignment: center;
                             Text {
-                                text: root.pad.is-virtual ? @tr("Made by {} while it runs. Games read this pad in place of the pads behind it.", root.pad.setup)
+                                text: root.pad.is-virtual ? @tr("Rumbles this pad as a game would, so the pads behind it buzz as {} sends it on.", root.pad.setup)
                                     : !root.pad.connected ? @tr("Remembered from when it was last connected.")
                                     : root.pad.rumble == "No" ? @tr("This pad has no rumble to buzz with.")
                                     : @tr("Buzzes this pad, so you can tell which it is.");
@@ -457,6 +456,12 @@ component PadDetail inherits Rectangle {
                         }
                     }
 
+                    if root.pad.is-virtual: Text {
+                        text: @tr("Made by {} while it runs. Games read this pad in place of the pads behind it.", root.pad.setup);
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                    }
                     if root.pad.connected && !root.pad.is-virtual: FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("Games");

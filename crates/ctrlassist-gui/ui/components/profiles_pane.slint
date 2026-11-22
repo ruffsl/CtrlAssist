@@ -435,7 +435,7 @@ component Card inherits VerticalLayout {
 }
 
 // The detail's header, as a profile's is in TisVlay: the tile, the name
-// with rename and delete beside it, the pads it uses as links, and two
+// with what is done to a whole profile beside it, its mode, and two
 // chips stacked at the right, whether it is managed and how it is.
 component ProfileDetailHeader inherits Rectangle {
     in property <ProfileRow> profile;
@@ -533,47 +533,22 @@ component ProfileDetailHeader inherits Rectangle {
                     }
                 }
             }
-            // Clipped, and out of the layout's reckoning: pads' names
-            // are as long as their makers like, and the header is as
-            // wide as the pane, not as its names.
-            Rectangle {
-                height: uses-line.preferred-height;
-                clip: true;
-                uses-line := HorizontalLayout {
-                x: 0;
+            // What it is, in a word or two: its mode, or that it is
+            // written by hand. The pads it uses are its INPUTS card's.
+            HorizontalLayout {
                 spacing: Design.gap-meta;
                 alignment: start;
                 Text {
-                    text: @tr("Uses:");
+                    text: @tr("Mode:");
                     color: Theme.text-dim;
                     font-size: Design.font-helper;
                 }
-                if root.profile.uses.length == 0: Text {
-                    text: "—";
+                Text {
+                    text: root.profile.mode-label == "" ? "—" : root.profile.mode-label;
                     color: Theme.text-dim;
                     font-size: Design.font-helper;
-                }
-                for use[i] in root.profile.uses: HorizontalLayout {
-                    spacing: Design.gap-meta;
-                    if i > 0: Text {
-                        text: "·";
-                        color: Theme.text-dim;
-                        font-size: Design.font-helper;
-                    }
-                    if use.pad != "": LinkText {
-                        nav-row: root.nav-row;
-                        text: use.name;
-                        tip: @tr("Show this pad");
-                        accessible-id: root.id-prefix + "profiles-pad-" + use.part;
-                        clicked => { Profiles.open-pad(use.pad); }
-                    }
-                    if use.pad == "": Text {
-                        text: use.name;
-                        color: Theme.text-dim;
-                        font-size: Design.font-helper;
-                        font-family: Theme.mono-font;
-                    }
-                }
+                    overflow: elide;
+                    accessible-id: root.id-prefix + "profiles-mode";
                 }
             }
         }
@@ -901,7 +876,7 @@ component ProfileDetail inherits Rectangle {
                     }
                     for output[i] in root.profile.outputs: output-row := FormRow {
                         property <bool> chooses: i == 0 && root.profile.identity-field.key != "";
-                        property <bool> set-here: self.chooses && !root.profile.identity-field.at-default;
+
                         id-prefix: root.id-prefix + "profiles-";
                         label: output.name;
                         key: "output-" + output.name;
@@ -936,23 +911,9 @@ component ProfileDetail inherits Rectangle {
                                 }
                             }
                         }
-                        // The row's two slots sit close, as one end.
-                        HorizontalLayout {
-                            spacing: Design.gap-form;
-                        VerticalLayout {
-                            alignment: center;
-                            width: 24px;
-                            if output-row.chooses: IconBtn {
-                                nav-row: output-row.row-id;
-                                source: Icons.reset;
-                                active: output-row.set-here;
-                                enabled: root.daemon-available && output-row.set-here;
-                                accessible-label: @tr("Reset the identity to its default");
-                                tip: @tr("Reset to the default");
-                                accessible-id: root.id-prefix + "profiles-reset-identity";
-                                clicked => { Profiles.reset-field(root.profile.name, "identity"); }
-                            }
-                        }
+                        // One slot at the row's end, as an input's row
+                        // has, so the two cards' controls line up: the
+                        // pencil. The identity has no reset here.
                         VerticalLayout {
                             alignment: center;
                             width: 24px;
@@ -964,7 +925,6 @@ component ProfileDetail inherits Rectangle {
                                 accessible-id: root.id-prefix + "profiles-virtual-" + output.name;
                                 clicked => { Profiles.open-pad(output.pad); }
                             }
-                        }
                         }
                     }
                 }

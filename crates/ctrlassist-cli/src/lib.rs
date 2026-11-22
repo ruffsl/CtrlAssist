@@ -53,6 +53,9 @@ pub enum Command {
     Identify {
         /// The pad: its id as `pads` prints it, a bare address, or
         /// `model:<vendor>:<product>` when one known pad is of that model.
+        /// Or a running profile's virtual pad, as
+        /// `virtual:<profile>/<name>`, which is rumbled as a game would
+        /// rumble it: the pads behind it buzz as the profile sends it on.
         #[arg(add = pad_completions())]
         pad: String,
         /// How long to buzz, in milliseconds.

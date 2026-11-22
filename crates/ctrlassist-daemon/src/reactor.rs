@@ -474,6 +474,22 @@ impl Reactor {
                 request.millis
             )));
         }
+        // A setup's virtual pad is rumbled as a game rumbles it, on its
+        // own node: what the setup makes of that is the point.
+        if let Some((setup, sink)) = rpc::parse_virtual_pad(&request.pad) {
+            let node = self
+                .setups
+                .setup(setup)
+                .and_then(|setup| setup.sinks.into_iter().find(|made| made.name == sink))
+                .and_then(|made| made.node);
+            return match node {
+                Some(node) => Ok(Some(PathBuf::from(node))),
+                None => Err(WireError::refusal(
+                    ErrorCode::UnknownPad,
+                    format!("no setup has a virtual pad {setup}/{sink} now"),
+                )),
+            };
+        }
         let id = self.book.resolve(&request.pad)?;
         // A pad that isn't there is said to be that, before anything it
         // lacks. One a setup holds is reached through the setup.

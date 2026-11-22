@@ -290,11 +290,13 @@ fn virtual_pads_follow_the_real_ones() {
     let pad = &made[4];
     assert!(pad.is_virtual && pad.connected);
     assert_eq!(pad.id, "virtual:quick/virtual");
-    assert_eq!(pad.name, "quick");
+    // It goes by the name a game sees, with whose it is under that and
+    // its node to tell it from another.
+    assert_eq!(pad.name, "Xbox");
     assert_eq!(pad.maker, "microsoft");
     assert_eq!(
-        (pad.word.as_str(), pad.tone.as_str()),
-        ("Xbox · event31", "success")
+        (pad.word.as_str(), pad.tone.as_str(), pad.tag.as_str()),
+        ("In quick", "success", "event31")
     );
     assert_eq!(
         (pad.identity.as_str(), pad.model.as_str(), pad.node.as_str()),
@@ -329,11 +331,28 @@ fn virtual_pads_follow_the_real_ones() {
     settle();
     crate::support::activate_shown(&app, "pads-profile-quick");
     assert_eq!(*opened.borrow(), ["quick"]);
-    let enabled = crate::support::find_all_by_accessible_id(&app, "pads-identify")
-        .into_iter()
-        .any(|control| control.accessible_enabled().unwrap_or(false));
-    assert!(!enabled, "a virtual pad has nothing to buzz");
+    // It is buzzed by its own name, as a game would rumble it; it can't
+    // be forgotten.
+    let buzzed: Rc<RefCell<Vec<String>>> = Rc::default();
+    let felt = buzzed.clone();
+    pads.on_identify(move |id| felt.borrow_mut().push(id.to_string()));
+    crate::support::activate_shown(&app, "pads-identify");
+    assert_eq!(*buzzed.borrow(), ["virtual:quick/virtual"]);
     assert!(find_by_accessible_id(&app, "pads-forget").is_none());
+
+    // One that presents itself as nobody else's is CtrlAssist's own.
+    let mut generic = quick();
+    generic.sinks = vec![SetupSink {
+        name: "virtual".to_string(),
+        identity: "generic".to_string(),
+        node: None,
+    }];
+    let own = &rows(&[], &[generic], &[], &[])[0];
+    assert_eq!(
+        (own.maker.as_str(), own.name.as_str()),
+        ("ctrlassist", "Generic")
+    );
+    assert!(!own.connected, "not made yet");
 }
 
 #[test]
