@@ -41,6 +41,8 @@ pub enum Action {
     Quick(String),
     /// Open the settings window, or raise it if it is open.
     Settings,
+    /// Keep this profile as the one last used, for the next start.
+    Aim(String),
     /// End the tray.
     Quit,
 }
@@ -61,6 +63,7 @@ impl Action {
             Self::Forget(pad) => format!("forget {pad}"),
             Self::Quick(_) => format!("keep and run `{}` as picked", quick::NAME),
             Self::Settings => "open the settings window".to_string(),
+            Self::Aim(name) => format!("aim at {name}"),
             Self::Quit => "quit".to_string(),
         }
     }
@@ -130,11 +133,20 @@ impl PadTray {
                         .iter()
                         .find(|setup| view.setup(&setup.name).is_none())
                 });
-            if let Some(setup) = changed {
-                self.target = Some(setup.name.clone());
+            if let Some(name) = changed.map(|setup| setup.name.clone()) {
+                self.aim(name);
             }
         }
         self.view = view;
+    }
+
+    /// Makes `name` the profile last used, and has it kept if it
+    /// wasn't already.
+    fn aim(&mut self, name: String) {
+        if self.target.as_deref() != Some(name.as_str()) {
+            self.target = Some(name.clone());
+            let _ = self.actions.send(Action::Aim(name));
+        }
     }
 
     /// Takes a turn of the wheel, reported at `now`, and moves the mark
@@ -169,7 +181,8 @@ impl PadTray {
         let from = at.unwrap_or(if steps > 0 { -1 } else { count });
         let next = (from + i64::from(steps)).rem_euclid(count);
         if let Some(name) = usize::try_from(next).ok().and_then(|at| candidates.get(at)) {
-            self.target = Some((*name).to_string());
+            let name = (*name).to_string();
+            self.aim(name);
         }
     }
 
@@ -463,6 +476,8 @@ mod tests {
         tray.scroll(120, ksni::Orientation::Vertical);
         assert_eq!(tray.aimed(), Some("desk"));
         assert!(tray.tool_tip().description.ends_with("► desk: Ready"));
+        // What is aimed at is kept for the next start, as it changes.
+        assert_eq!(clicked.try_recv().unwrap(), Action::Aim("desk".into()));
         tray.secondary_activate(0, 0);
         assert_eq!(clicked.try_recv().unwrap(), Action::Start("desk".into()));
         tray.scroll(120, ksni::Orientation::Vertical);
@@ -495,6 +510,15 @@ mod tests {
         (stopped.pads[1].vendor, stopped.pads[1].product) = (0x2dc8, 0x6003);
         tray.see(stopped);
         assert_eq!(tray.target.as_deref(), Some("couch"));
+        let mut kept = Vec::new();
+        while let Ok(action) = clicked.try_recv() {
+            kept.push(action);
+        }
+        assert_eq!(kept.last(), Some(&Action::Aim("couch".into())), "{kept:?}");
+        assert!(
+            kept.iter().all(|action| matches!(action, Action::Aim(_))),
+            "{kept:?}"
+        );
         tray.view.profiles.clear();
         assert_eq!(tray.aimed(), None);
         tray.secondary_activate(0, 0);

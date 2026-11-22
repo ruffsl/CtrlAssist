@@ -142,9 +142,21 @@ pub(crate) async fn act(
     mut clicked: mpsc::UnboundedReceiver<Action>,
     notifier: Notifier,
     quit: Arc<Notify>,
+    config: Option<std::path::PathBuf>,
 ) {
     let opening = Arc::new(std::sync::atomic::AtomicBool::new(false));
     while let Some(action) = clicked.recv().await {
+        // Not a click, and one for every notch of the wheel: kept, and
+        // nothing said of it.
+        let action = match action {
+            Action::Aim(name) => {
+                if let Some(config) = &config {
+                    notify::save_target(config, name).await;
+                }
+                continue;
+            }
+            other => other,
+        };
         // Said as it is taken up, so that a click that led nowhere can
         // be told from one that was never made.
         info!(action = action.named(), "an action from the menu");
@@ -153,6 +165,8 @@ pub(crate) async fn act(
                 quit.notify_one();
                 return;
             }
+            // Taken above.
+            Action::Aim(_) => continue,
             Action::Settings => {
                 // On a task of its own: a window that is starting takes
                 // a while to answer, and the menu's other clicks don't
@@ -297,7 +311,13 @@ mod tests {
         let tray = Arc::new(Mutex::new(PadTray::new(actions)));
         let handle = Handle::Headless(Arc::clone(&tray));
         tokio::spawn(follow(client.clone(), handle, notifier.clone()));
-        tokio::spawn(act(client, clicked, notifier, Arc::new(Notify::new())));
+        tokio::spawn(act(
+            client,
+            clicked,
+            notifier,
+            Arc::new(Notify::new()),
+            None,
+        ));
         Rig {
             _dir: dir,
             daemon: Some(daemon),

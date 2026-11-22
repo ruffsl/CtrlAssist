@@ -78,11 +78,10 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     // With no StatusNotifier host the spawn still succeeds: the icon
     // registers if a host appears later, and notifications work meanwhile.
     // Only a failure of the session bus itself ends up here.
-    let handle = match PadTray::new(actions)
-        .assume_sni_available(true)
-        .spawn()
-        .await
-    {
+    let mut tray = PadTray::new(actions);
+    // The profile last used before this start, if it was kept.
+    tray.target = notify::load_target(&options.config);
+    let handle = match tray.assume_sni_available(true).spawn().await {
         Ok(handle) => Handle::Desktop(handle),
         Err(error) => {
             warn!(%error, "the tray icon can't be shown; nothing to do but wait");
@@ -95,7 +94,13 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     info!(socket = %options.socket.display(), "the tray is up");
     let quit = Arc::new(Notify::new());
     tokio::spawn(follow(daemon.clone(), handle.clone(), notifier.clone()));
-    tokio::spawn(act(daemon, clicked, notifier, Arc::clone(&quit)));
+    tokio::spawn(act(
+        daemon,
+        clicked,
+        notifier,
+        Arc::clone(&quit),
+        Some(options.config.clone()),
+    ));
     tokio::select! {
         outcome = tokio::signal::ctrl_c() => outcome.context("waiting to be stopped")?,
         () = quit.notified() => {}

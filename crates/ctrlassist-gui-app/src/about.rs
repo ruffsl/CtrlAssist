@@ -277,7 +277,7 @@ pub fn rows(parts: &Parts) -> Vec<AboutComponentRow> {
         ),
         (
             "cli",
-            "Command line",
+            "CLI",
             // Nothing in parens: the row then has no folder button, and
             // the command has no files of its own to show.
             String::new(),

@@ -100,13 +100,42 @@ impl Notifier {
     }
 }
 
-/// `tray.toml`: the switches, under a schema number.
+/// `tray.toml`: the switches and the profile last used, under a schema
+/// number.
 #[derive(Serialize, Deserialize)]
 struct Persisted {
     #[serde(default = "schema")]
     schema: u32,
+    /// The profile a middle click on the icon acts on: the last one
+    /// started, stopped or scrolled to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
     #[serde(flatten)]
     settings: NotificationSettings,
+}
+
+/// One write of `tray.toml` at a time: the switches and the profile
+/// last used are written from different tasks, each keeping what the
+/// file holds of the other.
+static WRITING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn read_persisted(path: &Path) -> Option<Persisted> {
+    toml::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+/// The profile last used, as `path` keeps it; none where it keeps none
+/// or can't be read.
+#[must_use]
+pub fn load_target(path: &Path) -> Option<String> {
+    read_persisted(path)?.target
+}
+
+/// Keeps `target` as the profile last used, beside the switches the
+/// file holds.
+pub(crate) async fn save_target(path: &Path, target: String) {
+    let _one = WRITING.lock().await;
+    let settings = load_settings(path).unwrap_or_default();
+    write_persisted(path, settings, Some(target)).await;
 }
 
 fn schema() -> u32 {
@@ -163,11 +192,24 @@ fn read_for_reload(
         .map_err(|error| unreadable(error.to_string()))
 }
 
-/// Writes the switches to `path`, off the runtime's threads since the
-/// write waits for the disk. Says whether the file now holds them.
+/// Writes the switches to `path`, beside the profile last used that it
+/// holds. Says whether the file now holds them.
 async fn save_settings(path: &Path, settings: NotificationSettings) -> bool {
+    let _one = WRITING.lock().await;
+    let target = load_target(path);
+    write_persisted(path, settings, target).await
+}
+
+/// Writes `tray.toml`, off the runtime's threads since the write waits
+/// for the disk. Says whether the file now holds what was given.
+async fn write_persisted(
+    path: &Path,
+    settings: NotificationSettings,
+    target: Option<String>,
+) -> bool {
     let persisted = Persisted {
         schema: schema(),
+        target,
         settings,
     };
     let path = path.to_path_buf();
@@ -367,4 +409,40 @@ async fn open_and_serve(
             );
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The switches and the profile last used share a file, written
+    /// from different tasks: each write keeps what the other wrote.
+    #[tokio::test]
+    async fn the_switches_and_the_profile_last_used_keep_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tray.toml");
+        assert_eq!(load_target(&path), None);
+
+        save_target(&path, "couch".to_string()).await;
+        assert_eq!(load_target(&path).as_deref(), Some("couch"));
+        assert_eq!(
+            load_settings(&path).unwrap(),
+            NotificationSettings::default()
+        );
+
+        let quieter = NotificationSettings {
+            pad_connection: false,
+            ..NotificationSettings::default()
+        };
+        assert!(save_settings(&path, quieter).await);
+        assert_eq!(load_target(&path).as_deref(), Some("couch"));
+
+        save_target(&path, "desk".to_string()).await;
+        assert_eq!(load_target(&path).as_deref(), Some("desk"));
+        assert_eq!(load_settings(&path).unwrap(), quieter);
+
+        // A file from before the profile was kept has none.
+        std::fs::write(&path, "schema = 1\nsetup_started = false\n").unwrap();
+        assert_eq!(load_target(&path), None);
+    }
 }
