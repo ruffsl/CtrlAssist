@@ -382,6 +382,7 @@ export component AppWindow inherits Window {
     callback view-release-clicked();
     callback report-issue-clicked();
     callback view-notices-clicked();
+    callback copy-diagnostic-clicked();
     // Reveal a part's files in the file manager.
     callback open-config-folder(string);
     in-out property <Pane> active-pane: Pane.pads;
@@ -751,6 +752,7 @@ export component AppWindow inherits Window {
                         view-release-clicked => { root.view-release-clicked(); }
                         report-issue-clicked => { root.report-issue-clicked(); }
                         view-notices-clicked => { root.view-notices-clicked(); }
+                        copy-diagnostic-clicked => { root.copy-diagnostic-clicked(); }
                         open-config-folder(p) => { root.open-config-folder(p); }
                     }
                 }

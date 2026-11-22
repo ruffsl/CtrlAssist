@@ -6,6 +6,7 @@
 
 pub mod about;
 mod couch;
+pub mod diagnostic;
 mod file_manager;
 mod icon_theme;
 mod icons;
@@ -103,7 +104,6 @@ pub fn run() -> Result<()> {
     let app = AppWindow::new()?;
     let nav = nav::wire(&app);
     icons::load(&app);
-    about::wire(&app);
 
     // The daemon: connected to whether or not it is there yet, and
     // followed from then on.
@@ -111,6 +111,7 @@ pub fn run() -> Result<()> {
         .block_on(ctrlassist::DaemonClient::connect(&socket))
         .context("couldn't open a session for the daemon's socket")?;
     state::wire_reload(&app, &daemon);
+    about::wire(&app, &daemon);
     rt.spawn(state::follow(daemon, app.as_weak()));
 
     keys::bind_key_router(&app);

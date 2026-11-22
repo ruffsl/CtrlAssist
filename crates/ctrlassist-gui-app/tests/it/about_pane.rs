@@ -106,6 +106,7 @@ fn the_pane_shows_the_rows_the_window_holds() {
         "about-brand-link",
         "about-version-chip",
         "about-issue-button",
+        "about-diagnostics-button",
         "about-notices-button",
     ] {
         assert!(find_by_accessible_id(&app, id).is_some(), "{id}");

@@ -211,7 +211,7 @@ export component AboutPane inherits Rectangle {
         brand.focus();
     }
     // The header's two lines are two rows for the arrows: the brand
-    // link with the version chip, then Report issue.
+    // link with the version chip, then Diagnostics and Report issue.
     property <int> header-row-1;
     property <int> header-row-2;
     init => {
@@ -223,6 +223,7 @@ export component AboutPane inherits Rectangle {
     callback view-release-clicked();
     callback report-issue-clicked();
     callback view-notices-clicked();
+    callback copy-diagnostic-clicked();
     callback open-config-folder(string);
 
     background: Theme.surface-alt;
@@ -361,6 +362,18 @@ export component AboutPane inherits Rectangle {
                     HorizontalLayout {
                         alignment: end;
                         spacing: Design.gap-stack;
+                        IconBtn {
+                            nav-row: root.header-row-2;
+                            source: Clipboard.copy-icon;
+                            label: @tr("Diagnostics");
+                            tip: @tr("Copy diagnostics to clipboard");
+                            // As tall as the Report issue link beside it;
+                            // its width grows with its label.
+                            height: Design.size-input;
+                            framed: true;
+                            accessible-id: "about-diagnostics-button";
+                            clicked => { root.copy-diagnostic-clicked(); }
+                        }
                         UriBtn {
                             nav-row: root.header-row-2;
                             text: @tr("Report issue");

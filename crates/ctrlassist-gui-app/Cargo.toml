@@ -26,12 +26,14 @@ ctrlassist-gui = { workspace = true }
 ctrlassist-icons = { workspace = true }
 ctrlassist-protocol = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 slint = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 webbrowser = { workspace = true }
+wl-clipboard-rs = { workspace = true }
 zbus = { workspace = true }
 
 [dev-dependencies]

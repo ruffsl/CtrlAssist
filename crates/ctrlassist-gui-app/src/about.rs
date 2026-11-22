@@ -8,10 +8,12 @@
 
 use std::path::Path;
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use ctrlassist::DaemonClient;
+use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
 use tracing::warn;
 
-use crate::{AboutComponentRow, AppWindow, ServiceHealth, on_ui};
+use crate::toast::show_toast;
+use crate::{AboutComponentRow, AppWindow, Clipboard, ServiceHealth, diagnostic, on_ui};
 
 /// This window's release, shown in the header's chip, and the one each
 /// part's health is judged against.
@@ -316,9 +318,63 @@ fn open(what: &str, url: &str) {
     }
 }
 
-/// Sets the pane's fixed parts, binds its links, and looks for the
-/// command line once.
-pub(crate) fn wire(app: &AppWindow) {
+/// The diagnostic bundle of this moment: the pane's rows, what the
+/// mirror holds of the daemon, and facts of this machine.
+fn diagnostic_bundle(app: &AppWindow, daemon: &DaemonClient) -> String {
+    let parts = app
+        .get_about_components()
+        .iter()
+        .map(|row| diagnostic::Part {
+            name: row.name.to_string(),
+            version: row.version.to_string(),
+            running: row.online,
+            chip: row.chip.to_string(),
+        })
+        .collect();
+    diagnostic::bundle(&diagnostic::Inputs {
+        parts,
+        daemon: daemon.daemon_state().ok().flatten(),
+        pads: daemon.list_pads().unwrap_or_default(),
+        setups: daemon.list_setups().unwrap_or_default(),
+        profiles: daemon.list_profiles().unwrap_or_default(),
+        machine: diagnostic::Machine::read(),
+    })
+}
+
+/// Binds the clipboard every Copy button goes through: the text onto
+/// the Wayland clipboard, then a toast naming what was copied.
+fn wire_clipboard(app: &AppWindow) {
+    let weak = app.as_weak();
+    app.global::<Clipboard>().on_copy(move |value, label| {
+        use wl_clipboard_rs::copy::{MimeType, Options, Source};
+        let source = Source::Bytes(value.as_bytes().to_vec().into_boxed_slice());
+        if let Err(error) = Options::new().copy(source, MimeType::Text) {
+            warn!(%error, "the clipboard couldn't be written");
+            return;
+        }
+        let message = if label.is_empty() {
+            "Copied to clipboard.".to_string()
+        } else {
+            format!("Copied {label}.")
+        };
+        show_toast(weak.clone(), &message);
+    });
+}
+
+/// Sets the pane's fixed parts, binds its links and buttons, and looks
+/// for the command line once.
+pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient) {
+    wire_clipboard(app);
+    let (weak, client) = (app.as_weak(), daemon.clone());
+    app.on_copy_diagnostic_clicked(move || {
+        if let Some(app) = weak.upgrade() {
+            let bundle = diagnostic_bundle(&app, &client);
+            app.global::<Clipboard>().invoke_copy(
+                SharedString::from(bundle),
+                SharedString::from("diagnostic info"),
+            );
+        }
+    });
     app.set_gui_version(SharedString::from(GUI_VERSION));
     refresh(app);
     app.on_view_source_clicked(|| open("the repository", REPO_URL));

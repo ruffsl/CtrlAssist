@@ -1,4 +1,5 @@
-//! Puts the third-party license bundle where `about.rs` embeds it from.
+//! Puts the third-party license bundle where `about.rs` embeds it from,
+//! and tells the crate what it was built for.
 //!
 //! The bundle is written by `just licenses-html` (cargo-about), which the
 //! commit hooks and every package build run; it isn't kept in the
@@ -21,6 +22,11 @@ fn main() {
          installs it under <code>share/doc/ctrlassist</code>.</p>"
             .to_string()
     });
+    // What the window was built for, for the diagnostic bundle.
+    println!(
+        "cargo::rustc-env=CTRLASSIST_BUILD_TARGET={}",
+        std::env::var("TARGET").expect("cargo sets TARGET for build scripts")
+    );
     let out =
         PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR for build scripts"))
             .join("THIRD-PARTY-LICENSES.html");
