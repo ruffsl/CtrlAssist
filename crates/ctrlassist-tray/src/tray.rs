@@ -7,6 +7,7 @@ use ctrlassist::form;
 use ctrlassist_icons::Variant;
 use ksni::menu::{CheckmarkItem, MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -89,6 +90,9 @@ pub struct PadTray {
     pub target: Option<String>,
     /// How far the wheel has turned toward its next notch, in the
     /// wheel's units, signed by direction.
+    /// The profiles picked at whose pick the daemon hasn't published
+    /// yet, each with its text as it was kept and as picked.
+    picked: BTreeMap<String, (String, String)>,
     wheel: i32,
     /// When the wheel last turned.
     turned: Option<Instant>,
@@ -117,6 +121,7 @@ impl PadTray {
             view: View::default(),
 
             target: None,
+            picked: BTreeMap::new(),
             wheel: 0,
             turned: None,
             actions,
@@ -125,7 +130,23 @@ impl PadTray {
 
     /// Takes a new view. A setup that came or went since the last is the
     /// profile last used, whoever started or stopped it.
-    pub fn see(&mut self, view: View) {
+    pub fn see(&mut self, mut view: View) {
+        // A profile picked at here is shown as picked until the daemon
+        // publishes it so: a view read before it did would undo the
+        // pick, and the next would be built on the profile without it.
+        self.picked.retain(|name, (was, picked)| {
+            let Some(kept) = view.profiles.iter_mut().find(|kept| kept.name == *name) else {
+                return false;
+            };
+            // Still as it was: the pick hasn't arrived. As picked, it
+            // has. Anything else is someone else's change, which stands.
+            if kept.toml != *was {
+                return false;
+            }
+            kept.toml.clone_from(picked);
+            kept.unset = ctrlassist_protocol::profile::Profile::unchosen(picked);
+            true
+        });
         if self.view.hydrated && view.hydrated {
             let changed = view
                 .setups
@@ -142,6 +163,13 @@ impl PadTray {
             }
         }
         self.view = view;
+    }
+
+    /// Shows the profiles as the daemon keeps them, after it refused a
+    /// pick at `name`.
+    pub fn unpick(&mut self, name: &str, kept: Vec<ctrlassist::Profile>) {
+        self.picked.remove(name);
+        self.view.profiles = kept;
     }
 
     /// Makes `name` the profile last used, and has it kept if it
@@ -221,9 +249,15 @@ impl PadTray {
                 };
                 values.insert(key, value);
                 let toml = form::to_toml(fields, &values);
-                // Held here as picked until the daemon publishes it, so
-                // that a second pick made at once builds on the first.
+                // Shown as picked until the daemon publishes it, so that
+                // a second pick made at once builds on the first.
+                let was = self
+                    .picked
+                    .remove(&profile)
+                    .map_or_else(|| kept.toml.clone(), |(was, _)| was);
                 kept.toml.clone_from(&toml);
+                kept.unset = ctrlassist_protocol::profile::Profile::unchosen(&toml);
+                self.picked.insert(profile.clone(), (was, toml.clone()));
                 Action::Put {
                     name: profile,
                     toml,
@@ -653,6 +687,30 @@ mod tests {
         assert!(second.contains("identity = \"xbox\""), "{second}");
         assert!(second.contains("assist = \"address:8bitdo\""), "{second}");
         assert_eq!(tray.view.profiles[0].toml, second);
+        // A view read before the daemon published the pick doesn't undo
+        // it; one that has it settles it; and a change from elsewhere
+        // made meanwhile stands.
+        let kept = view(None, Hiding::Service);
+        tray.see(kept.clone());
+        assert_eq!(tray.view.profiles[0].toml, second);
+        let mut arrived = kept;
+        arrived.profiles[0].toml.clone_from(&second);
+        tray.see(arrived.clone());
+        assert!(tray.picked.is_empty());
+        tray.activate(Command::set("couch", "rumble", "assist"));
+        let _ = clicked.try_recv();
+        let mut elsewhere = arrived.clone();
+        elsewhere.profiles[0].toml = crate::state::tests::COUCH.replace("toggle", "average");
+        tray.see(elsewhere.clone());
+        assert_eq!(tray.view.profiles[0].toml, elsewhere.profiles[0].toml);
+        assert!(tray.picked.is_empty());
+        // One the daemon refused is put back as kept.
+        tray.activate(Command::set("couch", "rumble", "assist"));
+        let _ = clicked.try_recv();
+        tray.unpick("couch", elsewhere.profiles.clone());
+        tray.see(elsewhere.clone());
+        assert_eq!(tray.view.profiles[0].toml, elsewhere.profiles[0].toml);
+        tray.see(arrived);
         // Another mode keeps what it has a use for, and drops the rest.
         tray.activate(Command::set("couch", "mode", "unicast"));
         let (_, other) = put(clicked.try_recv());

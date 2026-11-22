@@ -213,7 +213,8 @@ pub(crate) async fn act(
                 // what is kept again.
                 if outcome.is_err() {
                     let kept = daemon.list_profiles().unwrap_or_default();
-                    handle.update(move |tray| tray.view.profiles = kept).await;
+                    let name = name.clone();
+                    handle.update(move |tray| tray.unpick(&name, kept)).await;
                 }
                 (format!("Couldn't change {name}"), outcome)
             }

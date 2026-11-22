@@ -194,6 +194,20 @@ pub(crate) fn capitalized(name: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The most of a pad's name a row of a profile's menu or a line of the
+/// tooltip shows, in characters: a long name widens every row of the
+/// menu, and a desktop wraps a tooltip's long lines.
+const NAME_MAX: usize = 28;
+
+/// A pad's name cut to fit, with "…" for what was cut.
+pub(crate) fn short(name: &str) -> String {
+    if name.chars().count() <= NAME_MAX {
+        return name.to_string();
+    }
+    let kept: String = name.chars().take(NAME_MAX - 1).collect();
+    format!("{}…", kept.trim_end())
+}
+
 /// The name a game sees a virtual pad of `identity` under.
 pub(crate) fn virtual_name(view: &View, identity: &str) -> String {
     view.identities
@@ -248,8 +262,8 @@ fn control_entries(setup: &Setup, entries: &mut Vec<Entry>) {
 fn part_entries(view: &View, setup: &Setup, entries: &mut Vec<Entry>) {
     for source in &setup.sources {
         let pad = match (&source.pad, source.present) {
-            (Some(pad), true) => view.pad_name(pad).to_string(),
-            (Some(pad), false) => format!("{} (disconnected)", view.pad_name(pad)),
+            (Some(pad), true) => short(view.pad_name(pad)),
+            (Some(pad), false) => format!("{} (disconnected)", short(view.pad_name(pad))),
             (None, _) => "waiting for a pad that fits".to_string(),
         };
         entries.push(said(
@@ -268,7 +282,7 @@ fn part_entries(view: &View, setup: &Setup, entries: &mut Vec<Entry>) {
             format!(
                 "{}: {}{made}",
                 capitalized(&sink.name),
-                virtual_name(view, &sink.identity)
+                short(&virtual_name(view, &sink.identity))
             ),
         ));
     }
@@ -328,10 +342,12 @@ fn pad_entry(view: &View, name: &str, values: &Values, field: &Field) -> Entry {
         .collect();
     let selected = meant.and_then(|meant| view.pads.iter().position(|pad| pad.id == meant.id));
     // A pad the profile names that isn't known goes by what it wrote.
+    // Cut short on the profile's own menu, where a long name widens
+    // every row; the pads to pick from, under it, are named in full.
     let label = match (meant, picked) {
-        (Some(pad), _) if !pad.connected => format!("{} (disconnected)", pad.name),
-        (Some(pad), _) => pad.name.clone(),
-        (None, Some(value)) => value.to_string(),
+        (Some(pad), _) if !pad.connected => format!("{} (disconnected)", short(&pad.name)),
+        (Some(pad), _) => short(&pad.name),
+        (None, Some(value)) => short(value),
         (None, None) => "not chosen".to_string(),
     };
     sub(
@@ -866,6 +882,33 @@ default ✓ (Not set up) >
         assert_eq!(
             choices[1].command,
             Command::set("default", "primary", "address:8bitdo")
+        );
+    }
+
+    /// A pad's long name is cut short on its profile's menu, and in
+    /// full where pads are picked from and under Pads.
+    #[test]
+    fn a_long_pad_name_is_cut_on_a_profile_s_menu_and_whole_where_pads_are_listed() {
+        const LONG: &str = "Sony Interactive Entertainment DualSense Wireless Controller";
+        let mut view = with_default(Some(Phase::Running));
+        view.pads[0].name = LONG.to_string();
+        let menu = outline(&menu(&view));
+        assert!(
+            menu.contains(&format!(
+                "  Primary: Sony Interactive Entertainm… >\n    (o) {LONG}\n"
+            )),
+            "{menu}"
+        );
+        assert!(
+            menu.contains(&format!("\n  {LONG} (in couch) >\n")),
+            "{menu}"
+        );
+        // So for a profile no form can show, which says its parts.
+        view.profiles[0].toml = "[source.a]\npad = \"model:0001:0001\"\n".to_string();
+        let menu = outline(&super::menu(&view));
+        assert!(
+            menu.contains("  - Primary: Sony Interactive Entertainm…\n"),
+            "{menu}"
         );
     }
 

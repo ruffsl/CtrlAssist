@@ -8,7 +8,7 @@ use ctrlassist::form::{self, Kind, PRESET};
 use ctrlassist::{Pad, Phase, Profile, Setup};
 use ctrlassist_protocol::profile::{DEFAULT, PadRef, Profile as Checked};
 
-use crate::menu::{self, capitalized, virtual_name};
+use crate::menu::{self, capitalized, short, virtual_name};
 use crate::state::View;
 
 /// The mark before the profile a middle click acts on, as TisVlay's
@@ -18,19 +18,6 @@ const TARGET: &str = "►";
 
 /// The mark before the pad that has control.
 const HAS_CONTROL: &str = "●";
-
-/// The most of a pad's name a line shows, in characters: a desktop
-/// wraps a tooltip's long lines, which breaks the list's indenting.
-const NAME_MAX: usize = 28;
-
-/// A pad's name cut to fit a line, with "…" for what was cut.
-fn short(name: &str) -> String {
-    if name.chars().count() <= NAME_MAX {
-        return name.to_string();
-    }
-    let kept: String = name.chars().take(NAME_MAX - 1).collect();
-    format!("{}…", kept.trim_end())
-}
 
 fn marked(name: &str, target: Option<&str>) -> &'static str {
     if target == Some(name) { TARGET } else { " " }
