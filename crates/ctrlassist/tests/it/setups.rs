@@ -705,7 +705,7 @@ async fn a_profile_that_asks_to_starts_by_itself_once_its_pads_are_there() {
     let (_dir, socket) = socket();
     let daemon = start_daemon(&socket).await;
     let client = hydrated(&socket).await;
-    let profile = format!("{}auto-start = true\n", priority(0x8201, 0x8202));
+    let profile = format!("{}managed = true\n", priority(0x8201, 0x8202));
     let absent = async |client: &DaemonClient| {
         // Long enough for a start to have shown, had one been coming.
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -833,7 +833,7 @@ async fn an_update_is_taken_as_the_setup_runs_or_restarts_it_and_says_which() {
     south_is(&mut game_before, false).await;
     // A further update keeps who had control.
     client
-        .put_profile("couch", &format!("{toggle}auto-start = true\n"))
+        .put_profile("couch", &format!("{toggle}managed = true\n"))
         .await
         .unwrap();
     assert!(!client.update_setup("couch", true).await.unwrap());

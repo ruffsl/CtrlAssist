@@ -59,8 +59,8 @@ export struct ProfileRow {
     word-tone: string,
     // A line of how it is, beside its Start or Stop.
     note: string,
-    // It asks to start whenever its pads are connected.
-    auto-start: bool,
+    // The daemon starts it whenever its pads are connected.
+    managed: bool,
     // It can be started now, as far as the window can tell.
     can-start: bool,
     // Where its setup is among `Setups.rows`; -1 for none.

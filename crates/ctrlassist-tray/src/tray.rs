@@ -474,7 +474,7 @@ mod toolkit_tests {
         );
         // The quick-start choices changed where they are kept.
         assert!(tray.quick_settled);
-        assert_eq!(tray.quick.values["auto-start"], "true");
+        assert_eq!(tray.quick.values["managed"], "true");
         assert_eq!(tray.quick.values["assist"], "serial:xbox");
 
         // With no StatusNotifier host the tray stays, for its notifications.

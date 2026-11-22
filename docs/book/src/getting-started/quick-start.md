@@ -21,7 +21,7 @@ To stop, open **quick** in the tray and click **Stop**. The real controllers com
 Two more choices in Quick start:
 
 - **Rumble goes to** picks who feels the game's rumble: both, the primary only, or the assist only.
-- **Start by itself** makes this arrangement start whenever both controllers are plugged in, from then on.
+- **Managed** has CtrlAssist start this arrangement itself whenever both controllers are plugged in, from then on. Unmanaged, you start it.
 
 Your choices are remembered: the next time you open Quick start they are as you left them.
 

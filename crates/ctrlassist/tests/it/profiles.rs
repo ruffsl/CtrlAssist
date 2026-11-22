@@ -158,7 +158,7 @@ async fn the_daemon_serves_a_preset_s_fields_and_keeps_what_they_write() {
         ("primary", "0c:27:56:4f:bd:14"),
         ("assist", "model:054c:09cc"),
         ("rumble", "assist"),
-        ("auto-start", "true"),
+        ("managed", "true"),
     ] {
         values.insert(key.to_string(), value.to_string());
     }

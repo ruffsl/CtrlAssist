@@ -1,4 +1,4 @@
 preset = "priority"  # two pads, one mux, one virtual pad
 primary = "0c:27:56:4f:bd:14"
 assist = "model:054c:09cc"  # any pad of this model
-auto-start = true  # once the daemon is up and both are connected
+managed = true  # once the daemon is up and both are connected

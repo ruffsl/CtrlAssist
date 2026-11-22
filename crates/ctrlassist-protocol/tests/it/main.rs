@@ -34,7 +34,7 @@ const FULL: &str = include_str!("fixtures/full.toml");
 #[test]
 fn a_preset_is_two_pads_a_mux_and_a_virtual_pad() {
     let plan = plan(PRESET).unwrap();
-    assert!(plan.auto_start);
+    assert!(plan.managed);
     // Sources are numbered in name order.
     let names: Vec<&str> = plan
         .sources
@@ -69,7 +69,7 @@ fn a_preset_is_two_pads_a_mux_and_a_virtual_pad() {
 #[test]
 fn the_full_form_is_the_graph_it_describes() {
     let plan = plan(FULL).unwrap();
-    assert!(!plan.auto_start);
+    assert!(!plan.managed);
     let names: Vec<&str> = plan
         .sources
         .iter()
@@ -630,7 +630,7 @@ mod form {
             ("assist", "model:054c:09cc"),
             ("identity", "generic"),
             ("rumble", "both"),
-            ("auto-start", "false"),
+            ("managed", "false"),
             // Not this preset's, and so not written.
             ("outputs", "4"),
         ] {
@@ -644,7 +644,7 @@ mod form {
         let read = form::from_toml(&fields, &toml).unwrap();
         assert_eq!(read["identity"], "generic");
         assert_eq!(read["rumble"], "both");
-        assert_eq!(read["auto-start"], "false");
+        assert_eq!(read["managed"], "false");
         assert_eq!(read.get("outputs"), None);
     }
 

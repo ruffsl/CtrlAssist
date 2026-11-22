@@ -127,15 +127,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
         .collect();
     assert_eq!(
         keys,
-        [
-            "preset",
-            "primary",
-            "assist",
-            "identity",
-            "rumble",
-            "hide",
-            "auto-start"
-        ],
+        ["preset", "primary", "assist", "identity", "rumble", "hide"],
         "a preset of two pads has no pad count"
     );
     let preset = field(couch, "preset");
@@ -169,7 +161,8 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     assert_eq!(assist.value, "model:054c:09cc");
     // What the profile leaves out stands at its default.
     assert_eq!(field(couch, "rumble").value_label, "Both pads");
-    assert!(!field(couch, "auto-start").checked);
+    // Whether it is managed is the row's own, not a field of the form.
+    assert!(!couch.managed);
 
     // How each is, in a word, for the list and the chip.
     let said = |name: &str| {
@@ -261,10 +254,7 @@ fn what_the_window_holds_shows_as_unfinished_until_it_is_a_profile() {
         .iter()
         .map(|field| field.key.to_string())
         .collect();
-    assert_eq!(
-        keys,
-        ["preset", "pad", "outputs", "identity", "hide", "auto-start"]
-    );
+    assert_eq!(keys, ["preset", "pad", "outputs", "identity", "hide"]);
     let outputs = field(den, "outputs");
     assert_eq!((outputs.number, outputs.min, outputs.max), (3, 1, 8));
     assert_eq!(field(den, "pad").value_label, "");
@@ -476,9 +466,9 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
     activate_shown(&app, "dialog-confirm");
     assert_eq!(asked.borrow().last().unwrap(), "duplicate couch couch-copy");
 
-    // A switch in the form sets its field at once.
-    activate_shown(&app, "profiles-field-auto-start");
-    assert_eq!(asked.borrow().last().unwrap(), "set couch auto-start true");
+    // The Managed switch, in the STATUS group, sets its field at once.
+    activate_shown(&app, "profiles-managed");
+    assert_eq!(asked.borrow().last().unwrap(), "set couch managed true");
 
     // A field that isn't at its default can be put back; one that is
     // has nothing to reset.

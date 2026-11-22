@@ -72,4 +72,4 @@ systemctl --user restart ctrlassist-daemon ctrlassist-tray
 
 ## After the daemon stops
 
-Stopping the daemon, or it crashing, removes every virtual controller and gives the real ones back, hidden or not. A game will see its controller disconnect. Arrangements with `auto-start` come back when the daemon does.
+Stopping the daemon, or it crashing, removes every virtual controller and gives the real ones back, hidden or not. A game will see its controller disconnect. Arrangements with `managed` come back when the daemon does.

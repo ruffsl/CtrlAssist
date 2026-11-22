@@ -1574,7 +1574,7 @@ impl Reactor {
     }
 
     /// Starts each kept profile that asks to start by itself and now
-    /// can: one with `auto-start`, nothing wrong with it, no setup of its
+    /// can: one with `managed`, nothing wrong with it, no setup of its
     /// name, and every pad it names connected and free. `because` is the
     /// pad whose connecting prompted this, if one did: then only profiles
     /// that pad fits are looked at, so a setup the user stopped isn't
@@ -1597,7 +1597,7 @@ impl Reactor {
                     .iter()
                     .any(|source| self.book.fits(pad, &source.pad))
             });
-            if plan.auto_start && prompted && self.ready(&plan) {
+            if plan.managed && prompted && self.ready(&plan) {
                 info!(
                     profile = name,
                     "a profile starts by itself: its pads are connected"
@@ -1615,7 +1615,7 @@ impl Reactor {
             .profile(name)
             .and_then(|profile| Profile::check(&profile.toml).ok());
         if let Some(plan) = plan
-            && plan.auto_start
+            && plan.managed
             && !self.setups.entries.contains_key(name)
             && self.ready(&plan)
         {

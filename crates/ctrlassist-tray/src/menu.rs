@@ -553,7 +553,7 @@ Quick start >
     (o) Hidden
     ( ) Grabbed
     ( ) Visible
-  [ ] Start by itself
+  [ ] Managed
   ---
   - Start as `quick`
 Pads (2 connected) >

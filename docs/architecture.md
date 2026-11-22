@@ -11,6 +11,7 @@ This document describes the design and the reasons for it. [What the platform do
 | pad | A physical controller. |
 | virtual pad | A controller the daemon creates for games to read. |
 | primary, assist | The two roles in an assist setup: the player's pad and the helping pad. |
+| managed | A profile the daemon starts by itself whenever its pads are connected, by `managed = true`. One that isn't is started by hand. |
 | source, sink | A pad, or a virtual pad, as it appears in a graph. |
 | node | A transform between sources and sinks: a mux or a demux. |
 | control | One button or axis on a pad. |
@@ -195,7 +196,7 @@ A single reactor task owns the profiles, the known pads and the running setups, 
 
 A setup goes by the name of the profile it runs, and moves through starting, running, held and failed. Starting covers the round trip to the hiding service and creating the virtual pads; that work blocks, so it is done off the reactor and comes back to it as a result. Held means a pad it needs is missing: the virtual pads stay, the missing pad reads as at rest, and the rest carries on. A setup may start held, and a start that fails leaves nothing behind; failed is for a setup that was running and stopped working, which stays listed until it is stopped.
 
-A profile with `auto-start` is started by the daemon when it can run, not merely be held: when the daemon starts, when the profile is put, and when a pad it names connects, if by then every pad it names is connected and free. A setup the user stopped stays stopped until one of its pads is plugged in again.
+A **managed** profile, one with `managed = true`, is started by the daemon when it can run, not merely be held: when the daemon starts, when the profile is put, and when a pad it names connects, if by then every pad it names is connected and free. A setup the user stopped stays stopped until one of its pads is plugged in again.
 
 A node that selects, a mux that follows its switch or a demux that sends to one output at a time, has its choices and the one selected in the setup's state. The input thread reports each change of selection, whether from the switch button or from `select`, which names a choice or asks for the next. A mux doesn't hand over to a pad that isn't there.
 
@@ -358,7 +359,7 @@ A profile is a TOML file the daemon owns, kept under a name of lowercase letters
 preset = "priority"          # two pads, one mux, one virtual pad
 primary = "0c:27:56:4f:bd:14"
 assist  = "model:054c:09cc"  # any pad of this model
-auto-start = true            # once the daemon is up and both are connected
+managed = true            # once the daemon is up and both are connected
 ```
 
 The full form names sources, nodes and sinks, here one helper assisting two players in turn:

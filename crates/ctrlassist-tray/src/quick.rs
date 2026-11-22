@@ -154,17 +154,17 @@ mod tests {
         let fields = form::fields();
         for preset in presets(&fields) {
             for rumble in choices_of(&fields, "rumble") {
-                for (identity, auto_start) in [(Identity::Generic, false), (Identity::Xbox, true)] {
+                for (identity, managed) in [(Identity::Generic, false), (Identity::Xbox, true)] {
                     let mut quick = chosen();
                     quick.set(PRESET, &preset.value);
                     quick.set("rumble", rumble);
                     quick.set("identity", identity.as_str());
-                    quick.set("auto-start", &auto_start.to_string());
+                    quick.set("managed", &managed.to_string());
                     let toml = quick.profile(&fields).unwrap();
                     let plan = Profile::check(&toml).unwrap_or_else(|problem| {
                         unreachable!("{quick:?} made a wrong profile: {problem}\n{toml}")
                     });
-                    assert_eq!(plan.auto_start, auto_start);
+                    assert_eq!(plan.managed, managed);
                     assert_eq!(plan.sinks[0].identity, identity);
                     let back = Quick::from_profile(&fields, &toml).unwrap();
                     assert_eq!(back.text(&fields), toml);

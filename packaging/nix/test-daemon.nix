@@ -269,7 +269,7 @@ pkgs.testers.runNixOSTest {
 
     with subtest("a daemon that is killed gets its pads restored and its virtual pad removed"):
         # Kept with the asking to start by itself, for the daemon after it.
-        machine.succeed("printf '%s\\n' 'auto-start = true' >> /tmp/couch.toml")
+        machine.succeed("printf '%s\\n' 'managed = true' >> /tmp/couch.toml")
         cli("profile", "put", "/tmp/couch.toml")
         phase_is("running")
         assert not alice_can_open(HID) and not alice_can_open(PLAIN)

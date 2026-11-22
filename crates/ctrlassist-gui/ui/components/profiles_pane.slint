@@ -380,7 +380,7 @@ component FieldRow inherits Rectangle {
 
 // The detail's header, as a profile's is in TisVlay: the tile, the name
 // with rename and delete beside it, the pads it uses as links, and two
-// chips stacked at the right, whether it starts by itself and how it is.
+// chips stacked at the right, whether it is managed and how it is.
 component ProfileDetailHeader inherits Rectangle {
     in property <ProfileRow> profile;
     in property <bool> daemon-available;
@@ -503,8 +503,9 @@ component ProfileDetailHeader inherits Rectangle {
             HorizontalLayout {
                 alignment: end;
                 Chip {
-                    label: root.profile.auto-start ? @tr("Starts by itself") : @tr("Started by hand");
-                    tone: root.profile.auto-start ? "info" : "neutral";
+                    label: root.profile.managed ? @tr("Managed") : @tr("Unmanaged");
+                    tone: root.profile.managed ? "info" : "neutral";
+                    accessible-id: root.id-prefix + "profiles-managed-chip";
                 }
             }
             HorizontalLayout {
@@ -618,6 +619,42 @@ component ProfileDetail inherits Rectangle {
                                 font-size: Design.font-helper;
                                 wrap: word-wrap;
                                 accessible-id: root.id-prefix + "profiles-note";
+                            }
+                        }
+                    }
+
+                    // Whether the daemon starts it by itself, as a
+                    // TV's Managed is in TisVlay. A profile written by
+                    // hand says it in its file.
+                    managed-row := FormRow {
+                        id-prefix: root.id-prefix;
+                        label: @tr("Managed");
+                        key: "managed";
+                        help: @tr("The daemon starts a managed profile whenever every pad it names is connected. Unmanaged, it is started by hand.");
+                        HorizontalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 10px;
+                            alignment: start;
+                            VerticalLayout {
+                                alignment: center;
+                                ThemedSwitch {
+                                    accessible-label: managed-row.label;
+                                    nav-row: managed-row.row-id;
+                                    accessible-id: root.id-prefix + "profiles-managed";
+                                    checked: root.profile.managed;
+                                    enabled: root.daemon-available && root.profile.kind == "preset";
+                                    toggled(on) => {
+                                        Profiles.set-field(root.profile.name, "managed", on ? "true" : "false");
+                                    }
+                                }
+                            }
+                            if root.profile.kind != "preset": VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: @tr("Set in its file.");
+                                    color: Theme.text-faint;
+                                    font-size: Design.font-mini;
+                                }
                             }
                         }
                     }

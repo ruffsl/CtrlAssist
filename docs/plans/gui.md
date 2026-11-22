@@ -189,6 +189,8 @@ Still open: the tile of a pad from an unknown maker, which the mock-up draws as 
 
 **Answered, 2026-11-22, after packaging.** With no session bus the window opens anyway, as built. Help goes where it is now and in the gaps that are left: the header's chips, Identify, and the Settings pane's groups. Translations are the plumbing only: the domain, the template, the extract recipe and its gate, and a pseudo-locale run, with no language shipped and what Rust words left in English. Building stops here for the maintainer to use the window; help, translations and the book follow what that turns up.
 
+**Managed, for a profile the daemon starts itself** (2026-11-22, the maintainer's, from using the window). "Starts by itself" and "started by hand" give way to TisVlay's word for the like switch on a TV: a profile is **managed** when the daemon starts it whenever its pads are connected, and unmanaged when it is started by hand, as an unmanaged TV is still controlled by hand. The file's key is `managed`, where it was `auto-start`; nothing was released with the old one, and no alias reads it. The window's switch is in the STATUS group, as a TV's is, and no longer a row of the preset's fields; the header's first chip reads Managed or Unmanaged, beside the status. TisVlay's third word, Automated, for a managed TV whose automation is acting, isn't taken: Running says it.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps

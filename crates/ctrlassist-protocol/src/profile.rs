@@ -30,10 +30,11 @@ pub struct Profile {
     /// The schema version the file was written for.
     #[serde(default = "schema", skip_serializing_if = "is_current")]
     pub schema: u32,
-    /// Start this profile once the daemon is up and its pads are
-    /// connected.
+    /// Whether the daemon manages when this profile runs: it starts a
+    /// managed one once the daemon is up and its pads are connected.
+    /// One that isn't is started by hand.
     #[serde(default, skip_serializing_if = "is_false")]
-    pub auto_start: bool,
+    pub managed: bool,
 
     /// The preset, for a profile in the short form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -497,7 +498,7 @@ pub struct Plan {
     /// The virtual pads, by sink number.
     pub sinks: Vec<PlannedSink>,
     /// Whether to start it without being asked.
-    pub auto_start: bool,
+    pub managed: bool,
     /// How its pads are kept from games.
     pub hide: Hide,
 }
@@ -758,7 +759,7 @@ impl Profile {
             sources,
             nodes: node_names,
             sinks,
-            auto_start: full.auto_start,
+            managed: full.managed,
             hide: full.hide.unwrap_or_default(),
         })
     }

@@ -26,6 +26,9 @@ use crate::{
 /// The profile the tray's quick menu writes.
 const QUICK: &str = "quick";
 
+/// The key of the field that says the daemon starts the profile itself.
+const MANAGED: &str = "managed";
+
 /// What the daemon last said, for making the rows again when only what
 /// the window holds has changed.
 #[derive(Clone, Debug, Default)]
@@ -240,7 +243,9 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                     known
                         .fields
                         .iter()
-                        .filter(|field| field.applies_to(&preset))
+                        // Whether it is managed is the STATUS group's
+                        // to show, not a row of the arrangement.
+                        .filter(|field| field.applies_to(&preset) && field.key != MANAGED)
                         .map(|field| {
                             let value = values.get(&field.key).map_or("", String::as_str);
                             field_row(field, value, &known.pads)
@@ -294,7 +299,14 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 word: SharedString::from(word),
                 word_tone: SharedString::from(word_tone),
                 note: SharedString::from(note),
-                auto_start: plan.as_ref().is_some_and(|plan| plan.auto_start),
+                // A change the window holds says so before it is kept.
+                managed: values
+                    .as_ref()
+                    .and_then(|values| values.get(MANAGED))
+                    .map_or_else(
+                        || plan.as_ref().is_some_and(|plan| plan.managed),
+                        |value| value == "true",
+                    ),
                 can_start: setup.is_none() && matches!(word, "Ready" | "Waits for a pad"),
                 setup_index: running
                     .iter()

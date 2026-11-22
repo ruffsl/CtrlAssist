@@ -530,7 +530,7 @@ mod tests {
         .await;
         rig.click(Command::Quick(Edit::set("rumble", "primary")))
             .await;
-        rig.click(Command::Quick(Edit::set("auto-start", "true")))
+        rig.click(Command::Quick(Edit::set("managed", "true")))
             .await;
         rig.click(Command::QuickStart).await;
         rig.shows("quick (running) >").await;
@@ -574,7 +574,7 @@ mod tests {
         let menu = outline(&later.lock().await.entries());
         assert!(menu.contains("Primary: Tray Kept Primary >"), "{menu}");
         assert!(menu.contains("Rumble goes to: Primary only >"), "{menu}");
-        assert!(menu.contains("[x] Start by itself"), "{menu}");
+        assert!(menu.contains("[x] Managed"), "{menu}");
     }
 
     /// A daemon that knows hundreds of pads is followed like any other:

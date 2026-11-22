@@ -230,9 +230,10 @@ pub fn fields() -> Vec<Field> {
             default: Hide::default().as_str().to_string(),
         },
         Field {
-            key: "auto-start".to_string(),
-            label: "Start by itself".to_string(),
-            help: "Start whenever every pad it names is connected.".to_string(),
+            key: "managed".to_string(),
+            label: "Managed".to_string(),
+            help: "The daemon starts it whenever every pad it names is connected. Unmanaged, it is started by hand."
+                .to_string(),
             kind: Kind::Switch,
             presets: Vec::new(),
             default: "false".to_string(),
