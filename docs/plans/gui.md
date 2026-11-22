@@ -64,7 +64,9 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 
 **The tray's quick menu and the CLI move to the served schema in this plan,** so all three describe a preset the same way before the release.
 
-**The daemon gains a `reload` rpc,** with `ctrlassist reload`, that rereads profiles and settings from disk, and the sidebar keeps TisVlay's Reload button and its outcome banner. A hand edit of a profile file isn't picked up today until the daemon restarts.
+**The daemon gains a `reload` rpc,** with `ctrlassist reload`, that rereads profiles and settings from disk, and the sidebar keeps TisVlay's Reload button and its outcome banner. A hand edit of a profile file isn't picked up today until the daemon restarts. A running setup whose profile changed is brought up to it by the reload: live where the change allows, and by a restart where a virtual pad must be recreated.
+
+**The sidebar's dots are the daemon, the hiding service and the tray.** Without the hiding service pads are only grabbed, which the user should see.
 
 **Pacing:** build through, each decision made on the way recorded under For review; stop only where a rule says to ask or something needs the maintainer's hands or eyes.
 
@@ -116,6 +118,7 @@ Each is a commit or a few, with the gates run and the TisVlay commit named. Orde
 
 - **What the empty shell holds** (build step 2). All of TisVlay's widgets, tokens and theme, and the globals the widgets and the shell reach (`Nav`, `Couch`, `Help`, `Select`, `Toast`, `Errors`, `Health`, `Icons`, `Clipboard`, `Overlay`), came in at once, since `widgets.slint` and `main.slint` import them; the Rust behind navigation, couch mode and help follows in their steps, and until then those globals' callbacks do nothing. The key handling written in Slint (the rail, the pane following focus) already works and is tested. The footer shows the daemon and the tray as absent until the state step. The access banner (TisVlay's socket group) isn't copied: the daemon's socket is the user's own.
 - **Keys and couch mode** (build step 3). `keys.rs` is TisVlay's as it stands. `nav.rs` is its history with the TV and profile selections taken out: an entry remembers its pane and where focus was, and each pane adds its selection and its click-throughs as it is built. `couch.rs` is TisVlay's but for the file: TisVlay's helper keeps a hand edit's comments when it rewrites `gui.toml`, and this writes the file plain through the daemon's durable write, which became public for it. The preference's controls come with the Settings pane; until then the file and the environment variable set it. Couch mode was seen on the maintainer's desktop, forced on: maximized, scaled 1.4 over the display's 2.0, the ring on the active sidebar item.
+- **Answered, 2026-11-21:** the 2 s wait at exit stays, as TisVlay's; `gui.toml` written plain is fine.
 - **One duration came with couch mode:** on exit the window waits up to 2 s for the last preference write to reach the disk, as TisVlay's does, and says so in the log if it didn't. It bounds a write to a disk that has stopped answering; without it a hung filesystem would hold the window's process open. Flagged since a new duration is to be asked about.
 - **`just gui-start` names the package,** `-p ctrlassist-gui-app`, where TisVlay's doesn't: the window isn't in `default-members` until the packaging step puts it in the package.
 
