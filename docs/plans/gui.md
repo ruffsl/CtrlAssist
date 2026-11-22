@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** decisions being settled with the maintainer; nothing built.
-- **Next action:** the maintainer reads this draft; the open questions below are answered; then build step 1.
+- **Status:** decisions settled with the maintainer on 2026-11-21; the build is under way.
+- **Next action:** build step 1.
 - **Branch:** `feat/rewrite`, with the rewrite. Nothing is pushed.
 - **Template:** TisVlay at `5ddc2c0d` (`crates/tisvlay-gui`, `crates/tisvlay-gui-app`, `crates/tisvlay-icons`, `docs/gui/`).
 
@@ -60,6 +60,14 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 
 **A profile may name a known pad that isn't plugged in.** The form's role pickers list every known pad, the absent ones marked as such; the profile saves, and starting it waits for the pad, as the daemon already does for a source that names an exact pad.
 
+**The settings are two switches:** whether setups hide pads through the hiding service or only grab them, and whether the Steam blacklist fallback may be used. Both are on today with no way to turn them off. Starting at login and a default identity were offered and not taken.
+
+**The tray's quick menu and the CLI move to the served schema in this plan,** so all three describe a preset the same way before the release.
+
+**The daemon gains a `reload` rpc,** with `ctrlassist reload`, that rereads profiles and settings from disk, and the sidebar keeps TisVlay's Reload button and its outcome banner. A hand edit of a profile file isn't picked up today until the daemon restarts.
+
+**Pacing:** build through, each decision made on the way recorded under For review; stop only where a rule says to ask or something needs the maintainer's hands or eyes.
+
 ## What is copied, replaced and new
 
 | TisVlay | Here |
@@ -80,11 +88,8 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 
 ## Open questions
 
-1. **Which options the settings rpc holds.** Candidates: starting at login, the Steam blacklist fallback. Each is asked before the pane is built.
-2. **Whether the tray and the CLI move to the served schema in this plan** or after it.
-3. **Reload.** TisVlay's sidebar has a Reload button for hand-edited state files. Whether CtrlAssist's daemon has the same need (profiles are files it watches or not).
-4. **The live view's spike**: what it must show before the step is designed (sampling at a display rate, only while a client asks, from a copy the input thread writes without waiting).
-5. **The license bundle,** which TisVlay pins a cargo-about release for because of Slint's license files.
+1. **The live view's spike**: what it must show before the step is designed (sampling at a display rate, only while a client asks, from a copy the input thread writes without waiting).
+2. **The license bundle,** which TisVlay pins a cargo-about release for because of Slint's license files.
 
 ## Steps
 
@@ -93,11 +98,11 @@ Each is a commit or a few, with the gates run and the TisVlay commit named. Orde
 1. `build(gui): the Slint toolchain in the flake` — the pinned Slint crates in the workspace table, `slint-lsp`, `slint-viewer` and the runtime libraries in the dev shell, the license bundle's pin. Verified: the dev shell builds; `slint-viewer --version`.
 2. `feat(gui): an empty shell` — both crates, tokens, theme and its Breeze test, widgets, the shell with a sidebar and empty panes, the binary, `just gui-start` with live preview and the MCP server. Verified: the theme test; the window opens and its element tree is read over MCP.
 3. `feat(gui): keys and couch mode` — navigation, the Escape chain, the winit hook, with the copied navigation tests over the empty shell. Verified: the tests; by keys in the window.
-4. `feat(gui): the daemon's state in the window` — the mirror, the state watch, health and error slots, the reload banner if kept. Verified: tests against a daemon on a temp socket, as the tray's are.
+4. `feat(daemon): a reload rpc` with `ctrlassist reload`, then `feat(gui): the daemon's state in the window` — the mirror, the state watch, health and error slots, the Reload button and its banner. Verified: tests against a daemon on a temp socket, as the tray's are.
 5. `feat(gui): the About pane` — brings `ctrlassist-icons`. Verified: the copied About tests.
 6. `feat(gui): the Pads pane` — list, detail, identify, forget. Verified: tests with fake pads; identify on a real pad.
 7. `feat(gui): the Setups pane` — start, stop, update, selections. Verified: tests; a setup steered on real pads.
-8. `feat(protocol): a preset's fields as a served schema`, then `feat(gui): the Profiles pane and the preset form`. Verified: tests that a form's profile is what the CLI would write; a profile made and started in the window.
+8. `feat(protocol): a preset's fields as a served schema`, then `feat(gui): the Profiles pane and the preset form`, then `refactor(tray)` and `refactor(cli)`: the quick menu and the preset flags from the same schema. Verified: tests that a form's profile is what the CLI would write; a profile made and started in the window.
 9. `feat(daemon): settings, and an rpc to read and set them` with the CLI's side, `feat(tray): notification switches`, then `feat(gui): the Settings pane`. Verified: tests on both; a switch seen to silence a notification.
 10. `feat(gui): contextual help` — the overlay and the help text for each pane. Verified: the copied tests.
 11. `feat(gui): translations` — the domain, the `.pot`, the extract recipe and its gate. Verified: the gate; a pseudo-locale run.
