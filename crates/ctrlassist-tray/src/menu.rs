@@ -1,12 +1,19 @@
-//! The tray's menu as plain data, made from a view and the quick-start
-//! choices. Nothing here knows the desktop: the tray turns these entries
-//! into its toolkit's items, and tests read them as an outline.
+//! The tray's menu as plain data, made from a view. Nothing here knows
+//! the desktop: the tray turns these entries into its toolkit's items,
+//! and tests read them as an outline.
+//!
+//! A profile's menu is the window's profile detail in small: what to do
+//! with it, who has control while it runs, and for a profile in the
+//! preset form its fields, each a submenu by its kind. What there is to
+//! choose, what each choice is called and what a profile writes for it
+//! all come from the fields the daemon serves, as they do for the
+//! window's form.
 
-use ctrlassist::form::{Field, Kind, PRESET};
-use ctrlassist::{Phase, Setup};
+use ctrlassist::form::{self, Field, Kind, PRESET, Values};
+use ctrlassist::{Phase, Profile, Setup};
+use ctrlassist_protocol::profile::{DEFAULT, PadRef};
 use ctrlassist_protocol::rpc;
 
-use crate::quick::{self, Quick};
 use crate::state::View;
 
 /// What activating an entry asks for.
@@ -29,32 +36,28 @@ pub enum Command {
     Identify(String),
     /// Stop remembering a pad.
     Forget(String),
-    /// Change one of the quick-start choices. Nothing is asked of the
-    /// daemon until [`Command::QuickStart`].
-    Quick(Edit),
-    /// Write the quick-start choices as the profile `quick` and run it.
-    QuickStart,
+    /// Set one field of a profile in the preset form: it is kept so,
+    /// and a setup that runs it takes the change at once.
+    Set {
+        /// The profile.
+        profile: String,
+        /// The field's key.
+        key: String,
+        /// Its new value, as a profile writes it.
+        value: String,
+    },
     /// Open the settings window, or raise it if it is open.
     Settings,
     /// End the tray.
     Quit,
 }
 
-/// One change to the quick-start choices: a field of the preset form,
-/// and what it is set to.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Edit {
-    /// The field's key.
-    pub key: String,
-    /// Its new value, as a profile writes it.
-    pub value: String,
-}
-
-impl Edit {
-    /// Sets the field `key` to `value`.
+impl Command {
+    /// Sets the field `key` of `profile` to `value`.
     #[must_use]
-    pub fn set(key: &str, value: &str) -> Self {
-        Self {
+    pub fn set(profile: &str, key: &str, value: &str) -> Self {
+        Self::Set {
+            profile: profile.to_string(),
             key: key.to_string(),
             value: value.to_string(),
         }
@@ -96,8 +99,6 @@ pub mod icon {
     pub const HIDE: Icon = &["view-visible"];
     /// What a virtual pad presents itself as.
     pub const IDENTITY: Icon = &["edit-copy"];
-    /// Quick start.
-    pub const QUICK: Icon = &["system-run"];
     /// Forget a pad.
     pub const FORGET: Icon = &["edit-delete", "list-remove"];
     /// The daemon's status.
@@ -201,18 +202,8 @@ pub(crate) fn virtual_name(view: &View, identity: &str) -> String {
         .map_or_else(|| capitalized(identity), |known| known.name.clone())
 }
 
-/// A running setup's entries: what to do with it, then what it is made of.
-fn setup_entries(view: &View, setup: &Setup) -> Vec<Entry> {
-    let mut entries = vec![action(
-        icon::STOP,
-        "Stop",
-        Command::Stop(setup.name.clone()),
-    )];
-    if let Some(reason) = &setup.reason {
-        entries.push(Entry::Separator);
-        entries.push(said(icon::NONE, reason.clone()));
-        return entries;
-    }
+/// What a running setup's nodes select between: who has control.
+fn control_entries(setup: &Setup, entries: &mut Vec<Entry>) {
     for node in &setup.nodes {
         // A preset's one node needs no name; any other is called by its.
         let label = if node.name == "mux" {
@@ -250,7 +241,11 @@ fn setup_entries(view: &View, setup: &Setup) -> Vec<Entry> {
             }],
         ));
     }
-    entries.push(Entry::Separator);
+}
+
+/// What a running setup is made of, said and not chosen: for a profile
+/// no form can show.
+fn part_entries(view: &View, setup: &Setup, entries: &mut Vec<Entry>) {
     for source in &setup.sources {
         let pad = match (&source.pad, source.present) {
             (Some(pad), true) => view.pad_name(pad).to_string(),
@@ -277,7 +272,6 @@ fn setup_entries(view: &View, setup: &Setup) -> Vec<Entry> {
             ),
         ));
     }
-    entries
 }
 
 /// A setup's phase as the window says it, with the icon for it.
@@ -290,52 +284,59 @@ pub(crate) fn phase_label(phase: Phase) -> (&'static str, Icon) {
     }
 }
 
-/// Whether a pad can be picked in quick start: connected, not picked
-/// for another part, and in no setup but quick start's own.
-fn pickable(view: &View, id: &str, taken: &[&str]) -> (bool, String) {
-    let Some(pad) = view.pad(id) else {
-        return (false, id.to_string());
-    };
-    let name = pad.name.clone();
-    if !pad.connected {
-        return (false, format!("{name} (disconnected)"));
-    }
-    match pad.setup.as_deref() {
-        Some(setup) if setup != quick::NAME => (false, format!("{name} (in {setup})")),
-        _ => (!taken.contains(&id), name),
-    }
+/// The known pad a profile's value for a pad field means, if one does.
+fn pad_meant<'a>(view: &'a View, value: &str) -> Option<&'a ctrlassist::Pad> {
+    // By its id as it stands, or as any of the ways a profile names one.
+    view.pad(value).or_else(|| {
+        let wanted = PadRef::parse(value)?;
+        view.pads.iter().find(|pad| crate::tip::names(&wanted, pad))
+    })
 }
 
-/// A pad field: the known pads to pick from, with the one picked.
-fn pad_entry(view: &View, quick: &Quick, field: &Field) -> Entry {
-    let picked = quick.values.get(&field.key).map(String::as_str);
-    // A pad picked for another part can't be picked for this one.
-    let taken: Vec<&str> = quick
-        .pads(&view.fields)
-        .into_iter()
-        .filter(|(key, _)| *key != field.key)
-        .map(|(_, pad)| pad)
+/// A pad field of the profile `name`: the known pads to pick from, with
+/// the one picked. A pad can't be picked that isn't connected, is
+/// picked for another part, or is in another profile's setup.
+fn pad_entry(view: &View, name: &str, values: &Values, field: &Field) -> Entry {
+    let picked = values.get(&field.key).map(String::as_str);
+    let meant = picked.and_then(|value| pad_meant(view, value));
+    // The pads this profile's other parts have.
+    let taken: Vec<&str> = view
+        .fields
+        .iter()
+        .filter(|other| other.kind == Kind::Pad && other.key != field.key)
+        .filter_map(|other| values.get(&other.key))
+        .filter_map(|value| pad_meant(view, value))
+        .map(|pad| pad.id.as_str())
         .collect();
     let choices: Vec<Choice> = view
         .pads
         .iter()
         .map(|pad| {
-            let (enabled, label) = pickable(view, &pad.id, &taken);
+            let (enabled, label) = match (pad.connected, pad.setup.as_deref()) {
+                (false, _) => (false, format!("{} (disconnected)", pad.name)),
+                (true, Some(setup)) if setup != name => {
+                    (false, format!("{} (in {setup})", pad.name))
+                }
+                (true, _) => (!taken.contains(&pad.id.as_str()), pad.name.clone()),
+            };
             Choice {
                 label,
                 enabled,
-                command: Command::Quick(Edit::set(&field.key, &pad.id)),
+                command: Command::set(name, &field.key, &pad.id),
             }
         })
         .collect();
-    let selected = picked.and_then(|picked| view.pads.iter().position(|pad| pad.id == picked));
+    let selected = meant.and_then(|meant| view.pads.iter().position(|pad| pad.id == meant.id));
+    // A pad the profile names that isn't known goes by what it wrote.
+    let label = match (meant, picked) {
+        (Some(pad), _) if !pad.connected => format!("{} (disconnected)", pad.name),
+        (Some(pad), _) => pad.name.clone(),
+        (None, Some(value)) => value.to_string(),
+        (None, None) => "not chosen".to_string(),
+    };
     sub(
         icon::PAD,
-        format!(
-            "{}: {}",
-            field.label,
-            picked.map_or("not chosen", |pad| view.pad_name(pad))
-        ),
+        format!("{}: {label}", field.label),
         vec![Entry::Radio { choices, selected }],
     )
 }
@@ -343,25 +344,18 @@ fn pad_entry(view: &View, quick: &Quick, field: &Field) -> Entry {
 /// A field of choices: each by its label, with the one it stands at.
 fn choice_entry(
     view: &View,
-    quick: &Quick,
+    name: &str,
+    values: &Values,
     field: &Field,
-    choices: &[ctrlassist::form::Choice],
+    choices: &[form::Choice],
 ) -> Entry {
-    // Of the presets, the ones quick start offers.
-    let offered: Vec<&ctrlassist::form::Choice> = if field.key == PRESET {
-        quick::presets(&view.fields)
-    } else {
-        choices.iter().collect()
-    };
-    let stands_at = if field.key == PRESET {
-        quick.preset(&view.fields)
-    } else {
-        quick.value(field)
-    };
-    let selected = offered.iter().position(|choice| choice.value == stands_at);
-    let label = selected.map_or(stands_at, |at| offered[at].label.as_str());
+    let stands_at = values
+        .get(&field.key)
+        .map_or(field.default.as_str(), String::as_str);
+    let selected = choices.iter().position(|choice| choice.value == stands_at);
+    let label = selected.map_or(stands_at, |at| choices[at].label.as_str());
     let radio = Entry::Radio {
-        choices: offered
+        choices: choices
             .iter()
             .map(|choice| Choice {
                 label: choice.label.clone(),
@@ -373,7 +367,7 @@ fn choice_entry(
                         .iter()
                         .find(|known| known.id == choice.value)
                         .is_none_or(|known| known.available),
-                command: Command::Quick(Edit::set(&field.key, &choice.value)),
+                command: Command::set(name, &field.key, &choice.value),
             })
             .collect(),
         selected,
@@ -388,58 +382,149 @@ fn choice_entry(
     sub(icon, format!("{}: {label}", field.label), vec![radio])
 }
 
-fn quick_entries(view: &View, quick: &Quick) -> Vec<Entry> {
-    // What there is to choose is the daemon's to say.
-    if view.fields.is_empty() {
-        return vec![said(
-            icon::NONE,
-            "Waiting for the daemon to say what can be chosen",
-        )];
-    }
-    let preset = quick.preset(&view.fields);
-    let mut entries: Vec<Entry> = view
+/// A number in a range: each it may be, with the one it stands at.
+fn number_entry(name: &str, values: &Values, field: &Field, min: u32, max: u32) -> Entry {
+    let stands_at = values
+        .get(&field.key)
+        .map_or(field.default.as_str(), String::as_str);
+    let numbers: Vec<String> = (min..=max).map(|number| number.to_string()).collect();
+    sub(
+        icon::NONE,
+        format!("{}: {stands_at}", field.label),
+        vec![Entry::Radio {
+            selected: numbers.iter().position(|number| number == stands_at),
+            choices: numbers
+                .iter()
+                .map(|number| Choice {
+                    label: number.clone(),
+                    enabled: true,
+                    command: Command::set(name, &field.key, number),
+                })
+                .collect(),
+        }],
+    )
+}
+
+/// The fields of a profile in the preset form, as the window's detail
+/// has them: each a submenu by its kind.
+fn field_entries(view: &View, name: &str, values: &Values) -> Vec<Entry> {
+    let preset = values.get(PRESET).map(String::as_str).unwrap_or_default();
+    // In the order of the window's cards: the pads, the virtual pads,
+    // how they are merged, and the rest.
+    let card = |field: &Field| match field.group.as_str() {
+        form::INPUTS => 0,
+        form::OUTPUTS => 1,
+        form::ARRANGEMENT => 2,
+        _ => 3,
+    };
+    let mut fields: Vec<&Field> = view
         .fields
         .iter()
         .filter(|field| field.applies_to(preset))
+        .collect();
+    fields.sort_by_key(|field| card(field));
+    fields
+        .into_iter()
         .filter_map(|field| match &field.kind {
-            Kind::Pad => Some(pad_entry(view, quick, field)),
-            Kind::Choice { choices } => Some(choice_entry(view, quick, field, choices)),
+            Kind::Pad => Some(pad_entry(view, name, values, field)),
+            Kind::Choice { choices } => Some(choice_entry(view, name, values, field, choices)),
+            Kind::Number { min, max } => Some(number_entry(name, values, field, *min, *max)),
             Kind::Switch => {
-                let checked = quick.value(field) == "true";
+                let checked = values.get(&field.key).unwrap_or(&field.default) == "true";
                 Some(Entry::Check {
                     label: field.label.clone(),
                     checked,
-                    command: Command::Quick(Edit::set(&field.key, &(!checked).to_string())),
+                    command: Command::set(name, &field.key, &(!checked).to_string()),
                 })
             }
-            // No preset quick start offers has another kind of field.
+            // A kind of field from a later release: left to the window.
             _ => None,
         })
-        .collect();
-    let running = view.setup(quick::NAME).is_some();
-    let ready = quick.profile(&view.fields).is_some()
-        && quick
-            .pads(&view.fields)
-            .into_iter()
-            .all(|(_, pad)| pickable(view, pad, &[]).0);
-    // Every pick is applied to a running `quick` as it is made, so
-    // there is something to restart only if that didn't happen: the
-    // picks then differ from the profile as kept.
-    let waiting = view
-        .kept_quick()
-        .is_none_or(|kept| kept.text(&view.fields) != quick.text(&view.fields));
-    let (verb, ready) = match (running, waiting) {
-        (false, _) => ("Start", ready),
-        (true, true) => ("Restart", ready),
-        (true, false) => ("Running", false),
+        .collect()
+}
+
+/// The profile `name` as its row says it: the default profile carries
+/// a check mark, as in the window.
+#[must_use]
+pub fn shown_name(name: &str) -> String {
+    if name == DEFAULT {
+        format!("{name} ✓")
+    } else {
+        name.to_string()
+    }
+}
+
+/// A profile's menu: what to do with it, who has control while it runs,
+/// and its fields, or for one no form can show, what it is made of.
+fn profile_entry(view: &View, name: &str) -> Entry {
+    let profile: Option<&Profile> = view.profiles.iter().find(|profile| profile.name == name);
+    let setup = view.setup(name);
+    // The fields are the daemon's to say, and only a preset has them.
+    let values = profile.and_then(|profile| form::from_toml(&view.fields, &profile.toml));
+    let shown = shown_name(name);
+    let mut entries = Vec::new();
+    let (label, icon) = match (setup, profile) {
+        (Some(setup), _) => {
+            let (word, icon) = phase_label(setup.phase);
+            entries.push(action(icon::STOP, "Stop", Command::Stop(name.to_string())));
+            if let Some(reason) = &setup.reason {
+                entries.push(Entry::Separator);
+                entries.push(said(icon::NONE, reason.clone()));
+            } else {
+                control_entries(setup, &mut entries);
+            }
+            (format!("{shown} ({word})"), icon)
+        }
+        (
+            None,
+            Some(Profile {
+                problem: Some(problem),
+                ..
+            }),
+        ) => {
+            entries.push(said(icon::NONE, format!("Can't run: {problem}")));
+            (format!("{shown} (Wrong)"), icon::WRONG)
+        }
+        (None, Some(profile)) if !profile.unset.is_empty() => {
+            entries.push(said(icon::START, "Choose its pads to start"));
+            (format!("{shown} (Not set up)"), icon::STOP)
+        }
+        (None, _) => {
+            entries.push(action(
+                icon::START,
+                "Start",
+                Command::Start(name.to_string()),
+            ));
+            (shown, icon::STOP)
+        }
     };
-    entries.push(Entry::Separator);
-    entries.push(Entry::Item {
-        icon: icon::START,
-        label: format!("{verb} as `{}`", quick::NAME),
-        command: ready.then_some(Command::QuickStart),
-    });
-    entries
+    match (&values, setup) {
+        (Some(values), _) => {
+            entries.push(Entry::Separator);
+            entries.extend(field_entries(view, name, values));
+        }
+        (None, Some(setup)) if setup.reason.is_none() => {
+            entries.push(Entry::Separator);
+            part_entries(view, setup, &mut entries);
+        }
+        _ => {}
+    }
+    sub(icon, label, entries)
+}
+
+/// Every kept profile and any setup whose profile is gone, in the order
+/// they are listed: the default profile, then the rest by name.
+#[must_use]
+pub fn listed(view: &View) -> Vec<&str> {
+    let mut names: Vec<&str> = view
+        .profiles
+        .iter()
+        .map(|profile| profile.name.as_str())
+        .chain(view.setups.iter().map(|setup| setup.name.as_str()))
+        .collect();
+    names.sort_unstable_by_key(|name| (*name != DEFAULT, *name));
+    names.dedup();
+    names
 }
 
 fn pad_entries(view: &View) -> Vec<Entry> {
@@ -504,11 +589,9 @@ fn pad_entries(view: &View) -> Vec<Entry> {
     }
     pads
 }
-
-/// The whole menu for what the daemon publishes now and the quick-start
-/// choices.
+/// The whole menu for what the daemon publishes now.
 #[must_use]
-pub fn menu(view: &View, quick: &Quick) -> Vec<Entry> {
+pub fn menu(view: &View) -> Vec<Entry> {
     let mut entries = Vec::new();
     if !view.alive {
         entries.push(said(icon::FAILED, "The CtrlAssist daemon isn't running"));
@@ -517,47 +600,12 @@ pub fn menu(view: &View, quick: &Quick) -> Vec<Entry> {
     } else if !view.hydrated {
         entries.push(said(icon::STARTING, "Reading from the daemon…"));
     } else {
-        // Every kept profile, and any setup whose profile is gone.
-        let mut names: Vec<&str> = view
-            .profiles
-            .iter()
-            .map(|profile| profile.name.as_str())
-            .collect();
-        names.extend(view.setups.iter().map(|setup| setup.name.as_str()));
-        names.sort_unstable();
-        names.dedup();
-        for name in names {
-            let profile = view.profiles.iter().find(|profile| profile.name == name);
-            entries.push(match view.setup(name) {
-                Some(setup) => {
-                    let (word, icon) = phase_label(setup.phase);
-                    sub(icon, format!("{name} ({word})"), setup_entries(view, setup))
-                }
-                None => {
-                    let problem = profile.and_then(|profile| profile.problem.as_ref());
-                    match problem {
-                        Some(problem) => sub(
-                            icon::WRONG,
-                            format!("{name} (Wrong)"),
-                            vec![said(icon::NONE, format!("Can't run: {problem}"))],
-                        ),
-                        None => sub(
-                            icon::STOP,
-                            name,
-                            vec![action(
-                                icon::START,
-                                "Start",
-                                Command::Start(name.to_string()),
-                            )],
-                        ),
-                    }
-                }
-            });
+        for name in listed(view) {
+            entries.push(profile_entry(view, name));
         }
         if !entries.is_empty() {
             entries.push(Entry::Separator);
         }
-        entries.push(sub(icon::QUICK, "Quick start", quick_entries(view, quick)));
         let connected = view.pads.iter().filter(|pad| pad.connected).count();
         entries.push(sub(
             icon::PAD,
@@ -584,7 +632,6 @@ pub fn menu(view: &View, quick: &Quick) -> Vec<Entry> {
     entries
 }
 
-/// What the menu and tooltip say of a daemon on a release this tray
 /// can't talk to.
 #[must_use]
 pub fn mismatch_text(theirs: &str) -> String {
@@ -640,65 +687,66 @@ mod tests {
     use super::*;
     use crate::state::tests::{profile, view};
 
-    fn quick() -> Quick {
-        let mut quick = Quick::default();
-        quick.set("primary", "address:dualsense");
-        quick.set("assist", "address:8bitdo");
-        quick
+    /// The fixture's daemon with the default profile as a daemon makes
+    /// it: its pads still to choose.
+    fn with_default(phase: Option<Phase>) -> View {
+        let mut view = view(phase, Hiding::Service);
+        view.profiles.push(Profile {
+            toml: ctrlassist_protocol::profile::DEFAULT_TOML.to_string(),
+            unset: vec!["primary".to_string(), "assist".to_string()],
+            ..profile("default", None)
+        });
+        view
     }
 
-    /// What quick start offers is the daemon's to say: until it has,
-    /// there is nothing to choose and nothing to start.
-    #[test]
-    fn quick_start_waits_for_the_daemon_to_say_what_can_be_chosen() {
-        let mut unsaid = view(None, Hiding::Service);
-        unsaid.fields.clear();
-        let menu = outline(&menu(&unsaid, &quick()));
-        assert!(
-            menu.contains(
-                "Quick start >\n  - Waiting for the daemon to say what can be chosen\nPads"
-            ),
-            "{menu}"
-        );
+    /// One profile's menu, from its row to the next row at the top.
+    fn of<'a>(menu: &'a str, row: &str) -> &'a str {
+        let from = menu
+            .find(row)
+            .unwrap_or_else(|| unreachable!("no {row:?} in\n{menu}"));
+        let rest = &menu[from..];
+        let end = rest[row.len()..]
+            .find("\n---\n")
+            .into_iter()
+            .chain(
+                rest.lines()
+                    .skip(1)
+                    .find(|line| !line.starts_with(' '))
+                    .and_then(|next| rest.find(&format!("\n{next}\n"))),
+            )
+            .min()
+            .map_or(rest.len(), |end| end + 1);
+        &rest[..end]
     }
 
-    /// The whole menu, as the maintainer's mockup has it: a toggle held
-    /// because its assist left, a profile not running, quick start, the
-    /// pads, and the daemon's status.
+    /// The default profile is first, with its mark, and before its pads
+    /// are chosen its menu is where they are chosen: the fields in the
+    /// order of the window's cards.
     #[test]
-    fn the_menu_shows_profiles_then_quick_start_then_pads_then_status() {
-        let menu = outline(&menu(&view(Some(Phase::Held), Hiding::Service), &quick()));
+    fn the_default_profile_is_first_and_its_menu_has_its_fields() {
+        let menu = outline(&menu(&with_default(Some(Phase::Held))));
         let expected = "\
-couch (Held) >
-  Stop
+default ✓ (Not set up) >
+  - Choose its pads to start
   ---
-  Has control >
-    (o) primary
-    ( ) - assist
-  ---
-  - Assist: Xbox pad (disconnected)
-  - Primary: DualSense
-  - Virtual: Generic
-desk >
-  Start
----
-Quick start >
-  Mode: Priority >
-    (o) Priority
-    ( ) Average
-    ( ) Toggle
-  Primary: DualSense >
-    (o) - DualSense (in couch)
-    ( ) - 8BitDo Pro 2
-    ( ) - Xbox pad (disconnected)
-  Assist: 8BitDo Pro 2 >
+  Primary: not chosen >
     ( ) - DualSense (in couch)
-    (o) 8BitDo Pro 2
+    ( ) 8BitDo Pro 2
+    ( ) - Xbox pad (disconnected)
+  Assist: not chosen >
+    ( ) - DualSense (in couch)
+    ( ) 8BitDo Pro 2
     ( ) - Xbox pad (disconnected)
   Identity: Generic >
     (o) Generic
     ( ) Xbox
     ( ) DualSense
+  Mode: Priority >
+    (o) Priority
+    ( ) Average
+    ( ) Toggle
+    ( ) Unicast
+    ( ) Multicast
   Rumble goes to: Both pads >
     (o) Both pads
     ( ) Primary only
@@ -709,36 +757,63 @@ Quick start >
     ( ) Grabbed
     ( ) Visible
   [ ] Managed
-  ---
-  - Start as `quick`
-Pads (2/3 connected) >
-  DualSense (in couch) >
-    - address:dualsense
-    Identify (buzz)
-  8BitDo Pro 2 >
-    - address:8bitdo
-    - No rumble to buzz with
-  Xbox pad (in couch) >
-    - serial:xbox
-  ---
-  Generic (in couch) >
-    - /dev/input/event31
-    Identify (buzz)
----
-- Hiding: service · Real-time: yes
----
-Settings
-Quit tray
 ";
-        assert_eq!(menu, expected, "\n{menu}");
+        assert_eq!(of(&menu, "default ✓"), expected, "\n{menu}");
+        assert!(menu.starts_with("default ✓ (Not set up) >\n"), "{menu}");
+        assert!(!menu.contains("Quick start"), "{menu}");
+    }
+
+    /// A profile that runs has Stop, who has control, and its fields; a
+    /// pad that left its setup is said so, and can't be handed to.
+    #[test]
+    fn a_running_profile_s_menu_has_stop_control_and_its_fields() {
+        let menu = outline(&menu(&with_default(Some(Phase::Held))));
+        let couch = of(&menu, "couch (Held) >");
+        assert!(
+            couch.starts_with(
+                "couch (Held) >\n  Stop\n  ---\n  Has control >\n    (o) primary\n    ( ) - assist\n  ---\n  Primary: DualSense >\n    (o) DualSense\n    ( ) 8BitDo Pro 2\n    ( ) - Xbox pad (disconnected)\n  Assist: Xbox pad (disconnected) >\n    ( ) - DualSense\n    ( ) 8BitDo Pro 2\n    (o) - Xbox pad (disconnected)\n"
+            ),
+            "{couch}"
+        );
+        assert!(couch.contains("  Mode: Toggle >\n"), "{couch}");
+        // One of another preset has that preset's fields.
+        let desk = of(&menu, "desk >");
+        assert!(
+            desk.starts_with(
+                "desk >\n  Start\n  ---\n  Pad: 8BitDo Pro 2 >\n    ( ) - DualSense (in couch)\n    (o) 8BitDo Pro 2\n"
+            ),
+            "{desk}"
+        );
+        assert!(
+            desk.contains("  Virtual pads: 2 >\n    ( ) 1\n    (o) 2\n"),
+            "{desk}"
+        );
+        assert!(!desk.contains("Rumble"), "{desk}");
+        // Then the pads, with the virtual ones after, and the status.
+        assert!(
+            menu.contains(
+                "---\nPads (2/3 connected) >\n  DualSense (in couch) >\n    - address:dualsense\n    Identify (buzz)\n"
+            ),
+            "{menu}"
+        );
+        assert!(
+            menu.contains(
+                "  ---\n  Generic (in couch) >\n    - /dev/input/event31\n    Identify (buzz)\n"
+            ),
+            "{menu}"
+        );
+        assert!(
+            menu.ends_with("---\n- Hiding: service · Real-time: yes\n---\nSettings\nQuit tray\n"),
+            "{menu}"
+        );
     }
 
     /// A row's icon is a name in the desktop's theme, as plain data: a
     /// profile by how it is, a pad, an action by what it does. A virtual
-    /// pad is buzzed by its own name.
+    /// pad is buzzed by its own name, and a pick names its profile.
     #[test]
-    fn rows_carry_their_icons_and_a_virtual_pad_is_buzzed_by_its_name() {
-        let entries = menu(&view(Some(Phase::Held), Hiding::Service), &quick());
+    fn rows_carry_their_icons_and_their_commands() {
+        let entries = menu(&with_default(Some(Phase::Held)));
         let top: Vec<(&str, Icon)> = entries
             .iter()
             .filter_map(|entry| match entry {
@@ -751,21 +826,29 @@ Quit tray
         assert_eq!(
             top,
             [
+                ("default ✓ (Not set up)", icon::STOP),
                 ("couch (Held)", icon::HELD),
                 ("desk", icon::STOP),
-                ("Quick start", icon::QUICK),
                 ("Pads (2/3 connected)", icon::PAD),
                 ("Hiding: service · Real-time: yes", icon::STATUS),
                 ("Settings", icon::SETTINGS),
                 ("Quit tray", icon::QUIT),
             ]
         );
-        let Some(Entry::Sub { entries: pads, .. }) = entries.get(4) else {
-            unreachable!("the pads follow quick start");
+        let subs = |entries: &'_ [Entry], label: &str| -> Vec<Entry> {
+            entries
+                .iter()
+                .find_map(|entry| match entry {
+                    Entry::Sub {
+                        label: found,
+                        entries,
+                        ..
+                    } if found.starts_with(label) => Some(entries.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| unreachable!("no {label}"))
         };
-        let Some(Entry::Sub { entries: made, .. }) = pads.last() else {
-            unreachable!("the virtual pad is last");
-        };
+        let made = subs(&subs(&entries, "Pads"), "Generic");
         assert_eq!(
             made[1],
             Entry::Item {
@@ -774,32 +857,16 @@ Quit tray
                 command: Some(Command::Identify("virtual:couch/virtual".to_string())),
             }
         );
-    }
-
-    #[test]
-    fn quick_start_can_start_once_two_free_pads_are_chosen() {
-        let free = view(None, Hiding::Grab);
-        let menu = outline(&menu(&free, &quick()));
-        assert!(menu.contains("\n  Start as `quick`\n"), "{menu}");
-        assert!(menu.contains("    ( ) Xbox pad\n"), "{menu}");
-        // The pad chosen as the other can't be chosen again.
-        assert!(
-            menu.contains("Primary: DualSense >\n    (o) DualSense\n    ( ) - 8BitDo Pro 2\n"),
-            "{menu}"
-        );
-        // A pad remembered but not connected can be forgotten.
-        let mut gone = free.clone();
-        gone.pads[2].connected = false;
-        assert!(outline(&super::menu(&gone, &quick())).contains("    Forget\n"));
-        // Nothing chosen, nothing to start; nothing known, nothing to list.
-        let empty = View {
-            pads: Vec::new(),
-            ..free
+        let Some(Entry::Radio { choices, .. }) = subs(&subs(&entries, "default"), "Primary")
+            .into_iter()
+            .next()
+        else {
+            unreachable!("a pad field is a radio group");
         };
-        let menu = outline(&super::menu(&empty, &Quick::default()));
-        assert!(menu.contains("Primary: not chosen >"), "{menu}");
-        assert!(menu.contains("- Start as `quick`"), "{menu}");
-        assert!(menu.contains("- No pads are known"), "{menu}");
+        assert_eq!(
+            choices[1].command,
+            Command::set("default", "primary", "address:8bitdo")
+        );
     }
 
     #[test]
@@ -808,7 +875,7 @@ Quit tray
         failed
             .profiles
             .push(profile("broken", Some("no such preset")));
-        let menu = outline(&menu(&failed, &quick()));
+        let menu = outline(&menu(&failed));
         assert!(
             menu.contains("couch (Failed) >\n  Stop\n  ---\n  - a virtual pad refused a write\n"),
             "{menu}"
@@ -819,21 +886,63 @@ Quit tray
         );
     }
 
+    /// A profile written by hand has no fields to pick: while it runs
+    /// its menu says what it is made of. So does a setup whose profile
+    /// is gone.
     #[test]
-    fn a_setup_whose_profile_is_gone_and_a_node_with_its_own_name_are_still_shown() {
+    fn a_profile_no_form_can_show_says_what_it_is_made_of() {
         let mut odd = view(Some(Phase::Running), Hiding::Service);
         odd.profiles.clear();
         odd.setups[0].nodes[0].name = "share".to_string();
         odd.setups[0].sources[0].pad = None;
         odd.setups[0].sinks[0].node = None;
-        let menu = outline(&menu(&odd, &quick()));
+        let menu = outline(&menu(&odd));
         assert!(menu.starts_with("couch (Running) >\n"), "{menu}");
         assert!(menu.contains("share selects >"), "{menu}");
         assert!(
             menu.contains("- Assist: waiting for a pad that fits"),
             "{menu}"
         );
+        assert!(menu.contains("- Primary: DualSense\n"), "{menu}");
         assert!(menu.contains("- Virtual: Generic (not made)"), "{menu}");
+        assert!(!menu.contains("Mode:"), "{menu}");
+        // Not running, it has Start and nothing else.
+        let mut kept = view(None, Hiding::Service);
+        kept.profiles[1].toml = "[source.a]\npad = \"model:0001:0001\"\n".to_string();
+        let menu = outline(&super::menu(&kept));
+        assert!(menu.contains("desk >\n  Start\n---\n"), "{menu}");
+    }
+
+    /// Before the daemon has said what a preset's fields are, a
+    /// profile's menu has what to do with it and no more.
+    #[test]
+    fn a_profile_s_fields_wait_for_the_daemon_to_say_what_they_are() {
+        let mut unsaid = with_default(None);
+        unsaid.fields.clear();
+        let menu = outline(&menu(&unsaid));
+        assert!(
+            menu.starts_with("default ✓ (Not set up) >\n  - Choose its pads to start\ncouch >\n  Start\ndesk >\n  Start\n---\nPads"),
+            "{menu}"
+        );
+    }
+
+    #[test]
+    fn a_pad_remembered_but_away_can_be_forgotten_and_none_known_says_so() {
+        let mut gone = view(None, Hiding::Grab);
+        gone.pads[2].connected = false;
+        let menu = outline(&menu(&gone));
+        assert!(
+            menu.contains("  Xbox pad (remembered) >\n    - serial:xbox\n    Forget\n"),
+            "{menu}"
+        );
+        let empty = View {
+            pads: Vec::new(),
+            ..gone
+        };
+        let menu = outline(&super::menu(&empty));
+        assert!(menu.contains("- No pads are known"), "{menu}");
+        // A pad a profile names that isn't known goes by what it wrote.
+        assert!(menu.contains("Primary: address:dualsense >"), "{menu}");
     }
 
     #[test]
@@ -841,15 +950,15 @@ Quit tray
         let mut down = view(None, Hiding::Service);
         down.alive = false;
         assert_eq!(
-            outline(&menu(&down, &quick())),
+            outline(&menu(&down)),
             "- The CtrlAssist daemon isn't running\n---\nSettings\nQuit tray\n"
         );
         let mut arriving = view(None, Hiding::Service);
         arriving.hydrated = false;
-        assert!(outline(&menu(&arriving, &quick())).starts_with("- Reading from the daemon…\n"));
+        assert!(outline(&menu(&arriving)).starts_with("- Reading from the daemon…\n"));
         let mut other = view(None, Hiding::Service);
         other.mismatch = Some("9.0.0".to_string());
-        let menu = outline(&menu(&other, &quick()));
+        let menu = outline(&menu(&other));
         assert!(
             menu.starts_with("- Version mismatch: daemon 9.0.0, tray "),
             "{menu}"
@@ -866,7 +975,7 @@ Quit tray
             product: 0x0b12,
             available: false,
         }];
-        let menu = outline(&menu(&view, &quick()));
+        let menu = outline(&menu(&view));
         assert!(menu.contains("    (o) Generic\n    ( ) - Xbox\n"), "{menu}");
     }
 }

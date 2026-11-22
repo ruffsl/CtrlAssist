@@ -694,6 +694,24 @@ impl Profile {
                     ),
                 );
             };
+            // One pad is one source: a setup takes each pad once. Two
+            // sources of one model are two pads of it.
+            let twice = matches!(pad, PadRef::Exact(_))
+                .then(|| {
+                    sources
+                        .iter()
+                        .find(|other: &&PlannedSource| other.pad == pad)
+                })
+                .flatten();
+            if let Some(other) = twice {
+                return error(
+                    format!("{at}.pad"),
+                    format!(
+                        "`{}` is the pad `{}` has; each needs its own",
+                        source.pad, other.name
+                    ),
+                );
+            }
             sources.push(PlannedSource {
                 name: name.clone(),
                 pad,

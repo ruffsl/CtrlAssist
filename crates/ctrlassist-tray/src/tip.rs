@@ -6,7 +6,7 @@
 
 use ctrlassist::form::{self, Kind, PRESET};
 use ctrlassist::{Pad, Phase, Profile, Setup};
-use ctrlassist_protocol::profile::{PadRef, Profile as Checked};
+use ctrlassist_protocol::profile::{DEFAULT, PadRef, Profile as Checked};
 
 use crate::menu::{self, capitalized, virtual_name};
 use crate::state::View;
@@ -99,7 +99,7 @@ fn setup_lines(view: &View, setup: &Setup, target: Option<&str>, lines: &mut Vec
 }
 
 /// Whether `pad` is one `wanted` means.
-fn names(wanted: &PadRef, pad: &Pad) -> bool {
+pub(crate) fn names(wanted: &PadRef, pad: &Pad) -> bool {
     match wanted {
         PadRef::Exact(id) => *id == pad.id,
         PadRef::Model(vendor, product) => (*vendor, *product) == (pad.vendor, pad.product),
@@ -131,21 +131,18 @@ pub fn ready(view: &View) -> Vec<&str> {
 /// names: the ones that run, to stop, and the ones that could start.
 #[must_use]
 pub fn candidates(view: &View) -> Vec<&str> {
-    let mut names: Vec<&str> = view
-        .setups
-        .iter()
-        .map(|setup| setup.name.as_str())
-        .chain(ready(view))
-        .collect();
-    names.sort_unstable();
-    names.dedup();
-    names
+    // In the menu's order, the default profile first.
+    let ready = ready(view);
+    menu::listed(view)
+        .into_iter()
+        .filter(|name| view.setup(name).is_some() || ready.contains(name))
+        .collect()
 }
 
 /// The profile a middle click acts on: the one `remembered`, the last
 /// started, stopped or scrolled to, while it can be acted on; without
-/// one, the only setup, or the only candidate. Nothing where that
-/// leaves a choice, until the wheel makes it.
+/// one, the only setup, or the only candidate, or the default profile.
+/// Nothing where that leaves a choice, until the wheel makes it.
 #[must_use]
 pub fn target<'a>(view: &'a View, remembered: Option<&str>) -> Option<&'a str> {
     let candidates = candidates(view);
@@ -155,7 +152,8 @@ pub fn target<'a>(view: &'a View, remembered: Option<&str>) -> Option<&'a str> {
     match (view.setups.as_slice(), candidates.as_slice()) {
         ([only], _) => Some(only.name.as_str()),
         (_, [only]) => Some(only),
-        _ => None,
+        // The default profile is the one the tray is quickest to.
+        _ => candidates.into_iter().find(|name| *name == DEFAULT),
     }
 }
 

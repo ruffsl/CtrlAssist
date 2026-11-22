@@ -100,6 +100,7 @@ pub async fn run(options: TrayOptions) -> Result<()> {
         notifier,
         Arc::clone(&quit),
         Some(options.config.clone()),
+        handle.clone(),
     ));
     tokio::select! {
         outcome = tokio::signal::ctrl_c() => outcome.context("waiting to be stopped")?,

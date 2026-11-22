@@ -5,7 +5,6 @@ use ctrlassist::form::Field;
 use ctrlassist::{DaemonState, Hiding, Identity, Pad, Phase, Profile, Setup};
 
 use crate::notify::Category;
-use crate::quick::{self, Quick};
 
 /// One snapshot of what the daemon publishes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -26,7 +25,7 @@ pub struct View {
     pub setups: Vec<Setup>,
     /// What a virtual pad can present itself as.
     pub identities: Vec<Identity>,
-    /// A preset's fields, as the daemon serves them: what quick start
+    /// A preset's fields, as the daemon serves them: what a profile's menu
     /// has to choose from. Empty until the daemon has said.
     pub fields: Vec<Field>,
 }
@@ -67,16 +66,6 @@ impl View {
     #[must_use]
     pub fn setup(&self, name: &str) -> Option<&Setup> {
         self.setups.iter().find(|setup| setup.name == name)
-    }
-
-    /// The quick-start choices the kept `quick` profile was written
-    /// from, if one is kept that quick start wrote.
-    #[must_use]
-    pub fn kept_quick(&self) -> Option<Quick> {
-        self.profiles
-            .iter()
-            .find(|profile| profile.name == quick::NAME)
-            .and_then(|profile| Quick::from_profile(&self.fields, &profile.toml))
     }
 
     /// The pad known by `id`, if the daemon knows one.
@@ -320,6 +309,13 @@ pub(crate) mod tests {
         }
     }
 
+    /// `couch` as kept: a toggle over the DualSense and the Xbox pad.
+    pub(crate) const COUCH: &str =
+        "mode = \"toggle\"\nprimary = \"address:dualsense\"\nassist = \"serial:xbox\"\n";
+
+    /// `desk` as kept: the 8BitDo pad as two virtual pads.
+    pub(crate) const DESK: &str = "mode = \"unicast\"\npad = \"address:8bitdo\"\n";
+
     /// A daemon with three pads, two profiles and `couch` as given.
     pub(crate) fn view(couch_is: Option<Phase>, hiding: Hiding) -> View {
         let in_couch = couch_is.map(|_| "couch");
@@ -340,7 +336,16 @@ pub(crate) mod tests {
                 pad("address:8bitdo", "8BitDo Pro 2", true, None),
                 pad("serial:xbox", "Xbox pad", !held, in_couch),
             ],
-            profiles: vec![profile("couch", None), profile("desk", None)],
+            profiles: vec![
+                Profile {
+                    toml: COUCH.to_string(),
+                    ..profile("couch", None)
+                },
+                Profile {
+                    toml: DESK.to_string(),
+                    ..profile("desk", None)
+                },
+            ],
             setups: couch_is.map(couch).into_iter().collect(),
             identities: Vec::new(),
             fields: ctrlassist::form::fields(),

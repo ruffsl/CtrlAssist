@@ -2776,9 +2776,10 @@ mod tests {
         let other = bound(&plan(a, c));
         assert_eq!(other.1, [None, Some(0)]);
         assert_eq!(other.0, [Some(c.to_string()), Some(a.to_string())]);
-        // One pad as both is refused, as at a start.
-        let both = rebind(&book, "couch", &has, &plan(c, c)).unwrap_err();
-        assert_eq!(both.code, ErrorCode::InvalidProfile);
+        // One pad as both is no profile at all.
+        let both = format!("mode = \"priority\"\nprimary = \"{c}\"\nassist = \"{c}\"\n");
+        let refused = Profile::check(&both).unwrap_err();
+        assert_eq!(refused.at, "source.primary.pad");
     }
 
     /// A node carries on from the one of its name, and what it selected

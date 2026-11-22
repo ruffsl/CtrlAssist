@@ -3,6 +3,7 @@
 //! are English literals: the tray isn't translated yet.
 
 use ctrlassist::Phase;
+use ctrlassist::form;
 use ctrlassist_icons::Variant;
 use ksni::menu::{CheckmarkItem, MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray};
@@ -12,7 +13,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::menu::{self, Command, Entry};
-use crate::quick::{self, Quick};
+
 use crate::state::View;
 use crate::tip;
 
@@ -36,9 +37,17 @@ pub enum Action {
     Identify(String),
     /// Stop remembering a pad.
     Forget(String),
-    /// Keep this TOML as the profile `quick`, and run it: started if it
-    /// isn't running, and if it is, changed as it runs or restarted.
-    Quick(String),
+    /// Keep this TOML as the profile `name`. A setup that runs it takes
+    /// the change at once: all but another identity as it runs, and that
+    /// one by a restart, which a game sees as its pad going and another
+    /// coming.
+    Put {
+        /// The profile.
+        name: String,
+        /// Its new text.
+        toml: String,
+    },
+
     /// Open the settings window, or raise it if it is open.
     Settings,
     /// Keep this profile as the one last used, for the next start.
@@ -61,7 +70,7 @@ impl Action {
             } => format!("select {choice} at {node} of {setup}"),
             Self::Identify(pad) => format!("identify {pad}"),
             Self::Forget(pad) => format!("forget {pad}"),
-            Self::Quick(_) => format!("keep and run `{}` as picked", quick::NAME),
+            Self::Put { name, .. } => format!("keep {name} as picked"),
             Self::Settings => "open the settings window".to_string(),
             Self::Aim(name) => format!("aim at {name}"),
             Self::Quit => "quit".to_string(),
@@ -74,11 +83,7 @@ impl Action {
 pub struct PadTray {
     /// What the daemon publishes, as last seen.
     pub view: View,
-    /// The quick-start choices.
-    pub quick: Quick,
-    /// Whether the choices have been read from a kept `quick` profile, or
-    /// touched, so that they aren't overwritten by a later look.
-    pub quick_settled: bool,
+
     /// The profile last started, stopped or scrolled to: what a middle
     /// click on the icon acts on, while it can be.
     pub target: Option<String>,
@@ -110,8 +115,7 @@ impl PadTray {
     pub fn new(actions: mpsc::UnboundedSender<Action>) -> Self {
         Self {
             view: View::default(),
-            quick: Quick::default(),
-            quick_settled: false,
+
             target: None,
             wheel: 0,
             turned: None,
@@ -192,33 +196,37 @@ impl PadTray {
         tip::target(&self.view, self.target.as_deref())
     }
 
-    /// Does what a menu entry asks: a quick-start choice changes here,
-    /// and anything else goes to the async side.
+    /// Does what a menu entry asks: a pick is worked into its profile
+    /// here, and the async side is asked to keep it and to do anything
+    /// else.
     pub fn activate(&mut self, command: Command) {
         let action = match command {
-            Command::Quick(edit) => {
-                self.quick_settled = true;
-                self.quick.set(&edit.key, &edit.value);
-                // A pick is applied to a running `quick` as it is made.
-                // All but another identity it takes as it runs; that
-                // one restarts it, which a game sees as its pad going
-                // and another coming.
-                let running = self.view.setup(quick::NAME).is_some();
-                match self.quick.profile(&self.view.fields).filter(|_| running) {
-                    Some(toml) => Action::Quick(toml),
-                    None => return,
-                }
-            }
-            Command::QuickStart => match self.quick.profile(&self.view.fields) {
-                Some(toml) => Action::Quick(toml),
-                None => return,
-            },
-            // Starting `quick` starts what is picked, not what was last
-            // kept, where the picks make a profile.
-            Command::Start(name) if name == quick::NAME => {
-                match self.quick.profile(&self.view.fields) {
-                    Some(toml) => Action::Quick(toml),
-                    None => Action::Start(name),
+            Command::Set {
+                profile,
+                key,
+                value,
+            } => {
+                let fields = &self.view.fields;
+                let kept = self
+                    .view
+                    .profiles
+                    .iter_mut()
+                    .find(|kept| kept.name == profile);
+                // Only a profile in the preset form has fields to set.
+                let Some((kept, mut values)) = kept.and_then(|kept| {
+                    let values = form::from_toml(fields, &kept.toml)?;
+                    Some((kept, values))
+                }) else {
+                    return;
+                };
+                values.insert(key, value);
+                let toml = form::to_toml(fields, &values);
+                // Held here as picked until the daemon publishes it, so
+                // that a second pick made at once builds on the first.
+                kept.toml.clone_from(&toml);
+                Action::Put {
+                    name: profile,
+                    toml,
                 }
             }
             Command::Start(name) => Action::Start(name),
@@ -243,7 +251,7 @@ impl PadTray {
     /// The menu as it stands, as plain data.
     #[must_use]
     pub fn entries(&self) -> Vec<Entry> {
-        menu::menu(&self.view, &self.quick)
+        menu::menu(&self.view)
     }
 
     /// The tray's own icon, and which form of it: the colored pad glyph
@@ -449,7 +457,7 @@ mod tests {
     use ctrlassist::Hiding;
 
     use super::*;
-    use crate::menu::Edit;
+
     use crate::state::tests::view;
 
     fn tray(phase: Option<Phase>) -> (PadTray, mpsc::UnboundedReceiver<Action>) {
@@ -604,7 +612,7 @@ mod tests {
         assert_eq!(said(Some(Phase::Failed)).1, ("dialog-error", false));
         assert_eq!(
             said(Some(Phase::Failed)).2,
-            "► couch: Failed\n    a virtual pad refused a write"
+            "► couch: Failed · Toggle\n    a virtual pad refused a write"
         );
 
         let (mut down, _clicked) = tray(Some(Phase::Running));
@@ -627,27 +635,42 @@ mod tests {
     }
 
     #[test]
-    fn a_click_is_an_action_and_a_quick_choice_stays_in_the_tray() {
+    fn a_click_is_an_action_and_a_pick_is_worked_into_its_profile() {
         let (mut tray, mut clicked) = tray(None);
-        tray.activate(Command::Quick(Edit::set("primary", "address:dualsense")));
-        tray.activate(Command::QuickStart);
-        assert!(clicked.try_recv().is_err(), "one pad isn't a profile yet");
-        assert!(tray.quick_settled);
-        tray.activate(Command::Quick(Edit::set("assist", "address:8bitdo")));
-        tray.activate(Command::Quick(Edit::set("identity", "xbox")));
-        tray.activate(Command::QuickStart);
-        let Ok(Action::Quick(toml)) = clicked.try_recv() else {
-            unreachable!("two pads are a profile")
+        // A pick asks for the profile to be kept with it, and the next
+        // builds on it without waiting for the daemon to say so.
+        tray.activate(Command::set("couch", "identity", "xbox"));
+        tray.activate(Command::set("couch", "assist", "address:8bitdo"));
+        let put = |action| match action {
+            Ok(Action::Put { name, toml }) => (name, toml),
+            other => unreachable!("a pick is a put, not {other:?}"),
         };
-        assert!(toml.contains("identity = \"xbox\""), "{toml}");
+        let (name, first) = put(clicked.try_recv());
+        assert_eq!(name, "couch");
+        assert!(first.contains("identity = \"xbox\""), "{first}");
+        assert!(first.contains("assist = \"serial:xbox\""), "{first}");
+        let (_, second) = put(clicked.try_recv());
+        assert!(second.contains("identity = \"xbox\""), "{second}");
+        assert!(second.contains("assist = \"address:8bitdo\""), "{second}");
+        assert_eq!(tray.view.profiles[0].toml, second);
+        // Another mode keeps what it has a use for, and drops the rest.
+        tray.activate(Command::set("couch", "mode", "unicast"));
+        let (_, other) = put(clicked.try_recv());
+        assert_eq!(other, "mode = \"unicast\"\nidentity = \"xbox\"\n");
+        // A profile there is none of, or that no form can show, has
+        // nothing to pick.
+        tray.activate(Command::set("nobody", "identity", "xbox"));
+        tray.view.profiles[1].toml = "[source.a]\npad = \"model:0001:0001\"\n".to_string();
+        tray.activate(Command::set("desk", "identity", "xbox"));
+        assert!(clicked.try_recv().is_err());
 
-        // Starting `quick` itself starts what is picked.
-        tray.activate(Command::Start(quick::NAME.into()));
-        assert_eq!(clicked.try_recv().unwrap(), Action::Quick(toml));
-        assert_eq!(
-            Action::Quick(String::new()).named(),
-            "keep and run `quick` as picked"
-        );
+        tray.activate(Command::Start("couch".into()));
+        assert_eq!(clicked.try_recv().unwrap(), Action::Start("couch".into()));
+        let put = Action::Put {
+            name: "couch".into(),
+            toml: String::new(),
+        };
+        assert_eq!(put.named(), "keep couch as picked");
         let select = Action::Select {
             setup: "couch".into(),
             node: "mux".into(),
@@ -733,10 +756,14 @@ mod toolkit_tests {
             )),
             "{asked:?}"
         );
-        // The quick-start choices changed where they are kept.
-        assert!(tray.quick_settled);
-        assert_eq!(tray.quick.values["managed"], "true");
-        assert_eq!(tray.quick.values["assist"], "serial:xbox");
+        // Every field of a preset was picked through.
+        assert!(
+            asked.iter().any(|action| matches!(
+                action,
+                Action::Put { name, toml } if name == "desk" && toml.contains("outputs = 8")
+            )),
+            "{asked:?}"
+        );
 
         // With no StatusNotifier host the tray stays, for its notifications.
         assert!(tray.watcher_offline(ksni::OfflineReason::No));

@@ -5,7 +5,6 @@
 mod desktop;
 pub mod menu;
 pub mod notify;
-pub mod quick;
 pub mod service;
 mod settings;
 pub mod state;
@@ -98,15 +97,6 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
                     alive,
                     !tray.view.setups.is_empty(),
                 ));
-                // The quick-start choices start out as whatever the kept
-                // `quick` profile was written from, which takes the
-                // fields to read.
-                if view.hydrated && !view.fields.is_empty() && !tray.quick_settled {
-                    tray.quick_settled = true;
-                    if let Some(kept) = view.kept_quick() {
-                        tray.quick = kept;
-                    }
-                }
                 tray.see(view);
                 news
             })
@@ -143,6 +133,7 @@ pub(crate) async fn act(
     notifier: Notifier,
     quit: Arc<Notify>,
     config: Option<std::path::PathBuf>,
+    handle: Handle,
 ) {
     let opening = Arc::new(std::sync::atomic::AtomicBool::new(false));
     while let Some(action) = clicked.recv().await {
@@ -216,10 +207,16 @@ pub(crate) async fn act(
                 "Couldn't forget the pad".to_string(),
                 daemon.forget_pad(&pad).await,
             ),
-            Action::Quick(toml) => (
-                format!("Couldn't start `{}`", quick::NAME),
-                quick_start(&daemon, &toml).await,
-            ),
+            Action::Put { name, toml } => {
+                let outcome = put_and_apply(&daemon, &name, &toml).await;
+                // The tray showed the pick as made. Refused, it shows
+                // what is kept again.
+                if outcome.is_err() {
+                    let kept = daemon.list_profiles().unwrap_or_default();
+                    handle.update(move |tray| tray.view.profiles = kept).await;
+                }
+                (format!("Couldn't change {name}"), outcome)
+            }
         };
         if let Err(error) = outcome {
             warn!(%error, what, "an action from the menu failed");
@@ -228,20 +225,15 @@ pub(crate) async fn act(
     }
 }
 
-/// Keeps `toml` as the profile `quick` and runs it: started if it isn't
-/// running, restarted on the new profile if it is.
-async fn quick_start(daemon: &DaemonClient, toml: &str) -> ctrlassist::Result<()> {
-    daemon.put_profile(quick::NAME, toml).await?;
-    let running = daemon.setup(quick::NAME)?.is_some();
-    if running {
-        daemon.update_setup(quick::NAME, true).await.map(|_| ())
-    } else {
-        match daemon.start_setup(quick::NAME).await {
-            // A profile that starts by itself may have, at the put.
-            Err(error) if error.rpc_code() == Some(ctrlassist::ErrorCode::SetupExists) => Ok(()),
-            outcome => outcome,
-        }
+/// Keeps `toml` as the profile `name`, and has a setup that runs it
+/// take the change: as it runs where it can, and by a restart where it
+/// can't. One that doesn't run is only kept.
+async fn put_and_apply(daemon: &DaemonClient, name: &str, toml: &str) -> ctrlassist::Result<()> {
+    daemon.put_profile(name, toml).await?;
+    if daemon.setup(name)?.is_some() {
+        daemon.update_setup(name, true).await?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -258,7 +250,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
-    use crate::menu::{Command, Edit, outline};
+    use crate::menu::{Command, outline};
 
     struct Rig {
         _dir: tempfile::TempDir,
@@ -310,13 +302,14 @@ mod tests {
         let (notifier, toasts) = Notifier::capturing(notify::NotificationSettings::default());
         let tray = Arc::new(Mutex::new(PadTray::new(actions)));
         let handle = Handle::Headless(Arc::clone(&tray));
-        tokio::spawn(follow(client.clone(), handle, notifier.clone()));
+        tokio::spawn(follow(client.clone(), handle.clone(), notifier.clone()));
         tokio::spawn(act(
             client,
             clicked,
             notifier,
             Arc::new(Notify::new()),
             None,
+            handle,
         ));
         Rig {
             _dir: dir,
@@ -367,120 +360,91 @@ mod tests {
         format!("model:1209:{product:04x}:{name}")
     }
 
+    /// A pick in the default profile's menu.
+    fn pick(key: &str, value: &str) -> Command {
+        Command::set("default", key, value)
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn quick_start_runs_two_pads_and_the_menu_follows_what_happens_to_them() {
-        const TEST: &str = "quick_start_runs_two_pads_and_the_menu_follows_what_happens_to_them";
+    async fn the_default_profile_runs_two_pads_and_the_menu_follows_what_happens_to_them() {
+        const TEST: &str =
+            "the_default_profile_runs_two_pads_and_the_menu_follows_what_happens_to_them";
         if !can_make_pads(TEST) {
             return;
         }
         let _primary = FakePad::new("Tray Primary", 0x1209, 0x8701).unwrap();
         let assist = FakePad::new("Tray Assist", 0x1209, 0x8702).unwrap();
         let mut rig = rig().await;
-        let menu = rig.shows("Pads (").await;
-        assert!(menu.contains("Quick start >"), "{menu}");
-        assert!(menu.contains("Primary: not chosen >"), "{menu}");
-        assert!(
-            menu.contains("- Start as `quick`"),
-            "nothing to start yet:\n{menu}"
-        );
+        // The default profile is there from the start, its pads to
+        // choose, and nothing to start yet.
+        let menu = rig.shows("Primary: not chosen >").await;
+        assert!(menu.starts_with("default ✓ (Not set up) >\n"), "{menu}");
+        assert!(menu.contains("  - Choose its pads to start\n"), "{menu}");
         assert!(menu.contains("Hiding: grab"), "{menu}");
 
-        // Two pads, picked from the menu, then started.
-        rig.click(Command::Quick(Edit::set(
-            "primary",
-            &id("Tray Primary", 0x8701),
-        )))
-        .await;
-        rig.click(Command::Quick(Edit::set(
-            "assist",
-            &id("Tray Assist", 0x8702),
-        )))
-        .await;
-        let menu = outline(&rig.tray.lock().await.entries());
+        // Two pads, picked from its menu one after the other, then
+        // started.
+        rig.click(pick("primary", &id("Tray Primary", 0x8701)))
+            .await;
+        rig.click(pick("assist", &id("Tray Assist", 0x8702))).await;
+        let menu = rig.shows("default ✓ >\n  Start\n").await;
         assert!(menu.contains("Primary: Tray Primary >"), "{menu}");
-        assert!(menu.contains("\n  Start as `quick`"), "{menu}");
-        rig.click(Command::QuickStart).await;
-        let menu = rig.shows("quick (Running) >").await;
-        assert!(menu.contains("- Running as `quick`"), "{menu}");
+        assert!(menu.contains("Assist: Tray Assist >"), "{menu}");
+        rig.click(Command::Start("default".into())).await;
+        rig.shows("default ✓ (Running) >").await;
         // Without the hiding service the pads are grabbed, which is said
         // once, as the setup starts.
         let grabbed = rig.told("grabbed, not hidden").await;
-        assert!(grabbed.summary.starts_with("quick:"), "{grabbed:?}");
+        assert!(grabbed.summary.starts_with("default:"), "{grabbed:?}");
         rig.told("no rumble on Tray").await;
 
         // A mode picked while it runs is taken at once, by the virtual
         // pad it has: nothing waits for a click.
-        let node = |tray: &PadTray| tray.view.setup("quick").unwrap().sinks[0].node.clone();
-        let before = node(&*rig.tray.lock().await);
-        rig.click(Command::Quick(Edit::set("mode", "toggle"))).await;
-        let menu = rig.shows("Has control >").await;
-        assert!(menu.contains("- Running as `quick`"), "{menu}");
-        assert_eq!(node(&*rig.tray.lock().await), before);
-        // So is another pad: the two change parts, and back.
-        rig.click(Command::Quick(Edit::set(
-            "primary",
-            &id("Tray Assist", 0x8702),
-        )))
-        .await;
-        {
-            let tray = rig.tray.lock().await;
-            assert!(
-                tray.quick.profile(&tray.view.fields).is_none(),
-                "one pad as both parts is no profile, and nothing is asked"
-            );
-        }
-        rig.click(Command::Quick(Edit::set(
-            "assist",
-            &id("Tray Primary", 0x8701),
-        )))
-        .await;
-        rig.shows("Primary: Tray Assist").await;
-        rig.click(Command::Quick(Edit::set(
-            "assist",
-            &id("Tray Assist", 0x8702),
-        )))
-        .await;
-        rig.click(Command::Quick(Edit::set(
-            "primary",
-            &id("Tray Primary", 0x8701),
-        )))
-        .await;
-        rig.shows("Primary: Tray Primary").await;
-        assert_eq!(node(&*rig.tray.lock().await), before);
+        let node = |tray: &PadTray| tray.view.setup("default").unwrap().sinks[0].node.clone();
+        let made = |rig: &Rig| {
+            let tray = Arc::clone(&rig.tray);
+            async move { node(&*tray.lock().await) }
+        };
+        let before = made(&rig).await;
+        assert!(before.is_some());
+        rig.click(pick("mode", "toggle")).await;
+        rig.shows("Has control >").await;
+        assert_eq!(made(&rig).await, before);
+        // A pad one part has can't be picked for the other.
+        let menu = rig.shows("Mode: Toggle >").await;
+        assert!(
+            menu.contains("    (o) Tray Primary\n    ( ) - Tray Assist\n"),
+            "{menu}"
+        );
+        // What the daemon refuses is said, and the menu goes back to
+        // what is kept.
+        rig.click(pick("primary", &id("Tray Assist", 0x8702))).await;
+        rig.told("Couldn't change default").await;
+        rig.shows("Primary: Tray Primary >").await;
+        assert_eq!(made(&rig).await, before);
         // Another identity is another virtual pad: picking it restarts
         // the setup at once, with nothing more to click.
-        let identity = |identity: ctrlassist_protocol::profile::Identity| {
-            Command::Quick(Edit::set("identity", identity.as_str()))
-        };
-        rig.click(identity(ctrlassist_protocol::profile::Identity::Xbox))
-            .await;
-        // Another pad, though the kernel may give it the node the old
-        // one had.
-        rig.shows("Virtual: Microsoft Xbox Series S|X Controller\n")
-            .await;
-        let menu = rig.shows("- Running as `quick`").await;
-        assert!(menu.contains("quick (Running) >"), "{menu}");
-        rig.click(identity(ctrlassist_protocol::profile::Identity::Generic))
-            .await;
-        rig.shows("Virtual: CtrlAssist Virtual Pad\n").await;
-        // Stopped, the profile's own Start runs what is picked now, not
-        // what was last kept.
-        rig.click(Command::Stop("quick".into())).await;
-        rig.shows("quick >\n  Start\n").await;
-        rig.click(identity(ctrlassist_protocol::profile::Identity::Xbox))
-            .await;
-        rig.click(Command::Start("quick".into())).await;
-        rig.shows("Virtual: Microsoft Xbox Series S|X Controller\n")
-            .await;
-        rig.click(identity(ctrlassist_protocol::profile::Identity::Generic))
-            .await;
-        rig.shows("Virtual: CtrlAssist Virtual Pad\n").await;
+        rig.click(pick("identity", "xbox")).await;
+        rig.shows("Identity: Xbox >").await;
+        eventually_pad(&rig, "Microsoft Xbox Series S|X Controller (in default)").await;
+        rig.shows("default ✓ (Running) >").await;
+        rig.click(pick("identity", "generic")).await;
+        eventually_pad(&rig, "CtrlAssist Virtual Pad (in default)").await;
+        // Stopped, a pick is kept, and Start runs the profile as kept.
+        rig.click(Command::Stop("default".into())).await;
+        rig.shows("default ✓ >\n  Start\n").await;
+        rig.click(pick("identity", "xbox")).await;
+        rig.shows("Identity: Xbox >").await;
+        rig.click(Command::Start("default".into())).await;
+        eventually_pad(&rig, "Microsoft Xbox Series S|X Controller (in default)").await;
+        rig.click(pick("identity", "generic")).await;
+        eventually_pad(&rig, "CtrlAssist Virtual Pad (in default)").await;
 
         // The toggle's holder is in the menu, and a click hands over.
         let menu = rig.shows("(o) primary").await;
         assert!(menu.contains("Has control >"), "{menu}");
         rig.click(Command::Select {
-            setup: "quick".into(),
+            setup: "default".into(),
             node: "mux".into(),
             choice: "assist".into(),
         })
@@ -490,12 +454,12 @@ mod tests {
         // The assist leaves: the setup is held, the menu and a
         // notification say so, and it can't be handed to a pad that is gone.
         drop(assist);
-        let menu = rig.shows("quick (Held) >").await;
+        let menu = rig.shows("default ✓ (Held) >").await;
         assert!(
-            menu.contains("Assist: Tray Assist (disconnected)"),
+            menu.contains("Assist: Tray Assist (disconnected) >"),
             "{menu}"
         );
-        let held = rig.told("quick is held").await;
+        let held = rig.told("default is held").await;
         assert!(
             held.body.starts_with("Tray Assist disconnected"),
             "{held:?}"
@@ -504,17 +468,16 @@ mod tests {
 
         // It returns: running again, and said.
         let _assist = FakePad::new("Tray Assist", 0x1209, 0x8702).unwrap();
-        rig.shows("quick (Running) >").await;
-        rig.told("quick is running again").await;
+        rig.shows("default ✓ (Running) >").await;
+        rig.told("default is running again").await;
 
         // Stopped from the menu; the profile stays, to start again.
-        rig.click(Command::Stop("quick".into())).await;
-        let menu = rig.shows("quick >\n  Start\n").await;
-        assert!(menu.contains("Start as `quick`"), "{menu}");
+        rig.click(Command::Stop("default".into())).await;
+        rig.shows("default ✓ >\n  Start\n").await;
 
         // What can't be done is said, since a menu has nowhere to say it.
-        rig.click(Command::Stop("quick".into())).await;
-        let refused = rig.told("Couldn't stop quick").await;
+        rig.click(Command::Stop("default".into())).await;
+        let refused = rig.told("Couldn't stop default").await;
         assert!(refused.body.contains("unknown-setup"), "{refused:?}");
         rig.click(Command::Start("nothing".into())).await;
         rig.told("Couldn't start nothing").await;
@@ -525,46 +488,43 @@ mod tests {
         rig.click(Command::Forget(id("Tray Primary", 0x8701))).await;
         rig.told("Couldn't forget the pad").await;
         rig.click(Command::Select {
-            setup: "quick".into(),
+            setup: "default".into(),
             node: "mux".into(),
             choice: "assist".into(),
         })
         .await;
-        rig.told("Couldn't hand quick over to assist").await;
+        rig.told("Couldn't hand default over to assist").await;
+    }
+
+    /// Waits for a virtual pad of this name among the menu's pads.
+    async fn eventually_pad(rig: &Rig, wanted: &str) {
+        rig.shows(&format!("  {wanted} >\n")).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn the_tray_outlives_the_daemon_and_remembers_the_quick_choices() {
-        const TEST: &str = "the_tray_outlives_the_daemon_and_remembers_the_quick_choices";
+    async fn the_tray_outlives_the_daemon_and_a_later_tray_reads_what_was_picked() {
+        const TEST: &str = "the_tray_outlives_the_daemon_and_a_later_tray_reads_what_was_picked";
         if !can_make_pads(TEST) {
             return;
         }
         let _primary = FakePad::new("Tray Kept Primary", 0x1209, 0x8711).unwrap();
         let _assist = FakePad::new("Tray Kept Assist", 0x1209, 0x8712).unwrap();
         let mut rig = rig().await;
-        rig.shows("Pads (").await;
-        rig.click(Command::Quick(Edit::set(
-            "primary",
-            &id("Tray Kept Primary", 0x8711),
-        )))
-        .await;
-        rig.click(Command::Quick(Edit::set(
-            "assist",
-            &id("Tray Kept Assist", 0x8712),
-        )))
-        .await;
-        rig.click(Command::Quick(Edit::set("rumble", "primary")))
+        rig.shows("Primary: not chosen >").await;
+        rig.click(pick("primary", &id("Tray Kept Primary", 0x8711)))
             .await;
-        rig.click(Command::Quick(Edit::set("managed", "true")))
+        rig.click(pick("assist", &id("Tray Kept Assist", 0x8712)))
             .await;
-        rig.click(Command::QuickStart).await;
-        rig.shows("quick (Running) >").await;
+        rig.click(pick("rumble", "primary")).await;
+        // A managed profile starts by itself once its pads are there.
+        rig.click(pick("managed", "true")).await;
+        rig.shows("default ✓ (Running) >").await;
 
         // The daemon stops: the menu says so, and a notification says
         // what went with it.
         rig.daemon.take().unwrap().stop().await;
         let menu = rig.shows("The CtrlAssist daemon isn't running").await;
-        assert!(!menu.contains("Quick start"), "{menu}");
+        assert!(!menu.contains("default"), "{menu}");
         let stopped = rig.told("daemon stopped").await;
         assert!(
             stopped.body.contains("virtual pads are gone"),
@@ -574,9 +534,10 @@ mod tests {
         // It comes back, and the profile, which asks to, starts by itself.
         rig.daemon = Some(start_daemon(&rig.paths).await);
         rig.told("daemon is back").await;
-        rig.shows("quick (Running) >").await;
+        rig.shows("default ✓ (Running) >").await;
 
-        // A tray that starts later reads its choices from the kept profile.
+        // A tray that starts later shows what was picked: it is the
+        // profile, and nothing of it is the tray's to remember.
         let client = DaemonClient::connect(Path::new(&rig.paths.socket))
             .await
             .unwrap();
@@ -589,15 +550,17 @@ mod tests {
             notifier,
         ));
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-        while !later.lock().await.quick_settled {
+        let menu = loop {
+            let menu = outline(&later.lock().await.entries());
+            if menu.contains("Primary: Tray Kept Primary >") {
+                break menu;
+            }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "it never read the daemon"
+                "it never read the daemon:\n{menu}"
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let menu = outline(&later.lock().await.entries());
-        assert!(menu.contains("Primary: Tray Kept Primary >"), "{menu}");
+        };
         assert!(menu.contains("Rumble goes to: Primary only >"), "{menu}");
         assert!(menu.contains("[x] Managed"), "{menu}");
     }
