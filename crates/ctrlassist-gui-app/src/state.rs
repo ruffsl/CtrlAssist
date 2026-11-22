@@ -8,7 +8,8 @@
 
 use ctrlassist::form::Field;
 use ctrlassist::{
-    DaemonClient, Hiding, Pad, Profile, Setup, StateWatcher, StateWatcherConfig, TrayClient,
+    DaemonClient, Hiding, NotificationSettings, Pad, Profile, Setup, StateWatcher,
+    StateWatcherConfig, TrayClient,
 };
 use ctrlassist_protocol::{VERSION, compatible};
 use slint::{ComponentHandle, SharedString};
@@ -37,6 +38,10 @@ pub struct Snapshot {
     pub tray_available: bool,
     /// The tray's release, once it has said.
     pub tray: Option<String>,
+    /// The file the tray keeps its settings in, once it has said.
+    pub tray_config: String,
+    /// The tray's notification switches, once it has published them.
+    pub notifications: Option<NotificationSettings>,
     /// The pads it knows.
     pub pads: Vec<Pad>,
     /// The setups that exist.
@@ -67,6 +72,11 @@ impl Snapshot {
             tray: tray
                 .and_then(TrayClient::service_info)
                 .map(|info| info.version),
+            tray_config: tray
+                .and_then(TrayClient::service_info)
+                .map(|info| info.config)
+                .unwrap_or_default(),
+            notifications: tray.and_then(TrayClient::notification_settings),
             pads: daemon.list_pads().unwrap_or_default(),
             setups: daemon.list_setups().unwrap_or_default(),
             profiles: daemon.list_profiles().unwrap_or_default(),
@@ -109,6 +119,15 @@ impl Snapshot {
         app.set_daemon_realtime(self.realtime);
         app.set_tray_health(self.tray_health());
         app.set_tray_version(SharedString::from(self.tray.clone().unwrap_or_default()));
+        let tray = app.global::<crate::Tray>();
+        tray.set_available(self.tray_available);
+        // With no tray the pane goes on showing what was last known.
+        if let Some(settings) = self.notifications {
+            tray.set_notifications(crate::settings::shown(settings));
+        }
+        if !self.tray_config.is_empty() {
+            tray.set_config_path(SharedString::from(self.tray_config.as_str()));
+        }
         crate::about::refresh(app);
         crate::pads::show(app, crate::pads::rows(&self.pads, &self.setups));
         crate::setups::show(
@@ -244,16 +263,40 @@ pub fn reload_banner(reloaded: &ctrlassist::Reloaded) -> ErrorState {
 }
 
 /// The sidebar's Reload: asks the daemon, then says what it found.
-pub(crate) fn wire_reload(app: &AppWindow, daemon: &DaemonClient) {
+pub(crate) fn wire_reload(app: &AppWindow, daemon: &DaemonClient, tray: Option<&TrayClient>) {
     let weak = app.as_weak();
     let daemon = daemon.clone();
+    let tray = tray.cloned();
     app.global::<crate::Daemon>().on_reload_config(move || {
-        let (weak, daemon) = (weak.clone(), daemon.clone());
+        let (weak, daemon, tray) = (weak.clone(), daemon.clone(), tray.clone());
         tokio::spawn(async move {
+            // The tray's file too, where a tray is there to reread it.
+            let tray = match tray.filter(TrayClient::is_available) {
+                Some(tray) => Some(tray.reload_config().await),
+                None => None,
+            };
             match daemon.reload().await {
                 Ok(reloaded) => {
-                    show_toast(weak.clone(), &reload_summary(&reloaded));
-                    let banner = reload_banner(&reloaded);
+                    let mut summary = reload_summary(&reloaded);
+                    if matches!(tray, Some(Ok(report)) if report.changed) {
+                        summary.push_str("; the tray's settings read again");
+                    }
+                    show_toast(weak.clone(), &summary);
+                    let mut banner = reload_banner(&reloaded);
+                    // A profile that is wrong is said first; the tray's
+                    // file is said when nothing else is.
+                    if banner == ErrorState::default()
+                        && let Some(Err(error)) = &tray
+                    {
+                        warn!(%error, "the tray couldn't reread its settings");
+                        banner = ErrorState {
+                            kind: SharedString::from("reload"),
+                            tone: SharedString::from("warn"),
+                            title: SharedString::from("The tray couldn't reread its settings"),
+                            message: SharedString::from(error.to_string()),
+                            action_label: SharedString::default(),
+                        };
+                    }
                     on_ui(&weak, move |app| app.global::<Errors>().set_reload(banner));
                 }
                 Err(error) => {

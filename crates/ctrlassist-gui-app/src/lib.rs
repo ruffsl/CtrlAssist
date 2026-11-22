@@ -15,6 +15,7 @@ mod models;
 pub mod nav;
 pub mod pads;
 pub mod profiles;
+pub mod settings;
 pub mod setups;
 pub mod state;
 mod toast;
@@ -114,17 +115,18 @@ pub fn run() -> Result<()> {
     let daemon = rt
         .block_on(ctrlassist::DaemonClient::connect(&socket))
         .context("couldn't open a session for the daemon's socket")?;
-    state::wire_reload(&app, &daemon);
-    about::wire(&app, &daemon);
-    pads::wire(&app, &daemon, &nav);
-    setups::wire(&app, &daemon, &nav);
-    profiles::wire(&app, &daemon, &nav);
     // The tray, on the same session: it serves through the daemon. With
     // no client for it the window still works, and shows no tray.
     let tray = rt
         .block_on(ctrlassist::TrayClient::beside(&daemon))
         .map_err(|error| tracing::warn!(%error, "the tray can't be followed"))
         .ok();
+    state::wire_reload(&app, &daemon, tray.as_ref());
+    settings::wire(&app, tray.as_ref());
+    about::wire(&app, &daemon);
+    pads::wire(&app, &daemon, &nav);
+    setups::wire(&app, &daemon, &nav);
+    profiles::wire(&app, &daemon, &nav);
     rt.spawn(state::follow(daemon, tray, app.as_weak()));
 
     keys::bind_key_router(&app);
@@ -155,6 +157,8 @@ pub fn run() -> Result<()> {
     let prefs = std::rc::Rc::new(std::cell::Cell::new(couch_prefs));
     // One writer, so a held arrow's run of scale changes lands in order
     // and the exit below can wait for the last one.
+    app.global::<Couch>()
+        .set_config_path(gui_config_path.display().to_string().into());
     let writer = std::rc::Rc::new(couch::PrefsWriter::spawn(gui_config_path, couch_prefs));
     {
         let couch = app.global::<Couch>();

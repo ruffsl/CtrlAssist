@@ -17,6 +17,8 @@ export global Couch {
     /// Rust clamps a hand-edited file's value to. Defined here once.
     out property <int> scale-min-percent: 100;
     out property <int> scale-max-percent: 250;
+    /// The file the preference is kept in, for the Settings pane to say.
+    in property <string> config-path;
     /// The user picked a mode in Settings.
     callback mode-changed(string);
     /// The user set a scale in Settings.

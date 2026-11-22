@@ -28,10 +28,12 @@ import { PadsPane } from "components/pads_pane.slint";
 import { Pads, PadRow } from "globals/pads.slint";
 import { SetupsPane } from "components/setups_pane.slint";
 import { ProfilesPane } from "components/profiles_pane.slint";
+import { SettingsPane } from "components/settings_pane.slint";
+import { Tray, TrayNotificationSettings } from "globals/tray.slint";
 import { Profiles, ProfileRow, ProfileFieldRow } from "globals/profiles.slint";
 import { Setups, SetupRow, SetupPadRow, SetupSinkRow, SetupNodeRow } from "globals/setups.slint";
 
-export { Select, AboutComponentRow, Profiles, ProfileRow, ProfileFieldRow, Pads, PadRow, Setups, SetupRow, SetupPadRow, SetupSinkRow, SetupNodeRow, Theme, Daemon, Clipboard, Errors, Icons, Toast, Help, ServiceHealth, Nav, Couch }
+export { Select, AboutComponentRow, Profiles, ProfileRow, ProfileFieldRow, Pads, PadRow, Setups, SetupRow, SetupPadRow, SetupSinkRow, SetupNodeRow, Theme, Daemon, Clipboard, Errors, Icons, Toast, Help, ServiceHealth, Nav, Couch, Tray, TrayNotificationSettings }
 
 export enum Pane {
     pads,
@@ -47,21 +49,6 @@ export enum Pane {
 // `Theme.sidebar-text` otherwise. If the icon failed to resolve the
 // `image` property is empty and Slint draws nothing in its slot —
 // the layout degrades to label-only without surrounding rework.
-// A pane that isn't built yet: its name, where its content will be.
-component EmptyPane inherits Rectangle {
-    in property <string> title;
-    VerticalLayout {
-        padding: Design.pad-pane;
-        padding-top: Design.pad-pane-top;
-        alignment: start;
-        Text {
-            text: root.title;
-            color: Theme.text;
-            font-size: Design.font-title-2;
-            font-weight: 600;
-        }
-    }
-}
 
 component SidebarItem inherits Focusable {
     in property <image> icon;
@@ -763,10 +750,9 @@ export component AppWindow inherits Window {
                         daemon-loading: root.daemon-loading;
                         daemon-health: root.daemon-health;
                     }
-                    if root.active-pane == Pane.settings: EmptyPane {
+                    if root.active-pane == Pane.settings: SettingsPane {
                         width: 100%;
                         height: 100%;
-                        title: @tr("Settings");
                     }
                     if root.active-pane == Pane.about: AboutPane {
                         width: 100%;
