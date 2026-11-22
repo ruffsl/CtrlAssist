@@ -55,6 +55,11 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     let daemon = DaemonClient::connect(&options.socket)
         .await
         .map_err(|error| anyhow!("connecting to {}: {error}", options.socket.display()))?;
+    // For as long as the tray runs, so the daemon can say one is there.
+    let _presence = daemon
+        .announce_tray()
+        .await
+        .map_err(|error| anyhow!("announcing the tray: {error}"))?;
     let (actions, clicked) = mpsc::unbounded_channel();
     let notifier = show_toasts();
     // With no StatusNotifier host the spawn still succeeds: the icon

@@ -42,6 +42,10 @@ pub struct Parts {
     pub daemon_realtime: bool,
     /// The hiding service's health, as the daemon finds it.
     pub hider: ServiceHealth,
+    /// The tray's health, as the daemon reports it.
+    pub tray: ServiceHealth,
+    /// Its release, when one is connected.
+    pub tray_version: String,
     /// The release of the `ctrlassist` on PATH; empty for none found.
     pub cli_version: String,
 }
@@ -56,6 +60,8 @@ impl Parts {
             daemon_config: app.get_daemon_config().to_string(),
             daemon_realtime: app.get_daemon_realtime(),
             hider: app.get_hider_health(),
+            tray: app.get_tray_health(),
+            tray_version: app.get_tray_version().to_string(),
             cli_version: app.get_cli_version().to_string(),
         }
     }
@@ -125,12 +131,19 @@ pub fn rows(parts: &Parts) -> Vec<AboutComponentRow> {
         },
         config_path: String::new(),
     };
-    // The tray says nothing on the bus a client could see it by, yet.
+    // The tray is the daemon's to report: one client can't see another.
     let tray = Cells {
-        version: String::new(),
-        health: ServiceHealth::Offline,
-        chip: "not seen".to_string(),
-        tip: "The tray doesn't announce itself yet, so this can't tell whether it runs".to_string(),
+        version: parts.tray_version.clone(),
+        health: parts.tray,
+        chip: match (online(parts.daemon), online(parts.tray)) {
+            (false, _) => "unknown".to_string(),
+            (true, false) => "offline".to_string(),
+            (true, true) => format!("v{}", parts.tray_version),
+        },
+        tip: match (online(parts.daemon), online(parts.tray)) {
+            (false, _) => "Only the daemon can say, and it isn't running".to_string(),
+            (true, _) => release_tip(parts.tray, &parts.tray_version),
+        },
         config_path: String::new(),
     };
     let window = Cells {

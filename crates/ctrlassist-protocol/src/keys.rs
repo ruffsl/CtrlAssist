@@ -6,6 +6,25 @@ pub fn daemon_alive() -> String {
     "ctrlassist/alive/daemon".to_string()
 }
 
+/// Liveliness token declared by a running tray, on its link to the
+/// daemon. It carries the tray's release, since a token has no body.
+/// Only the daemon sees it: what one client of the daemon's socket
+/// declares doesn't reach another, so the daemon says in its own state
+/// that a tray is there.
+pub fn tray_alive(version: &str) -> String {
+    format!("ctrlassist/alive/tray/{version}")
+}
+
+/// Wildcard over every tray's token.
+pub fn tray_alive_wild() -> String {
+    "ctrlassist/alive/tray/*".to_string()
+}
+
+/// Parse a [`tray_alive`] key into the tray's release.
+pub fn parse_tray_alive(key: &str) -> Option<&str> {
+    segment(key.strip_prefix("ctrlassist/alive/tray/")?)
+}
+
 /// The daemon's own state, a [`Daemon`](crate::payload::Daemon): a cached
 /// publish.
 pub fn daemon() -> String {

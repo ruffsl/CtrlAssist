@@ -30,6 +30,8 @@ pub struct Snapshot {
     pub config: String,
     /// Whether its input thread has real-time scheduling.
     pub realtime: bool,
+    /// The release of a tray connected to it, if one is.
+    pub tray: Option<String>,
 }
 
 impl Snapshot {
@@ -46,7 +48,8 @@ impl Snapshot {
                 .as_ref()
                 .map(|state| state.config.clone())
                 .unwrap_or_default(),
-            realtime: state.is_some_and(|state| state.realtime),
+            realtime: state.as_ref().is_some_and(|state| state.realtime),
+            tray: state.and_then(|state| state.tray),
         }
     }
 
@@ -67,6 +70,13 @@ impl Snapshot {
         }
     }
 
+    /// The tray's health, as the daemon reports it: absent with no
+    /// daemon to say.
+    #[must_use]
+    pub fn tray_health(&self) -> ServiceHealth {
+        health(self.available && self.tray.is_some(), self.tray.as_deref())
+    }
+
     /// Puts the snapshot on the window.
     pub fn show(&self, app: &AppWindow) {
         app.set_daemon_available(self.available);
@@ -76,6 +86,8 @@ impl Snapshot {
         app.set_daemon_version(SharedString::from(self.version.clone().unwrap_or_default()));
         app.set_daemon_config(SharedString::from(self.config.as_str()));
         app.set_daemon_realtime(self.realtime);
+        app.set_tray_health(self.tray_health());
+        app.set_tray_version(SharedString::from(self.tray.clone().unwrap_or_default()));
         crate::about::refresh(app);
         let banner = match (&self.version, self.daemon_health()) {
             (Some(theirs), ServiceHealth::Incompatible) => ErrorState {

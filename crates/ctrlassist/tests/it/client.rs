@@ -316,3 +316,44 @@ async fn try_next_drains_without_waiting() {
     assert_eq!(polling.try_next(), Some(StateEvent::FallbackPoll));
     assert!(silent.try_next().is_none(), "zero turns the poll off");
 }
+
+/// A tray's announcement reaches other clients through the daemon's own
+/// state, since one client of the daemon's socket can't see another:
+/// there while the tray is, gone when it goes, and there again in a
+/// daemon that starts later.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tray_s_presence_is_the_daemon_s_to_report() {
+    let (_dir, socket) = socket();
+    let daemon = start_daemon(&socket).await;
+    let window = DaemonClient::connect(&socket).await.unwrap();
+    let tray_of =
+        |client: &DaemonClient| client.daemon_state().unwrap().and_then(|state| state.tray);
+    eventually("the daemon's state never arrived", async || {
+        window.daemon_state().unwrap().is_some()
+    })
+    .await;
+    assert_eq!(tray_of(&window), None);
+
+    let tray = DaemonClient::connect(&socket).await.unwrap();
+    let presence = tray.announce_tray().await.unwrap();
+    eventually("the tray was never reported", async || {
+        tray_of(&window).as_deref() == Some(VERSION)
+    })
+    .await;
+
+    // A daemon that starts later hears of the tray that was already there.
+    daemon.stop().await;
+    eventually("the daemon never went", async || !window.is_available()).await;
+    let daemon = start_daemon(&socket).await;
+    eventually("the tray wasn't reported by the next daemon", async || {
+        tray_of(&window).as_deref() == Some(VERSION)
+    })
+    .await;
+
+    drop(presence);
+    eventually("the tray was still reported after it went", async || {
+        window.is_available() && tray_of(&window).is_none()
+    })
+    .await;
+    daemon.stop().await;
+}

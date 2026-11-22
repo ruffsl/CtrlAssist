@@ -53,6 +53,8 @@ type Rpc = Queryable<FifoChannelHandler<Query>>;
 
 /// The rpc families the reactor answers, one queryable each.
 pub(crate) struct Rpcs {
+    /// Not an rpc: the trays connected to this daemon, by their tokens.
+    pub(crate) trays: zenoh::pubsub::Subscriber<FifoChannelHandler<zenoh::sample::Sample>>,
     pub(crate) daemon: Rpc,
     pub(crate) pad: Rpc,
     pub(crate) profile: Rpc,
@@ -63,6 +65,11 @@ impl Rpcs {
     /// Declares every family on `session`.
     pub(crate) async fn declare(session: &Session) -> zenoh::Result<Self> {
         Ok(Self {
+            trays: session
+                .liveliness()
+                .declare_subscriber(keys::tray_alive_wild())
+                .history(true)
+                .await?,
             daemon: session.declare_queryable(daemon::Incoming::wild()).await?,
             pad: session.declare_queryable(pad::Incoming::wild()).await?,
             profile: session.declare_queryable(profile::Incoming::wild()).await?,
@@ -105,6 +112,8 @@ pub(crate) struct Reactor {
     /// The pads that connected while another was being copied, to try
     /// if that one can't be: a pad another program has hidden can't.
     pub(crate) candidates: Vec<Found>,
+    /// The releases of the trays connected now, one for each.
+    trays: Vec<String>,
 }
 
 impl std::fmt::Debug for Reactor {
@@ -176,6 +185,7 @@ impl Reactor {
             test_pads: false,
             state: None,
             candidates: Vec::new(),
+            trays: Vec::new(),
         }
     }
 
@@ -184,6 +194,31 @@ impl Reactor {
         self.publish(keys::daemon(), &state).await?;
         self.state = Some(state);
         Ok(())
+    }
+
+    /// Takes in a tray's token coming or going, and says in the
+    /// daemon's state whether a tray is there.
+    async fn tray_seen(&mut self, sample: zenoh::sample::Sample) {
+        let Some(version) = keys::parse_tray_alive(sample.key_expr().as_str()) else {
+            return;
+        };
+        match sample.kind() {
+            zenoh::sample::SampleKind::Put => self.trays.push(version.to_string()),
+            zenoh::sample::SampleKind::Delete => {
+                if let Some(at) = self.trays.iter().position(|tray| tray == version) {
+                    self.trays.remove(at);
+                }
+            }
+        }
+        let tray = self.trays.last().cloned();
+        info!(tray = tray.as_deref(), "the trays connected changed");
+        let Some(state) = self.state.clone().filter(|state| state.tray != tray) else {
+            return;
+        };
+        let state = payload::Daemon { tray, ..state };
+        if let Err(error) = self.publish_daemon(state).await {
+            warn!(%error, "publishing the daemon's state failed");
+        }
     }
 
     /// Says how pads are hidden now, if that isn't what was last said:
@@ -520,6 +555,7 @@ impl Reactor {
         loop {
             tokio::select! {
                 _ = &mut stop => break,
+                Ok(sample) = rpcs.trays.recv_async() => self.tray_seen(sample).await,
                 Ok(query) = rpcs.daemon.recv_async() => self.daemon_rpc(query).await,
                 Ok(query) = rpcs.pad.recv_async() => self.pad_rpc(query).await,
                 Ok(query) = rpcs.profile.recv_async() => self.profile_rpc(query).await,

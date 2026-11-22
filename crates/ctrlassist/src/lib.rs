@@ -104,9 +104,18 @@ pub enum StateEvent {
 
 const EVENT_CAPACITY: usize = 256;
 
+/// A client's announcement that it is there, withdrawn when dropped.
+#[derive(Debug)]
+#[must_use = "dropping it withdraws the announcement"]
+pub struct Presence(
+    #[expect(dead_code, reason = "held for its drop, which withdraws the token")]
+    zenoh::liveliness::LivelinessToken,
+);
+
 /// Client for the daemon: mirror reads, rpc writes.
 #[derive(Debug, Clone)]
 pub struct DaemonClient {
+    session: zenoh::Session,
     caller: Arc<Caller>,
     mirror: LifetimeMirror<DaemonMirror>,
     events: broadcast::Sender<StateEvent>,
@@ -147,11 +156,32 @@ impl DaemonClient {
         let caller = Arc::new(Caller::new(session.clone()));
         let mirror = LifetimeMirror::<DaemonMirror>::start(&session, &caller).await?;
         Ok(Self {
+            session,
             caller,
             events: mirror.events().clone(),
             handshake: Arc::clone(mirror.handshake()),
             mirror,
         })
+    }
+
+    /// Announces this process as the tray, at this release, for as long
+    /// as the token returned is held. The daemon sees it, across its
+    /// restarts too, and says in its own state that a tray is there:
+    /// [`DaemonState::tray`].
+    ///
+    /// # Errors
+    ///
+    /// Fails only with [`Error::Transport`], when the local session
+    /// can't declare the token.
+    pub async fn announce_tray(&self) -> Result<Presence> {
+        self.session
+            .liveliness()
+            .declare_token(ctrlassist_protocol::keys::tray_alive(
+                ctrlassist_protocol::VERSION,
+            ))
+            .await
+            .map(Presence)
+            .map_err(|e| Error::transport("announce the tray", e))
     }
 
     /// Whether the daemon's liveliness token is present: a mirror read.

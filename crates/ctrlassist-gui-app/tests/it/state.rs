@@ -155,6 +155,7 @@ async fn a_snapshot_reads_a_live_daemon_and_its_going() {
             config: socket.with_file_name("config").display().to_string(),
             // Granted or not is the machine's to say.
             realtime: snapshot.realtime,
+            tray: None,
         }
     );
     assert_eq!(snapshot.daemon_health(), ServiceHealth::Ok);

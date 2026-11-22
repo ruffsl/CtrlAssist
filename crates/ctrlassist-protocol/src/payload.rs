@@ -17,6 +17,11 @@ pub struct Daemon {
     /// that doesn't say.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub config: String,
+    /// The release of a tray connected to this daemon, if one is: the
+    /// tray's presence is the daemon's to report, since one client
+    /// can't see another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tray: Option<String>,
 }
 
 /// How the pads of a running setup are kept from games.

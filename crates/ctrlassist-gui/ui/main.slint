@@ -363,6 +363,9 @@ export component AppWindow inherits Window {
     // The hiding service, as the daemon finds it: without it a setup's
     // pads are grabbed, not hidden.
     in property <ServiceHealth> hider-health: ServiceHealth.offline;
+    // The tray, as the daemon reports it: a client can't see another.
+    in property <ServiceHealth> tray-health: ServiceHealth.offline;
+    in-out property <string> tray-version;
     // The About pane: this window's release, its rows, and the links
     // Rust opens.
     in property <string> gui-version;
@@ -640,8 +643,8 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // Footer status block — two peer indicators (Daemon /
-                    // Hiding service) grouped together and centered within
+                    // Footer status block — three peer indicators (Daemon /
+                    // Hiding service / Tray) grouped together and centered within
                     // the sidebar. Each dot renders its service's health:
                     // filled while it runs, colored by whether this GUI
                     // can use it. Each row is a single left-aligned Text
@@ -665,6 +668,12 @@ export component AppWindow inherits Window {
                             Text {
                                 text: Health.dot(root.hider-health) + " " + @tr("Hiding");
                                 color: Health.color(root.hider-health);
+                                font-size: Design.font-caption;
+                                horizontal-alignment: left;
+                            }
+                            Text {
+                                text: Health.dot(root.tray-health) + " " + @tr("Tray");
+                                color: Health.color(root.tray-health);
                                 font-size: Design.font-caption;
                                 horizontal-alignment: left;
                             }
