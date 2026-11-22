@@ -48,6 +48,12 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 
 **The icons crate and the tray's notification switches come in with the GUI.** `tisvlay-icons` is copied as `ctrlassist-icons` in the step that first draws a theme icon; the tray grows per-category notification switches, served to the GUI as TisVlay's are, in the step that builds the Settings pane. This undoes the rewrite plan's deviation "the tray leaves out TisVlay's notification switches and its icons crate".
 
+**The tray opens the window,** as TisVlay's does: an entry in its menu, activated over D-Bus, so a second click raises the window already open. The desktop file does the same from a launcher.
+
+**The daemon grows a settings rpc.** A small settings file the daemon owns, read and written through an rpc and published like its other state, so the CLI sets the same options the window does. The tray serves its own notification switches, as in TisVlay. Which options there are is still to be listed.
+
+**The preset form is rendered from one served schema.** `ctrlassist-protocol` describes a preset's fields once, the daemon serves it, and the window renders it with TisVlay's schema form. The tray's quick menu and the CLI can move to the same description afterwards.
+
 ## What is copied, replaced and new
 
 | TisVlay | Here |
@@ -58,7 +64,7 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 | `components/about_pane.slint`, `about.rs`, `diagnostic.rs` | Copied; the component rows are the daemon, the hiding service, the tray. |
 | `components/settings_pane.slint` | Copied and extended. |
 | `components/profiles_pane.slint`, `globals/profiles.slint`, `profiles.rs` | The list, header and dialogs are copied; the field model is replaced by the preset form. |
-| `components/schema_form.slint`, `schema_form.rs` | Open question below. |
+| `components/schema_form.slint`, `schema_form.rs` | Copied; it renders the preset form. |
 | `components/tvs_pane.slint` | Replaced by the Pads and Setups panes, on its list and detail shapes. |
 | `components/pairing_wizard.slint`, `wizard.rs`, `power_cycle.rs` | Not copied. |
 | `nav.rs`, `couch.rs`, `keys.rs`, `state.rs`, `state_watch.rs`, `toast.rs`, `accent.rs`, `fonts.rs`, `icon_theme.rs`, `file_manager.rs`, `dbus.rs`, `token.rs` | Copied and trimmed; `state_watch` reads CtrlAssist's mirror. |
@@ -69,13 +75,12 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 ## Open questions
 
 1. **The application id** the desktop file, the D-Bus name and the window carry. TisVlay's is `org.tisvlay.Gui`; nothing in CtrlAssist fixes one yet.
-2. **Does the tray open the GUI,** as TisVlay's does (an "Open settings" entry, activated over D-Bus)?
-3. **What does Settings write?** "Start at login" and the blacklist fallback aren't options a client can set today. Either the daemon grows a settings rpc and a file, or the pane shows state and says where to change it.
-4. **The schema form.** TisVlay renders a form from a schema the daemon serves. The preset form could be written by hand (five fields) or driven from the profile schema in `ctrlassist-protocol`, which would also keep the CLI, the tray's quick menu and the GUI on one description of a preset.
-5. **Roles in the form when a pad isn't plugged in.** Whether a profile may name a known pad that is absent, and how the form shows it.
-6. **Reload.** TisVlay's sidebar has a Reload button for hand-edited state files. Whether CtrlAssist's daemon has the same need (profiles are files it watches or not).
-7. **The live view's spike**: what it must show before the step is designed (sampling at a display rate, only while a client asks, from a copy the input thread writes without waiting).
-8. **Packaging.** Whether the GUI is in the one package or its own, so a headless install doesn't pull in a toolkit; and the license bundle, which TisVlay pins a cargo-about release for because of Slint's license files.
+2. **Which options the settings rpc holds.** Candidates: starting at login, the Steam blacklist fallback. Each is asked before the pane is built.
+3. **Whether the tray and the CLI move to the served schema in this plan** or after it.
+4. **Roles in the form when a pad isn't plugged in.** Whether a profile may name a known pad that is absent, and how the form shows it.
+5. **Reload.** TisVlay's sidebar has a Reload button for hand-edited state files. Whether CtrlAssist's daemon has the same need (profiles are files it watches or not).
+6. **The live view's spike**: what it must show before the step is designed (sampling at a display rate, only while a client asks, from a copy the input thread writes without waiting).
+7. **Packaging.** Whether the GUI is in the one package or its own, so a headless install doesn't pull in a toolkit; and the license bundle, which TisVlay pins a cargo-about release for because of Slint's license files.
 
 ## Steps
 
@@ -88,8 +93,8 @@ Each is a commit or a few, with the gates run and the TisVlay commit named. Orde
 5. `feat(gui): the About pane` — brings `ctrlassist-icons`. Verified: the copied About tests.
 6. `feat(gui): the Pads pane` — list, detail, identify, forget. Verified: tests with fake pads; identify on a real pad.
 7. `feat(gui): the Setups pane` — start, stop, update, selections. Verified: tests; a setup steered on real pads.
-8. `feat(gui): the Profiles pane and the preset form`. Verified: tests that a form's profile is what the CLI would write; a profile made and started in the window.
-9. `feat(tray): notification switches`, then `feat(gui): the Settings pane`. Verified: tests on both; a switch seen to silence a notification.
+8. `feat(protocol): a preset's fields as a served schema`, then `feat(gui): the Profiles pane and the preset form`. Verified: tests that a form's profile is what the CLI would write; a profile made and started in the window.
+9. `feat(daemon): settings, and an rpc to read and set them` with the CLI's side, `feat(tray): notification switches`, then `feat(gui): the Settings pane`. Verified: tests on both; a switch seen to silence a notification.
 10. `feat(gui): contextual help` — the overlay and the help text for each pane. Verified: the copied tests.
 11. `feat(gui): translations` — the domain, the `.pot`, the extract recipe and its gate. Verified: the gate; a pseudo-locale run.
 12. `feat(gui): activation and packaging` — the desktop file, D-Bus activation, the tray's entry if wanted, the Nix package and module, the other packages' file lists, a VM check that the window opens. Verified: the VM check; the copied activation tests.
