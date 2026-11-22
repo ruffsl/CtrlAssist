@@ -45,6 +45,12 @@ export struct PadRow {
     games: string,
     // Every profile that names it.
     profiles: [PadProfileRow],
+    // A virtual pad, which a running profile makes: it has a profile, an
+    // identity and a node, and no address, rumble or forgetting.
+    is-virtual: bool,
+    // For a virtual pad: what it presents itself as, and its node.
+    identity: string,
+    node: string,
     // The setup that has it, and its role there; empty for none.
     setup: string,
     role: string,
@@ -60,6 +66,9 @@ export global Pads {
     // How many of `rows` are connected: Slint can't count a model in a
     // binding.
     in property <int> connected-count;
+    // How many of `rows` are real pads: they come first, connected and
+    // then remembered, and the virtual pads after them.
+    in property <int> real-count;
     in-out property <int> selected-index: -1;
     // Buzz the pad, so a person can tell which it is.
     callback identify(string);

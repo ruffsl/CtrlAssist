@@ -1,7 +1,7 @@
 // The Pads pane: every pad the daemon knows, the connected ones and
-// then the remembered ones, and for the one selected what it is, which
-// profiles name it, and the two things to do with it: Identify and
-// Forget.
+// then the remembered ones, then the virtual pads the running profiles
+// make; and for the one selected what it is, which profiles name it,
+// and the two things to do with a real one: Identify and Forget.
 //
 // The list and the detail are TisVlay's TVs pane with a pad in a TV's
 // place, component for component: the row and its tile, the header with
@@ -40,6 +40,7 @@ component PadListRow inherits ListRow {
             alignment: center;
             PadTile {
                 maker: root.pad.maker;
+                outlined: root.pad.is-virtual;
                 tile-size: Design.size-tile-sm;
             }
         }
@@ -166,7 +167,7 @@ component PadList inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     Text {
-                        text: @tr("{}/{} CONNECTED", Pads.connected-count, Pads.rows.length);
+                        text: @tr("{}/{} CONNECTED", Pads.connected-count, Pads.real-count);
                         color: Theme.text-dim;
                         font-size: Design.font-mini;
                         font-weight: 600;
@@ -201,11 +202,12 @@ component PadList inherits Rectangle {
             content-width: self.visible-width;
             VerticalLayout {
                 alignment: start;
-                // The rows come connected first, so the pads that are
-                // only remembered start at the count of those.
+                // The real pads come first, the connected ones and then
+                // the remembered, so the virtual pads start at the
+                // count of those.
                 for pad[i] in Pads.rows: VerticalLayout {
-                    if i == Pads.connected-count: ListCaption {
-                        title: @tr("REMEMBERED");
+                    if i == Pads.real-count: ListCaption {
+                        title: @tr("VIRTUAL");
                     }
                     PadListRow {
                         pad: pad;
@@ -313,6 +315,7 @@ component PadDetailHeader inherits Rectangle {
             alignment: center;
             PadTile {
                 maker: root.pad.maker;
+                outlined: root.pad.is-virtual;
                 tile-size: Design.size-tile-md;
             }
         }
@@ -361,8 +364,8 @@ component PadDetailHeader inherits Rectangle {
             HorizontalLayout {
                 alignment: end;
                 Chip {
-                    label: root.pad.word;
-                    tone: root.pad.tone;
+                    label: root.pad.is-virtual ? @tr("Virtual") : root.pad.word;
+                    tone: root.pad.is-virtual ? "info" : root.pad.tone;
                 }
             }
         }
@@ -434,7 +437,8 @@ component PadDetail inherits Rectangle {
                             nav-row: root.status-row;
                             text: @tr("Identify");
                             icon: Icons.identify;
-                            enabled: root.daemon-available && root.pad.connected && root.pad.rumble != "No";
+                            enabled: root.daemon-available && root.pad.connected && root.pad.rumble != "No"
+                                && !root.pad.is-virtual;
                             accessible-id: root.id-prefix + "pads-identify";
                             clicked => { Pads.identify(root.pad.id); }
                         }
@@ -442,7 +446,8 @@ component PadDetail inherits Rectangle {
                             horizontal-stretch: 1;
                             alignment: center;
                             Text {
-                                text: !root.pad.connected ? @tr("Remembered from when it was last connected.")
+                                text: root.pad.is-virtual ? @tr("Made by {} while it runs. Games read this pad in place of the pads behind it.", root.pad.setup)
+                                    : !root.pad.connected ? @tr("Remembered from when it was last connected.")
                                     : root.pad.rumble == "No" ? @tr("This pad has no rumble to buzz with.")
                                     : @tr("Buzzes this pad, so you can tell which it is.");
                                 color: Theme.text-dim;
@@ -452,7 +457,7 @@ component PadDetail inherits Rectangle {
                         }
                     }
 
-                    if root.pad.connected: FormRow {
+                    if root.pad.connected && !root.pad.is-virtual: FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("Games");
                         key: "games";
@@ -541,11 +546,15 @@ component PadDetail inherits Rectangle {
                 // -- INFO --
                 Group {
                     title: @tr("INFO");
-                    LabeledRow {
+                    if !root.pad.is-virtual: LabeledRow {
                         label: @tr("Pad ID");
                         value: root.pad.id;
                         mono: true;
                         copyable: true;
+                    }
+                    if root.pad.is-virtual: LabeledRow {
+                        label: @tr("Identity");
+                        value: root.pad.identity;
                     }
                     LabeledRow {
                         label: @tr("Model");
@@ -553,13 +562,19 @@ component PadDetail inherits Rectangle {
                         mono: true;
                         copyable: true;
                     }
-                    LabeledRow {
+                    if !root.pad.is-virtual: LabeledRow {
                         label: @tr("Connection");
                         value: root.pad.connection;
                     }
-                    LabeledRow {
+                    if !root.pad.is-virtual: LabeledRow {
                         label: @tr("Rumble");
                         value: root.pad.rumble;
+                    }
+                    if root.pad.is-virtual: LabeledRow {
+                        label: @tr("Node");
+                        value: root.pad.node;
+                        mono: true;
+                        copyable: true;
                     }
                     if root.pad.address != "": LabeledRow {
                         label: @tr("Address");
@@ -572,7 +587,7 @@ component PadDetail inherits Rectangle {
                 // -- DANGER ZONE --
                 //
                 // Only a pad that isn't connected can be forgotten.
-                if !root.pad.connected: Group {
+                if !root.pad.connected && !root.pad.is-virtual: Group {
                     title: @tr("DANGER ZONE");
                     HorizontalLayout {
                         spacing: Design.gap-row;

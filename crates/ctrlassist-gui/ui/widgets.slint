@@ -2456,6 +2456,9 @@ export component NameInputDialog inherits Rectangle {
 export component PadTile inherits Rectangle {
     in property <string> maker;
     in property <length> tile-size: Design.size-tile-sm;
+    // A virtual pad's: the mark in the maker's color on no fill, so it
+    // is told from a real pad's at a glance.
+    in property <bool> outlined;
 
     width: tile-size;
     height: tile-size;
@@ -2464,14 +2467,16 @@ export component PadTile inherits Rectangle {
     property <bool> is-known: maker == "sony" || maker == "microsoft" || maker == "nintendo"
         || maker == "8bitdo" || maker == "valve";
 
-    background: maker == "sony" ? Theme.maker-sony
+    property <brush> maker-color: maker == "sony" ? Theme.maker-sony
               : maker == "microsoft" ? Theme.maker-microsoft
               : maker == "nintendo" ? Theme.maker-nintendo
               : maker == "8bitdo" ? Theme.maker-8bitdo
               : maker == "valve" ? Theme.maker-valve
               : Theme.chip;
-    border-width: is-known ? 0 : Design.border-thin;
-    border-color: Theme.border;
+    background: root.outlined ? transparent : root.maker-color;
+    border-width: root.outlined ? 1.5px : is-known ? 0 : Design.border-thin;
+    border-color: root.outlined && is-known ? root.maker-color
+        : root.outlined ? Theme.border-strong : Theme.border;
 
     if root.is-known: Text {
         text: root.maker == "sony" ? "PS"
@@ -2479,7 +2484,9 @@ export component PadTile inherits Rectangle {
             : root.maker == "nintendo" ? "NS"
             : root.maker == "8bitdo" ? "8B"
             : "SD";
-        color: white;
+        // On no fill the mark is the text's own color, which reads in
+        // both modes where a maker's dark color wouldn't.
+        color: root.outlined ? Theme.text : white;
         font-size: root.tile-size * 0.40;
         font-weight: 700;
         letter-spacing: 0.3px;
@@ -2561,10 +2568,40 @@ export component ListCaption inherits Rectangle {
     }
 }
 
+// A word in one of the tones a chip has, small, for the state under a
+// list row's name and under a detail row's label.
+export component ToneText inherits Text {
+    in property <string> tone;
+    color: tone == "success" ? Theme.success-text
+         : tone == "warn" ? Theme.warn-text
+         : tone == "danger" ? Theme.danger-text
+         : tone == "info" ? Theme.info-text
+         : Theme.text-faint;
+    font-size: Design.font-mini;
+}
+
+// The dot before a toned word: a state's color at a glance.
+export component ToneDot inherits Rectangle {
+    in property <string> tone;
+    width: Design.size-status-dot;
+    height: Design.size-status-dot;
+    border-radius: 3px;
+    background: tone == "success" ? Theme.success
+        : tone == "warn" ? Theme.warn
+        : tone == "danger" ? Theme.danger
+        : tone == "info" ? Theme.info
+        : Theme.text-faint;
+}
+
 // A detail's row: a label in a fixed column, the control, and then the
-// row's "i" when it has help. An optional helper line sits under the
-// control. TisVlay's `FormRow`.
+// row's "i" when it has help. The label may carry a second line, a dot
+// and a word for how the row's thing is, as a list row does under its
+// name; an optional helper line sits under the control. TisVlay's
+// `FormRow`, whose labels run to two lines the same way.
 export component FormRow {
+    // How the row's thing is, under its label; empty for none.
+    in property <string> status-word;
+    in property <string> status-tone;
     in property <string> label;
     // A stable name for the row, in its help button's id.
     in property <string> key;
@@ -2585,12 +2622,26 @@ export component FormRow {
         VerticalLayout {
             width: root.label-width;
             alignment: root.helper != "" ? start : center;
+            spacing: 2px;
             Text {
                 text: root.label;
                 color: Theme.text;
                 font-size: Design.font-body;
                 vertical-alignment: root.helper != "" ? top : center;
                 wrap: word-wrap;
+            }
+            if root.status-word != "": HorizontalLayout {
+                spacing: Design.gap-tight;
+                alignment: start;
+                ToneDot {
+                    y: (parent.height - self.height) / 2;
+                    tone: root.status-tone;
+                }
+                ToneText {
+                    text: root.status-word;
+                    tone: root.status-tone;
+                    accessible-id: root.id-prefix + "status-" + root.key;
+                }
             }
         }
         VerticalLayout {
@@ -2617,29 +2668,4 @@ export component FormRow {
             }
         }
     }
-}
-
-// A word in one of the tones a chip has, small, for the state under a
-// list row's name and beside a detail row.
-export component ToneText inherits Text {
-    in property <string> tone;
-    color: tone == "success" ? Theme.success-text
-         : tone == "warn" ? Theme.warn-text
-         : tone == "danger" ? Theme.danger-text
-         : tone == "info" ? Theme.info-text
-         : Theme.text-faint;
-    font-size: Design.font-mini;
-}
-
-// The dot before a toned word: a state's color at a glance.
-export component ToneDot inherits Rectangle {
-    in property <string> tone;
-    width: Design.size-status-dot;
-    height: Design.size-status-dot;
-    border-radius: 3px;
-    background: tone == "success" ? Theme.success
-        : tone == "warn" ? Theme.warn
-        : tone == "danger" ? Theme.danger
-        : tone == "info" ? Theme.info
-        : Theme.text-faint;
 }

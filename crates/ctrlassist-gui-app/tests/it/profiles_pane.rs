@@ -217,6 +217,20 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
         .map(|output| format!("{} {} {}", output.name, output.identity, output.node))
         .collect();
     assert_eq!(outputs, ["Virtual Generic event31"]);
+    // It exists while its profile runs, and its row opens it in Pads;
+    // the first virtual pad's row carries the identity.
+    let made = row(&rows, "quick").outputs.row_data(0).unwrap();
+    assert_eq!(
+        (made.word.as_str(), made.pad.as_str()),
+        ("Connected", "virtual:quick/virtual")
+    );
+    let idle = couch.outputs.row_data(0).unwrap();
+    assert_eq!(
+        (idle.word.as_str(), idle.pad.as_str()),
+        ("Disconnected", "")
+    );
+    assert_eq!(couch.identity_field.key, "identity");
+    assert_eq!(couch.output_fields.row_count(), 0);
 
     // How each is, in a word, for the list and the chip.
     let said = |name: &str| {
@@ -608,7 +622,7 @@ fn a_profile_s_pad_and_a_pad_s_profile_are_a_click_apart_and_back_returns() {
     setups::show(&app, setups::rows(&known.setups, &known.pads, &kept), "");
     pads::show(
         &app,
-        pads::rows(&known.pads, &known.setups, &known.profiles),
+        pads::rows(&known.pads, &known.setups, &known.profiles, &[]),
     );
     profiles::show(&app, known);
     let pads_pane = app.global::<Pads>();

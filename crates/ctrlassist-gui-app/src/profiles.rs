@@ -27,6 +27,10 @@ use crate::{
 /// The profile the tray's quick menu writes.
 const QUICK: &str = "quick";
 
+/// The key of the field that says what the virtual pads present
+/// themselves as.
+const IDENTITY: &str = "identity";
+
 /// The key of the field that says the daemon starts the profile itself.
 const MANAGED: &str = "managed";
 
@@ -350,25 +354,45 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 .map(|plan| {
                     plan.sinks
                         .iter()
-                        .map(|sink| ProfileOutputRow {
-                            name: SharedString::from(crate::status::capitalized(&sink.name)),
-                            // A row's own word, so with a capital.
-                            identity: SharedString::from(crate::status::capitalized(
-                                crate::status::identity(sink.identity.as_str()),
-                            )),
-                            node: SharedString::from(
-                                setup
-                                    .and_then(|setup| {
-                                        setup.sinks.iter().find(|made| made.name == sink.name)
-                                    })
-                                    .and_then(|made| made.node.as_deref())
-                                    .map(|node| node.rsplit('/').next().unwrap_or(node))
-                                    .unwrap_or_default(),
-                            ),
+                        .map(|sink| {
+                            // It exists once its setup has made it.
+                            let made = setup
+                                .and_then(|setup| {
+                                    setup.sinks.iter().find(|made| made.name == sink.name)
+                                })
+                                .is_some_and(|made| made.node.is_some());
+                            ProfileOutputRow {
+                                pad: SharedString::from(if made {
+                                    crate::pads::virtual_id(name, &sink.name)
+                                } else {
+                                    String::new()
+                                }),
+                                word: SharedString::from(if made {
+                                    "Connected"
+                                } else {
+                                    "Disconnected"
+                                }),
+                                tone: SharedString::from(if made { "success" } else { "neutral" }),
+                                name: SharedString::from(crate::status::capitalized(&sink.name)),
+                                // A row's own word, so with a capital.
+                                identity: SharedString::from(crate::status::capitalized(
+                                    crate::status::identity(sink.identity.as_str()),
+                                )),
+                                node: SharedString::from(
+                                    setup
+                                        .and_then(|setup| {
+                                            setup.sinks.iter().find(|made| made.name == sink.name)
+                                        })
+                                        .and_then(|made| made.node.as_deref())
+                                        .map(|node| node.rsplit('/').next().unwrap_or(node))
+                                        .unwrap_or_default(),
+                                ),
+                            }
                         })
                         .collect()
                 })
                 .unwrap_or_default();
+            let no_outputs = outputs.is_empty();
             ProfileRow {
                 shape: SharedString::from(shape),
                 word: SharedString::from(word),
@@ -406,7 +430,22 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 tone: SharedString::from(tone),
                 is_quick: name == QUICK,
                 input_fields: in_card(&fields, |group| group == form::INPUTS),
-                output_fields: in_card(&fields, |group| group == form::OUTPUTS),
+                // The first virtual pad's row carries the identity,
+                // once the profile's virtual pads can be told.
+                output_fields: ModelRc::new(VecModel::from(
+                    fields
+                        .iter()
+                        .filter(|field| {
+                            field.group == form::OUTPUTS && (no_outputs || field.key != IDENTITY)
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )),
+                identity_field: fields
+                    .iter()
+                    .find(|field| field.key == IDENTITY && !no_outputs)
+                    .cloned()
+                    .unwrap_or_default(),
                 preset_fields: in_card(&fields, |group| {
                     group != form::INPUTS && group != form::OUTPUTS
                 }),

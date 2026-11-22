@@ -49,6 +49,12 @@ export struct ProfileOutputRow {
     name: string,
     identity: string,
     node: string,
+    // Its id among the Pads pane's rows while it exists, for the row's
+    // pencil; empty while it doesn't.
+    pad: string,
+    // Whether it exists, in a word and the word's tone.
+    word: string,
+    tone: string,
 }
 
 // A pad a profile names, for its header's links.
@@ -109,7 +115,10 @@ export struct ProfileRow {
     // shown in.
     fields: [ProfileFieldRow],
     input-fields: [ProfileFieldRow],
+    // Those of the outputs but the identity, which the first virtual
+    // pad's row carries; its `key` is empty for a profile with none.
     output-fields: [ProfileFieldRow],
+    identity-field: ProfileFieldRow,
     preset-fields: [ProfileFieldRow],
 }
 

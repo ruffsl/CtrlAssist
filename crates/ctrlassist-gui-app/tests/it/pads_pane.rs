@@ -91,7 +91,7 @@ fn some_pads() -> Vec<Pad> {
 
 #[test]
 fn rows_put_connected_pads_first_and_say_what_each_is() {
-    let made = rows(&some_pads(), &[quick()], &profiles());
+    let made = rows(&some_pads(), &[quick()], &profiles(), &[]);
     let names: Vec<&str> = made.iter().map(|row| row.name.as_str()).collect();
     assert_eq!(
         names,
@@ -159,7 +159,7 @@ fn rows_put_connected_pads_first_and_say_what_each_is() {
         rumble: None,
         ..pad("port:usb-1/input0", "Odd", true, None)
     };
-    let row = &rows(&[odd], &[], &[])[0];
+    let row = &rows(&[odd], &[], &[], &[])[0];
     assert_eq!((row.connection.as_str(), row.rumble.as_str()), ("", ""));
 }
 
@@ -169,7 +169,7 @@ fn app() -> AppWindow {
     let _ = nav::wire(&app);
     keys::bind_key_router(&app);
     app.set_daemon_available(true);
-    show(&app, rows(&some_pads(), &[quick()], &profiles()));
+    show(&app, rows(&some_pads(), &[quick()], &profiles(), &[]));
     app
 }
 
@@ -184,7 +184,7 @@ fn the_selection_stays_on_its_pad_as_rows_move_and_goes_with_it() {
     // The DualSense goes: the Wireless Controller is second now.
     let mut fewer = some_pads();
     fewer.remove(2);
-    show(&app, rows(&fewer, &[], &[]));
+    show(&app, rows(&fewer, &[], &[], &[]));
     assert_eq!(pads.get_selected_index(), 1);
     assert_eq!(
         pads.get_rows().row_data(1).unwrap().name,
@@ -192,7 +192,7 @@ fn the_selection_stays_on_its_pad_as_rows_move_and_goes_with_it() {
     );
     // It is forgotten: nothing is selected.
     fewer.remove(1);
-    show(&app, rows(&fewer, &[], &[]));
+    show(&app, rows(&fewer, &[], &[], &[]));
     assert_eq!(pads.get_selected_index(), -1);
 }
 
@@ -262,11 +262,78 @@ fn a_pad_s_profiles_open_from_its_detail() {
     pads.set_selected_index(0);
     settle();
     assert!(find_by_accessible_id(&app, "pads-no-profiles").is_some());
-    let caption = i_slint_backend_testing::ElementQuery::from_root(&app)
-        .match_descendants()
-        .match_predicate(|element| element.accessible_label().as_deref() == Some("REMEMBERED"))
-        .find_first();
-    assert!(caption.is_some(), "the remembered pad sits under a caption");
+}
+
+/// The virtual pads the running profiles make follow the real pads,
+/// under a caption of their own: each is its profile's, shows what it
+/// presents itself as, and opens that profile; it can't be buzzed or
+/// forgotten.
+#[test]
+fn virtual_pads_follow_the_real_ones() {
+    use ctrlassist::{Identity, SetupSink};
+
+    let mut running = quick();
+    running.sinks = vec![SetupSink {
+        name: "virtual".to_string(),
+        identity: "xbox".to_string(),
+        node: Some("/dev/input/event31".to_string()),
+    }];
+    let identities = [Identity {
+        id: "xbox".to_string(),
+        name: "Xbox".to_string(),
+        vendor: 0x045e,
+        product: 0x0b12,
+        available: true,
+    }];
+    let made = rows(&some_pads(), &[running], &profiles(), &identities);
+    assert_eq!(made.len(), 5);
+    let pad = &made[4];
+    assert!(pad.is_virtual && pad.connected);
+    assert_eq!(pad.id, "virtual:quick/virtual");
+    assert_eq!(pad.name, "quick");
+    assert_eq!(pad.maker, "microsoft");
+    assert_eq!(
+        (pad.word.as_str(), pad.tone.as_str()),
+        ("Xbox · event31", "success")
+    );
+    assert_eq!(
+        (pad.identity.as_str(), pad.model.as_str(), pad.node.as_str()),
+        ("Xbox", "045e:0b12", "/dev/input/event31")
+    );
+    let its: Vec<String> = pad
+        .profiles
+        .iter()
+        .map(|row| format!("{} {} {}", row.name, row.part, row.word))
+        .collect();
+    assert_eq!(its, ["quick Virtual Running"]);
+
+    let app = app();
+    show(&app, made);
+    let pads = app.global::<Pads>();
+    // The header counts the real pads, and the caption starts the rest.
+    assert_eq!((pads.get_connected_count(), pads.get_real_count()), (3, 4));
+    let caption = |title: &'static str| {
+        i_slint_backend_testing::ElementQuery::from_root(&app)
+            .match_descendants()
+            .match_predicate(move |element| element.accessible_label().as_deref() == Some(title))
+            .find_first()
+            .is_some()
+    };
+    assert!(caption("VIRTUAL"));
+    assert!(!caption("REMEMBERED"), "remembered pads are among the real");
+
+    let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+    let seen = opened.clone();
+    pads.on_open_profile(move |name| seen.borrow_mut().push(name.to_string()));
+    pads.set_selected_index(4);
+    settle();
+    crate::support::activate_shown(&app, "pads-profile-quick");
+    assert_eq!(*opened.borrow(), ["quick"]);
+    let enabled = crate::support::find_all_by_accessible_id(&app, "pads-identify")
+        .into_iter()
+        .any(|control| control.accessible_enabled().unwrap_or(false));
+    assert!(!enabled, "a virtual pad has nothing to buzz");
+    assert!(find_by_accessible_id(&app, "pads-forget").is_none());
 }
 
 #[test]

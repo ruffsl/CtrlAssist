@@ -48,6 +48,8 @@ pub struct Snapshot {
     pub setups: Vec<Setup>,
     /// The profiles it keeps.
     pub profiles: Vec<Profile>,
+    /// What a virtual pad can present itself as.
+    pub identities: Vec<ctrlassist::Identity>,
     /// A preset's fields, as it serves them; empty until it has.
     pub fields: Vec<Field>,
 }
@@ -80,6 +82,7 @@ impl Snapshot {
             pads: daemon.list_pads().unwrap_or_default(),
             setups: daemon.list_setups().unwrap_or_default(),
             profiles: daemon.list_profiles().unwrap_or_default(),
+            identities: daemon.list_identities().unwrap_or_default(),
             fields: Vec::new(),
         }
     }
@@ -131,7 +134,7 @@ impl Snapshot {
         crate::about::refresh(app);
         crate::pads::show(
             app,
-            crate::pads::rows(&self.pads, &self.setups, &self.profiles),
+            crate::pads::rows(&self.pads, &self.setups, &self.profiles, &self.identities),
         );
         crate::setups::show(
             app,

@@ -272,24 +272,6 @@ component ProfileList inherits Rectangle {
 
 // One field of the form: its label, its control by its kind, and under
 // the control the chosen choice's sentence or the field's help.
-// A pad's connection, in a dot and a word, under the row's control.
-component StatusLine inherits HorizontalLayout {
-    in property <string> word;
-    in property <string> tone;
-    in property <length> indent;
-
-    padding-left: root.indent;
-    spacing: Design.gap-tight;
-    alignment: start;
-    ToneDot {
-        y: (parent.height - self.height) / 2;
-        tone: root.tone;
-    }
-    ToneText {
-        text: root.word;
-        tone: root.tone;
-    }
-}
 
 // One field of a preset: its label, its control by its kind, and a slot
 // at the row's end. For a pad that slot opens the pad, and its
@@ -301,6 +283,9 @@ component FieldRow inherits Rectangle {
     in property <ProfileFieldRow> field;
     in property <bool> enabled;
     in property <string> id-prefix;
+    // Narrower than TisVlay's profile rows: these end in up to two
+    // slots, and the labels are short.
+    property <length> label-col: Design.width-label-col-profile - 30px;
 
     property <string> control-id: root.id-prefix + "profiles-field-" + root.field.key;
     // Set to something other than what leaving it out means.
@@ -320,10 +305,13 @@ component FieldRow inherits Rectangle {
         spacing: Design.gap-form;
 
         row := FormRow {
-            id-prefix: root.id-prefix;
+            id-prefix: root.id-prefix + "profiles-";
             label: root.field.label;
             key: root.field.key;
-            label-width: Design.width-label-col-profile;
+            label-width: root.label-col;
+            // A pad's connection, under its label.
+            status-word: root.field.status-word;
+            status-tone: root.field.status-tone;
 
             // The control takes the row's width, whichever kind it is.
             HorizontalLayout {
@@ -392,14 +380,7 @@ component FieldRow inherits Rectangle {
                 }
             }
         }
-        if root.field.status-word != "": StatusLine {
-            word: root.field.status-word;
-            tone: root.field.status-tone;
-            indent: Design.width-label-col-profile + Design.gap-row;
-            accessible-role: text;
-            accessible-label: root.field.status-word;
-            accessible-id: root.id-prefix + "profiles-status-" + root.field.key;
-        }
+
     }
 }
 
@@ -622,6 +603,8 @@ component ProfileDetailHeader inherits Rectangle {
 component ProfileDetail inherits Rectangle {
     in property <ProfileRow> profile;
     in property <bool> daemon-available;
+    // The label column of the cards' rows, as a field row's.
+    property <length> label-col: Design.width-label-col-profile - 30px;
     callback request-delete();
     callback request-duplicate();
     callback request-rename();
@@ -857,10 +840,12 @@ component ProfileDetail inherits Rectangle {
                         for use in root.profile.uses: VerticalLayout {
                             spacing: Design.gap-form;
                             use-row := FormRow {
-                                id-prefix: root.id-prefix;
+                                id-prefix: root.id-prefix + "profiles-";
                                 label: use.part;
                                 key: "use-" + use.part;
-                                label-width: Design.width-label-col-profile;
+                                label-width: root.label-col;
+                                status-word: use.word;
+                                status-tone: use.tone;
                                 VerticalLayout {
                                     horizontal-stretch: 1;
                                     alignment: center;
@@ -885,20 +870,18 @@ component ProfileDetail inherits Rectangle {
                                     }
                                 }
                             }
-                            StatusLine {
-                                word: use.word;
-                                tone: use.tone;
-                                indent: Design.width-label-col-profile + Design.gap-row;
-                            }
+
                         }
                     }
                 }
 
                 // -- OUTPUTS --
                 //
-                // The virtual pads: what a preset's present themselves
-                // as and how many there are, and each one a game can
-                // see while the profile runs.
+                // The virtual pads, a row each as the inputs have: its
+                // name with whether it exists under it, what it
+                // presents itself as, and a pencil that opens it while
+                // it does. A preset's are all of one identity, chosen
+                // on the first.
                 Card {
                     title: @tr("OUTPUTS");
                     id-prefix: root.id-prefix;
@@ -910,25 +893,78 @@ component ProfileDetail inherits Rectangle {
                         enabled: root.daemon-available;
                         id-prefix: root.id-prefix;
                     }
-                    if root.profile.kind != "preset" || root.live: VerticalLayout {
-                        spacing: Design.gap-block;
-                        for output in root.profile.outputs: FormRow {
-                            id-prefix: root.id-prefix;
-                            label: output.name;
-                            key: "output-" + output.name;
-                            label-width: Design.width-label-col-profile;
-                            VerticalLayout {
+                    if root.profile.outputs.length == 0 && root.profile.kind != "preset": Text {
+                        text: @tr("Its virtual pads can't be told while something is wrong with it.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                    }
+                    for output[i] in root.profile.outputs: output-row := FormRow {
+                        property <bool> chooses: i == 0 && root.profile.identity-field.key != "";
+                        property <bool> set-here: self.chooses && !root.profile.identity-field.at-default;
+                        id-prefix: root.id-prefix + "profiles-";
+                        label: output.name;
+                        key: "output-" + output.name;
+                        label-width: root.label-col;
+                        status-word: output.word;
+                        status-tone: output.tone;
+
+                        HorizontalLayout {
+                            horizontal-stretch: 1;
+                            if output-row.chooses: ThemedSelect {
+                                horizontal-stretch: 1;
+                                accessible-label: root.profile.identity-field.label;
+                                accessible-id: root.id-prefix + "profiles-field-identity";
+                                nav-row: output-row.row-id;
+                                enabled: root.daemon-available;
+                                model: root.profile.identity-field.options;
+                                current-value: root.profile.identity-field.value-label;
+                                selected-index(i) => {
+                                    Profiles.set-field(root.profile.name, "identity",
+                                        root.profile.identity-field.option-values[i]);
+                                }
+                            }
+                            if !output-row.chooses: VerticalLayout {
                                 horizontal-stretch: 1;
                                 alignment: center;
                                 Text {
-                                    text: output.node == "" ? output.identity
-                                        : @tr("{} at {}", output.identity, output.node);
+                                    text: output.identity;
                                     color: Theme.text;
                                     font-size: Design.font-body;
                                     overflow: elide;
                                     accessible-id: root.id-prefix + "profiles-output-" + output.name;
                                 }
                             }
+                        }
+                        // The row's two slots sit close, as one end.
+                        HorizontalLayout {
+                            spacing: Design.gap-form;
+                        VerticalLayout {
+                            alignment: center;
+                            width: 24px;
+                            if output-row.chooses: IconBtn {
+                                nav-row: output-row.row-id;
+                                source: Icons.reset;
+                                active: output-row.set-here;
+                                enabled: root.daemon-available && output-row.set-here;
+                                accessible-label: @tr("Reset the identity to its default");
+                                tip: @tr("Reset to the default");
+                                accessible-id: root.id-prefix + "profiles-reset-identity";
+                                clicked => { Profiles.reset-field(root.profile.name, "identity"); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            width: 24px;
+                            if output.pad != "": IconBtn {
+                                nav-row: output-row.row-id;
+                                source: Icons.edit;
+                                accessible-label: @tr("Show {}", output.name);
+                                tip: @tr("Show this pad");
+                                accessible-id: root.id-prefix + "profiles-virtual-" + output.name;
+                                clicked => { Profiles.open-pad(output.pad); }
+                            }
+                        }
                         }
                     }
                 }

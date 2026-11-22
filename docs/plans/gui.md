@@ -204,6 +204,14 @@ Still open: the tile of a pad from an unknown maker, which the mock-up draws as 
 
 Duplicate and Show its file moved from the PRESET card's caption to the header, beside Rename and Delete, since a profile written by hand has no such card.
 
+**Virtual pads in the window, and a row's status under its label** (2026-11-22, the maintainer's, from using the window).
+
+- **A row's connection is the second line of its label,** a dot and a word under "Primary", as a list row has under its name and as TisVlay's profile rows run their labels to two lines. It was a line under the dropdown, which made each row taller.
+- **The Pads list has the virtual pads,** under a VIRTUAL caption after the real pads. The real pads are one list again, connected first and remembered after, as TisVlay lists TVs that aren't connected among the rest; the REMEMBERED caption is gone, and the header counts connected of real. A virtual pad's row is its profile's name, with what it presents itself as and its node, and a tile of its identity's mark drawn in outline, to tell it from a real pad's.
+- **A virtual pad's detail** says which profile makes it, lists that profile with a pencil to it, and under INFO has its identity, its model numbers and its node. It can't be buzzed or forgotten. The window makes these rows from the running profiles the daemon already publishes; the daemon doesn't list virtual pads among its pads.
+- **OUTPUTS has a row for each virtual pad,** as INPUTS has for each pad: its name with Connected or Disconnected under it, by whether its profile runs; the Identity dropdown as the first row's control, a preset's virtual pads being all of one identity; and a pencil that opens the virtual pad in Pads while it exists.
+- **The cards' label column is 110 wide,** 30 less than TisVlay's profile rows: an output's row ends in two slots, a reset and a pencil, which didn't fit beside a dropdown at the window's default width. The dropdowns gained the room.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps

@@ -60,7 +60,87 @@ fn maker_of(vendor: u16) -> &'static str {
 /// each group in name order and then by id, so two of one name keep
 /// their places.
 #[must_use]
-pub fn rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow> {
+pub fn rows(
+    pads: &[Pad],
+    setups: &[Setup],
+    profiles: &[Profile],
+    identities: &[ctrlassist::Identity],
+) -> Vec<PadRow> {
+    let mut rows = real_rows(pads, setups, profiles);
+    rows.extend(virtual_rows(setups, identities));
+    rows
+}
+
+/// The id a virtual pad's row goes by: the profile that makes it and
+/// its name there. No real pad's id starts so.
+#[must_use]
+pub fn virtual_id(profile: &str, sink: &str) -> String {
+    format!("virtual:{profile}/{sink}")
+}
+
+/// A row for each virtual pad of a running profile, by profile and then
+/// by its name there. A virtual pad is there only while its profile
+/// runs, so these come and go with the profiles.
+fn virtual_rows(setups: &[Setup], identities: &[ctrlassist::Identity]) -> Vec<PadRow> {
+    let mut running: Vec<&Setup> = setups.iter().collect();
+    running.sort_by(|a, b| a.name.cmp(&b.name));
+    running
+        .into_iter()
+        .flat_map(|setup| setup.sinks.iter().map(move |sink| (setup, sink)))
+        .map(|(setup, sink)| {
+            let id = virtual_id(&setup.name, &sink.name);
+            let known = identities.iter().find(|known| known.id == sink.identity);
+            let identity = status::capitalized(status::identity(&sink.identity));
+            let node = sink
+                .node
+                .as_deref()
+                .map(|node| node.rsplit('/').next().unwrap_or(node).to_string());
+            // One virtual pad goes by its profile's name; several, by
+            // that and their own.
+            let name = if setup.sinks.len() == 1 {
+                setup.name.clone()
+            } else {
+                format!("{} · {}", setup.name, sink.name)
+            };
+            let (word, tone) = status::of(&setup.name, None, std::slice::from_ref(setup), &[]);
+            PadRow {
+                is_virtual: true,
+                key: SharedString::from(key_of(&id)),
+                id: SharedString::from(id),
+                name: SharedString::from(name),
+                maker: SharedString::from(match sink.identity.as_str() {
+                    "xbox" => "microsoft",
+                    "dualsense" => "sony",
+                    _ => "",
+                }),
+                word: SharedString::from(match &node {
+                    Some(node) => format!("{identity} · {node}"),
+                    None => identity.clone(),
+                }),
+                tone: SharedString::from(if node.is_some() { "success" } else { "neutral" }),
+                model: SharedString::from(known.map_or_else(String::new, |known| {
+                    format!("{:04x}:{:04x}", known.vendor, known.product)
+                })),
+                identity: SharedString::from(identity),
+                node: SharedString::from(sink.node.clone().unwrap_or_default()),
+                connection: SharedString::from("Virtual"),
+                connected: node.is_some(),
+                setup: SharedString::from(setup.name.as_str()),
+                role: SharedString::from(status::capitalized(&sink.name)),
+                profiles: ModelRc::new(VecModel::from(vec![PadProfileRow {
+                    name: SharedString::from(setup.name.as_str()),
+                    part: SharedString::from(status::capitalized(&sink.name)),
+                    word: SharedString::from(word),
+                    tone: SharedString::from(tone),
+                }])),
+                ..PadRow::default()
+            }
+        })
+        .collect()
+}
+
+/// The real pads' rows: connected ones first, then the remembered ones.
+fn real_rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow> {
     // Each profile worked out once; one the daemon finds wrong names no
     // pad that can be told.
     let plans: Vec<(&str, Plan)> = profiles
@@ -128,6 +208,9 @@ pub fn rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow>
                 (true, false, _) => "Only grabbed",
             };
             PadRow {
+                is_virtual: false,
+                identity: SharedString::default(),
+                node: SharedString::default(),
                 maker: SharedString::from(maker_of(pad.vendor)),
                 word: SharedString::from(word),
                 tone: SharedString::from(tone),
@@ -172,8 +255,13 @@ pub fn show(app: &AppWindow, rows: Vec<PadRow>) {
         .and_then(|id| rows.iter().position(|row| row.id == id))
         .and_then(|at| i32::try_from(at).ok())
         .unwrap_or(-1);
-    let connected = rows.iter().filter(|row| row.connected).count();
+    let real = rows.iter().filter(|row| !row.is_virtual).count();
+    let connected = rows
+        .iter()
+        .filter(|row| !row.is_virtual && row.connected)
+        .count();
     pads.set_connected_count(i32::try_from(connected).unwrap_or(i32::MAX));
+    pads.set_real_count(i32::try_from(real).unwrap_or(i32::MAX));
     // In place where the pads are the same ones: see `models`.
     pads.set_rows(crate::models::sync(&pads.get_rows(), rows, |a, b| {
         a.id == b.id
