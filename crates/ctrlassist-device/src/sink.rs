@@ -134,6 +134,18 @@ pub enum Request {
     /// Run the motors at this level until told otherwise: what a pad
     /// that is sent levels, not effects, asks.
     Level(Level),
+    /// A feature report was asked for or set, on a virtual pad that has
+    /// them: its number, whether it was being set, and whether the pad
+    /// had an answer. Nothing is to be done about it; it is here for
+    /// whoever is working out what a game makes of the pad.
+    Feature {
+        /// The report's number.
+        number: u8,
+        /// Whether the game was setting it, not asking for it.
+        set: bool,
+        /// Whether the pad answered.
+        answered: bool,
+    },
 }
 
 const BUTTONS: [(KeyCode, Control); 11] = [

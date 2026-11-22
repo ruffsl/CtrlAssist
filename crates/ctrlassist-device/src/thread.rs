@@ -522,6 +522,8 @@ impl Setup {
                     router.set_gain(id, gain);
                     Ok(())
                 }
+                // Only to be seen by whoever is tapping.
+                Request::Feature { .. } => Ok(()),
                 // A level is one endless effect of the pad's own, replaced
                 // as the level changes and stopped at none.
                 Request::Level(level) => {

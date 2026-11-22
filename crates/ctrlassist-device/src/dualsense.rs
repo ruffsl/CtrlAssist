@@ -516,8 +516,9 @@ enum Asked {
     Rumble(Level),
     /// A feature report is wanted: the request's number, and the report's.
     Get(u32, u8),
-    /// A report was set, which is only to be acknowledged.
-    Set(u32),
+    /// A report was set, which is only to be acknowledged: the
+    /// request's number, and the report's.
+    Set(u32, u8),
     /// Nothing the emulator acts on.
     Nothing,
 }
@@ -535,7 +536,7 @@ fn asked(event: &[u8]) -> Asked {
         }
         // id u32, then the report's number.
         UHID_GET_REPORT => Asked::Get(u32_at(event, 4), event.get(8).copied().unwrap_or(0)),
-        UHID_SET_REPORT => Asked::Set(u32_at(event, 4)),
+        UHID_SET_REPORT => Asked::Set(u32_at(event, 4), event.get(8).copied().unwrap_or(0)),
         _ => Asked::Nothing,
     }
 }
@@ -756,6 +757,12 @@ impl Emulator {
                     let _ = handle(Request::Level(level));
                 }
                 Asked::Get(id, number) => {
+                    let answered = self.feature(number).is_some();
+                    let _ = handle(Request::Feature {
+                        number,
+                        set: false,
+                        answered,
+                    });
                     // UHID_GET_REPORT_REPLY: type u32, id u32, err u16,
                     // size u16, then the report.
                     let mut reply = [0u8; 12 + FIRMWARE_SIZE];
@@ -774,7 +781,12 @@ impl Emulator {
                     };
                     self.uhid.write_all(&reply[..length])?;
                 }
-                Asked::Set(id) => {
+                Asked::Set(id, number) => {
+                    let _ = handle(Request::Feature {
+                        number,
+                        set: true,
+                        answered: true,
+                    });
                     // UHID_SET_REPORT_REPLY: type u32, id u32, err u16.
                     let mut reply = [0u8; 10];
                     reply[..4].copy_from_slice(&UHID_SET_REPORT_REPLY.to_ne_bytes());
@@ -1052,7 +1064,7 @@ mod tests {
         let set = event(UHID_SET_REPORT, &|event| {
             event[4..8].copy_from_slice(&78u32.to_ne_bytes());
         });
-        assert_eq!(asked(&set), Asked::Set(78));
+        assert_eq!(asked(&set), Asked::Set(78, 0));
         let output = event(UHID_OUTPUT, &|event| {
             event[4..9].copy_from_slice(&[OUTPUT_REPORT, 0x01, 0, 1, 2]);
             event[4 + UHID_DATA..6 + UHID_DATA].copy_from_slice(&63u16.to_ne_bytes());
