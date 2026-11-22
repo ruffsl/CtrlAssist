@@ -82,6 +82,10 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 
 **The Pads pane's detail** (2026-11-21) shows, beyond the pad's name and its Identify and Forget buttons: its model and how it is connected; which setup has it and in what role, as a link to that setup; whether it is hidden or only grabbed while a setup has it; and its id and address, each with a Copy button. Identify buzzes for 600 ms, the CLI's default. Nicknames for pads are [an idea](../ideas/pad-nicknames.md), not built: the list tells pads of one model apart by a short tag from the address.
 
+**The Setups pane** (2026-11-21) lists only the setups that exist: running, held or failed. A profile is started from the Profiles pane, and an empty Setups pane says so and links there. A setup's detail can stop it, asking first; update it when the kept profile differs from what runs, saying beforehand whether that is seamless or restarts the virtual pads; switch what a toggle or unicast node selects; and jump to each of its pads and to its profile. While any setup is held or failed, the sidebar's Setups item carries a badge, seen from every pane.
+
+Identify from the Pads pane buzzed the maintainer's DualSense, which a running setup held (2026-11-21).
+
 ## What is copied, replaced and new
 
 | TisVlay | Here |
