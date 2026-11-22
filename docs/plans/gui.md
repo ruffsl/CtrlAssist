@@ -152,6 +152,14 @@ The hub itself saw all three in every case.
 
 **Proposed.** Keep the daemon a peer. Give the tray a serving session on a client-mode link, opened when the daemon appears, and copy TisVlay's tray settings service and its `TrayClient` onto that. The tray's presence, now reported by the daemon, could then come from the tray's own token, and the daemon's relay of it be removed.
 
+**Decided, 2026-11-22.** The maintainer asked what each hub is worth as an outcome, the work of getting there set aside, and chose the router. The two behaved the same in the spike; a router is the role zenoh gives the job of relaying between clients, it is the shape TisVlay runs and pins with a test, and TisVlay's notes record a peer hub's behavior changing once already under a zenoh release. A peer's one advantage was that nothing built would change. So:
+
+- **The daemon becomes a zenoh router,** as TisVlay's hub for its tray is, and the tray serves on a client-mode link into it. The existing clients stay connect-only peers, as TisVlay's are. The whole suite under a router waits, as every whole run does, for Steam to be closed.
+- **The tray's serving session follows the daemon's presence.** It is opened when the daemon's token appears on the tray's first session and dropped when the token goes, so there is no retry loop and no timer, where TisVlay's tray reopens its link in a loop.
+- **The tray is seen by its own token,** as in TisVlay. The daemon stops following trays and its report of them goes.
+
+**To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
+
 ## Steps
 
 Each is a commit or a few, with the gates run and the TisVlay commit named. Order may change as the open questions are answered.
