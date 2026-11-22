@@ -409,7 +409,10 @@ fn a_virtual_dualsense_is_a_dualsense_to_the_kernel_s_driver() {
             effect.stop().unwrap();
             std::thread::sleep(std::time::Duration::from_millis(200));
         };
-        let (requests, ()) = serve_while(&mut sink, game, |_| Ok(()));
+        let (mut requests, ()) = serve_while(&mut sink, game, |_| Ok(()));
+        // Whatever else has the pad open, as a running Steam does, may
+        // ask for its feature reports meanwhile.
+        requests.retain(|request| !matches!(request, Request::Feature { .. }));
         let on = Level {
             strong: 0x8080,
             weak: 0x4040,
