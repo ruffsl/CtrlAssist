@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** decisions settled with the maintainer on 2026-11-21; the build is under way. Build steps 1 to 7 are done: the window opens with its sidebar and five empty panes, is steered by keys, with couch mode, follows the daemon, and its Reload asks the daemon to reread its files.
-- **Next action:** build steps 1 to 9 are done: every pane is built. Build step 10, contextual help, is next. The daemon has no settings of its own: see "Rethought, 2026-11-22".
+- **Next action:** build steps 1 to 9 are done: every pane is built. The maintainer has paused further polish (help, translations) to rethink the panes first: see "The panes are to be rethought". Packaging is to come before the other remaining steps. The daemon has no settings of its own: see "Rethought, 2026-11-22".
 - **Branch:** `feat/rewrite`, with the rewrite. Nothing is pushed.
 - **Template:** TisVlay at `5ddc2c0d` (`crates/tisvlay-gui`, `crates/tisvlay-gui-app`, `crates/tisvlay-icons`, `docs/gui/`).
 
@@ -159,6 +159,8 @@ The hub itself saw all three in every case.
 - **The tray is seen by its own token,** as in TisVlay. The daemon stops following trays and its report of them goes.
 
 **Rethought, 2026-11-22: no daemon settings.** Asked where the two switches should live, the maintainer took hiding out of the daemon's settings and into the profile, and deferred the other. How a setup's pads are kept from games is about the arrangement: one game is to read a real pad directly, another doubles its input unless the pad is hidden, and one global switch would force one answer on both. So a profile says it, with `hide`: `full` (the default, as before), `grab`, or `none`. It is the second key a preset takes beside its own, after `rumble`, and unlike `rumble` the full form takes it too. The Steam blacklist fallback stays automatic, and a way to turn it off is [an idea](../ideas/steam-blacklist-consent.md). That leaves the daemon no settings, so no settings file, rpc or command is built, which this plan's "The daemon grows a settings rpc" and "The settings are two switches" had said. The Settings pane is the tray's notification switches, with a test button, and couch mode, with where each file is kept; the window's Reload asks the tray to reread its file too. "The daemon stopped" and "is back" stay under the trouble switch.
+
+**The panes are to be rethought** (2026-11-22). Asked where help should go, the maintainer stepped back instead: before more polish, the sidebar's panes and the layout are to be looked at again in a mock-up session, to bring the window more in line with TisVlay's. A pad is to CtrlAssist roughly what a TV is to TisVlay, and a profile is a profile; a setup, a profile in effect, may not need a pane of its own and could show on both sides, as a TisVlay profile shows on its TVs and a TV on its profiles. How the form's help is shown waits for that too. Of the steps left, packaging comes first.
 
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
