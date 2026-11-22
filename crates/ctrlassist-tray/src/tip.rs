@@ -19,6 +19,19 @@ const TARGET: &str = "►";
 /// The mark before the pad that has control.
 const HAS_CONTROL: &str = "●";
 
+/// The most of a pad's name a line shows, in characters: a desktop
+/// wraps a tooltip's long lines, which breaks the list's indenting.
+const NAME_MAX: usize = 28;
+
+/// A pad's name cut to fit a line, with "…" for what was cut.
+fn short(name: &str) -> String {
+    if name.chars().count() <= NAME_MAX {
+        return name.to_string();
+    }
+    let kept: String = name.chars().take(NAME_MAX - 1).collect();
+    format!("{}…", kept.trim_end())
+}
+
 fn marked(name: &str, target: Option<&str>) -> &'static str {
     if target == Some(name) { TARGET } else { " " }
 }
@@ -70,7 +83,7 @@ fn setup_lines(view: &View, setup: &Setup, target: Option<&str>, lines: &mut Vec
             " "
         };
         let pad = match (&source.pad, source.present) {
-            (Some(pad), true) => view.pad_name(pad).to_string(),
+            (Some(pad), true) => short(view.pad_name(pad)),
             (Some(_), false) => "disconnected".to_string(),
             (None, _) => "waiting for a pad that fits".to_string(),
         };
@@ -78,7 +91,7 @@ fn setup_lines(view: &View, setup: &Setup, target: Option<&str>, lines: &mut Vec
     }
     for sink in &setup.sinks {
         let name = match sink.node {
-            Some(_) => virtual_name(view, &sink.identity),
+            Some(_) => short(&virtual_name(view, &sink.identity)),
             None => "not made".to_string(),
         };
         lines.push(format!("      {}: {name}", capitalized(&sink.name)));
@@ -215,6 +228,22 @@ mod tests {
         odd.setups[0].sinks[0].node = None;
         assert!(description(&odd, None).starts_with("  couch: Starting\n"));
         assert!(description(&odd, None).ends_with("      Virtual: not made"));
+    }
+
+    #[test]
+    fn a_long_pad_name_is_cut_to_fit_a_line() {
+        assert_eq!(short("Wireless Controller"), "Wireless Controller");
+        assert_eq!(
+            short("Sony Interactive Entertainment DualSense Wireless Controller"),
+            "Sony Interactive Entertainm…"
+        );
+        let mut long = kept(Some(Phase::Running));
+        long.pads[0].name = "Sony Interactive Entertainment DualSense".to_string();
+        assert!(
+            description(&long, None).contains("● Primary: Sony Interactive Entertainm…\n"),
+            "{}",
+            description(&long, None)
+        );
     }
 
     #[test]
