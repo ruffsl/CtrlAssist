@@ -62,7 +62,7 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 
 **The settings are two switches:** whether setups hide pads through the hiding service or only grab them, and whether the Steam blacklist fallback may be used. Both are on today with no way to turn them off. Starting at login and a default identity were offered and not taken.
 
-**The tray's quick menu and the CLI move to the served schema in this plan,** so all three describe a preset the same way before the release.
+**The tray's quick menu moves to the served schema in this plan,** so the tray and the window describe a preset the same way before the release.
 
 **The daemon gains a `reload` rpc,** with `ctrlassist reload`, that rereads profiles and settings from disk, and the sidebar keeps TisVlay's Reload button and its outcome banner. A hand edit of a profile file isn't picked up today until the daemon restarts. A running setup whose profile changed is brought up to it by the reload: live where the change allows, and by a restart where a virtual pad must be recreated.
 
@@ -87,6 +87,12 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 Identify from the Pads pane buzzed the maintainer's DualSense, which a running setup held (2026-11-21).
 
 **The preset form** (2026-11-21). The preset is a dropdown with the chosen one's sentence under it, and the fields that don't belong to it disappear. A role's pad is picked from the known pads, by name and tag, the absent ones marked; "any pad of this model" stays something written by hand, and a profile that uses it shows that field read-only. Each change applies at once: there is no draft, every pick is put, and a setup running the profile is updated, as the tray's quick menu does, which restarts its virtual pads where the change needs it (another identity, another count of them). The tray's `quick` is an ordinary profile in the list, with a note that the tray's menu edits it.
+
+**Presets gain a `rumble` key** (2026-11-21): `both`, `primary` or `assist`, on the three presets of two pads, saying who feels what a game rumbles. The tray's `quick` profile was written in the full form only to say that, so a form over presets couldn't have edited it; with the key the tray writes `quick` as a preset, and one description covers the tray, the form and a file. This revisits the rewrite plan's "presets take no overrides" for the one key.
+
+**The served schema is the fields with their rules:** each field's key, label, help, kind (a choice, a pad, a number, a switch), its choices with their labels and descriptions, its default, and which presets it belongs to. A client renders it and writes the profile's TOML; the daemon still checks every profile it is given. A new preset or field then needs no change in a client.
+
+**The CLI has no preset flags to move,** which an earlier line of this plan assumed: profiles go in as files. Making one from flags is [an idea](../ideas/profile-new.md). The schema's users in this plan are the window and the tray.
 
 ## What is copied, replaced and new
 
@@ -122,7 +128,7 @@ Each is a commit or a few, with the gates run and the TisVlay commit named. Orde
 5. `feat(gui): the About pane` — brings `ctrlassist-icons`. Verified: the copied About tests.
 6. `feat(gui): the Pads pane` — list, detail, identify, forget. Verified: tests with fake pads; identify on a real pad.
 7. `feat(gui): the Setups pane` — start, stop, update, selections. Verified: tests; a setup steered on real pads.
-8. `feat(protocol): a preset's fields as a served schema`, then `feat(gui): the Profiles pane and the preset form`, then `refactor(tray)` and `refactor(cli)`: the quick menu and the preset flags from the same schema. Verified: tests that a form's profile is what the CLI would write; a profile made and started in the window.
+8. `feat(protocol): presets take a rumble key`, `feat(protocol): a preset's fields as a served schema`, then `feat(gui): the Profiles pane and the preset form`, then `refactor(tray)`: the quick menu from the same schema. Verified: tests that a form's profile is what the CLI would write; a profile made and started in the window.
 9. `feat(daemon): settings, and an rpc to read and set them` with the CLI's side, `feat(tray): notification switches`, then `feat(gui): the Settings pane`. Verified: tests on both; a switch seen to silence a notification.
 10. `feat(gui): contextual help` — the overlay and the help text for each pane. Verified: the copied tests.
 11. `feat(gui): translations` — the domain, the `.pot`, the extract recipe and its gate. Verified: the gate; a pseudo-locale run.

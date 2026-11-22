@@ -14,6 +14,7 @@ Deferred work and designs set aside, one file each. An entry says what the idea 
 
 - [`non-gamepad-pads.md`](non-gamepad-pads.md) — wheels, flight sticks and levers.
 - [`pad-nicknames.md`](pad-nicknames.md) — a name the user gives a pad.
+- [`profile-new.md`](profile-new.md) — a preset profile from command-line flags.
 - [`relative-controls.md`](relative-controls.md) — gyro, touchpad, mouse and keyboard.
 - [`larger-pad-state.md`](larger-pad-state.md) — more than 64 buttons or 16 axes.
 - [`split-preset.md`](split-preset.md) — a preset for splitting one pad into several.
