@@ -242,12 +242,28 @@ fn input_report(state: &PadState, sequence: u8) -> [u8; INPUT_SIZE] {
         | bit(gamepad::LEFT_THUMB, 0x40)
         | bit(gamepad::RIGHT_THUMB, 0x80);
     report[10] = bit(gamepad::MODE, 0x01);
+    // Lying flat and still: no turning, and gravity on the one axis, at
+    // the 8192 to the g the calibration says.
+    report[24..26].copy_from_slice(&8192u16.to_le_bytes());
     // Neither touch point is in contact.
     report[33] = 0x80;
     report[37] = 0x80;
-    // Charged and full.
+    // Charged and full, on a USB cable: a real pad on one says so, and a
+    // program may go by it for what the pad can be sent.
     report[53] = 0x2a;
+    report[54] = 0x08;
     report
+}
+
+/// The time the pad's sensors were read, as the report carries it: a
+/// count of thirds of a microsecond that wraps. A real pad's never
+/// stands still.
+fn sensor_time() -> [u8; 4] {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    let micros = (now.tv_sec as u64)
+        .wrapping_mul(1_000_000)
+        .wrapping_add(now.tv_nsec as u64 / 1000);
+    (micros.wrapping_mul(3) as u32).to_le_bytes()
 }
 
 /// The rumble the pad is left at by an output report. Rumble is marked
@@ -682,7 +698,8 @@ impl Emulator {
     pub(crate) fn write(&mut self, state: &PadState) -> io::Result<()> {
         if input_report(state, 0) != input_report(&self.held, 0) {
             self.sequence = self.sequence.wrapping_add(1);
-            let report = input_report(state, self.sequence);
+            let mut report = input_report(state, self.sequence);
+            report[28..32].copy_from_slice(&sensor_time());
             // UHID_INPUT2: type u32, size u16, then the report.
             let mut event = [0u8; 6 + INPUT_SIZE];
             event[..4].copy_from_slice(&UHID_INPUT2.to_ne_bytes());
@@ -838,12 +855,15 @@ mod tests {
     fn a_pad_at_rest_is_the_report_a_dualsense_sends_untouched() {
         let report = input_report(&PadState::NEUTRAL, 7);
         assert_eq!(report[..11], [1, 128, 128, 128, 128, 0, 0, 7, 8, 0, 0]);
-        // Neither touch point in contact, and a full battery.
+        // Neither touch point in contact, a full battery, a USB cable,
+        // and gravity on the one axis: a real pad lying on a desk.
         assert_eq!((report[33], report[37], report[53]), (0x80, 0x80, 0x2a));
+        assert_eq!((report[54], report[24], report[25]), (0x08, 0x00, 0x20));
         let rest: Vec<usize> = (11..INPUT_SIZE)
             .filter(|index| report[*index] != 0)
             .collect();
-        assert_eq!(rest, [33, 37, 53], "nothing else is set");
+        assert_eq!(rest, [25, 33, 37, 53, 54], "nothing else is set");
+        assert_ne!(sensor_time(), [0; 4]);
     }
 
     #[test]
