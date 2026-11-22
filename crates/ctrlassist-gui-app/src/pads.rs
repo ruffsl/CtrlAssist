@@ -7,6 +7,7 @@ use ctrlassist::{DaemonClient, Pad, Setup};
 use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
 use tracing::warn;
 
+use crate::nav::NavHandles;
 use crate::{AppWindow, ErrorState, Errors, PadRow, Pads, on_ui};
 
 /// How long Identify buzzes a pad: the command line's default.
@@ -116,6 +117,27 @@ pub fn show(app: &AppWindow, rows: Vec<PadRow>) {
     pads.set_selected_index(index);
 }
 
+/// The id of the pad selected, empty for none.
+pub(crate) fn selected(app: &AppWindow) -> SharedString {
+    let pads = app.global::<Pads>();
+    pads.get_rows()
+        .row_data(usize::try_from(pads.get_selected_index()).unwrap_or(usize::MAX))
+        .map(|row| row.id)
+        .unwrap_or_default()
+}
+
+/// Selects the pad of that id, or nothing when there is none.
+pub(crate) fn select(app: &AppWindow, id: &str) {
+    let pads = app.global::<Pads>();
+    let index = pads
+        .get_rows()
+        .iter()
+        .position(|row| row.id == id)
+        .and_then(|at| i32::try_from(at).ok())
+        .unwrap_or(-1);
+    pads.set_selected_index(index);
+}
+
 /// The pane's banner for an action the daemon refused.
 fn refused(what: &str, error: &ctrlassist::Error) -> ErrorState {
     ErrorState {
@@ -127,17 +149,21 @@ fn refused(what: &str, error: &ctrlassist::Error) -> ErrorState {
     }
 }
 
-/// Binds Identify and Forget. What either changes comes back through
-/// the mirror, as any change does.
-pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient) {
-    let pads = app.global::<Pads>();
-    // To the Setups pane. Which setup it shows comes with that pane.
-    let weak = app.as_weak();
-    pads.on_open_setup(move |_setup| {
+/// Binds the link from a pad to its setup. It needs no daemon.
+pub fn bind_links(app: &AppWindow, nav: &NavHandles) {
+    let (weak, go_setup) = (app.as_weak(), nav.go_setup.clone());
+    app.global::<Pads>().on_open_setup(move |setup| {
         if let Some(app) = weak.upgrade() {
-            app.invoke_navigate(crate::Pane::Setups);
+            go_setup(&app, setup);
         }
     });
+}
+
+/// Binds Identify and Forget. What either changes comes back through
+/// the mirror, as any change does.
+pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient, nav: &NavHandles) {
+    bind_links(app, nav);
+    let pads = app.global::<Pads>();
     let (weak, client) = (app.as_weak(), daemon.clone());
     pads.on_identify(move |id| {
         let (weak, client, id) = (weak.clone(), client.clone(), id.to_string());

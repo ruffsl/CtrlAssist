@@ -1,0 +1,69 @@
+// The Setups pane's model and callbacks. Rust pushes `rows` from the
+// daemon's mirror on every change and binds the callbacks.
+
+// A pad of a setup, by the role the profile gives it.
+export struct SetupPadRow {
+    role: string,
+    // The pad's id, empty while no pad that fits has been found.
+    pad: string,
+    // Its name, or its id when the daemon no longer knows it.
+    name: string,
+    present: bool,
+}
+
+// A virtual pad of a setup.
+export struct SetupSinkRow {
+    name: string,
+    identity: string,
+    // Its event node, empty until it is made.
+    node: string,
+}
+
+// A node of a setup that selects one of its choices.
+export struct SetupNodeRow {
+    name: string,
+    choices: [string],
+    selected: int,
+}
+
+export struct SetupRow {
+    // The setup's name: the profile it runs.
+    name: string,
+    // "starting", "running", "held" or "failed".
+    phase: string,
+    // The phase as a person reads it, and the `Chip` tone for it.
+    phase-label: string,
+    tone: string,
+    // Why it failed; empty otherwise.
+    reason: string,
+    // The profile as kept is another than it runs, or gone.
+    stale: bool,
+    // Whether a profile of its name is kept at all.
+    profile-kept: bool,
+    pads: [SetupPadRow],
+    sinks: [SetupSinkRow],
+    nodes: [SetupNodeRow],
+}
+
+export global Setups {
+    in property <[SetupRow]> rows;
+    in-out property <int> selected-index: -1;
+    // The worst of what the setups are in, for the sidebar's badge:
+    // "" for none, "warn" while one is held, "danger" while one failed.
+    in property <string> trouble;
+    // An update waiting on its dialog: the setup, and what Rust found
+    // it would cost ("seamless" or "restart"). Rust sets them once it
+    // has asked the daemon; the dialog clears them.
+    in-out property <string> pending-update;
+    in-out property <string> pending-update-cost;
+
+    callback stop(string);
+    // Ask what an update would cost, then open its dialog.
+    callback ask-update(string);
+    callback update(string);
+    // Have a node select a choice: setup, node, choice.
+    callback select(string, string, string);
+    // Show a pad in the Pads pane, a profile in the Profiles pane.
+    callback open-pad(string);
+    callback open-profile(string);
+}

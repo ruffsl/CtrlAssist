@@ -36,6 +36,8 @@ pub struct Snapshot {
     pub pads: Vec<Pad>,
     /// The setups that exist.
     pub setups: Vec<Setup>,
+    /// The names of the profiles it keeps.
+    pub profiles: Vec<String>,
 }
 
 impl Snapshot {
@@ -56,6 +58,12 @@ impl Snapshot {
             tray: state.and_then(|state| state.tray),
             pads: daemon.list_pads().unwrap_or_default(),
             setups: daemon.list_setups().unwrap_or_default(),
+            profiles: daemon
+                .list_profiles()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|profile| profile.name)
+                .collect(),
         }
     }
 
@@ -96,6 +104,11 @@ impl Snapshot {
         app.set_tray_version(SharedString::from(self.tray.clone().unwrap_or_default()));
         crate::about::refresh(app);
         crate::pads::show(app, crate::pads::rows(&self.pads, &self.setups));
+        crate::setups::show(
+            app,
+            crate::setups::rows(&self.setups, &self.pads, &self.profiles),
+            crate::setups::trouble(&self.setups),
+        );
         let banner = match (&self.version, self.daemon_health()) {
             (Some(theirs), ServiceHealth::Incompatible) => ErrorState {
                 kind: SharedString::from("version"),

@@ -4,12 +4,13 @@
 //! Alt+Left/Right (a top-level `FocusScope` in `main.slint`) and the
 //! mouse back/forward buttons (a winit event hook in `lib.rs`) can
 //! replay it. Each entry remembers the pane and where focus was when it
-//! was left, so going back puts focus where it was. No pane has a
-//! selection to remember yet; each brings its own as it is built, and
-//! with it the click-throughs from one pane into another.
+//! was left, and the pad or the setup selected there, so going back
+//! shows what was being looked at: also after a click-through from one
+//! pane into another (a pad's setup, a setup's pad).
 //!
 //! [`wire`] returns the [`NavHandles`] the rest of the app needs: the
-//! winit mouse-button hook replays history through `back` / `forward`.
+//! click-throughs record history through `go_*`, and the winit
+//! mouse-button hook replays it through `back` / `forward`.
 //! The `apply` closure here is the only writer of
 //! `AppWindow.active-pane`.
 
@@ -25,6 +26,10 @@ use crate::{AppWindow, Nav, Pane};
 enum NavSel {
     /// Nothing to restore.
     None,
+    /// The Pads pane: the pad selected, by its id; empty for none.
+    Pad(SharedString),
+    /// The Setups pane: the setup selected, by name; empty for none.
+    Setup(SharedString),
 }
 
 struct NavEntry {
@@ -158,10 +163,14 @@ type ApplyFn = Rc<dyn Fn(&AppWindow, Pane, &NavSel)>;
 type GoFn = Rc<dyn Fn(&AppWindow, Pane, NavSel, bool)>;
 type StepFn = Rc<dyn Fn(&AppWindow, bool)>;
 type NavActionFn = Rc<dyn Fn(&AppWindow)>;
+type GoToFn = Rc<dyn Fn(&AppWindow, SharedString)>;
 
-/// Navigation entry points used by `lib.rs`: the winit mouse-button
-/// hook replays history through `back` / `forward`.
+/// Navigation entry points: the click-throughs from one pane into
+/// another record history through `go_*`, and the winit mouse-button
+/// hook replays it through `back` / `forward`.
 pub struct NavHandles {
+    pub(crate) go_pad: GoToFn,
+    pub(crate) go_setup: GoToFn,
     pub(crate) back: NavActionFn,
     pub(crate) forward: NavActionFn,
 }
@@ -194,6 +203,8 @@ pub fn wire(app: &AppWindow) -> NavHandles {
         app.set_active_pane(pane);
         match sel {
             NavSel::None => {}
+            NavSel::Pad(id) => crate::pads::select(app, id),
+            NavSel::Setup(name) => crate::setups::select(app, name),
         }
     });
 
@@ -274,12 +285,30 @@ pub fn wire(app: &AppWindow) -> NavHandles {
         Rc::new(move |app| step(app, true))
     };
 
-    NavHandles { back, forward }
+    let go_pad: GoToFn = {
+        let go = go.clone();
+        Rc::new(move |app, id| go(app, Pane::Pads, NavSel::Pad(id), true))
+    };
+    let go_setup: GoToFn = {
+        let go = go.clone();
+        Rc::new(move |app, name| go(app, Pane::Setups, NavSel::Setup(name), true))
+    };
+
+    NavHandles {
+        go_pad,
+        go_setup,
+        back,
+        forward,
+    }
 }
 
 /// The selection a pane holds now, to record as it is left.
-fn read_current_sel(_app: &AppWindow, _pane: Pane) -> NavSel {
-    NavSel::None
+fn read_current_sel(app: &AppWindow, pane: Pane) -> NavSel {
+    match pane {
+        Pane::Pads => NavSel::Pad(crate::pads::selected(app)),
+        Pane::Setups => NavSel::Setup(crate::setups::selected(app)),
+        _ => NavSel::None,
+    }
 }
 
 #[cfg(test)]

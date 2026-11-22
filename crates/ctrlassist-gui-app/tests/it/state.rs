@@ -159,6 +159,7 @@ async fn a_snapshot_reads_a_live_daemon_and_its_going() {
             // Whatever pads this machine has are its own.
             pads: snapshot.pads.clone(),
             setups: Vec::new(),
+            profiles: Vec::new(),
         }
     );
     assert_eq!(snapshot.daemon_health(), ServiceHealth::Ok);

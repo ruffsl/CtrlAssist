@@ -106,5 +106,10 @@ pub(crate) fn activate_shown(app: &AppWindow, id: &str) {
         })
         .expect("a control of that id is showing and enabled")
         .invoke_accessible_default_action();
-    settle();
+    // A move between panes lands focus through a chain of deferred
+    // steps (the new pane is made, a request goes unanswered, the
+    // fallback asks the column), each a timer of its own.
+    for _ in 0..4 {
+        settle();
+    }
 }

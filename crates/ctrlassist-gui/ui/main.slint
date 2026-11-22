@@ -26,8 +26,10 @@ import { Select, SelectOverlay } from "globals/select.slint";
 import { AboutPane, AboutComponentRow } from "components/about_pane.slint";
 import { PadsPane } from "components/pads_pane.slint";
 import { Pads, PadRow } from "globals/pads.slint";
+import { SetupsPane } from "components/setups_pane.slint";
+import { Setups, SetupRow, SetupPadRow, SetupSinkRow, SetupNodeRow } from "globals/setups.slint";
 
-export { AboutComponentRow, Pads, PadRow, Theme, Daemon, Clipboard, Errors, Icons, Toast, Help, ServiceHealth, Nav, Couch }
+export { AboutComponentRow, Pads, PadRow, Setups, SetupRow, SetupPadRow, SetupSinkRow, SetupNodeRow, Theme, Daemon, Clipboard, Errors, Icons, Toast, Help, ServiceHealth, Nav, Couch }
 
 export enum Pane {
     pads,
@@ -63,6 +65,9 @@ component SidebarItem inherits Focusable {
     in property <image> icon;
     in property <string> label;
     in property <bool> selected;
+    // A dot after the label for trouble in the pane, seen from any
+    // other: "warn" or "danger"; empty for none.
+    in property <string> badge;
     callback clicked();
 
     column: 0;
@@ -125,6 +130,17 @@ component SidebarItem inherits Focusable {
                 font-weight: root.selected ? 600 : 500;
             }
         }
+        if root.badge != "": VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: Design.size-status-dot + 2px;
+                height: Design.size-status-dot + 2px;
+                border-radius: self.width / 2;
+                background: root.badge == "danger" ? Theme.danger : Theme.warn;
+                accessible-role: text;
+                accessible-label: root.badge == "danger" ? @tr("something failed") : @tr("something is held");
+            }
+        }
     }
 }
 
@@ -156,7 +172,7 @@ export component AppWindow inherits Window {
         return true;
     }
     // The panes with no list: Left from them goes to the sidebar.
-    property <bool> single-column: root.active-pane != Pane.pads;
+    property <bool> single-column: root.active-pane != Pane.pads && root.active-pane != Pane.setups;
     function jump-right() -> bool {
         if (Nav.column != 0) {
             return false;
@@ -558,6 +574,7 @@ export component AppWindow inherits Window {
                         icon: root.setups-icon;
                         label: @tr("Setups");
                         selected: root.active-pane == Pane.setups;
+                        badge: Setups.trouble;
                         accessible-id: "sidebar-setups";
                         clicked => { root.navigate(Pane.setups); }
                     }
@@ -730,10 +747,12 @@ export component AppWindow inherits Window {
                         daemon-loading: root.daemon-loading;
                         daemon-health: root.daemon-health;
                     }
-                    if root.active-pane == Pane.setups: EmptyPane {
+                    if root.active-pane == Pane.setups: SetupsPane {
                         width: 100%;
                         height: 100%;
-                        title: @tr("Setups");
+                        daemon-available: root.daemon-available;
+                        daemon-loading: root.daemon-loading;
+                        daemon-health: root.daemon-health;
                     }
                     if root.active-pane == Pane.profiles: EmptyPane {
                         width: 100%;

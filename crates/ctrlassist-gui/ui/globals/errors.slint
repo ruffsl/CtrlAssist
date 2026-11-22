@@ -26,6 +26,9 @@ export struct ErrorState {
 export global Errors {
     /// The Pads pane: an Identify or a Forget the daemon refused.
     in-out property <ErrorState> pads;
+    /// The Setups pane: a stop, an update or a selection the daemon
+    /// refused.
+    in-out property <ErrorState> setups;
     /// App-level reload banner — the sidebar's Reload belongs to no
     /// pane, so a file it couldn't apply shows above every pane, until
     /// dismissed or a later Reload succeeds.

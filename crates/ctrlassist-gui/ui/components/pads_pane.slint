@@ -272,6 +272,10 @@ component LabeledRow {
 
 component PadDetail inherits Rectangle {
     in property <PadRow> pad;
+    // Every pad has a detail and one shows. The hidden ones' controls go
+    // by other ids, so a request to put focus back on a control by its
+    // id finds the one on screen.
+    property <string> id-prefix: root.visible ? "" : "hidden-";
     in property <bool> daemon-available;
     callback request-forget();
 
@@ -347,7 +351,7 @@ component PadDetail inherits Rectangle {
                             text: @tr("Identify");
                             // A buzz needs the pad there, and motors.
                             enabled: root.daemon-available && root.pad.connected && root.pad.rumble != "No";
-                            accessible-id: "pads-identify";
+                            accessible-id: root.id-prefix + "pads-identify";
                             clicked => { Pads.identify(root.pad.id); }
                         }
                         forget := DangerBtn {
@@ -356,7 +360,7 @@ component PadDetail inherits Rectangle {
                             // Only a pad that isn't connected is forgotten:
                             // one that is would be known again at once.
                             enabled: root.daemon-available && !root.pad.connected;
-                            accessible-id: "pads-forget";
+                            accessible-id: root.id-prefix + "pads-forget";
                             clicked => { root.request-forget(); }
                         }
                     }
@@ -413,7 +417,7 @@ component PadDetail inherits Rectangle {
                         text: root.pad.setup;
                         font-size: Design.font-meta;
                         tip: @tr("Show this setup");
-                        accessible-id: "pads-setup-link";
+                        accessible-id: root.id-prefix + "pads-setup-link";
                         clicked => { Pads.open-setup(root.pad.setup); }
                     }
                 }
