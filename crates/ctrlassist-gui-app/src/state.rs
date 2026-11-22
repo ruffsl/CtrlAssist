@@ -6,7 +6,8 @@
 //! to know what an event changed, and an event that was dropped costs
 //! nothing: the next one reads the same whole.
 
-use ctrlassist::{DaemonClient, Hiding, Pad, Setup, StateWatcher, StateWatcherConfig};
+use ctrlassist::form::Field;
+use ctrlassist::{DaemonClient, Hiding, Pad, Profile, Setup, StateWatcher, StateWatcherConfig};
 use ctrlassist_protocol::{VERSION, compatible};
 use slint::{ComponentHandle, SharedString};
 use tracing::{debug, warn};
@@ -36,8 +37,10 @@ pub struct Snapshot {
     pub pads: Vec<Pad>,
     /// The setups that exist.
     pub setups: Vec<Setup>,
-    /// The names of the profiles it keeps.
-    pub profiles: Vec<String>,
+    /// The profiles it keeps.
+    pub profiles: Vec<Profile>,
+    /// A preset's fields, as it serves them; empty until it has.
+    pub fields: Vec<Field>,
 }
 
 impl Snapshot {
@@ -58,12 +61,8 @@ impl Snapshot {
             tray: state.and_then(|state| state.tray),
             pads: daemon.list_pads().unwrap_or_default(),
             setups: daemon.list_setups().unwrap_or_default(),
-            profiles: daemon
-                .list_profiles()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|profile| profile.name)
-                .collect(),
+            profiles: daemon.list_profiles().unwrap_or_default(),
+            fields: Vec::new(),
         }
     }
 
@@ -106,8 +105,25 @@ impl Snapshot {
         crate::pads::show(app, crate::pads::rows(&self.pads, &self.setups));
         crate::setups::show(
             app,
-            crate::setups::rows(&self.setups, &self.pads, &self.profiles),
+            crate::setups::rows(
+                &self.setups,
+                &self.pads,
+                &self
+                    .profiles
+                    .iter()
+                    .map(|profile| profile.name.clone())
+                    .collect::<Vec<_>>(),
+            ),
             crate::setups::trouble(&self.setups),
+        );
+        crate::profiles::show(
+            app,
+            crate::profiles::Known {
+                profiles: self.profiles.clone(),
+                setups: self.setups.clone(),
+                pads: self.pads.clone(),
+                fields: self.fields.clone(),
+            },
         );
         let banner = match (&self.version, self.daemon_health()) {
             (Some(theirs), ServiceHealth::Incompatible) => ErrorState {
@@ -144,10 +160,21 @@ pub fn health(available: bool, version: Option<&str>) -> ServiceHealth {
 pub(crate) async fn follow(daemon: DaemonClient, app: slint::Weak<AppWindow>) {
     let mut watcher = StateWatcher::new(&daemon, StateWatcherConfig::default());
     let mut shown = None;
+    // A preset's fields, asked once of each daemon that comes.
+    let mut fields: Vec<Field> = Vec::new();
     loop {
         // One read for a burst of events.
         while watcher.try_next().is_some() {}
-        let snapshot = Snapshot::read(&daemon);
+        let mut snapshot = Snapshot::read(&daemon);
+        if !snapshot.available {
+            fields.clear();
+        } else if fields.is_empty() {
+            match daemon.preset_form().await {
+                Ok(served) => fields = served,
+                Err(error) => warn!(%error, "the daemon didn't say what a preset's fields are"),
+            }
+        }
+        snapshot.fields.clone_from(&fields);
         if shown.as_ref() != Some(&snapshot) {
             debug!(?snapshot, "the daemon's state changed");
             shown = Some(snapshot.clone());

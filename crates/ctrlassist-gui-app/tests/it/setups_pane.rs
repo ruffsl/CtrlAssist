@@ -151,7 +151,14 @@ fn app(setups_now: Vec<Setup>) -> AppWindow {
         available: true,
         hydrated: true,
         pads: some_pads(),
-        profiles: setups_now.iter().map(|setup| setup.name.clone()).collect(),
+        profiles: setups_now
+            .iter()
+            .map(|setup| ctrlassist::Profile {
+                name: setup.name.clone(),
+                toml: String::new(),
+                problem: None,
+            })
+            .collect(),
         setups: setups_now,
         ..Snapshot::default()
     }

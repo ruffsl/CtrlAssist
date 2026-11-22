@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use ctrlassist::{DaemonClient, Pad, Setup};
-use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model as _, SharedString};
 use tracing::warn;
 
 use crate::nav::NavHandles;
@@ -33,7 +33,7 @@ fn address_of(id: &str) -> &str {
 /// A few characters that tell this pad from another of its model: the
 /// end of whatever it is known by, when that is its own (an address, a
 /// serial number, a port) and not just its model.
-fn tag_of(id: &str) -> String {
+pub(crate) fn tag_of(id: &str) -> String {
     if id.starts_with("model:") {
         return String::new();
     }
@@ -113,7 +113,10 @@ pub fn show(app: &AppWindow, rows: Vec<PadRow>) {
         .unwrap_or(-1);
     let connected = rows.iter().filter(|row| row.connected).count();
     pads.set_connected_count(i32::try_from(connected).unwrap_or(i32::MAX));
-    pads.set_rows(ModelRc::new(VecModel::from(rows)));
+    // In place where the pads are the same ones: see `models`.
+    pads.set_rows(crate::models::sync(&pads.get_rows(), rows, |a, b| {
+        a.id == b.id
+    }));
     pads.set_selected_index(index);
 }
 

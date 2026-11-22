@@ -160,6 +160,8 @@ async fn a_snapshot_reads_a_live_daemon_and_its_going() {
             pads: snapshot.pads.clone(),
             setups: Vec::new(),
             profiles: Vec::new(),
+            // Asked for by the loop that follows the daemon, not read.
+            fields: Vec::new(),
         }
     );
     assert_eq!(snapshot.daemon_health(), ServiceHealth::Ok);

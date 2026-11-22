@@ -104,7 +104,7 @@ pub(crate) fn activate_shown(app: &AppWindow, id: &str) {
         .find(|control| {
             control.computed_opacity() > 0.0 && control.accessible_enabled().unwrap_or(false)
         })
-        .expect("a control of that id is showing and enabled")
+        .unwrap_or_else(|| unreachable!("no control `{id}` is showing and enabled"))
         .invoke_accessible_default_action();
     // A move between panes lands focus through a chain of deferred
     // steps (the new pane is made, a request goes unanswered, the

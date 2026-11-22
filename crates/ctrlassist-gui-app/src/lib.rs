@@ -11,8 +11,10 @@ mod file_manager;
 mod icon_theme;
 mod icons;
 pub mod keys;
+mod models;
 pub mod nav;
 pub mod pads;
+pub mod profiles;
 pub mod setups;
 pub mod state;
 mod toast;
@@ -116,6 +118,7 @@ pub fn run() -> Result<()> {
     about::wire(&app, &daemon);
     pads::wire(&app, &daemon, &nav);
     setups::wire(&app, &daemon, &nav);
+    profiles::wire(&app, &daemon, &nav);
     rt.spawn(state::follow(daemon, app.as_weak()));
 
     keys::bind_key_router(&app);

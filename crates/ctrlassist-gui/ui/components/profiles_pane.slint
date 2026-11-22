@@ -1,0 +1,712 @@
+// The Profiles pane: the profiles the daemon keeps, and for the one
+// selected a form over its preset, rendered from the fields the daemon
+// serves. Each change applies at once. A profile only its text can
+// show (the full form) is shown as text.
+//
+// The list and the detail are the shapes of the Pads and Setups panes,
+// and so of TisVlay's; the list's "+" and the name dialogs are its
+// profile list's.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+import { ListRow, Group, Chip, ThemedButton, DangerBtn, LinkText, ConfirmDialog, NameInputDialog, InlineError, ThemedSwitch, ThemedSpinBox, Focusable } from "../widgets.slint";
+import { ThemedSelect } from "../globals/select.slint";
+import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
+import { ServiceHealth } from "../globals/health.slint";
+import { Errors } from "../globals/errors.slint";
+import { Nav } from "../globals/nav.slint";
+import { Profiles, ProfileRow, ProfileFieldRow } from "../globals/profiles.slint";
+
+component ProfileListRow inherits ListRow {
+    in property <ProfileRow> profile;
+
+    accessible-label: root.profile.name;
+    accessible-id: "profiles-row-" + root.profile.name;
+    height: 64px;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 12px;
+        padding-right: 12px;
+        alignment: start;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.profile.name;
+                color: root.title-color;
+                font-size: Design.font-body;
+                font-weight: root.title-weight;
+                overflow: elide;
+            }
+            HorizontalLayout {
+                spacing: Design.gap-tight;
+                alignment: start;
+                Text {
+                    text: root.profile.unfinished ? @tr("unfinished")
+                        : root.profile.problem != "" ? @tr("something is wrong")
+                        : root.profile.running ? root.profile.phase-label
+                        : root.profile.summary;
+                    color: root.profile.unfinished ? Theme.warn-text
+                        : root.profile.problem != "" ? Theme.danger-text
+                        : root.profile.running ? Theme.success-text
+                        : Theme.text-faint;
+                    font-size: Design.font-mini;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
+
+component ProfileList inherits Rectangle {
+    in property <bool> daemon-available;
+    in property <bool> daemon-loading;
+    in property <ServiceHealth> daemon-health;
+    callback activated();
+    callback request-new();
+
+    // As the other panes' lists, with the "+" before the first row: a
+    // column request lands on the selected row, else the first, else
+    // the "+".
+    property <string> focus-row-name;
+    property <int> focus-row-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        root.serve-column-request();
+    }
+    property <bool> has-selection: Profiles.selected-index >= 0 && Profiles.selected-index < Profiles.rows.length;
+
+    // The list's stops, top to bottom: the "+" (slot -1), then the rows.
+    function focus-slot(slot: int) {
+        if (slot < 0) {
+            add.focus();
+        } else if (slot < Profiles.rows.length) {
+            root.focus-row-name = Profiles.rows[slot].name;
+            root.focus-row-tick += 1;
+        }
+    }
+    property <int> step-mirror: Nav.list-step-tick;
+    changed step-mirror => {
+        if (add.focused) {
+            Nav.list-step-served = Nav.list-step-tick;
+            if (Nav.list-step-forward) {
+                root.focus-slot(0);
+            }
+        }
+    }
+    init => {
+        if (Nav.column-tick != Nav.column-served) {
+            serve-later.running = true;
+        }
+    }
+    serve-later := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.serve-column-request();
+        }
+    }
+    function serve-column-request() {
+        if (Nav.column-target == 1 || (Nav.column-target == 2 && !root.has-selection)) {
+            Nav.column-served = Nav.column-tick;
+            if (Profiles.rows.length > 0) {
+                root.focus-row-name = Profiles.rows[root.has-selection ? Profiles.selected-index : 0].name;
+                root.focus-row-tick += 1;
+            } else if (add.enabled) {
+                add.focus();
+            } else {
+                Nav.request-column(0);
+            }
+        }
+    }
+
+    width: Design.width-master + 60px;
+    background: Theme.surface-alt;
+
+    Rectangle {
+        x: parent.width - 1px;
+        width: Design.border-thin;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        Rectangle {
+            height: 40px;
+            background: Theme.surface;
+            Rectangle {
+                x: parent.width - 1px;
+                width: Design.border-thin;
+                background: Theme.border;
+            }
+            HorizontalLayout {
+                width: 100%;
+                height: 100%;
+                padding-left: 12px;
+                padding-right: Design.gap-stack;
+                spacing: Design.gap-stack;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: @tr("PROFILES · {}", Profiles.rows.length);
+                        color: Theme.text-dim;
+                        font-size: Design.font-mini;
+                        font-weight: 600;
+                        letter-spacing: 0.6px;
+                    }
+                }
+                add := Focusable {
+                    width: 24px;
+                    height: 24px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 12px;
+                    column: 1;
+                    enabled: root.daemon-available;
+                    background: !root.daemon-available ? Theme.text-faint
+                        : (add.hovered ? Theme.accent-pressed : Theme.accent);
+                    animate background { duration: 150ms; }
+                    accessible-label: @tr("New profile");
+                    accessible-id: "profiles-new";
+                    activated => {
+                        root.request-new();
+                        add-help.hover-leave();
+                    }
+                    hover-changed(hovering) => {
+                        add-help.set-hover(hovering);
+                    }
+                    Text {
+                        text: "+";
+                        color: white;
+                        font-size: 16px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                    add-help := HelpTrigger {
+                        width: 100%;
+                        height: 100%;
+                        text: @tr("New profile");
+                    }
+                }
+            }
+        }
+
+        if Profiles.rows.length == 0: Rectangle {
+            VerticalLayout {
+                width: 100%;
+                alignment: center;
+                padding: Design.gap-pane;
+                Text {
+                    text: !root.daemon-available ? @tr("Daemon offline")
+                        : root.daemon-health == ServiceHealth.incompatible ? @tr("Profiles hidden: version mismatch")
+                        : root.daemon-loading ? @tr("Loading")
+                        : @tr("No profiles yet. Make one with +.");
+                    color: !root.daemon-available || root.daemon-health == ServiceHealth.incompatible
+                        ? Theme.danger-text : Theme.text-faint;
+                    font-size: Design.font-body;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    accessible-id: "profiles-empty";
+                }
+            }
+        }
+
+        ScrollView {
+            content-width: self.visible-width;
+            VerticalLayout {
+                alignment: start;
+                for profile[i] in Profiles.rows: ProfileListRow {
+                    profile: profile;
+                    selected: i == Profiles.selected-index;
+                    tab-stop: root.has-selection ? i == Profiles.selected-index : i == 0;
+                    focus-tick: root.focus-row-tick;
+                    focus-wanted: profile.name == root.focus-row-name;
+                    focus-in => {
+                        Profiles.selected-index = i;
+                    }
+                    clicked => {
+                        Profiles.selected-index = i;
+                        root.activated();
+                    }
+                    step(forward) => {
+                        Nav.list-step-served = Nav.list-step-tick;
+                        root.focus-slot(forward ? i + 1 : i - 1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// One field of the form: its label, its control by its kind, and under
+// the control the chosen choice's sentence or the field's help.
+component FormField {
+    in property <string> profile;
+    in property <ProfileFieldRow> field;
+    in property <bool> enabled;
+    in property <string> id-prefix;
+    property <int> row-id;
+    init => {
+        root.row-id = Nav.next-row-id();
+    }
+    property <string> control-id: root.id-prefix + "profiles-field-" + root.field.key;
+
+    HorizontalLayout {
+        width: 100%;
+        spacing: Design.gap-row;
+        padding-top: Design.gap-stack;
+        padding-bottom: Design.gap-stack;
+
+        VerticalLayout {
+            width: Design.width-label-col-profile;
+            alignment: start;
+            padding-top: 6px;
+            Text {
+                text: root.field.label;
+                color: Theme.text;
+                font-size: Design.font-meta;
+                font-weight: 500;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: Design.gap-form;
+
+            if (root.field.kind == "choice" || root.field.kind == "pad") && !root.field.read-only: choice := ThemedSelect {
+                accessible-label: root.field.label;
+                accessible-id: root.control-id;
+                nav-row: root.row-id;
+                enabled: root.enabled;
+                model: root.field.options;
+                current-value: root.field.value-label;
+                selected-index(i) => {
+                    Profiles.set-field(root.profile, root.field.key, root.field.option-values[i]);
+                }
+            }
+            if root.field.read-only: Text {
+                text: root.field.value;
+                color: Theme.text;
+                font-size: Design.font-meta;
+                font-family: Theme.mono-font;
+                accessible-id: root.control-id;
+            }
+            if root.field.kind == "number": HorizontalLayout {
+                alignment: start;
+                ThemedSpinBox {
+                    accessible-label: root.field.label;
+                    accessible-id: root.control-id;
+                    nav-row: root.row-id;
+                    enabled: root.enabled;
+                    value: root.field.number;
+                    minimum: root.field.min;
+                    maximum: root.field.max;
+                    committed(v) => { Profiles.set-number(root.profile, root.field.key, v); }
+                }
+            }
+            if root.field.kind == "switch": HorizontalLayout {
+                alignment: start;
+                toggle := ThemedSwitch {
+                    accessible-label: root.field.label;
+                    accessible-id: root.control-id;
+                    nav-row: root.row-id;
+                    enabled: root.enabled;
+                    checked: root.field.checked;
+                    toggled(on) => {
+                        Profiles.set-field(root.profile, root.field.key, on ? "true" : "false");
+                    }
+                }
+            }
+            Text {
+                text: root.field.read-only
+                    ? @tr("Written by hand; change it in the file.")
+                    : root.field.description != "" ? root.field.description : root.field.help;
+                color: Theme.text-dim;
+                font-size: Design.font-helper;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+component ProfileDetail inherits Rectangle {
+    in property <ProfileRow> profile;
+    in property <bool> daemon-available;
+    callback request-delete();
+    callback request-duplicate();
+    callback request-rename();
+
+    // Every profile has a detail and one shows; the hidden ones'
+    // controls go by other ids.
+    property <string> id-prefix: root.visible ? "" : "hidden-";
+
+    in property <int> focus-tick;
+    changed focus-tick => {
+        if (root.visible) {
+            if (start-button.enabled) {
+                start-button.focus();
+            } else {
+                duplicate.focus();
+            }
+        }
+    }
+    property <int> header-row;
+    property <int> second-row;
+    init => {
+        root.header-row = Nav.next-row-id();
+        root.second-row = Nav.next-row-id();
+    }
+
+    background: Theme.surface-alt;
+
+    HelpScrollView {
+        VerticalLayout {
+            width: 100%;
+            padding-left: Design.pad-pane;
+            padding-right: Design.pad-pane;
+            padding-top: Design.pad-header-top;
+            padding-bottom: Design.pad-pane;
+            spacing: Design.gap-pane;
+            alignment: start;
+
+            VerticalLayout {
+                spacing: Design.gap-block;
+                VerticalLayout {
+                    spacing: Design.gap-stack;
+                    Text {
+                        text: root.profile.name;
+                        color: Theme.text;
+                        font-size: Design.font-title-3;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: Design.gap-tight;
+                        if root.profile.running: Chip {
+                            label: root.profile.phase-label;
+                            tone: root.profile.tone;
+                            interactive: true;
+                            tip: @tr("Show its setup");
+                            accessible-id: root.id-prefix + "profiles-setup-chip";
+                            clicked => { Profiles.open-setup(root.profile.name); }
+                        }
+                        if root.profile.unfinished: Chip {
+                            label: root.profile.kept ? @tr("Unfinished change") : @tr("Not kept yet");
+                            tone: "warn";
+                        }
+                        if root.profile.kind == "full": Chip {
+                            label: @tr("Full form");
+                            tone: "neutral";
+                        }
+                    }
+                    if root.profile.unfinished: Text {
+                        text: root.profile.unfinished-why;
+                        color: Theme.warn-text;
+                        font-size: Design.font-meta;
+                        wrap: word-wrap;
+                        accessible-id: root.id-prefix + "profiles-unfinished-why";
+                    }
+                    if root.profile.problem != "": Text {
+                        text: root.profile.problem;
+                        color: Theme.danger-text;
+                        font-size: Design.font-meta;
+                        wrap: word-wrap;
+                        accessible-id: root.id-prefix + "profiles-problem";
+                    }
+                    if root.profile.is-quick: Text {
+                        text: @tr("The tray's quick menu edits this profile too.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                    }
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: Design.gap-stack;
+                    start-button := ThemedButton {
+                        nav-row: root.header-row;
+                        text: @tr("Start");
+                        primary: true;
+                        // A kept profile with nothing wrong, not running.
+                        enabled: root.daemon-available && root.profile.kept && !root.profile.unfinished
+                            && root.profile.problem == "" && !root.profile.running;
+                        accessible-id: root.id-prefix + "profiles-start";
+                        clicked => { Profiles.start(root.profile.name); }
+                    }
+                    duplicate := ThemedButton {
+                        nav-row: root.header-row;
+                        text: @tr("Duplicate…");
+                        enabled: root.daemon-available && root.profile.kept;
+                        accessible-id: root.id-prefix + "profiles-duplicate";
+                        clicked => { root.request-duplicate(); }
+                    }
+                    ThemedButton {
+                        nav-row: root.header-row;
+                        text: @tr("Rename…");
+                        // A setup goes by its profile's name, so not
+                        // while one runs.
+                        enabled: root.daemon-available && root.profile.kept && !root.profile.running;
+                        accessible-id: root.id-prefix + "profiles-rename";
+                        clicked => { root.request-rename(); }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: Design.gap-stack;
+                    if root.profile.unfinished: ThemedButton {
+                        nav-row: root.second-row;
+                        text: root.profile.kept ? @tr("Discard change") : @tr("Discard");
+                        accessible-id: root.id-prefix + "profiles-discard";
+                        clicked => { Profiles.discard(root.profile.name); }
+                    }
+                    if root.profile.kept: DangerBtn {
+                        nav-row: root.second-row;
+                        text: @tr("Delete");
+                        enabled: root.daemon-available;
+                        accessible-id: root.id-prefix + "profiles-delete";
+                        clicked => { root.request-delete(); }
+                    }
+                    if root.profile.kept: VerticalLayout {
+                        alignment: center;
+                        LinkText {
+                            nav-row: root.second-row;
+                            text: @tr("Show its file");
+                            font-size: Design.font-meta;
+                            accessible-id: root.id-prefix + "profiles-reveal";
+                            clicked => { Profiles.reveal(root.profile.name); }
+                        }
+                    }
+                }
+            }
+
+            if root.profile.kind == "preset": Group {
+                title: @tr("PRESET");
+                for field in root.profile.fields: FormField {
+                    profile: root.profile.name;
+                    field: field;
+                    enabled: root.daemon-available;
+                    id-prefix: root.id-prefix;
+                }
+            }
+
+            if root.profile.kind == "full": Group {
+                title: @tr("AS WRITTEN");
+                Text {
+                    text: @tr("This profile is written in the full form, which the form can't show. Edit its file, then Reload.");
+                    color: Theme.text-dim;
+                    font-size: Design.font-helper;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.profile.toml;
+                    color: Theme.text;
+                    font-size: Design.font-meta;
+                    font-family: Theme.mono-font;
+                    wrap: word-wrap;
+                    accessible-id: root.id-prefix + "profiles-text";
+                }
+            }
+        }
+    }
+}
+
+export component ProfilesPane {
+    in property <bool> daemon-available;
+    in property <bool> daemon-loading;
+    in property <ServiceHealth> daemon-health;
+
+    property <string> pending-delete: "";
+    // The name dialog: "new", "duplicate" or "rename", and what of.
+    property <string> naming: "";
+    property <string> naming-source: "";
+    property <string> naming-name: "";
+    property <string> naming-error: "";
+    function close-naming() {
+        root.naming = "";
+        root.naming-source = "";
+        root.naming-name = "";
+        root.naming-error = "";
+    }
+
+    property <int> focus-detail-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 2 && root.has-selection) {
+            Nav.column-served = Nav.column-tick;
+            root.focus-detail-tick += 1;
+        }
+    }
+    property <bool> has-selection: Profiles.selected-index >= 0 && Profiles.selected-index < Profiles.rows.length;
+    changed has-selection => {
+        if (!root.has-selection && Nav.column == 2) {
+            Nav.request-column(1);
+        }
+    }
+
+    // A profile left with a change the window holds and the daemon
+    // doesn't: ask before it is dropped. `shown` is the row the detail
+    // was on; when the selection moves off an unfinished one, the
+    // dialog offers to drop it or go back to it.
+    property <string> shown: root.has-selection ? Profiles.rows[Profiles.selected-index].name : "";
+    property <string> was-shown;
+    property <bool> was-unfinished;
+    property <string> pending-leave: "";
+    changed shown => {
+        if (root.was-unfinished && root.was-shown != "" && root.was-shown != root.shown && root.pending-leave == "") {
+            root.pending-leave = root.was-shown;
+        }
+        root.was-shown = root.shown;
+        root.was-unfinished = root.has-selection && Profiles.rows[Profiles.selected-index].unfinished;
+    }
+    property <bool> unfinished-now: root.has-selection && Profiles.rows[Profiles.selected-index].unfinished;
+    changed unfinished-now => {
+        root.was-unfinished = root.unfinished-now;
+    }
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        if Errors.profiles.title != "" || Errors.profiles.message != "": Rectangle {
+            background: Theme.surface-alt;
+            HorizontalLayout {
+                width: 100%;
+                padding: 12px;
+                padding-bottom: 0;
+                InlineError {
+                    tone: Errors.profiles.tone == "" ? "error" : Errors.profiles.tone;
+                    title: Errors.profiles.title;
+                    message: Errors.profiles.message;
+                    dismissed => {
+                        Errors.profiles = { kind: "", tone: "", title: "", message: "", action-label: "" };
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            width: 100%;
+            vertical-stretch: 1;
+
+            ProfileList {
+                daemon-available: root.daemon-available;
+                daemon-loading: root.daemon-loading;
+                daemon-health: root.daemon-health;
+                activated => { root.focus-detail-tick += 1; }
+                request-new => { root.naming = "new"; }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Theme.surface-alt;
+
+                if !root.has-selection: VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: Profiles.rows.length == 0
+                            ? @tr("A profile says which pads become which virtual pads, and how.")
+                            : @tr("Pick a profile to change it or start it.");
+                        color: Theme.text-faint;
+                        font-size: Design.font-body;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+
+                for profile[i] in Profiles.rows: ProfileDetail {
+                    width: parent.width;
+                    height: parent.height;
+                    visible: i == Profiles.selected-index;
+                    profile: profile;
+                    daemon-available: root.daemon-available;
+                    focus-tick: root.focus-detail-tick;
+                    request-delete => { root.pending-delete = profile.name; }
+                    request-duplicate => {
+                        root.naming-source = profile.name;
+                        root.naming-name = profile.name + "-copy";
+                        root.naming-error = Profiles.name-problem(root.naming-name);
+                        root.naming = "duplicate";
+                    }
+                    request-rename => {
+                        root.naming-source = profile.name;
+                        root.naming-name = profile.name;
+                        root.naming-error = Profiles.name-problem(root.naming-name);
+                        root.naming = "rename";
+                    }
+                }
+            }
+        }
+    }
+
+    ConfirmDialog {
+        open: root.pending-delete != "";
+        title: @tr("Delete profile");
+        message: @tr("Delete '{}'? A setup running it carries on as it is until it is stopped.", root.pending-delete);
+        confirm-label: @tr("Delete");
+        confirmed => {
+            Profiles.delete(root.pending-delete);
+            root.pending-delete = "";
+        }
+        cancelled => {
+            root.pending-delete = "";
+        }
+    }
+
+    ConfirmDialog {
+        open: root.pending-leave != "";
+        title: @tr("Unfinished profile");
+        message: @tr("'{}' has a change that isn't a profile yet, so it hasn't been kept. Drop it?", root.pending-leave);
+        confirm-label: @tr("Drop it");
+        confirmed => {
+            Profiles.discard(root.pending-leave);
+            root.pending-leave = "";
+        }
+        // Back to it, to finish it.
+        cancelled => {
+            Profiles.select(root.pending-leave);
+            root.pending-leave = "";
+        }
+    }
+
+    NameInputDialog {
+        open: root.naming != "";
+        title: root.naming == "duplicate" ? @tr("Duplicate profile")
+            : root.naming == "rename" ? @tr("Rename profile")
+            : @tr("New profile");
+        prompt: @tr("A name of lowercase letters, digits and hyphens.");
+        placeholder: @tr("couch");
+        confirm-label: root.naming == "duplicate" ? @tr("Duplicate")
+            : root.naming == "rename" ? @tr("Rename")
+            : @tr("Create");
+        name <=> root.naming-name;
+        error-message: root.naming-error;
+        name-changed(v) => {
+            root.naming-error = Profiles.name-problem(v);
+        }
+        confirmed => {
+            if (root.naming == "duplicate") {
+                Profiles.duplicate(root.naming-source, root.naming-name);
+            } else if (root.naming == "rename") {
+                Profiles.rename(root.naming-source, root.naming-name);
+            } else {
+                Profiles.create(root.naming-name);
+            }
+            root.close-naming();
+        }
+        cancelled => { root.close-naming(); }
+    }
+}

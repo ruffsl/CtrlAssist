@@ -27,9 +27,11 @@ import { AboutPane, AboutComponentRow } from "components/about_pane.slint";
 import { PadsPane } from "components/pads_pane.slint";
 import { Pads, PadRow } from "globals/pads.slint";
 import { SetupsPane } from "components/setups_pane.slint";
+import { ProfilesPane } from "components/profiles_pane.slint";
+import { Profiles, ProfileRow, ProfileFieldRow } from "globals/profiles.slint";
 import { Setups, SetupRow, SetupPadRow, SetupSinkRow, SetupNodeRow } from "globals/setups.slint";
 
-export { AboutComponentRow, Pads, PadRow, Setups, SetupRow, SetupPadRow, SetupSinkRow, SetupNodeRow, Theme, Daemon, Clipboard, Errors, Icons, Toast, Help, ServiceHealth, Nav, Couch }
+export { AboutComponentRow, Profiles, ProfileRow, ProfileFieldRow, Pads, PadRow, Setups, SetupRow, SetupPadRow, SetupSinkRow, SetupNodeRow, Theme, Daemon, Clipboard, Errors, Icons, Toast, Help, ServiceHealth, Nav, Couch }
 
 export enum Pane {
     pads,
@@ -172,7 +174,7 @@ export component AppWindow inherits Window {
         return true;
     }
     // The panes with no list: Left from them goes to the sidebar.
-    property <bool> single-column: root.active-pane != Pane.pads && root.active-pane != Pane.setups;
+    property <bool> single-column: root.active-pane == Pane.settings || root.active-pane == Pane.about;
     function jump-right() -> bool {
         if (Nav.column != 0) {
             return false;
@@ -754,10 +756,12 @@ export component AppWindow inherits Window {
                         daemon-loading: root.daemon-loading;
                         daemon-health: root.daemon-health;
                     }
-                    if root.active-pane == Pane.profiles: EmptyPane {
+                    if root.active-pane == Pane.profiles: ProfilesPane {
                         width: 100%;
                         height: 100%;
-                        title: @tr("Profiles");
+                        daemon-available: root.daemon-available;
+                        daemon-loading: root.daemon-loading;
+                        daemon-health: root.daemon-health;
                     }
                     if root.active-pane == Pane.settings: EmptyPane {
                         width: 100%;

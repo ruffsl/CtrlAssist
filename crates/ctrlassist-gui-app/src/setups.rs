@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// A phase as a person reads it, and the chip's tone for it.
-fn phase_text(phase: Phase) -> (&'static str, &'static str) {
+pub(crate) fn phase_text(phase: Phase) -> (&'static str, &'static str) {
     match phase {
         Phase::Running => ("Running", "success"),
         Phase::Held => ("Held: a pad is missing", "warn"),
@@ -102,8 +102,30 @@ pub fn trouble(setups: &[Setup]) -> &'static str {
 
 /// Puts the rows on the window, keeping the selection on the setup it
 /// was on; one that is gone leaves nothing selected.
-pub fn show(app: &AppWindow, rows: Vec<SetupRow>, trouble: &str) {
+pub fn show(app: &AppWindow, mut rows: Vec<SetupRow>, trouble: &str) {
     let setups = app.global::<Setups>();
+    // In place, down to each setup's pads, virtual pads, nodes and a
+    // node's choices: see `models`.
+    let current = setups.get_rows();
+    for row in &mut rows {
+        let Some(old) = current.iter().find(|old| old.name == row.name) else {
+            continue;
+        };
+        row.pads = crate::models::sync(&old.pads, row.pads.iter().collect(), |a, b| {
+            a.role == b.role
+        });
+        row.sinks = crate::models::sync(&old.sinks, row.sinks.iter().collect(), |a, b| {
+            a.name == b.name
+        });
+        let mut nodes: Vec<SetupNodeRow> = row.nodes.iter().collect();
+        for node in &mut nodes {
+            if let Some(old) = old.nodes.iter().find(|old| old.name == node.name) {
+                node.choices =
+                    crate::models::sync(&old.choices, node.choices.iter().collect(), |a, b| a == b);
+            }
+        }
+        row.nodes = crate::models::sync(&old.nodes, nodes, |a, b| a.name == b.name);
+    }
     let selected = setups
         .get_rows()
         .row_data(usize::try_from(setups.get_selected_index()).unwrap_or(usize::MAX))
@@ -113,7 +135,7 @@ pub fn show(app: &AppWindow, rows: Vec<SetupRow>, trouble: &str) {
         .and_then(|at| i32::try_from(at).ok())
         .unwrap_or(-1);
     setups.set_trouble(SharedString::from(trouble));
-    setups.set_rows(ModelRc::new(VecModel::from(rows)));
+    setups.set_rows(crate::models::sync(&current, rows, |a, b| a.name == b.name));
     setups.set_selected_index(index);
 }
 
@@ -239,11 +261,10 @@ pub fn bind_links(app: &AppWindow, nav: &NavHandles) {
             go_pad(&app, id);
         }
     });
-    // To the Profiles pane. Which profile it shows comes with that pane.
-    let weak = app.as_weak();
-    setups.on_open_profile(move |_name| {
+    let (weak, go_profile) = (app.as_weak(), nav.go_profile.clone());
+    setups.on_open_profile(move |name| {
         if let Some(app) = weak.upgrade() {
-            app.invoke_navigate(crate::Pane::Profiles);
+            go_profile(&app, name);
         }
     });
 }
