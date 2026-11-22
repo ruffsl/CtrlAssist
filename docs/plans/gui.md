@@ -72,6 +72,12 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 
 **Couch mode is copied whole** (2026-11-21): on by itself under Plasma Bigscreen, a preference (auto, on, off) and a scale in Settings, kept in the window's own `gui.toml` beside the daemon's files, and `CTRLASSIST_COUCH_MODE` to override it.
 
+**The About pane lists four parts** (2026-11-21): the daemon, the hiding service, the tray and the command line, each with its release and health. The tray shows as absent until it is a service, which stays with the step that gives it its notification switches.
+
+**The diagnostic bundle** holds, beyond the releases and the desktop session: the known pads, the running setups, the profiles' text, and facts of the kernel and input (the kernel's release, whether uinput and uhid can be opened, whether the daemon got real-time scheduling, whether Steam runs). Pad addresses are shortened in it, so a pasted report doesn't carry a pad's whole Bluetooth address.
+
+**CtrlAssist's icon is the theme's `input-gaming`,** for the window, the desktop entry and the About header: what the tray uses, and no artwork to ship.
+
 ## What is copied, replaced and new
 
 | TisVlay | Here |
