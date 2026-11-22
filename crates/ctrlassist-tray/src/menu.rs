@@ -4,6 +4,7 @@
 
 use ctrlassist::form::{Field, Kind, PRESET};
 use ctrlassist::{Phase, Setup};
+use ctrlassist_protocol::rpc;
 
 use crate::quick::{self, Quick};
 use crate::state::View;
@@ -60,6 +61,53 @@ impl Edit {
     }
 }
 
+/// A row's icon: names in a desktop's icon theme, the first it has
+/// being the one shown, in its symbolic form. Empty for none.
+pub type Icon = &'static [&'static str];
+
+/// The menu's icons. The choices follow 0.4.0's tray where it had one.
+pub mod icon {
+    use super::Icon;
+
+    /// No icon.
+    pub const NONE: Icon = &[];
+    /// A pad, and the tray itself. Adwaita has the first name's
+    /// symbolic form and Breeze the second's.
+    pub const PAD: Icon = &["input-gaming", "input-gamepad"];
+    /// Start, and a profile that runs.
+    pub const START: Icon = &["media-playback-start"];
+    /// Stop, and a profile that doesn't run.
+    pub const STOP: Icon = &["media-playback-stop"];
+    /// A setup held for a pad.
+    pub const HELD: Icon = &["media-playback-pause"];
+    /// A setup that failed.
+    pub const FAILED: Icon = &["dialog-error"];
+    /// A profile that is wrong.
+    pub const WRONG: Icon = &["dialog-warning"];
+    /// A setup starting.
+    pub const STARTING: Icon = &["view-refresh"];
+    /// Which pad has control.
+    pub const CONTROL: Icon = &["swap-panels", "object-flip-horizontal"];
+    /// A profile's mode.
+    pub const MODE: Icon = &["media-playlist-shuffle"];
+    /// Rumble, and a buzz.
+    pub const RUMBLE: Icon = &["notification-active", "preferences-desktop-notification"];
+    /// Whether the real pads are hidden.
+    pub const HIDE: Icon = &["view-visible"];
+    /// What a virtual pad presents itself as.
+    pub const IDENTITY: Icon = &["edit-copy"];
+    /// Quick start.
+    pub const QUICK: Icon = &["system-run"];
+    /// Forget a pad.
+    pub const FORGET: Icon = &["edit-delete", "list-remove"];
+    /// The daemon's status.
+    pub const STATUS: Icon = &["dialog-information", "help-about"];
+    /// The settings window.
+    pub const SETTINGS: Icon = &["settings-configure", "configure", "preferences-system"];
+    /// End the tray.
+    pub const QUIT: Icon = &["application-exit"];
+}
+
 /// One of a radio group's options.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Choice {
@@ -78,6 +126,8 @@ pub enum Entry {
     Separator,
     /// A row: something to activate, or with no command, something said.
     Item {
+        /// Its icon.
+        icon: Icon,
         /// What it says.
         label: String,
         /// What activating it asks for.
@@ -101,6 +151,8 @@ pub enum Entry {
     },
     /// A row that opens a menu of its own.
     Sub {
+        /// Its icon.
+        icon: Icon,
         /// What it says.
         label: String,
         /// Its entries.
@@ -108,33 +160,57 @@ pub enum Entry {
     },
 }
 
-fn said(label: impl Into<String>) -> Entry {
+fn said(icon: Icon, label: impl Into<String>) -> Entry {
     Entry::Item {
+        icon,
         label: label.into(),
         command: None,
     }
 }
 
-fn action(label: impl Into<String>, command: Command) -> Entry {
+fn action(icon: Icon, label: impl Into<String>, command: Command) -> Entry {
     Entry::Item {
+        icon,
         label: label.into(),
         command: Some(command),
     }
 }
 
-fn sub(label: impl Into<String>, entries: Vec<Entry>) -> Entry {
+fn sub(icon: Icon, label: impl Into<String>, entries: Vec<Entry>) -> Entry {
     Entry::Sub {
+        icon,
         label: label.into(),
         entries,
     }
 }
 
+/// A name as a row says it: `primary` as "Primary".
+fn capitalized(name: &str) -> String {
+    let mut letters = name.chars();
+    letters
+        .next()
+        .map(|first| first.to_uppercase().chain(letters).collect())
+        .unwrap_or_default()
+}
+
+/// The name a game sees a virtual pad of `identity` under.
+fn virtual_name(view: &View, identity: &str) -> String {
+    view.identities
+        .iter()
+        .find(|known| known.id == identity)
+        .map_or_else(|| capitalized(identity), |known| known.name.clone())
+}
+
 /// A running setup's entries: what to do with it, then what it is made of.
 fn setup_entries(view: &View, setup: &Setup) -> Vec<Entry> {
-    let mut entries = vec![action("Stop", Command::Stop(setup.name.clone()))];
+    let mut entries = vec![action(
+        icon::STOP,
+        "Stop",
+        Command::Stop(setup.name.clone()),
+    )];
     if let Some(reason) = &setup.reason {
         entries.push(Entry::Separator);
-        entries.push(said(reason.clone()));
+        entries.push(said(icon::NONE, reason.clone()));
         return entries;
     }
     for node in &setup.nodes {
@@ -166,6 +242,7 @@ fn setup_entries(view: &View, setup: &Setup) -> Vec<Entry> {
             .collect();
         entries.push(Entry::Separator);
         entries.push(sub(
+            icon::CONTROL,
             label,
             vec![Entry::Radio {
                 choices,
@@ -177,24 +254,40 @@ fn setup_entries(view: &View, setup: &Setup) -> Vec<Entry> {
     for source in &setup.sources {
         let pad = match (&source.pad, source.present) {
             (Some(pad), true) => view.pad_name(pad).to_string(),
-            (Some(pad), false) => format!("{} (missing)", view.pad_name(pad)),
+            (Some(pad), false) => format!("{} (disconnected)", view.pad_name(pad)),
             (None, _) => "waiting for a pad that fits".to_string(),
         };
-        entries.push(said(format!("{}: {pad}", source.name)));
+        entries.push(said(
+            icon::PAD,
+            format!("{}: {pad}", capitalized(&source.name)),
+        ));
     }
     for sink in &setup.sinks {
-        let node = sink
-            .node
-            .as_deref()
-            .and_then(|node| node.rsplit('/').next())
-            .unwrap_or("not made");
-        entries.push(said(format!("{}: {} at {node}", sink.name, sink.identity)));
+        let made = if sink.node.is_some() {
+            ""
+        } else {
+            " (not made)"
+        };
+        entries.push(said(
+            icon::PAD,
+            format!(
+                "{}: {}{made}",
+                capitalized(&sink.name),
+                virtual_name(view, &sink.identity)
+            ),
+        ));
     }
     entries
 }
 
-fn phase_label(phase: Phase) -> &'static str {
-    phase.as_str()
+/// A setup's phase as the window says it, with the icon for it.
+fn phase_label(phase: Phase) -> (&'static str, Icon) {
+    match phase {
+        Phase::Running => ("Running", icon::START),
+        Phase::Held => ("Held", icon::HELD),
+        Phase::Failed => ("Failed", icon::FAILED),
+        _ => ("Starting", icon::STARTING),
+    }
 }
 
 /// Whether a pad can be picked in quick start: connected, not picked
@@ -205,7 +298,7 @@ fn pickable(view: &View, id: &str, taken: &[&str]) -> (bool, String) {
     };
     let name = pad.name.clone();
     if !pad.connected {
-        return (false, format!("{name} (not connected)"));
+        return (false, format!("{name} (disconnected)"));
     }
     match pad.setup.as_deref() {
         Some(setup) if setup != quick::NAME => (false, format!("{name} (in {setup})")),
@@ -237,6 +330,7 @@ fn pad_entry(view: &View, quick: &Quick, field: &Field) -> Entry {
         .collect();
     let selected = picked.and_then(|picked| view.pads.iter().position(|pad| pad.id == picked));
     sub(
+        icon::PAD,
         format!(
             "{}: {}",
             field.label,
@@ -284,13 +378,23 @@ fn choice_entry(
             .collect(),
         selected,
     };
-    sub(format!("{}: {label}", field.label), vec![radio])
+    let icon = match field.key.as_str() {
+        PRESET => icon::MODE,
+        "rumble" => icon::RUMBLE,
+        "hide" => icon::HIDE,
+        "identity" => icon::IDENTITY,
+        _ => icon::NONE,
+    };
+    sub(icon, format!("{}: {label}", field.label), vec![radio])
 }
 
 fn quick_entries(view: &View, quick: &Quick) -> Vec<Entry> {
     // What there is to choose is the daemon's to say.
     if view.fields.is_empty() {
-        return vec![said("Waiting for the daemon to say what can be chosen")];
+        return vec![said(
+            icon::NONE,
+            "Waiting for the daemon to say what can be chosen",
+        )];
     }
     let preset = quick.preset(&view.fields);
     let mut entries: Vec<Entry> = view
@@ -331,6 +435,7 @@ fn quick_entries(view: &View, quick: &Quick) -> Vec<Entry> {
     };
     entries.push(Entry::Separator);
     entries.push(Entry::Item {
+        icon: icon::START,
         label: format!("{verb} as `{}`", quick::NAME),
         command: ready.then_some(Command::QuickStart),
     });
@@ -339,29 +444,65 @@ fn quick_entries(view: &View, quick: &Quick) -> Vec<Entry> {
 
 fn pad_entries(view: &View) -> Vec<Entry> {
     if view.pads.is_empty() {
-        return vec![said("No pads are known")];
+        return vec![said(icon::NONE, "No pads are known")];
     }
-    view.pads
+    let mut pads: Vec<Entry> = view
+        .pads
         .iter()
         .map(|pad| {
             let state = match (&pad.setup, pad.connected) {
                 (Some(setup), _) => format!(" (in {setup})"),
-                (None, false) => " (not connected)".to_string(),
+                (None, false) => " (remembered)".to_string(),
                 (None, true) => String::new(),
             };
-            let mut entries = vec![said(pad.id.clone())];
+            let mut entries = vec![said(icon::NONE, pad.id.clone())];
             if pad.connected {
                 entries.push(if pad.rumble == Some(false) {
-                    said("No rumble to buzz with")
+                    said(icon::NONE, "No rumble to buzz with")
                 } else {
-                    action("Identify (buzz)", Command::Identify(pad.id.clone()))
+                    action(
+                        icon::RUMBLE,
+                        "Identify (buzz)",
+                        Command::Identify(pad.id.clone()),
+                    )
                 });
             } else if pad.setup.is_none() {
-                entries.push(action("Forget", Command::Forget(pad.id.clone())));
+                entries.push(action(
+                    icon::FORGET,
+                    "Forget",
+                    Command::Forget(pad.id.clone()),
+                ));
             }
-            sub(format!("{}{state}", pad.name), entries)
+            sub(icon::PAD, format!("{}{state}", pad.name), entries)
         })
-        .collect()
+        .collect();
+    // The virtual pads that exist follow the real ones, as in the
+    // window: each is buzzed as a game would rumble it.
+    let made: Vec<Entry> = view
+        .setups
+        .iter()
+        .flat_map(|setup| setup.sinks.iter().map(move |sink| (setup, sink)))
+        .filter_map(|(setup, sink)| {
+            let node = sink.node.as_deref()?;
+            Some(sub(
+                icon::PAD,
+                format!("{} (in {})", virtual_name(view, &sink.identity), setup.name),
+                vec![
+                    said(icon::NONE, node),
+                    action(
+                        icon::RUMBLE,
+                        "Identify (buzz)",
+                        Command::Identify(rpc::virtual_pad(&setup.name, &sink.name)),
+                    ),
+                ],
+            ))
+        })
+        .collect();
+    if !made.is_empty() {
+        pads.push(Entry::Separator);
+        pads.extend(made);
+    }
+    pads
 }
 
 /// The whole menu for what the daemon publishes now and the quick-start
@@ -370,11 +511,11 @@ fn pad_entries(view: &View) -> Vec<Entry> {
 pub fn menu(view: &View, quick: &Quick) -> Vec<Entry> {
     let mut entries = Vec::new();
     if !view.alive {
-        entries.push(said("The CtrlAssist daemon isn't running"));
+        entries.push(said(icon::FAILED, "The CtrlAssist daemon isn't running"));
     } else if let Some(theirs) = &view.mismatch {
-        entries.push(said(mismatch_text(theirs)));
+        entries.push(said(icon::WRONG, mismatch_text(theirs)));
     } else if !view.hydrated {
-        entries.push(said("Reading from the daemon…"));
+        entries.push(said(icon::STARTING, "Reading from the daemon…"));
     } else {
         // Every kept profile, and any setup whose profile is gone.
         let mut names: Vec<&str> = view
@@ -388,45 +529,58 @@ pub fn menu(view: &View, quick: &Quick) -> Vec<Entry> {
         for name in names {
             let profile = view.profiles.iter().find(|profile| profile.name == name);
             entries.push(match view.setup(name) {
-                Some(setup) => sub(
-                    format!("{name} ({})", phase_label(setup.phase)),
-                    setup_entries(view, setup),
-                ),
+                Some(setup) => {
+                    let (word, icon) = phase_label(setup.phase);
+                    sub(icon, format!("{name} ({word})"), setup_entries(view, setup))
+                }
                 None => {
                     let problem = profile.and_then(|profile| profile.problem.as_ref());
-                    sub(
-                        name,
-                        match problem {
-                            Some(problem) => vec![said(format!("Can't run: {problem}"))],
-                            None => vec![action("Start", Command::Start(name.to_string()))],
-                        },
-                    )
+                    match problem {
+                        Some(problem) => sub(
+                            icon::WRONG,
+                            format!("{name} (Wrong)"),
+                            vec![said(icon::NONE, format!("Can't run: {problem}"))],
+                        ),
+                        None => sub(
+                            icon::STOP,
+                            name,
+                            vec![action(
+                                icon::START,
+                                "Start",
+                                Command::Start(name.to_string()),
+                            )],
+                        ),
+                    }
                 }
             });
         }
         if !entries.is_empty() {
             entries.push(Entry::Separator);
         }
-        entries.push(sub("Quick start", quick_entries(view, quick)));
+        entries.push(sub(icon::QUICK, "Quick start", quick_entries(view, quick)));
         let connected = view.pads.iter().filter(|pad| pad.connected).count();
         entries.push(sub(
-            format!("Pads ({connected} connected)"),
+            icon::PAD,
+            format!("Pads ({connected}/{} connected)", view.pads.len()),
             pad_entries(view),
         ));
         if let Some(daemon) = &view.daemon {
             entries.push(Entry::Separator);
-            entries.push(said(format!(
-                "Hiding: {} · Real-time: {}",
-                daemon.hiding.as_str(),
-                if daemon.realtime { "yes" } else { "no" }
-            )));
+            entries.push(said(
+                icon::STATUS,
+                format!(
+                    "Hiding: {} · Real-time: {}",
+                    daemon.hiding.as_str(),
+                    if daemon.realtime { "yes" } else { "no" }
+                ),
+            ));
         }
     }
     entries.push(Entry::Separator);
     // There whatever the daemon is doing: the window says more about a
     // daemon that isn't running than the menu can.
-    entries.push(action("Settings", Command::Settings));
-    entries.push(action("Quit tray", Command::Quit));
+    entries.push(action(icon::SETTINGS, "Settings", Command::Settings));
+    entries.push(action(icon::QUIT, "Quit tray", Command::Quit));
     entries
 }
 
@@ -450,7 +604,7 @@ pub fn outline(entries: &[Entry]) -> String {
         for entry in entries {
             match entry {
                 Entry::Separator => out.push_str(&format!("{pad}---\n")),
-                Entry::Item { label, command } => {
+                Entry::Item { label, command, .. } => {
                     let dead = if command.is_none() { "- " } else { "" };
                     out.push_str(&format!("{pad}{dead}{label}\n"));
                 }
@@ -467,7 +621,7 @@ pub fn outline(entries: &[Entry]) -> String {
                         out.push_str(&format!("{pad}({mark}) {dead}{}\n", choice.label));
                     }
                 }
-                Entry::Sub { label, entries } => {
+                Entry::Sub { label, entries, .. } => {
                     out.push_str(&format!("{pad}{label} >\n"));
                     walk(entries, depth + 1, out);
                 }
@@ -515,16 +669,16 @@ mod tests {
     fn the_menu_shows_profiles_then_quick_start_then_pads_then_status() {
         let menu = outline(&menu(&view(Some(Phase::Held), Hiding::Service), &quick()));
         let expected = "\
-couch (held) >
+couch (Held) >
   Stop
   ---
   Has control >
     (o) primary
     ( ) - assist
   ---
-  - assist: Xbox pad (missing)
-  - primary: DualSense
-  - virtual: generic at event31
+  - Assist: Xbox pad (disconnected)
+  - Primary: DualSense
+  - Virtual: Generic
 desk >
   Start
 ---
@@ -536,11 +690,11 @@ Quick start >
   Primary: DualSense >
     (o) - DualSense (in couch)
     ( ) - 8BitDo Pro 2
-    ( ) - Xbox pad (not connected)
+    ( ) - Xbox pad (disconnected)
   Assist: 8BitDo Pro 2 >
     ( ) - DualSense (in couch)
     (o) 8BitDo Pro 2
-    ( ) - Xbox pad (not connected)
+    ( ) - Xbox pad (disconnected)
   Identity: Generic >
     (o) Generic
     ( ) Xbox
@@ -557,7 +711,7 @@ Quick start >
   [ ] Managed
   ---
   - Start as `quick`
-Pads (2 connected) >
+Pads (2/3 connected) >
   DualSense (in couch) >
     - address:dualsense
     Identify (buzz)
@@ -566,6 +720,10 @@ Pads (2 connected) >
     - No rumble to buzz with
   Xbox pad (in couch) >
     - serial:xbox
+  ---
+  Generic (in couch) >
+    - /dev/input/event31
+    Identify (buzz)
 ---
 - Hiding: service · Real-time: yes
 ---
@@ -573,6 +731,49 @@ Settings
 Quit tray
 ";
         assert_eq!(menu, expected, "\n{menu}");
+    }
+
+    /// A row's icon is a name in the desktop's theme, as plain data: a
+    /// profile by how it is, a pad, an action by what it does. A virtual
+    /// pad is buzzed by its own name.
+    #[test]
+    fn rows_carry_their_icons_and_a_virtual_pad_is_buzzed_by_its_name() {
+        let entries = menu(&view(Some(Phase::Held), Hiding::Service), &quick());
+        let top: Vec<(&str, Icon)> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Sub { icon, label, .. } | Entry::Item { icon, label, .. } => {
+                    Some((label.as_str(), *icon))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            top,
+            [
+                ("couch (Held)", icon::HELD),
+                ("desk", icon::STOP),
+                ("Quick start", icon::QUICK),
+                ("Pads (2/3 connected)", icon::PAD),
+                ("Hiding: service · Real-time: yes", icon::STATUS),
+                ("Settings", icon::SETTINGS),
+                ("Quit tray", icon::QUIT),
+            ]
+        );
+        let Some(Entry::Sub { entries: pads, .. }) = entries.get(4) else {
+            unreachable!("the pads follow quick start");
+        };
+        let Some(Entry::Sub { entries: made, .. }) = pads.last() else {
+            unreachable!("the virtual pad is last");
+        };
+        assert_eq!(
+            made[1],
+            Entry::Item {
+                icon: icon::RUMBLE,
+                label: "Identify (buzz)".to_string(),
+                command: Some(Command::Identify("virtual:couch/virtual".to_string())),
+            }
+        );
     }
 
     #[test]
@@ -609,11 +810,11 @@ Quit tray
             .push(profile("broken", Some("no such preset")));
         let menu = outline(&menu(&failed, &quick()));
         assert!(
-            menu.contains("couch (failed) >\n  Stop\n  ---\n  - a virtual pad refused a write\n"),
+            menu.contains("couch (Failed) >\n  Stop\n  ---\n  - a virtual pad refused a write\n"),
             "{menu}"
         );
         assert!(
-            menu.contains("broken >\n  - Can't run: mode: no such preset\n"),
+            menu.contains("broken (Wrong) >\n  - Can't run: mode: no such preset\n"),
             "{menu}"
         );
     }
@@ -626,13 +827,13 @@ Quit tray
         odd.setups[0].sources[0].pad = None;
         odd.setups[0].sinks[0].node = None;
         let menu = outline(&menu(&odd, &quick()));
-        assert!(menu.starts_with("couch (running) >\n"), "{menu}");
+        assert!(menu.starts_with("couch (Running) >\n"), "{menu}");
         assert!(menu.contains("share selects >"), "{menu}");
         assert!(
-            menu.contains("- assist: waiting for a pad that fits"),
+            menu.contains("- Assist: waiting for a pad that fits"),
             "{menu}"
         );
-        assert!(menu.contains("- virtual: generic at not made"), "{menu}");
+        assert!(menu.contains("- Virtual: Generic (not made)"), "{menu}");
     }
 
     #[test]

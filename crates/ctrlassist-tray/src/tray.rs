@@ -3,6 +3,7 @@
 //! are English literals: the tray isn't translated yet.
 
 use ctrlassist::Phase;
+use ctrlassist_icons::Variant;
 use ksni::menu::{CheckmarkItem, MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray};
 use tokio::sync::mpsc;
@@ -141,12 +142,34 @@ impl PadTray {
         menu::menu(&self.view, &self.quick)
     }
 
+    /// The tray's own icon, and which form of it: the colored glyph
+    /// while something runs, as a status, and the flat one while nothing
+    /// does, as 0.4.0's tray had it.
+    fn glyph(&self) -> (menu::Icon, Variant) {
+        match self.worst() {
+            Some(Phase::Failed) => (menu::icon::FAILED, Variant::Color),
+            Some(Phase::Held) => (menu::icon::WRONG, Variant::Color),
+            Some(_) => (menu::icon::PAD, Variant::Color),
+            None => (menu::icon::PAD, Variant::Symbolic),
+        }
+    }
+
     /// The worst phase among the setups: failed, then held, then running.
     fn worst(&self) -> Option<Phase> {
         [Phase::Failed, Phase::Held, Phase::Starting, Phase::Running]
             .into_iter()
             .find(|phase| self.view.setups.iter().any(|setup| setup.phase == *phase))
     }
+}
+
+/// Resolves `names` to the one the desktop's icon theme has, so the
+/// tray's host loads a glyph it ships and, for a symbolic one, colors it
+/// as the panel's text. The first name where the theme can't be read.
+/// As TisVlay's tray does.
+fn themed(names: &[&str], prefer: Variant) -> String {
+    ctrlassist_icons::resolve_name(names, prefer)
+        .or_else(|| names.first().map(ToString::to_string))
+        .unwrap_or_default()
 }
 
 /// An underscore in a label is the toolkit's mark for an access key;
@@ -159,10 +182,12 @@ fn item(entry: Entry) -> MenuItem<PadTray> {
     match entry {
         Entry::Separator => MenuItem::Separator,
         Entry::Item {
+            icon,
             label: text,
             command,
         } => StandardItem {
             label: label(&text),
+            icon_name: themed(icon, Variant::Symbolic),
             enabled: command.is_some(),
             activate: Box::new(move |tray: &mut PadTray| {
                 if let Some(command) = command.clone() {
@@ -208,10 +233,12 @@ fn item(entry: Entry) -> MenuItem<PadTray> {
             .into()
         }
         Entry::Sub {
+            icon,
             label: text,
             entries,
         } => SubMenu {
             label: label(&text),
+            icon_name: themed(icon, Variant::Symbolic),
             submenu: entries.into_iter().map(item).collect(),
             ..Default::default()
         }
@@ -267,13 +294,8 @@ impl Tray for PadTray {
     }
 
     fn icon_name(&self) -> String {
-        match self.worst() {
-            Some(Phase::Failed) => "dialog-error".into(),
-            Some(Phase::Held) => "dialog-warning".into(),
-            // Something runs: the colored glyph. Nothing does: the flat one.
-            Some(_) => "input-gaming".into(),
-            None => "input-gaming-symbolic".into(),
-        }
+        let (name, variant) = self.glyph();
+        themed(name, variant)
     }
 
     fn status(&self) -> ksni::Status {
@@ -330,20 +352,24 @@ mod tests {
     fn the_icon_title_and_tooltip_say_the_worst_of_what_runs() {
         let said = |phase| {
             let (tray, _clicked) = tray(phase);
-            (tray.title(), tray.icon_name(), tray.tool_tip().description)
+            // The glyph and its form, before the desktop's theme is
+            // asked which name it has for it.
+            let (name, variant) = tray.glyph();
+            let flat = matches!(variant, Variant::Symbolic);
+            (tray.title(), (name[0], flat), tray.tool_tip().description)
         };
         assert_eq!(
             said(None),
             (
                 "CtrlAssist".to_string(),
-                "input-gaming-symbolic".to_string(),
+                ("input-gaming", true),
                 "Nothing is running".to_string()
             )
         );
-        assert_eq!(said(Some(Phase::Running)).1, "input-gaming");
+        assert_eq!(said(Some(Phase::Running)).1, ("input-gaming", false));
         assert_eq!(said(Some(Phase::Held)).0, "CtrlAssist [held]");
-        assert_eq!(said(Some(Phase::Held)).1, "dialog-warning");
-        assert_eq!(said(Some(Phase::Failed)).1, "dialog-error");
+        assert_eq!(said(Some(Phase::Held)).1, ("dialog-warning", false));
+        assert_eq!(said(Some(Phase::Failed)).1, ("dialog-error", false));
         assert_eq!(said(Some(Phase::Failed)).2, "couch: failed");
 
         let (mut down, _clicked) = tray(Some(Phase::Running));

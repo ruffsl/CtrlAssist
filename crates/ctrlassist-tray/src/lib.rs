@@ -379,7 +379,7 @@ mod tests {
         assert!(menu.contains("Primary: Tray Primary >"), "{menu}");
         assert!(menu.contains("\n  Start as `quick`"), "{menu}");
         rig.click(Command::QuickStart).await;
-        let menu = rig.shows("quick (running) >").await;
+        let menu = rig.shows("quick (Running) >").await;
         assert!(menu.contains("- Running as `quick`"), "{menu}");
         // Without the hiding service the pads are grabbed, which is said
         // once, as the setup starts.
@@ -413,7 +413,7 @@ mod tests {
             &id("Tray Primary", 0x8701),
         )))
         .await;
-        rig.shows("primary: Tray Assist").await;
+        rig.shows("Primary: Tray Assist").await;
         rig.click(Command::Quick(Edit::set(
             "assist",
             &id("Tray Assist", 0x8702),
@@ -424,7 +424,7 @@ mod tests {
             &id("Tray Primary", 0x8701),
         )))
         .await;
-        rig.shows("primary: Tray Primary").await;
+        rig.shows("Primary: Tray Primary").await;
         assert_eq!(node(&*rig.tray.lock().await), before);
         // Another identity is another virtual pad: picking it restarts
         // the setup at once, with nothing more to click.
@@ -435,12 +435,13 @@ mod tests {
             .await;
         // Another pad, though the kernel may give it the node the old
         // one had.
-        rig.shows("virtual: xbox at event").await;
+        rig.shows("Virtual: Microsoft Xbox Series S|X Controller\n")
+            .await;
         let menu = rig.shows("- Running as `quick`").await;
-        assert!(menu.contains("quick (running) >"), "{menu}");
+        assert!(menu.contains("quick (Running) >"), "{menu}");
         rig.click(identity(ctrlassist_protocol::profile::Identity::Generic))
             .await;
-        rig.shows("virtual: generic at event").await;
+        rig.shows("Virtual: CtrlAssist Virtual Pad\n").await;
         // Stopped, the profile's own Start runs what is picked now, not
         // what was last kept.
         rig.click(Command::Stop("quick".into())).await;
@@ -448,10 +449,11 @@ mod tests {
         rig.click(identity(ctrlassist_protocol::profile::Identity::Xbox))
             .await;
         rig.click(Command::Start("quick".into())).await;
-        rig.shows("virtual: xbox at event").await;
+        rig.shows("Virtual: Microsoft Xbox Series S|X Controller\n")
+            .await;
         rig.click(identity(ctrlassist_protocol::profile::Identity::Generic))
             .await;
-        rig.shows("virtual: generic at event").await;
+        rig.shows("Virtual: CtrlAssist Virtual Pad\n").await;
 
         // The toggle's holder is in the menu, and a click hands over.
         let menu = rig.shows("(o) primary").await;
@@ -467,8 +469,11 @@ mod tests {
         // The assist leaves: the setup is held, the menu and a
         // notification say so, and it can't be handed to a pad that is gone.
         drop(assist);
-        let menu = rig.shows("quick (held) >").await;
-        assert!(menu.contains("assist: Tray Assist (missing)"), "{menu}");
+        let menu = rig.shows("quick (Held) >").await;
+        assert!(
+            menu.contains("Assist: Tray Assist (disconnected)"),
+            "{menu}"
+        );
         let held = rig.told("quick is held").await;
         assert!(
             held.body.starts_with("Tray Assist disconnected"),
@@ -478,7 +483,7 @@ mod tests {
 
         // It returns: running again, and said.
         let _assist = FakePad::new("Tray Assist", 0x1209, 0x8702).unwrap();
-        rig.shows("quick (running) >").await;
+        rig.shows("quick (Running) >").await;
         rig.told("quick is running again").await;
 
         // Stopped from the menu; the profile stays, to start again.
@@ -532,7 +537,7 @@ mod tests {
         rig.click(Command::Quick(Edit::set("managed", "true")))
             .await;
         rig.click(Command::QuickStart).await;
-        rig.shows("quick (running) >").await;
+        rig.shows("quick (Running) >").await;
 
         // The daemon stops: the menu says so, and a notification says
         // what went with it.
@@ -548,7 +553,7 @@ mod tests {
         // It comes back, and the profile, which asks to, starts by itself.
         rig.daemon = Some(start_daemon(&rig.paths).await);
         rig.told("daemon is back").await;
-        rig.shows("quick (running) >").await;
+        rig.shows("quick (Running) >").await;
 
         // A tray that starts later reads its choices from the kept profile.
         let client = DaemonClient::connect(Path::new(&rig.paths.socket))

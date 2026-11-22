@@ -220,6 +220,13 @@ Duplicate and Show its file moved from the PRESET card's caption to the header, 
 - **A profile's header says its mode,** "Mode: Toggle", or that it is written by hand, where it listed the pads it uses: their names overran the line, and the INPUTS card has them.
 - **Identify works on a virtual pad.** The daemon's `identify` takes a setup's virtual pad by the name `virtual:<setup>/<sink>` and rumbles it on its own node as a game would, as it buzzes a free pad on that pad's node; what reaches the pads behind it is then the profile's doing, which shows who is mapped to it, who feels rumble, and who has control of a toggle. The command takes the same name. Tried on the maintainer's desktop from the command line, with `quick` running.
 
+**The tray, brought in line with the window** (2026-11-22, the maintainer's).
+
+- **Themed symbolic icons,** on TisVlay's pattern (`themed()` over the icons crate, in its tray at `5ddc2c0d`): each row of the menu model carries icon names, and the tray sends its host the one the desktop's theme has, symbolic first. The glyphs follow 0.4.0's tray where it had one: play and stop, shuffle for the mode, swap-panels for who has control, notification-active for rumble and a buzz, view-visible for hiding, edit-copy for the identity, application-exit. The pad glyph is `input-gaming` with `input-gamepad` after it, Adwaita having the first in symbolic form and Breeze the second. Read from the dev tray over the session bus on the maintainer's Plasma: every row's name resolved to a symbolic one.
+- **A profile's row has an icon for how it is:** play while it runs, pause while held, an error when failed, stop when it isn't running, a warning for one that is wrong.
+- **The window's words:** a phase reads "Running", "Held", "Failed"; a part reads "Primary"; a pad that left its setup is "disconnected" and one known but away is "remembered"; a virtual pad goes by the name a game sees. "Has control" keeps the names as a profile writes them, as the window does.
+- **Virtual pads are under Pads,** after the real ones, each with Identify.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps

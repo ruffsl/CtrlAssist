@@ -1,20 +1,21 @@
 # The Tray
 
-The tray is the everyday way to use CtrlAssist. Its icon shows the state at a glance: plain when nothing runs, colored when something does, a warning when an arrangement is waiting for a controller, an error when one has failed.
+The tray is the everyday way to use CtrlAssist. Its icon shows the state at a glance: plain when nothing runs, colored when something does, a warning when an arrangement is waiting for a controller, an error when one has failed. The icon and the menu's icons come from your desktop's icon theme, in its flat single-color style where the theme has one, so they follow a light or dark panel.
 
 ## The menu
 
 **Profiles** come first: each one you have kept, and anything running.
 
 - A profile that isn't running offers **Start**.
-- A running one shows its state in brackets and offers **Stop**. Under it are its controllers (and which is missing, if one is), its virtual controller, and for a toggle, **Has control**: who plays now, and a click to hand over. A controller that isn't connected can't be handed to.
+- A running one shows its state in brackets and offers **Stop**. Under it are its controllers (and which is disconnected, if one is), its virtual controller, and for a toggle, **Has control**: who plays now, and a click to hand over. A controller that isn't connected can't be handed to.
 - One that has failed says why. **Stop** clears it.
 
 **Quick start** pairs two controllers without writing anything; see the [Quick Start](../getting-started/quick-start.md). It keeps one profile, `quick`, which it rewrites each time. While `quick` runs, what you pick takes effect at once, without the game noticing: other controllers, a new mode, who feels rumble, starting by itself. A controller you swap out is given back to the system, and the new one is hidden. Picking another identity takes effect at once too, but needs a new virtual controller, which a game sees as its controller disconnecting and another connecting. A controller that is unplugged, already chosen for the other part, or busy in another arrangement can't be picked.
 
-**Pads** lists every controller CtrlAssist knows, connected or remembered.
+**Pads** lists every controller CtrlAssist knows, connected or remembered, and after them the virtual controllers that exist now.
 
 - **Identify** buzzes a connected controller for a moment, so you can tell two apart. If a game is rumbling it, the buzz takes over briefly.
+- **Identify** on a virtual controller rumbles it as a game would, so the controllers behind it buzz the way its profile passes rumble on: a quick check of who is mapped to it and who feels rumble.
 - **Forget** drops a controller that isn't connected from the list.
 
 The last line says how controllers are being hidden (`service` or `grab`) and whether the daemon got real-time scheduling. [How It Works](../reference/how-it-works.md) explains both.
