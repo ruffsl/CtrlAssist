@@ -1,0 +1,105 @@
+# A settings window, on TisVlay's GUI
+
+## State
+
+- **Status:** decisions being settled with the maintainer; nothing built.
+- **Next action:** the maintainer reads this draft; the open questions below are answered; then build step 1.
+- **Branch:** `feat/rewrite`, with the rewrite. Nothing is pushed.
+- **Template:** TisVlay at `5ddc2c0d` (`crates/tisvlay-gui`, `crates/tisvlay-gui-app`, `crates/tisvlay-icons`, `docs/gui/`).
+
+## Goal
+
+A window for what the tray's menu is too small for: seeing every known pad and what it is doing, seeing and steering the running setups, and making and editing profiles without writing TOML. Legacy issue #7.
+
+It is TisVlay's GUI with the TV-shaped parts replaced: the same crates, shell, widgets, tokens, key navigation, help, tests and tooling, so a fix in one project carries to the other.
+
+## Decided
+
+Answered by the maintainer on 2026-11-21 unless marked otherwise.
+
+**The first release waits for the GUI.** 0.5.0 ships the daemon, CLI, tray and GUI together. This changes the rewrite plan's "the first release is daemon, CLI and tray", recorded there as a deviation. The TUI still follows later.
+
+**It is built now, on `feat/rewrite`.** The rewrite plan stays open until the release; this plan holds the GUI's decisions and steps, and retires with it or just before.
+
+**Two crates, as TisVlay has.** `ctrlassist-gui` is the compiled Slint UI and owns the gettext domain; `ctrlassist-gui-app` is the state, the rpcs, the tests and the `ctrlassist-gui` binary. The split keeps a Rust change from recompiling the UI. The GUI is its own binary, not a `ctrlassist service` subcommand, so the CLI and the daemon don't link a toolkit. (Follows the template; not asked.)
+
+**Slint, pinned exactly as TisVlay pins it,** with the same features (`backend-winit-wayland`, `renderer-femtovg`, `gettext`, `unstable-winit-030`), `slint-build` and `i-slint-backend-testing` pinned beside it. (Follows the template; not asked.)
+
+**Panes: Pads, Setups, Profiles, Settings, About.** The shell is TisVlay's: a sidebar, and in each pane a list and a detail.
+
+- **Pads:** every known pad with its name, model, how it is connected, whether it is plugged in, whether a setup has it and whether it is hidden. Identify buzzes it; Forget drops it.
+- **Setups:** each running setup with its profile, its pads by role, its virtual pads and identity, and each selection it offers. Start, stop, update, and switch a selection.
+- **Profiles:** list, new, duplicate, rename, delete, start. Editing is the preset form below.
+- **Settings:** the hiding service's state, the Steam blacklist fallback, starting at login, and the tray's notification switches.
+- **About:** TisVlay's, with versions of each part and the diagnostic bundle.
+
+**Profiles are edited through a preset form.** The form covers what the presets take: the mode, which pad has which role, the identity, rumble, starting by itself. A profile the form can't express (a hand-written graph) is shown read-only with what the daemon's `validate` says about it, and a button that opens the file. Arbitrary graphs stay in files; the visual editor stays an idea.
+
+**Keys only, as TisVlay.** The GUI binds no pad. It copies TisVlay's key navigation and couch mode, so a pad drives it wherever the session turns pads into keys (Plasma Bigscreen, Steam's desktop layout). Reason: a running setup may have hidden the pads in the user's hands, and deciding which pad may steer a window while a game is running is a design of its own.
+
+**The live view of a pad is a later step in this plan,** after a spike. It needs pad state to leave the input thread, which nothing does today, and a client must never be able to slow that thread. The first panes are built on what the mirror already has.
+
+**Carried over from TisVlay in the first build:**
+
+- couch mode and the whole key navigation (regions, rows, the Escape chain, value controls entered with Return, the winit key hook), with its tests;
+- the contextual help overlay (the "i" toggletips and hover hints);
+- translations: `@tr()` and gettext, the `.pot` recipe; the tray stays untranslated, as there;
+- the dev tooling: pinned `slint-lsp` and `slint-viewer` in the flake, live preview and the Slint MCP server in `just gui-start`.
+
+**The icons crate and the tray's notification switches come in with the GUI.** `tisvlay-icons` is copied as `ctrlassist-icons` in the step that first draws a theme icon; the tray grows per-category notification switches, served to the GUI as TisVlay's are, in the step that builds the Settings pane. This undoes the rewrite plan's deviation "the tray leaves out TisVlay's notification switches and its icons crate".
+
+## What is copied, replaced and new
+
+| TisVlay | Here |
+|---|---|
+| `ui/design.slint`, `ui/theme.slint`, `tests/theme_breeze.rs`, `docs/gui/theme-breeze.md` | Copied. |
+| `ui/widgets.slint` | Copied, less `VendorTile`, `ProfileTile`, `ScanLine`; a pad tile is new. |
+| `ui/main.slint`, `globals/{nav,couch,help,select,toast,errors,health,overlay,clipboard,icons,daemon,tray,edit_pane}.slint` | Copied; the pane list changes, `Health` loses the session service. |
+| `components/about_pane.slint`, `about.rs`, `diagnostic.rs` | Copied; the component rows are the daemon, the hiding service, the tray. |
+| `components/settings_pane.slint` | Copied and extended. |
+| `components/profiles_pane.slint`, `globals/profiles.slint`, `profiles.rs` | The list, header and dialogs are copied; the field model is replaced by the preset form. |
+| `components/schema_form.slint`, `schema_form.rs` | Open question below. |
+| `components/tvs_pane.slint` | Replaced by the Pads and Setups panes, on its list and detail shapes. |
+| `components/pairing_wizard.slint`, `wizard.rs`, `power_cycle.rs` | Not copied. |
+| `nav.rs`, `couch.rs`, `keys.rs`, `state.rs`, `state_watch.rs`, `toast.rs`, `accent.rs`, `fonts.rs`, `icon_theme.rs`, `file_manager.rs`, `dbus.rs`, `token.rs` | Copied and trimmed; `state_watch` reads CtrlAssist's mirror. |
+| `tests/it/{navigation,about_pane,contextual_help,reload_banner,support}.rs` | Copied; navigation is rewritten for the new panes on the same helpers. |
+| `packaging/freedesktop/org.tisvlay.Gui.desktop`, the D-Bus activation unit, `packaging/nix/slint-*.nix` | Copied, renamed. |
+| `docs/gui/*.md`, `docs/i18n.md`, `docs/concerns/slint-*.md` | Copied, with what was found on TisVlay kept as found there. |
+
+## Open questions
+
+1. **The application id** the desktop file, the D-Bus name and the window carry. TisVlay's is `org.tisvlay.Gui`; nothing in CtrlAssist fixes one yet.
+2. **Does the tray open the GUI,** as TisVlay's does (an "Open settings" entry, activated over D-Bus)?
+3. **What does Settings write?** "Start at login" and the blacklist fallback aren't options a client can set today. Either the daemon grows a settings rpc and a file, or the pane shows state and says where to change it.
+4. **The schema form.** TisVlay renders a form from a schema the daemon serves. The preset form could be written by hand (five fields) or driven from the profile schema in `ctrlassist-protocol`, which would also keep the CLI, the tray's quick menu and the GUI on one description of a preset.
+5. **Roles in the form when a pad isn't plugged in.** Whether a profile may name a known pad that is absent, and how the form shows it.
+6. **Reload.** TisVlay's sidebar has a Reload button for hand-edited state files. Whether CtrlAssist's daemon has the same need (profiles are files it watches or not).
+7. **The live view's spike**: what it must show before the step is designed (sampling at a display rate, only while a client asks, from a copy the input thread writes without waiting).
+8. **Packaging.** Whether the GUI is in the one package or its own, so a headless install doesn't pull in a toolkit; and the license bundle, which TisVlay pins a cargo-about release for because of Slint's license files.
+
+## Steps
+
+Each is a commit or a few, with the gates run and the TisVlay commit named. Order may change as the open questions are answered.
+
+1. `build(gui): the Slint toolchain in the flake` — the pinned Slint crates in the workspace table, `slint-lsp`, `slint-viewer` and the runtime libraries in the dev shell, the license bundle's pin. Verified: the dev shell builds; `slint-viewer --version`.
+2. `feat(gui): an empty shell` — both crates, tokens, theme and its Breeze test, widgets, the shell with a sidebar and empty panes, the binary, `just gui-start` with live preview and the MCP server. Verified: the theme test; the window opens and its element tree is read over MCP.
+3. `feat(gui): keys and couch mode` — navigation, the Escape chain, the winit hook, with the copied navigation tests over the empty shell. Verified: the tests; by keys in the window.
+4. `feat(gui): the daemon's state in the window` — the mirror, the state watch, health and error slots, the reload banner if kept. Verified: tests against a daemon on a temp socket, as the tray's are.
+5. `feat(gui): the About pane` — brings `ctrlassist-icons`. Verified: the copied About tests.
+6. `feat(gui): the Pads pane` — list, detail, identify, forget. Verified: tests with fake pads; identify on a real pad.
+7. `feat(gui): the Setups pane` — start, stop, update, selections. Verified: tests; a setup steered on real pads.
+8. `feat(gui): the Profiles pane and the preset form`. Verified: tests that a form's profile is what the CLI would write; a profile made and started in the window.
+9. `feat(tray): notification switches`, then `feat(gui): the Settings pane`. Verified: tests on both; a switch seen to silence a notification.
+10. `feat(gui): contextual help` — the overlay and the help text for each pane. Verified: the copied tests.
+11. `feat(gui): translations` — the domain, the `.pot`, the extract recipe and its gate. Verified: the gate; a pseudo-locale run.
+12. `feat(gui): activation and packaging` — the desktop file, D-Bus activation, the tray's entry if wanted, the Nix package and module, the other packages' file lists, a VM check that the window opens. Verified: the VM check; the copied activation tests.
+13. `docs(book): the window` — a guide chapter with screenshots, and `docs/gui/`.
+14. Spike, then `feat: a live view of a pad`.
+
+## For review
+
+Nothing yet.
+
+## Deviations
+
+Nothing yet.
