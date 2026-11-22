@@ -6,6 +6,8 @@ use ctrlassist::Phase;
 use ctrlassist_icons::Variant;
 use ksni::menu::{CheckmarkItem, MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray};
+use std::time::{Duration, Instant};
+
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -80,8 +82,19 @@ pub struct PadTray {
     /// How far the wheel has turned toward its next notch, in the
     /// wheel's units, signed by direction.
     wheel: i32,
+    /// When the wheel last turned.
+    turned: Option<Instant>,
     actions: mpsc::UnboundedSender<Action>,
 }
+
+/// How long the wheel is still before what it had turned toward its
+/// next notch is forgotten. A notch comes as a burst of scrolls that
+/// add up to more than [`NOTCH`] by an amount that varies (168 to 204
+/// was measured on one wheel, its scrolls up to 0.2 s apart), so what
+/// is left over after the step belongs to the notch that made it, not
+/// to the next. Only the time between scrolls tells two notches apart:
+/// the maintainer's choice, for there being no event that does.
+const WHEEL_PAUSE: Duration = Duration::from_millis(300);
 
 /// One notch of a wheel, in the units a scroll is reported in. A wheel
 /// with finer steps, or a touchpad, reports many small scrolls that add
@@ -98,6 +111,7 @@ impl PadTray {
             quick_settled: false,
             target: None,
             wheel: 0,
+            turned: None,
             actions,
         }
     }
@@ -121,6 +135,42 @@ impl PadTray {
             }
         }
         self.view = view;
+    }
+
+    /// Takes a turn of the wheel, reported at `now`, and moves the mark
+    /// over the profiles a middle click could act on, around from the
+    /// last to the first: one profile a notch. Scrolls smaller than a
+    /// notch add up to one, so a finer wheel or a touchpad moves the
+    /// mark as far as a plain wheel does. What was turned is dropped
+    /// when the wheel turns the other way, and when it has been still
+    /// for [`WHEEL_PAUSE`].
+    pub fn turn(&mut self, delta: i32, now: Instant) {
+        let paused = self
+            .turned
+            .is_some_and(|last| now.duration_since(last) >= WHEEL_PAUSE);
+        self.turned = Some(now);
+        if paused || self.wheel.signum() != delta.signum() {
+            self.wheel = 0;
+        }
+        self.wheel = self.wheel.saturating_add(delta);
+        let steps = self.wheel / NOTCH;
+        self.wheel %= NOTCH;
+        let candidates = tip::candidates(&self.view);
+        if steps == 0 || candidates.is_empty() {
+            return;
+        }
+        let count = i64::try_from(candidates.len()).unwrap_or(i64::MAX);
+        let at = self
+            .aimed()
+            .and_then(|aimed| candidates.iter().position(|name| *name == aimed))
+            .and_then(|at| i64::try_from(at).ok());
+        // With no mark yet, the first notch puts it on the first
+        // profile going down the list, or the last going up.
+        let from = at.unwrap_or(if steps > 0 { -1 } else { count });
+        let next = (from + i64::from(steps)).rem_euclid(count);
+        if let Some(name) = usize::try_from(next).ok().and_then(|at| candidates.get(at)) {
+            self.target = Some((*name).to_string());
+        }
     }
 
     /// The profile a middle click acts on now.
@@ -330,37 +380,10 @@ impl Tray for PadTray {
         self.activate(command);
     }
 
-    /// The wheel moves the mark over the profiles a middle click could
-    /// act on, around from the last to the first: one profile a notch.
-    /// Scrolls smaller than a notch add up to one, so a finer wheel or
-    /// a touchpad moves the mark as far as a plain wheel does, and what
-    /// was turned one way is dropped when the wheel turns the other, so
-    /// a change of direction is felt from where the hand is.
+    /// The wheel moves the mark; see [`PadTray::turn`].
     fn scroll(&mut self, delta: i32, orientation: ksni::Orientation) {
-        if orientation != ksni::Orientation::Vertical || delta == 0 {
-            return;
-        }
-        if self.wheel.signum() != delta.signum() {
-            self.wheel = 0;
-        }
-        self.wheel = self.wheel.saturating_add(delta);
-        let steps = self.wheel / NOTCH;
-        self.wheel %= NOTCH;
-        let candidates = tip::candidates(&self.view);
-        if steps == 0 || candidates.is_empty() {
-            return;
-        }
-        let count = i64::try_from(candidates.len()).unwrap_or(i64::MAX);
-        let at = self
-            .aimed()
-            .and_then(|aimed| candidates.iter().position(|name| *name == aimed))
-            .and_then(|at| i64::try_from(at).ok());
-        // With no mark yet, the first notch puts it on the first
-        // profile going down the list, or the last going up.
-        let from = at.unwrap_or(if steps > 0 { -1 } else { count });
-        let next = (from + i64::from(steps)).rem_euclid(count);
-        if let Some(name) = usize::try_from(next).ok().and_then(|at| candidates.get(at)) {
-            self.target = Some((*name).to_string());
+        if orientation == ksni::Orientation::Vertical && delta != 0 {
+            self.turn(delta, Instant::now());
         }
     }
 
@@ -477,6 +500,60 @@ mod tests {
         tray.secondary_activate(0, 0);
         tray.scroll(120, ksni::Orientation::Vertical);
         assert!(clicked.try_recv().is_err());
+    }
+
+    /// A wheel as one was measured: each notch a burst of scrolls that
+    /// add up to between 168 and 204, with a second or so between
+    /// notches. Each notch moves the mark once, however many there are.
+    #[test]
+    fn a_notch_that_comes_as_a_burst_of_more_than_a_notch_moves_the_mark_once() {
+        const NOTCHES: [&[i32]; 7] = [
+            &[48, 84, 36, 24],
+            &[24, 24, 36, 24, 36, 24],
+            &[24, 36, 36, 48, 36],
+            &[24, 36, 24, 48, 24, 24],
+            &[24, 24, 24, 36, 24, 36],
+            // One that ends with the wheel settling back.
+            &[24, 36, 36, 60, 48, -24],
+            &[24, 24, 36, 48, 36],
+        ];
+        let (mut tray, _clicked) = tray(None);
+        // Seven profiles that could start, each a pad of its own.
+        tray.view.pads.clear();
+        tray.view.profiles.clear();
+        for at in 0..7_u16 {
+            let mut pad = tray
+                .view
+                .pads
+                .first()
+                .cloned()
+                .unwrap_or_else(|| view(None, Hiding::Service).pads[1].clone());
+            pad.id = format!("address:{at}");
+            (pad.vendor, pad.product) = (0x1209, at);
+            tray.view.pads.push(pad);
+            let mut profile = view(None, Hiding::Service).profiles[0].clone();
+            profile.name = format!("p{at}");
+            profile.toml = format!("mode = \"unicast\"\npad = \"model:1209:{at:04x}\"\n");
+            tray.view.profiles.push(profile);
+        }
+        assert_eq!(tip::candidates(&tray.view).len(), 7);
+        let mut now = Instant::now();
+        let mut reached = Vec::new();
+        for notch in NOTCHES {
+            now += Duration::from_secs(1);
+            for delta in notch {
+                now += Duration::from_millis(20);
+                tray.turn(*delta, now);
+            }
+            reached.push(tray.aimed().unwrap_or_default().to_string());
+        }
+        assert_eq!(reached, ["p0", "p1", "p2", "p3", "p4", "p5", "p6"]);
+        // Without a pause, the wheel spun: what is left over counts on.
+        for delta in [120, 60, 60] {
+            now += Duration::from_millis(20);
+            tray.turn(delta, now);
+        }
+        assert_eq!(tray.aimed(), Some("p1"));
     }
 
     #[test]
