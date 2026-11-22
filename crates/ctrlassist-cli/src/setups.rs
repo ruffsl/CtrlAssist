@@ -33,6 +33,34 @@ pub(crate) async fn update(socket: &Path, setup: &str, dry_run: bool) -> Result<
     Ok(())
 }
 
+pub(crate) async fn reload(socket: &Path) -> Result<()> {
+    let (client, _watcher) = connect(socket).await?;
+    let reloaded = client.reload().await?;
+    let mut out = io::stdout();
+    if reloaded == Default::default() {
+        writeln!(out, "nothing changed")?;
+    }
+    for name in &reloaded.changed {
+        writeln!(out, "{name}: read again")?;
+    }
+    for name in &reloaded.removed {
+        writeln!(out, "{name}: gone")?;
+    }
+    for name in &reloaded.updating {
+        writeln!(out, "{name}: its running setup is taking it up")?;
+    }
+    for profile in &reloaded.wrong {
+        if let Some(problem) = &profile.problem {
+            writeln!(
+                out,
+                "{}: wrong, so it can't be run: {problem}",
+                profile.name
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn select(
     socket: &Path,
     setup: &str,

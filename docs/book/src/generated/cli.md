@@ -10,6 +10,7 @@
 * [`ctrlassist stop`↴](#ctrlassist-stop)
 * [`ctrlassist update`↴](#ctrlassist-update)
 * [`ctrlassist select`↴](#ctrlassist-select)
+* [`ctrlassist reload`↴](#ctrlassist-reload)
 * [`ctrlassist setups`↴](#ctrlassist-setups)
 * [`ctrlassist profile`↴](#ctrlassist-profile)
 * [`ctrlassist profile list`↴](#ctrlassist-profile-list)
@@ -38,6 +39,7 @@ The ctrlassist command: the daemon as a service verb, and the clients that talk 
 * `stop` — Stop a setup: its virtual pads go
 * `update` — Have a running setup take up its profile as it is kept now
 * `select` — Have a node of a setup select another input or output
+* `reload` — Have the daemon read its files again, for edits made by hand, and bring the running setups up to them
 * `setups` — List the setups that exist, with their pads and virtual pads
 * `profile` — List, show, check, keep and delete profiles
 * `service` — Become one of CtrlAssist's long-running processes
@@ -165,6 +167,14 @@ Have a node of a setup select another input or output
 * `<SETUP>` — The setup's name
 * `<NODE>` — The node's name in the profile; `setups` lists the ones that select
 * `<CHOICE>` — What to select: one of the node's choices as `setups` lists them, or its place among them counted from 0. Left out, the node moves to its next choice, as its switch button would
+
+
+
+## `ctrlassist reload`
+
+Have the daemon read its files again, for edits made by hand, and bring the running setups up to them
+
+**Usage:** `ctrlassist reload`
 
 
 

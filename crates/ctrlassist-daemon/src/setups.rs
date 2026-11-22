@@ -78,7 +78,7 @@ struct Entry {
 /// that names a pad or a node by number is sent meanwhile.
 #[derive(Debug)]
 struct Taking {
-    responder: Responder<setup::Update>,
+    responder: Updating,
     /// Its pads as they will be, by the new graph's source number.
     slots: Vec<Slot>,
     /// By the new graph's source number: which slot it has now whose pad
@@ -187,13 +187,45 @@ fn rebind(
     Ok((slots, keep))
 }
 
+/// Who asked for an update, and is told how it went.
+#[derive(Debug)]
+pub(crate) enum Updating {
+    /// A client, which is owed a reply.
+    Client(Responder<setup::Update>),
+    /// The daemon itself, for a profile a reload found changed.
+    Reload,
+}
+
+impl Updating {
+    async fn ok(self, updated: &rpc::Updated) {
+        match self {
+            Self::Client(responder) => responder.ok(updated).await,
+            Self::Reload => {
+                info!(
+                    disruptive = updated.disruptive,
+                    "a setup took up its reloaded profile"
+                );
+            }
+        }
+    }
+
+    async fn err(self, refusal: &WireError) {
+        match self {
+            Self::Client(responder) => responder.err(refusal).await,
+            Self::Reload => {
+                warn!(code = %refusal.code, reason = refusal.message, "a setup couldn't take up its reloaded profile");
+            }
+        }
+    }
+}
+
 /// Who waits for a setup the input thread was asked to stop.
 #[derive(Debug)]
 pub(crate) enum Waiting {
     /// A stop, owed its reply.
     Stop(Responder<setup::Stop>),
     /// An update, for which the setup is started again.
-    Update(Responder<setup::Update>),
+    Update(Updating),
 }
 
 /// What an update by stopping and starting costs.
@@ -430,7 +462,7 @@ pub(crate) enum Asker {
     Daemon,
     /// A client that asked for an update, which is owed its reply once
     /// the setup runs again.
-    Update(Responder<setup::Update>),
+    Update(Updating),
 }
 
 impl Asker {
@@ -471,7 +503,7 @@ pub(crate) enum Done {
     },
     /// A graph the input thread replaced is gone, and the pads it had no
     /// place for are shown again: the update is answered.
-    Taken { responder: Responder<setup::Update> },
+    Taken { responder: Updating },
     /// A pad that returned is open again, or couldn't be opened.
     Returned {
         name: String,
@@ -1020,7 +1052,7 @@ impl Reactor {
     /// what that would cost. A profile of the same pads and virtual pads
     /// is taken as the setup runs: the input thread is handed its graph.
     /// Any other means stopping the setup and starting it again.
-    async fn update(&mut self, request: rpc::UpdateRequest, responder: Responder<setup::Update>) {
+    async fn update(&mut self, request: rpc::UpdateRequest, responder: Updating) {
         let name = request.name;
         let Some(entry) = self.setups.entries.get_mut(&name) else {
             return responder.err(&unknown(&name)).await;
@@ -1141,6 +1173,26 @@ impl Reactor {
                 responder.err(&refusal).await;
             }
         }
+    }
+
+    /// Brings the running setups among `names` up to their profiles as
+    /// a reload found them, and says which it set about. One whose
+    /// profile is now wrong, or that is busy, stays as it runs, and the
+    /// log says why.
+    pub(crate) async fn update_reloaded(&mut self, names: &[String]) -> Vec<String> {
+        let mut updating = Vec::new();
+        for name in names {
+            if !self.setups.entries.contains_key(name) {
+                continue;
+            }
+            updating.push(name.clone());
+            let request = rpc::UpdateRequest {
+                name: name.clone(),
+                apply: true,
+            };
+            self.update(request, Updating::Reload).await;
+        }
+        updating
     }
 
     /// Hands the input thread the graph of a change a setup is taking,
@@ -1442,7 +1494,7 @@ impl Reactor {
                 self.stop(request.name, responder).await;
             }
             Some(((), setup::Incoming::Update(request, responder))) => {
-                self.update(request, responder).await;
+                self.update(request, Updating::Client(responder)).await;
             }
             Some(((), setup::Incoming::Select(request, responder))) => {
                 responder

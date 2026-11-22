@@ -99,6 +99,9 @@ pub enum Command {
         /// node moves to its next choice, as its switch button would.
         choice: Option<String>,
     },
+    /// Have the daemon read its files again, for edits made by hand,
+    /// and bring the running setups up to them.
+    Reload,
     /// List the setups that exist, with their pads and virtual pads.
     Setups {
         /// Print a JSON array, one object per setup.

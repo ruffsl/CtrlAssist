@@ -61,6 +61,26 @@ impl Profiles {
         self.directory.join(format!("{name}.toml"))
     }
 
+    /// Reads the directory again, for files changed some other way than
+    /// through the daemon. Says which profiles are new or changed, and
+    /// which are gone, each in name order.
+    pub(crate) fn reload(&mut self) -> (Vec<String>, Vec<String>) {
+        let read = Self::open(&self.directory).kept;
+        let changed = read
+            .iter()
+            .filter(|(name, text)| self.kept.get(*name) != Some(*text))
+            .map(|(name, _)| name.clone())
+            .collect();
+        let removed = self
+            .kept
+            .keys()
+            .filter(|name| !read.contains_key(*name))
+            .cloned()
+            .collect();
+        self.kept = read;
+        (changed, removed)
+    }
+
     /// Every profile's name.
     pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
         self.kept.keys().map(String::as_str)

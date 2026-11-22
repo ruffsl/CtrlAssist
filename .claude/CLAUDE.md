@@ -17,7 +17,7 @@ crates/
                               # demux nodes, the graph, the feedback router. No dependencies.
   ctrlassist-cli/             # the ctrlassist binary: `service daemon`, `service tray`, `status`, `pads`,
                               # `identities`, `identify`, `forget`, `profile`, `start`,
-                              # `stop`, `update`, `select`, `setups`; shell completions
+                              # `stop`, `update`, `reload`, `select`, `setups`; shell completions
                               # that ask the daemon for names
   ctrlassist-daemon/          # the control side: the session, liveliness, the reactor
                               # that owns the known pads, the profiles and the setups

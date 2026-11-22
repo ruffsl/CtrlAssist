@@ -40,6 +40,11 @@ async fn serve(
                 Some(((), daemon::Incoming::Info((), responder))) => {
                     responder.answer(answer()).await;
                 }
+                Some(((), daemon::Incoming::Reload((), responder))) => {
+                    responder
+                        .ok(&ctrlassist_protocol::rpc::Reloaded::default())
+                        .await;
+                }
                 // Refused already, with a typed error.
                 None => {}
             }

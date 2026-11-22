@@ -193,6 +193,9 @@ pub mod daemon {
         rpcs: {
             /// The daemon's release.
             Info = "info" (()) -> rpc::ServiceInfo, read;
+            /// Reread the daemon's files from disk, and bring what runs
+            /// up to them.
+            Reload = "reload" (()) -> rpc::Reloaded, write;
         }
     }
 }

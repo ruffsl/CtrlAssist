@@ -398,7 +398,7 @@ impl Reactor {
         }
     }
 
-    async fn daemon_rpc(&self, query: Query) {
+    async fn daemon_rpc(&mut self, query: Query) {
         match daemon::Incoming::receive(query).await {
             Some(((), daemon::Incoming::Info((), responder))) => {
                 let info = rpc::ServiceInfo {
@@ -407,8 +407,46 @@ impl Reactor {
                 };
                 responder.ok(&info).await;
             }
+            Some(((), daemon::Incoming::Reload((), responder))) => {
+                let reloaded = self.reload().await;
+                responder.ok(&reloaded).await;
+            }
             // Refused already, with a typed error.
             None => {}
+        }
+    }
+
+    /// Reads the daemon's files again, publishes what changed, starts
+    /// what can now start by itself, and sets the running setups whose
+    /// profiles changed to taking them up.
+    async fn reload(&mut self) -> rpc::Reloaded {
+        let (changed, removed) = self.profiles.reload();
+        info!(?changed, ?removed, "the profiles were read again");
+        for name in &removed {
+            self.unpublish(&keys::profile(name)).await;
+        }
+        let mut wrong = Vec::new();
+        for name in &changed {
+            if let Err(error) = self.publish_profile(name).await {
+                warn!(profile = name, %error, "publishing a profile failed");
+            }
+            wrong.extend(
+                self.profiles
+                    .profile(name)
+                    .filter(|profile| profile.problem.is_some()),
+            );
+        }
+        let updating = self.update_reloaded(&changed).await;
+        for name in &changed {
+            if !updating.contains(name) {
+                self.start_if_it_can(name).await;
+            }
+        }
+        rpc::Reloaded {
+            changed,
+            removed,
+            wrong,
+            updating,
         }
     }
 

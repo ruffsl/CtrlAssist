@@ -328,6 +328,7 @@ zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the d
 | `ctrlassist/alive/daemon` | liveliness | present while the daemon runs |
 | `ctrlassist/daemon` | state | version; whether real-time scheduling was granted; the hiding mechanism in use, `service` or `grab` |
 | `ctrlassist/rpc/daemon/info` | rpc | the daemon's release, for the version check; its reply's shape is frozen |
+| `ctrlassist/rpc/daemon/reload` | rpc | read the profiles directory again, for files changed some other way than through the daemon; says what changed, what is gone and what is wrong, and sets the running setups whose profiles changed to taking them up, live or by a restart |
 | `ctrlassist/identity/<id>` | state | each identity a virtual pad can take, and whether it is available now |
 | `ctrlassist/pad/<id>` | state | the id it is known by across reconnects, name, model, connected, hidden, which setup uses it, whether it can rumble |
 | `ctrlassist/profile/<name>` | state | the profile as its TOML, and what is wrong with it if anything is |

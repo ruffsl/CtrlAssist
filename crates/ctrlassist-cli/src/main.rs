@@ -64,6 +64,7 @@ fn main() -> Result<()> {
                     node,
                     choice,
                 } => setups::select(&socket, &setup, &node, choice.as_deref()).await,
+                Command::Reload => setups::reload(&socket).await,
                 Command::Service(_) => Ok(()),
             }
         });

@@ -99,6 +99,27 @@ pub struct SelectRequest {
     pub choice: Option<String>,
 }
 
+/// Reply to `reload`: what the daemon found changed in its files, and
+/// what it is doing about it.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reloaded {
+    /// The profiles that are new or whose text changed, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed: Vec<String>,
+    /// The profiles whose files are gone, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
+    /// Of the changed profiles, those with something wrong with them,
+    /// which are kept and listed but can't be run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wrong: Vec<crate::payload::Profile>,
+    /// The running setups being brought up to their changed profiles:
+    /// as they run where the change allows, by a restart otherwise.
+    /// They are still changing when this reply is sent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub updating: Vec<String>,
+}
+
 /// Reply to the daemon's `info` rpc: the handshake a client runs before
 /// anything else.
 ///

@@ -135,6 +135,16 @@ ctrlassist update couch
 
 An update that keeps the same virtual controllers, as many and of the same identities, is applied as the setup runs, and a game notices nothing: other controllers, a mode, a threshold, a rule, a deadzone, who feels rumble, the switch button, even how the parts are wired. A controller that is swapped out is given back to the system and the new one hidden; one that only changes parts stays as it is. A toggle goes on with whoever had control. Changing a virtual controller's identity, or how many there are, restarts the setup, which a game sees as its controller disconnecting and a new one connecting. `update` says which it is, before and after. If the profile as kept is wrong or gone, the setup carries on as it was.
 
+### Editing the files by hand
+
+The daemon keeps each profile as `<name>.toml` in `~/.config/ctrlassist/profiles`, and goes by what it read when it started. After editing a file there, or adding or removing one:
+
+```sh
+ctrlassist reload
+```
+
+It says what it found changed. A running setup whose profile changed is brought up to it at once: as it runs where the virtual controllers stay the same, and by a restart where one must be made anew. A file with something wrong in it is still listed, with what is wrong, and a setup running its earlier text carries on as it was.
+
 To hand over a toggle or a unicast without its button:
 
 ```sh

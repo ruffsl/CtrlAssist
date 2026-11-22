@@ -1221,3 +1221,76 @@ async fn a_game_s_lights_reach_a_dualsense_behind_a_virtual_one() {
     client.stop_setup("solo").await.unwrap();
     daemon.stop().await;
 }
+
+/// A reload brings a running setup up to its profile as it is on disk:
+/// as it runs where the virtual pads stay, and by a restart where one
+/// must be made anew.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_brings_a_running_setup_up_to_its_profile() {
+    const TEST: &str = "a_reload_brings_a_running_setup_up_to_its_profile";
+    if !can_make_pads(TEST) {
+        return;
+    }
+    let _primary = FakePad::new("Reload Primary", VENDOR, 0x8601).unwrap();
+    let _assist = FakePad::new("Reload Assist", VENDOR, 0x8602).unwrap();
+    let (_dir, socket) = socket();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    let blended = priority(0x8601, 0x8602);
+    client.put_profile("couch", &blended).await.unwrap();
+    client.start_setup("couch").await.unwrap();
+    let before = in_phase(&client, "couch", Phase::Running).await;
+    let phys = phys_of(Path::new(before.sinks[0].node.as_deref().unwrap())).unwrap();
+    assert!(before.nodes.is_empty());
+    let file = socket.with_file_name("config").join("profiles/couch.toml");
+
+    // The same virtual pad: taken as the setup runs.
+    let toggle = blended.replace("priority", "toggle");
+    std::fs::write(&file, &toggle).unwrap();
+    let reloaded = client.reload().await.unwrap();
+    assert_eq!(reloaded.changed, ["couch"]);
+    assert_eq!(reloaded.updating, ["couch"]);
+    eventually("the setup never took the reloaded profile", async || {
+        client
+            .setup("couch")
+            .unwrap()
+            .is_some_and(|setup| setup.nodes.len() == 1)
+    })
+    .await;
+    assert_eq!(
+        client.setup("couch").unwrap().unwrap().sinks[0].node,
+        before.sinks[0].node
+    );
+    assert!(phys_connected(&phys));
+
+    // Another identity: the setup is restarted on it.
+    std::fs::write(&file, format!("{toggle}identity = \"xbox\"\n")).unwrap();
+    assert_eq!(client.reload().await.unwrap().updating, ["couch"]);
+    eventually(
+        "the setup never restarted on the reloaded profile",
+        async || {
+            client.setup("couch").unwrap().is_some_and(|setup| {
+                setup.phase == Phase::Running
+                    && setup
+                        .sinks
+                        .first()
+                        .is_some_and(|sink| sink.identity == "xbox")
+            })
+        },
+    )
+    .await;
+    assert!(
+        !phys_connected(&phys),
+        "the old virtual pad outlived the reload"
+    );
+
+    // A profile that is wrong now leaves what runs as it was.
+    std::fs::write(&file, "preset = \"priority\"\n").unwrap();
+    let reloaded = client.reload().await.unwrap();
+    assert_eq!(reloaded.wrong.len(), 1);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let still = client.setup("couch").unwrap().unwrap();
+    assert_eq!(still.phase, Phase::Running);
+    assert_eq!(still.sinks[0].identity, "xbox");
+    daemon.stop().await;
+}

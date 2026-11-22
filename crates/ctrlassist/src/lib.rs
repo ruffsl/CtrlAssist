@@ -430,6 +430,19 @@ impl DaemonClient {
         self.call::<pad::Forget>(&request).await.map(|_| ())
     }
 
+    /// Has the daemon read its files again, for edits made some other
+    /// way than through it, and bring what runs up to them. Says what
+    /// it found changed and which setups it set about updating; those
+    /// are still changing when this returns, and their state says how
+    /// they fare.
+    ///
+    /// # Errors
+    ///
+    /// Fails as any rpc can.
+    pub async fn reload(&self) -> Result<rpc::Reloaded> {
+        self.call::<daemon::Reload>(&()).await
+    }
+
     /// The daemon's release. Ungated, so it reports what's running even
     /// across a mismatch.
     ///

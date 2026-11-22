@@ -149,6 +149,7 @@ fn the_command_explains_itself() {
         "setups",
         "select",
         "update",
+        "reload",
         "service",
         "--socket",
     ] {
@@ -581,4 +582,43 @@ fn the_command_prints_what_registers_its_completions_with_a_shell() {
         assert!(output.status.success(), "{shell}");
         assert!(text(&output.stdout).contains("ctrlassist"), "{shell}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reload_says_what_the_daemon_found_changed_in_its_files() {
+    let (_dir, socket) = socket();
+    let daemon = start(&socket).await;
+    let nothing = ctrlassist(&socket, &["reload"]);
+    assert!(nothing.status.success(), "{}", text(&nothing.stderr));
+    assert_eq!(text(&nothing.stdout), "nothing changed\n");
+
+    // Written by hand, where the daemon keeps its profiles.
+    let profiles = socket.with_file_name("config").join("profiles");
+    std::fs::create_dir_all(&profiles).unwrap();
+    std::fs::write(
+        profiles.join("couch.toml"),
+        "preset = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n",
+    )
+    .unwrap();
+    std::fs::write(profiles.join("den.toml"), "preset = \"priority\"\n").unwrap();
+    let found = ctrlassist(&socket, &["reload"]);
+    assert!(found.status.success(), "{}", text(&found.stderr));
+    let said = text(&found.stdout);
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines[..2], ["couch: read again", "den: read again"]);
+    assert!(
+        lines[2].starts_with("den: wrong, so it can't be run: preset: "),
+        "{said}"
+    );
+    let listed = ctrlassist(&socket, &["profile", "list"]);
+    assert!(
+        text(&listed.stdout).contains("couch"),
+        "{}",
+        text(&listed.stdout)
+    );
+
+    std::fs::remove_file(profiles.join("den.toml")).unwrap();
+    let gone = ctrlassist(&socket, &["reload"]);
+    assert_eq!(text(&gone.stdout), "den: gone\n");
+    daemon.stop().await;
 }

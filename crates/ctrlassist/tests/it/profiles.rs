@@ -81,3 +81,52 @@ async fn a_profile_is_checked_kept_replaced_and_deleted() {
     assert_eq!(unknown.rpc_code(), Some(ErrorCode::UnknownProfile));
     daemon.stop().await;
 }
+
+/// Files changed some other way than through the daemon are taken up by
+/// a reload, which says what it found: new and changed profiles, ones
+/// that are gone, and ones with something wrong, which are still listed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_takes_up_profiles_written_by_hand() {
+    let (_dir, socket) = socket();
+    let daemon = start_daemon(&socket).await;
+    let client = DaemonClient::connect(&socket).await.unwrap();
+    let mut watcher = StateWatcher::new(&client, StateWatcherConfig::default());
+    next_matching(&mut watcher, |e| *e == StateEvent::Hydrated).await;
+    client.put_profile("couch", RIGHT).await.unwrap();
+    client.put_profile("desk", RIGHT).await.unwrap();
+    eventually("the profiles never arrived", async || {
+        client.list_profiles().unwrap().len() == 2
+    })
+    .await;
+    // Nothing changed on disk: nothing to say.
+    assert_eq!(client.reload().await.unwrap(), Default::default());
+
+    let profiles = socket.with_file_name("config").join("profiles");
+    let other = RIGHT.replace("priority", "average");
+    std::fs::write(profiles.join("couch.toml"), &other).unwrap();
+    std::fs::write(profiles.join("den.toml"), "preset = \"priority\"\n").unwrap();
+    std::fs::write(profiles.join("Not A Name.toml"), RIGHT).unwrap();
+    std::fs::remove_file(profiles.join("desk.toml")).unwrap();
+    // Until asked, the daemon goes by what it read.
+    assert_eq!(client.profile("couch").unwrap().unwrap().toml, RIGHT);
+
+    let reloaded = client.reload().await.unwrap();
+    assert_eq!(reloaded.changed, ["couch", "den"]);
+    assert_eq!(reloaded.removed, ["desk"]);
+    assert!(reloaded.updating.is_empty(), "nothing runs");
+    assert_eq!(reloaded.wrong.len(), 1);
+    assert_eq!(reloaded.wrong[0].name, "den");
+    assert!(reloaded.wrong[0].problem.is_some());
+    eventually("the reload's changes never arrived", async || {
+        let names: Vec<String> = client
+            .list_profiles()
+            .unwrap()
+            .into_iter()
+            .map(|profile| profile.name)
+            .collect();
+        names == ["couch", "den"] && client.profile("couch").unwrap().unwrap().toml == other
+    })
+    .await;
+    assert!(client.profile("den").unwrap().unwrap().problem.is_some());
+    daemon.stop().await;
+}
