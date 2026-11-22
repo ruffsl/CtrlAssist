@@ -60,6 +60,23 @@ pub(crate) fn load(app: &AppWindow) {
         "internet-web-browser",
         "applications-internet",
     ]));
+    icons.set_gamepad(load_symbolic_icon(&[
+        "input-gaming",
+        "input-gamepad",
+        "applications-games",
+    ]));
+    icons.set_reset(load_symbolic_icon(&[
+        "edit-reset",
+        "edit-undo",
+        "view-refresh",
+    ]));
+    icons.set_start(load_symbolic_icon(&["media-playback-start"]));
+    icons.set_stop(load_symbolic_icon(&["media-playback-stop"]));
+    icons.set_identify(load_symbolic_icon(&[
+        "notifications",
+        "preferences-desktop-notification-bell",
+        "audio-volume-high",
+    ]));
     app.global::<Clipboard>()
         .set_copy_icon(load_symbolic_icon(&["edit-copy"]));
 }

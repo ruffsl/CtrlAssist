@@ -19,12 +19,14 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+ashpd = { workspace = true }
 clap = { workspace = true }
 ctrlassist = { workspace = true }
 ctrlassist-daemon = { workspace = true }
 ctrlassist-gui = { workspace = true }
 ctrlassist-icons = { workspace = true }
 ctrlassist-protocol = { workspace = true }
+futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 slint = { workspace = true }

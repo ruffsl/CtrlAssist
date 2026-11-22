@@ -150,4 +150,12 @@ export global Theme {
     // so it stays legible against the wash.
     out property <color> row-selected: dark-mode ? accent.with-alpha(0.24) : accent.with-alpha(0.16);
     out property <color> row-selected-text: text;
+
+    // A pad maker's own color, behind its mark on the pad's tile. The
+    // same in both modes: each reads with white on it.
+    out property <brush> maker-sony: #00439c;
+    out property <brush> maker-microsoft: #107c10;
+    out property <brush> maker-nintendo: #e60012;
+    out property <brush> maker-8bitdo: #5a5d61;
+    out property <brush> maker-valve: #2a475e;
 }

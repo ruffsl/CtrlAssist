@@ -2448,3 +2448,173 @@ export component NameInputDialog inherits Rectangle {
         }
     }
 }
+
+// A pad's tile: its maker's mark in the maker's color, as a TV's tile is
+// in TisVlay; a pad of a maker with no mark gets a gamepad on the chip
+// color. `maker` is Rust's word for the maker, from the pad's vendor
+// number: "sony", "microsoft", "nintendo", "8bitdo", "valve", or empty.
+export component PadTile inherits Rectangle {
+    in property <string> maker;
+    in property <length> tile-size: Design.size-tile-sm;
+
+    width: tile-size;
+    height: tile-size;
+    border-radius: 5px;
+
+    property <bool> is-known: maker == "sony" || maker == "microsoft" || maker == "nintendo"
+        || maker == "8bitdo" || maker == "valve";
+
+    background: maker == "sony" ? Theme.maker-sony
+              : maker == "microsoft" ? Theme.maker-microsoft
+              : maker == "nintendo" ? Theme.maker-nintendo
+              : maker == "8bitdo" ? Theme.maker-8bitdo
+              : maker == "valve" ? Theme.maker-valve
+              : Theme.chip;
+    border-width: is-known ? 0 : Design.border-thin;
+    border-color: Theme.border;
+
+    if root.is-known: Text {
+        text: root.maker == "sony" ? "PS"
+            : root.maker == "microsoft" ? "XB"
+            : root.maker == "nintendo" ? "NS"
+            : root.maker == "8bitdo" ? "8B"
+            : "SD";
+        color: white;
+        font-size: root.tile-size * 0.40;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+    }
+    if !root.is-known: Image {
+        source: Icons.gamepad;
+        width: root.tile-size * 0.7;
+        height: root.tile-size * 0.7;
+        x: (root.tile-size - self.width) / 2;
+        y: (root.tile-size - self.height) / 2;
+        image-fit: contain;
+        colorize: Theme.chip-text;
+    }
+}
+
+// A profile's tile: its arrangement's shape. Two lines joining into one
+// for a preset that merges two pads, one line splitting into two for a
+// preset that shares one pad out; a profile that is neither, written by
+// hand, gets a plain mark.
+export component ProfileTile inherits Rectangle {
+    // "merge", "split", or anything else for neither.
+    in property <string> shape;
+    in property <length> tile-size: Design.size-tile-sm;
+
+    width: tile-size;
+    height: tile-size;
+    border-radius: 5px;
+    background: Theme.chip;
+    border-width: Design.border-thin;
+    border-color: Theme.border;
+
+    Path {
+        width: root.tile-size * 0.62;
+        height: root.tile-size * 0.62;
+        x: (root.tile-size - self.width) / 2;
+        y: (root.tile-size - self.height) / 2;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        stroke: Theme.chip-text;
+        stroke-width: 2px;
+        fill: transparent;
+        commands: root.shape == "merge" ? "M 3 6 C 10 6 10 12 14 12 L 21 12 M 3 18 C 10 18 10 12 14 12"
+            : root.shape == "split" ? "M 3 12 L 10 12 C 14 12 14 6 21 6 M 10 12 C 14 12 14 18 21 18"
+            : "M 4 7 L 20 7 M 4 12 L 20 12 M 4 17 L 14 17";
+    }
+}
+
+// A caption band over a section of a list, as the lists' headers are:
+// small capitals on the surface color, 40 high.
+export component ListCaption inherits Rectangle {
+    in property <string> title;
+
+    height: 40px;
+    background: Theme.surface;
+
+    Rectangle {
+        x: parent.width - 1px;
+        width: Design.border-thin;
+        background: Theme.border;
+    }
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 12px;
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.title;
+                color: Theme.text-dim;
+                font-size: Design.font-mini;
+                font-weight: 600;
+                letter-spacing: 0.6px;
+            }
+        }
+    }
+}
+
+// A detail's row: a label in a fixed column, the control, and then the
+// row's "i" when it has help. An optional helper line sits under the
+// control. TisVlay's `FormRow`.
+export component FormRow {
+    in property <string> label;
+    // A stable name for the row, in its help button's id.
+    in property <string> key;
+    in property <string> helper;
+    in property <string> help;
+    in property <string> id-prefix;
+    in property <length> label-width: Design.width-label-col;
+    // The row's id for the arrows: its controls and its "i" share it.
+    out property <int> row-id;
+    init => {
+        root.row-id = Nav.next-row-id();
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        spacing: Design.gap-row;
+
+        VerticalLayout {
+            width: root.label-width;
+            alignment: root.helper != "" ? start : center;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: Design.font-body;
+                vertical-alignment: root.helper != "" ? top : center;
+                wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: Design.gap-form;
+            HorizontalLayout {
+                spacing: Design.gap-row;
+                @children
+                if root.help != "": VerticalLayout {
+                    alignment: center;
+                    width: 24px;
+                    ContextualHelpButton {
+                        text: root.help;
+                        nav-row: root.row-id;
+                        accessible-id: root.id-prefix + "help-" + root.key;
+                    }
+                }
+            }
+            if root.helper != "": Text {
+                text: root.helper;
+                color: Theme.text-faint;
+                font-size: Design.font-mini;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

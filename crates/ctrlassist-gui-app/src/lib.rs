@@ -5,6 +5,7 @@
 //! keys alone, with couch mode for a TV across the room.
 
 pub mod about;
+mod accent;
 mod couch;
 pub mod diagnostic;
 mod file_manager;
@@ -128,6 +129,9 @@ pub fn run() -> Result<()> {
     setups::wire(&app, &daemon, &nav);
     profiles::wire(&app, &daemon, &nav);
     rt.spawn(state::follow(daemon, tray, app.as_weak()));
+    // The desktop's accent color, from the settings portal: with no
+    // portal the theme's own stays.
+    rt.spawn(accent::watch_accent_color(app.as_weak()));
 
     keys::bind_key_router(&app);
     // Escape on the sidebar with nothing to go back to, in couch mode:
