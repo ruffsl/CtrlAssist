@@ -26,6 +26,18 @@
             }
         },
         {
+            "label": "gui: start",
+            "type": "shell",
+            "command": "just gui-start",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "ctrlassist"
+            }
+        },
+        {
             "label": "hider: start",
             "type": "shell",
             "command": "just hider-dev",
@@ -43,7 +55,8 @@
             "dependsOn": [
                 "hider: start",
                 "daemon: start",
-                "tray: start"
+                "tray: start",
+                "gui: start"
             ],
             "dependsOrder": "parallel",
             "problemMatcher": []

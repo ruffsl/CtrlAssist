@@ -31,6 +31,7 @@ Run each service in its own terminal, each inside the dev shell:
 just hider-dev      # optional, asks for sudo: the hiding service
 just daemon-start
 just tray-start
+just gui-start       # the settings window
 ```
 
 In VS Code, the `all: start`, `all: stop` and `all: restart` tasks run the stack with a panel per service. They need the dev shell's environment to find `just`, so start VS Code from the dev shell or use a direnv extension.
