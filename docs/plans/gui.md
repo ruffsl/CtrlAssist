@@ -185,6 +185,8 @@ The hub itself saw all three in every case.
 
 Still open: the tile of a pad from an unknown maker, which the mock-up draws as a plain gamepad icon.
 
+**Answered, 2026-11-22, after the rebuild.** The Profiles list's one header with the count and the add button stays as built. Where a choice's own sentence shows is [an idea](../ideas/choice-descriptions.md) for later. The window is opened four ways, all as TisVlay has them: a desktop entry; an entry in the tray's menu, named "Settings" as TisVlay's is; a left click on the tray's icon; and D-Bus activation, so that a second launch raises the window that is open. The window is in the one package and installed with it always.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps
