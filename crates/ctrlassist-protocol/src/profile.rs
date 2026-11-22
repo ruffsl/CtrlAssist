@@ -132,6 +132,29 @@ pub enum Preset {
     Multicast,
 }
 
+impl Preset {
+    /// Every preset, in the order they are listed to a person.
+    pub const ALL: [Self; 5] = [
+        Self::Priority,
+        Self::Average,
+        Self::Toggle,
+        Self::Unicast,
+        Self::Multicast,
+    ];
+
+    /// The preset's name, as a profile writes it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Priority => "priority",
+            Self::Average => "average",
+            Self::Toggle => "toggle",
+            Self::Unicast => "unicast",
+            Self::Multicast => "multicast",
+        }
+    }
+}
+
 /// What a virtual pad presents itself as.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

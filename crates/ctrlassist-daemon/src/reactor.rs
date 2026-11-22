@@ -338,6 +338,12 @@ impl Reactor {
                 };
                 responder.ok(&validation).await;
             }
+            Some(((), profile::Incoming::Schema((), responder))) => {
+                let form = rpc::PresetForm {
+                    fields: ctrlassist_protocol::form::fields(),
+                };
+                responder.ok(&form).await;
+            }
             Some(((), profile::Incoming::Put(request, responder))) => {
                 match self.profiles.put(&request.name, &request.toml) {
                     Ok(()) => {

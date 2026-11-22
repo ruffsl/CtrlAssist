@@ -9,6 +9,7 @@ pub mod bootstrap;
 pub mod caller;
 pub mod endpoint;
 pub mod error;
+pub mod form;
 pub mod keys;
 pub mod payload;
 pub mod profile;

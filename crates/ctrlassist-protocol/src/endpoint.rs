@@ -213,6 +213,8 @@ pub mod profile {
         rpcs: {
             /// Check a profile and say where it is wrong. Nothing is kept.
             Validate = "validate" (rpc::ValidateRequest) -> rpc::Validation, read;
+            /// A preset's fields, for a client's form.
+            Schema = "schema" (()) -> rpc::PresetForm, read;
             /// Keep a profile, durably, once it is found to be right.
             Put = "put" (rpc::PutProfileRequest) -> rpc::Ack, write;
             /// Stop keeping a profile.

@@ -544,3 +544,120 @@ fn a_preset_s_rumble_is_the_mux_s_feedback() {
         "{problem}"
     );
 }
+
+mod form {
+    //! The described fields against the profiles they stand for.
+
+    use ctrlassist_protocol::form::{self, Kind, Values};
+    use ctrlassist_protocol::profile::Profile;
+
+    /// A value the field could hold, and another.
+    fn samples(field: &form::Field) -> Vec<String> {
+        match &field.kind {
+            Kind::Choice { choices } => choices.iter().map(|choice| choice.value.clone()).collect(),
+            Kind::Pad => vec![format!("model:0001:{:04x}", field.key.len())],
+            Kind::Number { min, max } => vec![min.to_string(), max.to_string()],
+            Kind::Switch => vec!["false".to_string(), "true".to_string()],
+            _ => unreachable!("a kind the test doesn't know"),
+        }
+    }
+
+    /// Every preset, with every other field at each of its values in
+    /// turn, writes a profile the daemon would keep, and reads back.
+    #[test]
+    fn what_a_form_writes_is_a_profile_and_reads_back_as_written() {
+        let fields = form::fields();
+        let presets = samples(&fields[0]);
+        assert_eq!(presets.len(), 5);
+        let mut made = 0;
+        for preset in &presets {
+            // A filled form, every field at its first value.
+            let mut base = Values::new();
+            for field in &fields {
+                base.insert(field.key.clone(), samples(field)[0].clone());
+            }
+            base.insert(form::PRESET.to_string(), preset.clone());
+            for field in fields.iter().skip(1) {
+                for value in samples(field) {
+                    let mut values = base.clone();
+                    values.insert(field.key.clone(), value);
+                    let toml = form::to_toml(&fields, &values);
+                    Profile::check(&toml)
+                        .unwrap_or_else(|problem| unreachable!("{problem}\n{toml}"));
+                    made += 1;
+                    // Read back: every field of this preset, at what was
+                    // set, and none that isn't its own.
+                    let read = form::from_toml(&fields, &toml).unwrap();
+                    for field in &fields {
+                        if field.applies_to(preset) {
+                            assert_eq!(read.get(&field.key), values.get(&field.key), "{toml}");
+                        } else {
+                            assert_eq!(read.get(&field.key), None, "{toml}");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(made > 50, "{made}");
+    }
+
+    #[test]
+    fn a_default_is_left_out_and_read_back_in() {
+        let fields = form::fields();
+        let mut values = Values::new();
+        for (key, value) in [
+            ("preset", "toggle"),
+            ("primary", "0c:27:56:4f:bd:14"),
+            ("assist", "model:054c:09cc"),
+            ("identity", "generic"),
+            ("rumble", "both"),
+            ("auto-start", "false"),
+            // Not this preset's, and so not written.
+            ("outputs", "4"),
+        ] {
+            values.insert(key.to_string(), value.to_string());
+        }
+        let toml = form::to_toml(&fields, &values);
+        assert_eq!(
+            toml,
+            "preset = \"toggle\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n"
+        );
+        let read = form::from_toml(&fields, &toml).unwrap();
+        assert_eq!(read["identity"], "generic");
+        assert_eq!(read["rumble"], "both");
+        assert_eq!(read["auto-start"], "false");
+        assert_eq!(read.get("outputs"), None);
+    }
+
+    #[test]
+    fn a_profile_a_form_cannot_show_reads_as_nothing() {
+        let fields = form::fields();
+        for toml in [
+            "not toml =",
+            // The full form.
+            include_str!("fixtures/full.toml"),
+            // A preset with a key that is no field.
+            "preset = \"priority\"\nprimary = \"a\"\nassist = \"b\"\n[source.x]\npad = \"c\"\n",
+            // A field holding what no field holds.
+            "preset = \"priority\"\nprimary = [\"a\"]\n",
+            "primary = \"a\"\n",
+        ] {
+            assert_eq!(form::from_toml(&fields, toml), None, "{toml}");
+        }
+        // The file's own schema number is no field, and is passed over.
+        assert!(form::from_toml(&fields, include_str!("fixtures/preset.toml")).is_some());
+    }
+
+    #[test]
+    fn the_description_travels_as_json_and_back() {
+        let fields = form::fields();
+        let json = serde_json::to_string(&fields).unwrap();
+        assert!(json.contains("\"kind\":\"pad\""), "{json}");
+        assert!(
+            json.contains("\"kind\":\"number\",\"min\":1,\"max\":8"),
+            "{json}"
+        );
+        let back: Vec<form::Field> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, fields);
+    }
+}

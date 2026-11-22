@@ -18,6 +18,7 @@ pub use ctrlassist_protocol::bootstrap::default_socket_path;
 use ctrlassist_protocol::caller::Caller;
 use ctrlassist_protocol::endpoint::{Unary, daemon, pad, profile, setup};
 pub use ctrlassist_protocol::error::ErrorCode;
+pub use ctrlassist_protocol::form;
 pub use ctrlassist_protocol::payload::{
     Daemon as DaemonState, Hiding, Identity, Pad, Phase, Problem, Profile, Setup, SetupNode,
     SetupSink, SetupSource,
@@ -458,6 +459,17 @@ impl DaemonClient {
             pad: pad.to_string(),
         };
         self.call::<pad::Forget>(&request).await.map(|_| ())
+    }
+
+    /// A preset's fields, as the daemon describes them: what a form
+    /// shows, and with [`form::to_toml`] and [`form::from_toml`] how its
+    /// values become a profile and come back from one.
+    ///
+    /// # Errors
+    ///
+    /// Fails as any rpc can.
+    pub async fn preset_form(&self) -> Result<Vec<form::Field>> {
+        Ok(self.call::<profile::Schema>(&()).await?.fields)
     }
 
     /// Has the daemon read its files again, for edits made some other

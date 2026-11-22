@@ -54,6 +54,13 @@ pub struct PutProfileRequest {
     pub toml: String,
 }
 
+/// Reply to `schema`: a preset's fields, for a form.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct PresetForm {
+    /// The fields, in the order a form shows them.
+    pub fields: Vec<crate::form::Field>,
+}
+
 /// Names a profile.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ProfileRequest {
