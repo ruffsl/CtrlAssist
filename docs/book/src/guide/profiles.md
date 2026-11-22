@@ -83,6 +83,12 @@ If you connect a real DualSense by USB cable, with the hiding service installed,
 
 A virtual DualSense carries the buttons, sticks, triggers and rumble. When the controller behind it is a real DualSense on a USB cable, with the hiding service installed, the game's lightbar, player lights and adaptive trigger effects reach it too. A DualShock 4 behind it gets the lightbar's color. Its touchpad and motion sensors are there and report nothing, and the system shows a battery and lights for it, as it does for a real one.
 
+## The default profile
+
+CtrlAssist always keeps one profile, `default`: it is there from the first start, with its controllers still to choose, so there is always a profile to fill in from the tray or the window. It is listed first, with a check mark. Change it as you like; it can't be deleted or renamed, and if its file is removed it is made again.
+
+A profile whose controllers aren't chosen yet is kept and shown as **Not set up**. It isn't wrong; it starts once its controllers are chosen. `ctrlassist profile list` says which ones those are.
+
 ## Managed profiles
 
 A profile is started by hand unless it is managed. With `managed = true`, the daemon starts the profile whenever every controller it names is connected: when the daemon starts, when you put the profile, and when one of its controllers is plugged in. If you stop it by hand it stays stopped until one of its own controllers is plugged in again.

@@ -55,9 +55,14 @@ fn known() -> Known {
                 unset: Vec::new(),
                 problem: Some(Problem {
                     at: "mode".into(),
-                    message: "this preset needs `primary` and `assist`".into(),
+                    message: "no such preset".into(),
                 }),
-                ..profile("broken", "mode = \"priority\"\n")
+                ..profile("broken", "mode = \"sideways\"\n")
+            },
+            // As a daemon makes it: its pads still to choose.
+            Profile {
+                unset: vec!["primary".to_string(), "assist".to_string()],
+                ..profile("default", ctrlassist_protocol::profile::DEFAULT_TOML)
             },
         ],
         setups: vec![Setup {
@@ -115,13 +120,25 @@ fn field(row: &ProfileRow, key: &str) -> ProfileFieldRow {
 fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     let rows = profiles::rows(&known(), &BTreeMap::new());
     let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
-    // The one that runs first, then the rest by name.
-    assert_eq!(names, ["quick", "attic", "broken", "couch"]);
+    // The one that runs first; then the default profile, and the rest
+    // by name.
+    assert_eq!(names, ["quick", "default", "attic", "broken", "couch"]);
+    // The default profile as a daemon makes it: a preset with its pads
+    // still to choose, which isn't wrong and can't start.
+    let default = row(&rows, "default");
+    assert!(default.is_default && default.kept && !default.unfinished);
+    assert_eq!(
+        (default.word.as_str(), default.word_tone.as_str()),
+        ("Not set up", "neutral")
+    );
+    assert_eq!(default.note, "Choose its pads to start it.");
+    assert!(!default.can_start && default.problem.is_empty());
+    assert_eq!(default.kind, "preset");
 
     let couch = row(&rows, "couch");
     assert_eq!(couch.kind, "preset");
     assert_eq!(couch.summary, "priority · xbox");
-    assert!(couch.kept && !couch.unfinished && !couch.running && !couch.is_quick);
+    assert!(couch.kept && !couch.unfinished && !couch.running && !couch.is_default);
     let keys: Vec<String> = couch
         .fields
         .iter()
@@ -282,7 +299,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
             "Primary DualSense [address:0c:27:56:4f:bd:14]"
         ]
     );
-    assert!(quick.is_quick && quick.running);
+    assert!(quick.running);
     assert_eq!(
         (quick.phase_label.as_str(), quick.tone.as_str()),
         ("Running", "success")
@@ -304,10 +321,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     assert_eq!(attic.outputs.row_count(), 2);
 
     let broken = row(&rows, "broken");
-    assert_eq!(
-        broken.problem,
-        "mode: this preset needs `primary` and `assist`"
-    );
+    assert_eq!(broken.problem, "mode: no such preset");
 }
 
 #[test]
@@ -523,7 +537,20 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
     assert!(find_by_accessible_id(&app, "profiles-field-mode").is_none());
     assert!(find_by_accessible_id(&app, "profiles-update").is_none());
 
+    // The default profile keeps its name and is always kept; its row
+    // carries its mark.
+    select("default");
+    assert!(!enabled("profiles-rename") && !enabled("profiles-delete"));
+    assert!(!enabled("profiles-start"));
+    assert!(enabled("profiles-duplicate"));
+    let marked = find_by_accessible_id(&app, "profiles-row-default")
+        .and_then(|row| row.accessible_label())
+        .unwrap_or_default();
+    assert_eq!(marked, "default, default profile");
+    assert!(find_by_accessible_id(&app, "profiles-field-primary").is_some());
+
     select("couch");
+    assert!(enabled("profiles-rename") && enabled("profiles-delete"));
     assert!(enabled("profiles-start"));
     activate_shown(&app, "profiles-start");
     assert_eq!(*asked.borrow(), ["start couch"]);

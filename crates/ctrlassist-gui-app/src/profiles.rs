@@ -24,8 +24,7 @@ use crate::{
     Profiles, on_ui,
 };
 
-/// The profile the tray's quick menu writes.
-const QUICK: &str = "quick";
+use ctrlassist_protocol::profile::DEFAULT;
 
 /// The key of the field that says what the virtual pads present
 /// themselves as.
@@ -264,8 +263,14 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
         .chain(held.keys().map(String::as_str))
         .collect();
     let runs = |name: &str| known.setups.iter().any(|setup| setup.name == name);
-    // Those with a setup first, as the list shows them.
-    names.sort_unstable_by(|a, b| runs(b).cmp(&runs(a)).then_with(|| a.cmp(b)));
+    // Those with a setup first, as the list shows them; among each, the
+    // default profile and then the rest by name.
+    names.sort_unstable_by(|a, b| {
+        runs(b)
+            .cmp(&runs(a))
+            .then_with(|| (*a != DEFAULT).cmp(&(*b != DEFAULT)))
+            .then_with(|| a.cmp(b))
+    });
     names.dedup();
     // A setup's place among the Setups rows, which go by name.
     let mut running: Vec<&str> = known
@@ -316,8 +321,19 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
             };
             let plan =
                 kept.and_then(|kept| ctrlassist_protocol::profile::Profile::check(&kept.toml).ok());
+            // Its pads still to choose: as picked here, or as kept.
+            let unset = match &values {
+                Some(values) => !ctrlassist_protocol::profile::Profile::unchosen(&form::to_toml(
+                    &known.fields,
+                    values,
+                ))
+                .is_empty(),
+                None => kept.is_some_and(|kept| !kept.unset.is_empty()),
+            };
             let (word, word_tone) = if why.is_some() || kept.is_none() {
                 ("Unfinished", "warn")
+            } else if unset && setup.is_none() {
+                ("Not set up", "neutral")
             } else {
                 crate::status::of(name, plan.as_ref(), &known.setups, &known.pads)
             };
@@ -334,6 +350,7 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 (Some(setup), _) => setup_note(setup),
                 (None, "Ready") => "Its pads are connected and free.".to_string(),
                 (None, "Unfinished") => "It isn't a profile yet.".to_string(),
+                (None, "Not set up") => "Choose its pads to start it.".to_string(),
                 (None, "Wrong") => "The daemon can't run it as it is written.".to_string(),
                 (None, _) => {
                     "A pad it names is missing, or in a profile that is running.".to_string()
@@ -445,7 +462,7 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 running: setup.is_some(),
                 phase_label: SharedString::from(phase_label),
                 tone: SharedString::from(tone),
-                is_quick: name == QUICK,
+                is_default: name == DEFAULT,
                 input_fields: in_card(&fields, |group| group == form::INPUTS),
                 // The first virtual pad's row carries the identity,
                 // once the profile's virtual pads can be told.
@@ -616,10 +633,12 @@ fn set_field(app: &AppWindow, daemon: &DaemonClient, name: &str, key: &str, valu
                 }
             }
         }
-        (
-            form::to_toml(&known.fields, &values),
-            unfinished_why(&known.fields, &values).is_none(),
-        )
+        // What the daemon keeps: a profile, or a preset that lacks
+        // only its pads, which it keeps as not set up.
+        let toml = form::to_toml(&known.fields, &values);
+        let keepable = unfinished_why(&known.fields, &values).is_none()
+            || !ctrlassist_protocol::profile::Profile::unchosen(&toml).is_empty();
+        (toml, keepable)
     });
     HELD.with_borrow_mut(|held| held.insert(name.to_string(), values));
     render(app);

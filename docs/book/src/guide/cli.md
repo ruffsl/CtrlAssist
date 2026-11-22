@@ -11,8 +11,8 @@ Every command is a short request to the daemon, except `service daemon` and `ser
 | A profile's **Start** / **Stop** | `ctrlassist start <name>`, `ctrlassist stop <name>` |
 | A running profile's details | `ctrlassist setups` |
 | **Has control** | `ctrlassist select <setup> <node> [choice]` |
-| **Quick start** | Write a profile, then `ctrlassist profile put` and `ctrlassist start` |
-| A pick while `quick` runs, **Restart as `quick`** | `ctrlassist profile put`, then `ctrlassist update <name>` |
+| A profile's settings | Write the profile, then `ctrlassist profile put` |
+| A pick while the profile runs | `ctrlassist profile put`, then `ctrlassist update <name>` |
 | **Pads** | `ctrlassist pads` |
 | **Identify**, **Forget** | `ctrlassist identify <pad>`, `ctrlassist forget <pad>` |
 | The status line | `ctrlassist status` |

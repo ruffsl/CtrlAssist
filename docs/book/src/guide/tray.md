@@ -6,13 +6,14 @@ A **middle click** on the icon starts or stops one profile without opening the m
 
 ## The menu
 
-**Profiles** come first: each one you have kept, and anything running.
+**Profiles** come first: each one you have kept, and anything running. **default ✓** is first: CtrlAssist always keeps it, so there is always a profile to fill in, and it can't be deleted or renamed.
 
-- A profile that isn't running offers **Start**.
-- A running one shows its state in brackets and offers **Stop**. Under it are its controllers (and which is disconnected, if one is), its virtual controller, and for a toggle, **Has control**: who plays now, and a click to hand over. A controller that isn't connected can't be handed to.
+- A profile that isn't running offers **Start**. One whose controllers aren't chosen yet says so instead.
+- A running one shows its state in brackets and offers **Stop**, and for a toggle, **Has control**: who plays now, and a click to hand over. A controller that isn't connected can't be handed to.
 - One that has failed says why. **Stop** clears it.
+- Under those are the profile's settings, the same as the window's profile page: its controllers, what its virtual controller presents itself as, its mode, who feels rumble, how the real controllers are hidden, and whether it is managed. A profile written by hand in the full form has no settings here; while it runs its menu lists its controllers.
 
-**Quick start** pairs two controllers without writing anything; see the [Quick Start](../getting-started/quick-start.md). It keeps one profile, `quick`, which it rewrites each time. While `quick` runs, what you pick takes effect at once, without the game noticing: other controllers, a new mode, who feels rumble, starting by itself. A controller you swap out is given back to the system, and the new one is hidden. Picking another identity takes effect at once too, but needs a new virtual controller, which a game sees as its controller disconnecting and another connecting. A controller that is unplugged, already chosen for the other part, or busy in another arrangement can't be picked.
+What you pick is kept at once. While the profile runs it also takes effect at once, without the game noticing: other controllers, a new mode, who feels rumble. A controller you swap out is given back to the system, and the new one is hidden. Picking another identity takes effect at once too, but needs a new virtual controller, which a game sees as its controller disconnecting and another connecting. A controller that is unplugged, already chosen for the other part, or busy in another arrangement can't be picked. The [Quick Start](../getting-started/quick-start.md) walks through it.
 
 **Pads** lists every controller CtrlAssist knows, connected or remembered, and after them the virtual controllers that exist now.
 

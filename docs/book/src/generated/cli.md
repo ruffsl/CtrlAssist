@@ -279,7 +279,7 @@ Become one of CtrlAssist's long-running processes
 ###### **Subcommands:**
 
 * `daemon` — The daemon: owns the pads and virtual pads, and serves the clients
-* `tray` — The system tray: what is running, start and stop, quick start, and notifications
+* `tray` — The system tray: what is running, start and stop, each profile's settings, and notifications
 
 
 
@@ -300,7 +300,7 @@ The daemon: owns the pads and virtual pads, and serves the clients
 
 ## `ctrlassist service tray`
 
-The system tray: what is running, start and stop, quick start, and notifications
+The system tray: what is running, start and stop, each profile's settings, and notifications
 
 **Usage:** `ctrlassist service tray [OPTIONS]`
 

@@ -164,7 +164,8 @@ async fn a_snapshot_reads_a_live_daemon_and_its_going() {
             // Whatever pads this machine has are its own.
             pads: snapshot.pads.clone(),
             setups: Vec::new(),
-            profiles: Vec::new(),
+            // The default profile, which a daemon always keeps.
+            profiles: snapshot.profiles.clone(),
             identities: snapshot.identities.clone(),
             // Asked for by the loop that follows the daemon, not read.
             fields: Vec::new(),

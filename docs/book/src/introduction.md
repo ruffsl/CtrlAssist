@@ -15,7 +15,7 @@ It works below the game. CtrlAssist reads the real controllers, combines what th
 
 ## How you use it
 
-A small daemon runs in your session and does the work. You tell it what to do from the **tray**, where Quick start pairs two controllers in a few clicks, or from the **`ctrlassist` command**. Arrangements you want to keep are **profiles**: short files that say which controllers play which part.
+A small daemon runs in your session and does the work. You tell it what to do from the **tray**, where a profile that is always there pairs two controllers in a few clicks, or from the **`ctrlassist` command**. Arrangements you want to keep are **profiles**: short files that say which controllers play which part.
 
 Start with [Installation](./getting-started/installation.md), then the [Quick Start](./getting-started/quick-start.md).
 

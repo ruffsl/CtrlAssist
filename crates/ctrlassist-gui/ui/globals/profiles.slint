@@ -112,8 +112,9 @@ export struct ProfileRow {
     running: bool,
     phase-label: string,
     tone: string,
-    // The tray's quick menu edits this one.
-    is-quick: bool,
+    // The default profile: always kept, listed first, never renamed or
+    // deleted.
+    is-default: bool,
     // A preset's fields, all of them and then by the card each is
     // shown in.
     fields: [ProfileFieldRow],

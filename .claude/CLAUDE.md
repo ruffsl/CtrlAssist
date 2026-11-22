@@ -41,7 +41,7 @@ crates/
                               # schema; session configuration, keys, the rpc table,
                               # typed wire errors and the version check
   ctrlassist-tray/            # the system tray: the menu as plain data from the SDK's
-                              # mirror, the quick-start builder, notifications from
+                              # mirror, each profile's fields in it, notifications from
                               # what changes, and the ksni item that renders them
   ctrlassist-test/            # fake pads made through uinput and uhid, one with rumble
                               # motors, and the

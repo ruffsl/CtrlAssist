@@ -23,7 +23,7 @@ import { Profiles, ProfileRow, ProfileFieldRow, ProfileUseRow, ProfileOutputRow 
 component ProfileListRow inherits ListRow {
     in property <ProfileRow> profile;
 
-    accessible-label: root.profile.name;
+    accessible-label: root.profile.is-default ? @tr("{}, default profile", root.profile.name) : root.profile.name;
     accessible-id: "profiles-row-" + root.profile.name;
     height: 64px;
 
@@ -50,7 +50,8 @@ component ProfileListRow inherits ListRow {
             spacing: 2px;
 
             Text {
-                text: root.profile.name;
+                // The default profile carries a check mark, as TisVlay's.
+                text: root.profile.is-default ? root.profile.name + "\u{00A0}\u{2713}" : root.profile.name;
                 color: root.title-color;
                 font-size: Design.font-body;
                 font-weight: root.title-weight;
@@ -479,7 +480,7 @@ component ProfileDetailHeader inherits Rectangle {
                 spacing: Design.gap-form;
                 alignment: start;
                 Text {
-                    text: root.profile.name;
+                    text: root.profile.is-default ? root.profile.name + "\u{00A0}\u{2713}" : root.profile.name;
                     color: Theme.text;
                     font-size: Design.font-title-3;
                     font-weight: 700;
@@ -490,9 +491,11 @@ component ProfileDetailHeader inherits Rectangle {
                     IconBtn {
                         nav-row: root.nav-row;
                         source: Icons.edit;
-                        enabled: root.daemon-available && root.profile.setup-index < 0;
+                        // The default profile keeps its name.
+                        enabled: root.daemon-available && root.profile.setup-index < 0 && !root.profile.is-default;
                         accessible-label: @tr("Rename profile");
-                        tip: root.profile.setup-index < 0 ? @tr("Rename profile") : @tr("Stop it to rename it");
+                        tip: root.profile.is-default ? @tr("The default profile keeps its name")
+                            : root.profile.setup-index < 0 ? @tr("Rename profile") : @tr("Stop it to rename it");
                         accessible-id: root.id-prefix + "profiles-rename";
                         clicked => { root.request-rename(); }
                     }
@@ -525,9 +528,10 @@ component ProfileDetailHeader inherits Rectangle {
                     IconBtn {
                         nav-row: root.nav-row;
                         source: Icons.delete;
-                        enabled: root.daemon-available;
+                        // The daemon always keeps the default profile.
+                        enabled: root.daemon-available && !root.profile.is-default;
                         accessible-label: @tr("Delete profile");
-                        tip: @tr("Delete profile");
+                        tip: root.profile.is-default ? @tr("The default profile is always kept") : @tr("Delete profile");
                         accessible-id: root.id-prefix + "profiles-delete";
                         clicked => { root.request-delete(); }
                     }
@@ -936,9 +940,7 @@ component ProfileDetail inherits Rectangle {
                 Card {
                     title: root.profile.kind == "preset" ? @tr("PRESET") : @tr("PROFILE");
                     help: root.profile.kind != "preset" ? ""
-                        : root.profile.is-quick
-                            ? @tr("How the pads and the virtual pads are arranged. A change to any card applies at once, and to the profile as it runs; one that changes its virtual pad, or how its pads are hidden, restarts it. The tray's quick start edits this profile too.")
-                            : @tr("How the pads and the virtual pads are arranged. A change to any card applies at once, and to the profile as it runs; one that changes its virtual pad, or how its pads are hidden, restarts it.");
+                        : @tr("How the pads and the virtual pads are arranged. A change to any card applies at once, and to the profile as it runs; one that changes its virtual pad, or how its pads are hidden, restarts it. The tray's menu for this profile changes the same things.");
                     id-prefix: root.id-prefix;
                     key: "preset";
                     nav-row: root.caption-row;

@@ -162,7 +162,7 @@ pub enum Profile {
 pub enum Service {
     /// The daemon: owns the pads and virtual pads, and serves the clients.
     Daemon(ctrlassist_daemon::service::Args),
-    /// The system tray: what is running, start and stop, quick start,
+    /// The system tray: what is running, start and stop, each profile's settings,
     /// and notifications.
     Tray(ctrlassist_tray::service::Args),
 }
