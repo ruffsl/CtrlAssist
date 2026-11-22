@@ -227,6 +227,8 @@ Duplicate and Show its file moved from the PRESET card's caption to the header, 
 - **The window's words:** a phase reads "Running", "Held", "Failed"; a part reads "Primary"; a pad that left its setup is "disconnected" and one known but away is "remembered"; a virtual pad goes by the name a game sees. "Has control" keeps the names as a profile writes them, as the window does.
 - **Virtual pads are under Pads,** after the real ones, each with Identify.
 
+**The tray icon's tooltip** (2026-11-22, the maintainer's, from mock-ups). Each setup has a line with its phase and its mode, then a line for each pad and each virtual pad, in the menu's words; "►" marks the pad that has control, as TisVlay's tooltip marks what its wheel acts on, and a setup that failed says why in place of its parts. With nothing running it counts the connected pads and names the profiles that could start, by the window's "Ready". It carries the pad glyph. The text is made as plain data in the tray's `tip` module. What a middle click on the icon should do is under discussion.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps

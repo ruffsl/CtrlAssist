@@ -185,7 +185,7 @@ fn sub(icon: Icon, label: impl Into<String>, entries: Vec<Entry>) -> Entry {
 }
 
 /// A name as a row says it: `primary` as "Primary".
-fn capitalized(name: &str) -> String {
+pub(crate) fn capitalized(name: &str) -> String {
     let mut letters = name.chars();
     letters
         .next()
@@ -194,7 +194,7 @@ fn capitalized(name: &str) -> String {
 }
 
 /// The name a game sees a virtual pad of `identity` under.
-fn virtual_name(view: &View, identity: &str) -> String {
+pub(crate) fn virtual_name(view: &View, identity: &str) -> String {
     view.identities
         .iter()
         .find(|known| known.id == identity)
@@ -281,7 +281,7 @@ fn setup_entries(view: &View, setup: &Setup) -> Vec<Entry> {
 }
 
 /// A setup's phase as the window says it, with the icon for it.
-fn phase_label(phase: Phase) -> (&'static str, Icon) {
+pub(crate) fn phase_label(phase: Phase) -> (&'static str, Icon) {
     match phase {
         Phase::Running => ("Running", icon::START),
         Phase::Held => ("Held", icon::HELD),

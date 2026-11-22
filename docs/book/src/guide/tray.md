@@ -1,6 +1,6 @@
 # The Tray
 
-The tray is the everyday way to use CtrlAssist. Its icon shows the state at a glance: plain when nothing runs, colored when something does, a warning when an arrangement is waiting for a controller, an error when one has failed. The icon and the menu's icons come from your desktop's icon theme, in its flat single-color style where the theme has one, so they follow a light or dark panel.
+The tray is the everyday way to use CtrlAssist. Its icon shows the state at a glance: plain when nothing runs, colored when something does, a warning when an arrangement is waiting for a controller, an error when one has failed. Hovering over it lists what runs: each arrangement with its mode, its controllers, a ► beside the one that has control, and its virtual controller. When nothing runs it says how many controllers are connected and which profiles are ready to start. The icon and the menu's icons come from your desktop's icon theme, in its flat single-color style where the theme has one, so they follow a light or dark panel.
 
 ## The menu
 

@@ -9,6 +9,7 @@ pub mod quick;
 pub mod service;
 mod settings;
 pub mod state;
+pub mod tip;
 pub mod tray;
 
 use std::sync::Arc;

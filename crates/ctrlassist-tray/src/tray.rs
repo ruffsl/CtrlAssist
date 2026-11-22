@@ -307,23 +307,10 @@ impl Tray for PadTray {
     }
 
     fn tool_tip(&self) -> ToolTip {
-        let description = if !self.view.alive {
-            "The daemon isn't running".to_string()
-        } else if let Some(theirs) = &self.view.mismatch {
-            menu::mismatch_text(theirs)
-        } else if self.view.setups.is_empty() {
-            "Nothing is running".to_string()
-        } else {
-            self.view
-                .setups
-                .iter()
-                .map(|setup| format!("{}: {}", setup.name, setup.phase.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
         ToolTip {
             title: "CtrlAssist".into(),
-            description,
+            description: crate::tip::description(&self.view),
+            icon_name: themed(menu::icon::PAD, Variant::Color),
             ..Default::default()
         }
     }
@@ -363,14 +350,17 @@ mod tests {
             (
                 "CtrlAssist".to_string(),
                 ("input-gaming", true),
-                "Nothing is running".to_string()
+                "Nothing is running\n3 of 3 pads connected".to_string()
             )
         );
         assert_eq!(said(Some(Phase::Running)).1, ("input-gaming", false));
         assert_eq!(said(Some(Phase::Held)).0, "CtrlAssist [held]");
         assert_eq!(said(Some(Phase::Held)).1, ("dialog-warning", false));
         assert_eq!(said(Some(Phase::Failed)).1, ("dialog-error", false));
-        assert_eq!(said(Some(Phase::Failed)).2, "couch: failed");
+        assert_eq!(
+            said(Some(Phase::Failed)).2,
+            "couch: Failed\n  a virtual pad refused a write"
+        );
 
         let (mut down, _clicked) = tray(Some(Phase::Running));
         down.view.alive = false;
