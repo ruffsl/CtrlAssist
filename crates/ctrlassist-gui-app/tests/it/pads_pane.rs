@@ -54,6 +54,7 @@ fn profiles() -> Vec<Profile> {
     let kept = |name: &str, toml: &str| Profile {
         name: name.to_string(),
         toml: toml.to_string(),
+        unset: Vec::new(),
         problem: None,
     };
     vec![

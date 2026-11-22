@@ -279,6 +279,7 @@ pub(crate) mod tests {
         Profile {
             name: name.to_string(),
             toml: String::new(),
+            unset: Vec::new(),
             problem: problem.map(|message| Problem {
                 at: "mode".to_string(),
                 message: message.to_string(),

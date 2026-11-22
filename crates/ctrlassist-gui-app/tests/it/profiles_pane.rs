@@ -37,6 +37,7 @@ fn profile(name: &str, toml: &str) -> Profile {
     Profile {
         name: name.to_string(),
         toml: toml.to_string(),
+        unset: Vec::new(),
         problem: None,
     }
 }
@@ -51,6 +52,7 @@ fn known() -> Known {
             profile("couch", COUCH),
             profile("attic", FULL),
             Profile {
+                unset: Vec::new(),
                 problem: Some(Problem {
                     at: "mode".into(),
                     message: "this preset needs `primary` and `assist`".into(),

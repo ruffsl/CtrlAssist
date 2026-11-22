@@ -25,10 +25,12 @@ pub(crate) async fn run(socket: &Path, command: Profile) -> Result<()> {
                 let rows: Vec<[String; 2]> = profiles
                     .iter()
                     .map(|profile| {
-                        let problem = profile
-                            .problem
-                            .as_ref()
-                            .map_or_else(String::new, |problem| printable(&problem.to_string()));
+                        // Wrong, or its pads still to choose, or neither.
+                        let problem = match (&profile.problem, profile.unset.as_slice()) {
+                            (Some(problem), _) => printable(&problem.to_string()),
+                            (None, []) => String::new(),
+                            (None, unset) => format!("not set up: choose {}", unset.join(", ")),
+                        };
                         [profile.name.clone(), problem]
                     })
                     .collect();

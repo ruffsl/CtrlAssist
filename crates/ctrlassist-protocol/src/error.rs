@@ -62,6 +62,9 @@ error_codes! {
     SetupFailed = "setup-failed",
     /// A pad the request needs is in use by a setup.
     PadInUse = "pad-in-use",
+    /// The profile is the reserved default, which is always kept: it
+    /// can't be deleted.
+    ProfileReserved = "profile-reserved",
     /// A settings file is missing or can't be read as settings; the
     /// message says why.
     SettingsUnreadable = "settings-unreadable",

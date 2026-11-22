@@ -23,7 +23,15 @@ async fn a_profile_is_checked_kept_replaced_and_deleted() {
         *e == StateEvent::Hydrated(ctrlassist::Service::Daemon)
     })
     .await;
-    assert!(client.list_profiles().unwrap().is_empty());
+    // The default profile is there from the start, its pads to choose.
+    let names = |client: &DaemonClient| -> Vec<String> {
+        let kept = client.list_profiles().unwrap();
+        kept.into_iter().map(|profile| profile.name).collect()
+    };
+    assert_eq!(names(&client), ["default"]);
+    let default = client.profile("default").unwrap().unwrap();
+    assert_eq!(default.unset, ["primary", "assist"]);
+    assert_eq!(default.problem, None);
     assert_eq!(client.profile("couch").unwrap(), None);
 
     // Checking keeps nothing, and says where a profile is wrong.
@@ -35,7 +43,10 @@ async fn a_profile_is_checked_kept_replaced_and_deleted() {
         .unwrap();
     assert_eq!(problem.at, "node.share.input");
     assert!(problem.to_string().starts_with("node.share.input: "));
-    assert!(client.list_profiles().unwrap().is_empty());
+    // A preset whose pads are still to choose isn't one that runs.
+    let unchosen = client.validate_profile("mode = \"priority\"\n").await;
+    assert_eq!(unchosen.unwrap().unwrap().at, "mode");
+    assert_eq!(names(&client), ["default"]);
 
     client.put_profile("couch", RIGHT).await.unwrap();
     next_matching(&mut watcher, |e| *e == changed("couch")).await;
@@ -45,11 +56,11 @@ async fn a_profile_is_checked_kept_replaced_and_deleted() {
 
     // A wrong one is refused with where and what, and the kept one stays.
     let refused = client
-        .put_profile("couch", "mode = \"priority\"\n")
+        .put_profile("couch", "mode = \"priority\"\npad = \"model:054c:09cc\"\n")
         .await
         .unwrap_err();
     assert_eq!(refused.rpc_code(), Some(ErrorCode::InvalidProfile));
-    assert!(refused.to_string().starts_with("mode: "), "{refused}");
+    assert!(refused.to_string().starts_with("pad: "), "{refused}");
     let refused = client.put_profile("Not A Name", RIGHT).await.unwrap_err();
     assert_eq!(refused.rpc_code(), Some(ErrorCode::BadRequest));
     assert_eq!(client.profile("couch").unwrap().unwrap().toml, RIGHT);
@@ -69,7 +80,7 @@ async fn a_profile_is_checked_kept_replaced_and_deleted() {
         .into_iter()
         .map(|profile| profile.name)
         .collect();
-    assert_eq!(names, ["couch"]);
+    assert_eq!(names, ["couch", "default"]);
 
     // Replaced, then deleted.
     let other = RIGHT.replace("priority", "average");
@@ -85,6 +96,12 @@ async fn a_profile_is_checked_kept_replaced_and_deleted() {
     .await;
     let unknown = client.delete_profile("couch").await.unwrap_err();
     assert_eq!(unknown.rpc_code(), Some(ErrorCode::UnknownProfile));
+    // The default profile is always kept, and doesn't run until its
+    // pads are chosen.
+    let reserved = client.delete_profile("default").await.unwrap_err();
+    assert_eq!(reserved.rpc_code(), Some(ErrorCode::ProfileReserved));
+    let unready = client.start_setup("default").await.unwrap_err();
+    assert_eq!(unready.rpc_code(), Some(ErrorCode::InvalidProfile));
     daemon.stop().await;
 }
 
@@ -104,7 +121,7 @@ async fn a_reload_takes_up_profiles_written_by_hand() {
     client.put_profile("couch", RIGHT).await.unwrap();
     client.put_profile("desk", RIGHT).await.unwrap();
     eventually("the profiles never arrived", async || {
-        client.list_profiles().unwrap().len() == 2
+        client.list_profiles().unwrap().len() == 3
     })
     .await;
     // Nothing changed on disk: nothing to say.
@@ -113,7 +130,7 @@ async fn a_reload_takes_up_profiles_written_by_hand() {
     let profiles = socket.with_file_name("config").join("profiles");
     let other = RIGHT.replace("priority", "average");
     std::fs::write(profiles.join("couch.toml"), &other).unwrap();
-    std::fs::write(profiles.join("den.toml"), "mode = \"priority\"\n").unwrap();
+    std::fs::write(profiles.join("den.toml"), "mode = \"sideways\"\n").unwrap();
     std::fs::write(profiles.join("Not A Name.toml"), RIGHT).unwrap();
     std::fs::remove_file(profiles.join("desk.toml")).unwrap();
     // Until asked, the daemon goes by what it read.
@@ -133,7 +150,8 @@ async fn a_reload_takes_up_profiles_written_by_hand() {
             .into_iter()
             .map(|profile| profile.name)
             .collect();
-        names == ["couch", "den"] && client.profile("couch").unwrap().unwrap().toml == other
+        names == ["couch", "default", "den"]
+            && client.profile("couch").unwrap().unwrap().toml == other
     })
     .await;
     assert!(client.profile("den").unwrap().unwrap().problem.is_some());

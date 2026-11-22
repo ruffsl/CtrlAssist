@@ -100,6 +100,7 @@ fn a_reload_is_summed_up_and_its_wrong_profiles_listed() {
         wrong: vec![Profile {
             name: "den".into(),
             toml: String::new(),
+            unset: Vec::new(),
             problem: Some(Problem {
                 at: "mode".into(),
                 message: "needs a primary".into(),

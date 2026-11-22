@@ -92,6 +92,10 @@ pub struct Profile {
     /// or written for a later release.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<Problem>,
+    /// The pads it still wants chosen, by their keys, where that is all
+    /// it lacks: it isn't wrong, and it can't run yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unset: Vec<String>,
 }
 
 /// What is wrong with a profile, and where.

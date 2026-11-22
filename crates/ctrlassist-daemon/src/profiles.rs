@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use ctrlassist_protocol::error::{ErrorCode, WireError};
 use ctrlassist_protocol::payload;
-use ctrlassist_protocol::profile::{Profile, is_name};
+use ctrlassist_protocol::profile::{self, Profile, is_name};
 use tracing::warn;
 
 use crate::durable;
@@ -51,10 +51,27 @@ impl Profiles {
                 }
             }
         }
-        Self {
+        let mut profiles = Self {
             directory: directory.to_path_buf(),
             kept,
+        };
+        profiles.ensure_default();
+        profiles
+    }
+
+    /// Makes the default profile where there is none: it is always
+    /// kept. One that can't be written is kept until the daemon stops.
+    fn ensure_default(&mut self) {
+        if self.kept.contains_key(profile::DEFAULT) {
+            return;
         }
+        if let Err(error) = durable::write(&self.path(profile::DEFAULT), profile::DEFAULT_TOML) {
+            warn!(%error, "the default profile couldn't be written; it is kept until the daemon stops");
+        }
+        self.kept.insert(
+            profile::DEFAULT.to_string(),
+            profile::DEFAULT_TOML.to_string(),
+        );
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -65,6 +82,7 @@ impl Profiles {
     /// through the daemon. Says which profiles are new or changed, and
     /// which are gone, each in name order.
     pub(crate) fn reload(&mut self) -> (Vec<String>, Vec<String>) {
+        // A default profile removed by hand is made again.
         let read = Self::open(&self.directory).kept;
         let changed = read
             .iter()
@@ -89,14 +107,16 @@ impl Profiles {
     /// A profile's published state.
     pub(crate) fn profile(&self, name: &str) -> Option<payload::Profile> {
         let toml = self.kept.get(name)?;
+        let unset = Profile::unchosen(toml);
         Some(payload::Profile {
             name: name.to_string(),
             toml: toml.clone(),
-            problem: Profile::check(toml).err().map(Into::into),
+            problem: Self::wrong(toml),
+            unset,
         })
     }
 
-    /// What is wrong with `toml` as a profile, if anything.
+    /// What keeps `toml` from being a profile that runs, if anything.
     pub(crate) fn problem(toml: &str) -> Option<payload::Problem> {
         if toml.len() > MOST_BYTES {
             return Some(payload::Problem {
@@ -105,6 +125,13 @@ impl Profiles {
             });
         }
         Profile::check(toml).err().map(Into::into)
+    }
+
+    /// What keeps `toml` from being kept, if anything. A preset whose
+    /// pads are still to choose isn't wrong: it is kept, and can't run
+    /// until they are chosen.
+    fn wrong(toml: &str) -> Option<payload::Problem> {
+        Self::problem(toml).filter(|_| Profile::unchosen(toml).is_empty())
     }
 
     /// Keeps `toml` as the profile `name`, durably, in place of any it
@@ -116,7 +143,7 @@ impl Profiles {
                 name.escape_debug()
             )));
         }
-        if let Some(problem) = Self::problem(toml) {
+        if let Some(problem) = Self::wrong(toml) {
             return Err(WireError::refusal(
                 ErrorCode::InvalidProfile,
                 problem.to_string(),
@@ -129,8 +156,15 @@ impl Profiles {
         Ok(())
     }
 
-    /// Stops keeping the profile `name`.
+    /// Stops keeping the profile `name`. The default profile is always
+    /// kept.
     pub(crate) fn delete(&mut self, name: &str) -> Result<(), WireError> {
+        if name == profile::DEFAULT {
+            return Err(WireError::refusal(
+                ErrorCode::ProfileReserved,
+                "the default profile is always kept; it can be changed, not deleted",
+            ));
+        }
         if !self.kept.contains_key(name) {
             return Err(WireError::refusal(
                 ErrorCode::UnknownProfile,
@@ -157,7 +191,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let directory = dir.path().join("profiles");
         let mut profiles = Profiles::open(&directory);
-        assert_eq!(profiles.names().count(), 0);
+        assert_eq!(profiles.names().collect::<Vec<_>>(), ["default"]);
         profiles.put("couch", RIGHT).unwrap();
         assert_eq!(
             fs::read_to_string(directory.join("couch.toml")).unwrap(),
@@ -165,7 +199,7 @@ mod tests {
         );
 
         let mut profiles = Profiles::open(&directory);
-        assert_eq!(profiles.names().collect::<Vec<_>>(), ["couch"]);
+        assert_eq!(profiles.names().collect::<Vec<_>>(), ["couch", "default"]);
         let kept = profiles.profile("couch").unwrap();
         assert_eq!((kept.name.as_str(), kept.toml.as_str()), ("couch", RIGHT));
         assert_eq!(kept.problem, None);
@@ -182,7 +216,54 @@ mod tests {
             profiles.delete("couch").unwrap_err().code,
             ErrorCode::UnknownProfile
         );
-        assert_eq!(Profiles::open(&directory).names().count(), 0);
+        assert_eq!(Profiles::open(&directory).names().count(), 1);
+    }
+
+    /// The default profile is always kept: made where there is none,
+    /// with its pads still to choose, changed like any other, never
+    /// deleted, and made again if its file is removed.
+    #[test]
+    fn the_default_profile_is_always_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut profiles = Profiles::open(dir.path());
+        let made = profiles.profile("default").unwrap();
+        assert_eq!(made.toml, profile::DEFAULT_TOML);
+        assert_eq!(
+            (made.problem, made.unset),
+            (None, vec!["primary".to_string(), "assist".to_string()])
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("default.toml")).unwrap(),
+            profile::DEFAULT_TOML
+        );
+        assert_eq!(
+            profiles.delete("default").unwrap_err().code,
+            ErrorCode::ProfileReserved
+        );
+
+        // One pad chosen is still not a profile that runs, and is kept.
+        let one = "mode = \"toggle\"\nprimary = \"model:054c:09cc\"\n";
+        profiles.put("default", one).unwrap();
+        assert_eq!(profiles.profile("default").unwrap().unset, ["assist"]);
+        profiles.put("default", RIGHT).unwrap();
+        let whole = profiles.profile("default").unwrap();
+        assert!(whole.unset.is_empty() && whole.problem.is_none());
+        // What a person made of it survives a restart.
+        assert_eq!(
+            Profiles::open(dir.path()).profile("default").unwrap().toml,
+            RIGHT
+        );
+
+        fs::remove_file(dir.path().join("default.toml")).unwrap();
+        let (changed, removed) = profiles.reload();
+        assert_eq!(
+            (changed, removed),
+            (vec!["default".to_string()], Vec::new())
+        );
+        assert_eq!(
+            profiles.profile("default").unwrap().toml,
+            profile::DEFAULT_TOML
+        );
     }
 
     #[test]
@@ -191,9 +272,11 @@ mod tests {
         let mut profiles = Profiles::open(dir.path());
         profiles.put("couch", RIGHT).unwrap();
 
-        let wrong = profiles.put("couch", "mode = \"priority\"").unwrap_err();
+        let wrong = profiles
+            .put("couch", "mode = \"priority\"\npad = \"model:054c:09cc\"\n")
+            .unwrap_err();
         assert_eq!(wrong.code, ErrorCode::InvalidProfile);
-        assert!(wrong.message.starts_with("mode: "), "{}", wrong.message);
+        assert!(wrong.message.starts_with("pad: "), "{}", wrong.message);
         let long = format!("{RIGHT}# {}\n", "x".repeat(MOST_BYTES));
         let refused = profiles.put("couch", &long).unwrap_err();
         assert_eq!(refused.code, ErrorCode::InvalidProfile);
@@ -204,7 +287,7 @@ mod tests {
             let refused = profiles.put(name, RIGHT).unwrap_err();
             assert_eq!(refused.code, ErrorCode::BadRequest, "{name}");
         }
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 
     #[test]
@@ -224,7 +307,10 @@ mod tests {
         fs::write(dir.path().join("binary.toml"), [0xff, 0xfe]).unwrap();
 
         let mut profiles = Profiles::open(dir.path());
-        assert_eq!(profiles.names().collect::<Vec<_>>(), ["edited", "later"]);
+        assert_eq!(
+            profiles.names().collect::<Vec<_>>(),
+            ["default", "edited", "later"]
+        );
         let edited = profiles.profile("edited").unwrap().problem.unwrap();
         assert_eq!(edited.at, "line 1");
         let later = profiles.profile("later").unwrap().problem.unwrap();
@@ -245,12 +331,12 @@ mod tests {
         fs::create_dir(dir.path().join("couch.toml.partial")).unwrap();
         let failed = profiles.put("couch", RIGHT).unwrap_err();
         assert_eq!(failed.code, ErrorCode::Internal);
-        assert_eq!(profiles.names().count(), 0);
+        assert_eq!(profiles.names().count(), 1);
 
         profiles.put("desk", RIGHT).unwrap();
         fs::remove_file(dir.path().join("desk.toml")).unwrap();
         let failed = profiles.delete("desk").unwrap_err();
         assert_eq!(failed.code, ErrorCode::Internal);
-        assert_eq!(profiles.names().collect::<Vec<_>>(), ["desk"]);
+        assert_eq!(profiles.names().collect::<Vec<_>>(), ["default", "desk"]);
     }
 }

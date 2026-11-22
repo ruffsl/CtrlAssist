@@ -243,6 +243,7 @@ mod tests {
         let couch = payload::Profile {
             name: "couch".to_string(),
             toml: "mode = \"priority\"".to_string(),
+            unset: Vec::new(),
             problem: None,
         };
         let profile_changed = Some(StateEvent::ProfileChanged {

@@ -285,11 +285,15 @@ async fn a_profile_file_is_checked_put_shown_listed_and_deleted() {
     let file = dir.path().join("couch.toml");
     std::fs::write(&file, right).unwrap();
     let wrong = dir.path().join("wrong.toml");
-    std::fs::write(&wrong, "mode = \"priority\"\n").unwrap();
+    std::fs::write(&wrong, "mode = \"priority\"\npad = \"model:054c:09cc\"\n").unwrap();
     let path = |file: &Path| file.to_str().unwrap().to_string();
 
-    let empty = ctrlassist(&socket, &["profile", "list"]);
-    assert_eq!(text(&empty.stdout), "no profiles are kept\n");
+    // The default profile is kept from the start, its pads to choose.
+    let fresh = ctrlassist(&socket, &["profile", "list"]);
+    assert_eq!(
+        text(&fresh.stdout),
+        "NAME     PROBLEM\ndefault  not set up: choose primary, assist\n"
+    );
 
     // Checking says where a profile is wrong, as a failure, and keeps
     // nothing either way.
@@ -299,7 +303,7 @@ async fn a_profile_file_is_checked_put_shown_listed_and_deleted() {
     let refused = ctrlassist(&socket, &["profile", "validate", &path(&wrong)]);
     assert_eq!(refused.status.code(), Some(1));
     assert!(
-        text(&refused.stderr).contains(&format!("{}: preset: ", wrong.display())),
+        text(&refused.stderr).contains(&format!("{}: pad: ", wrong.display())),
         "{}",
         text(&refused.stderr)
     );
@@ -308,8 +312,13 @@ async fn a_profile_file_is_checked_put_shown_listed_and_deleted() {
     assert!(text(&refused.stderr).contains("invalid-profile"));
     let missing = ctrlassist(&socket, &["profile", "put", "/nowhere/x.toml"]);
     assert!(text(&missing.stderr).contains("reading /nowhere/x.toml"));
-    let empty = ctrlassist(&socket, &["profile", "list", "--json"]);
-    assert_eq!(text(&empty.stdout), "[]\n");
+    let fresh = ctrlassist(&socket, &["profile", "list", "--json"]);
+    let profiles: Vec<serde_json::Value> = serde_json::from_slice(&fresh.stdout).unwrap();
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(
+        profiles[0]["unset"],
+        serde_json::json!(["primary", "assist"])
+    );
 
     // Put under the file's name, and under one given.
     let put = ctrlassist(&socket, &["profile", "put", &path(&file)]);
@@ -319,11 +328,14 @@ async fn a_profile_file_is_checked_put_shown_listed_and_deleted() {
     let shown = ctrlassist(&socket, &["profile", "show", "couch"]);
     assert_eq!(text(&shown.stdout), right);
     let listed = ctrlassist(&socket, &["profile", "list"]);
-    assert_eq!(text(&listed.stdout), "NAME   PROBLEM\ncouch\ndesk\n");
+    assert_eq!(
+        text(&listed.stdout),
+        "NAME     PROBLEM\ncouch\ndefault  not set up: choose primary, assist\ndesk\n"
+    );
     let json = ctrlassist(&socket, &["profile", "list", "--json"]);
     let profiles: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
-    assert_eq!(profiles[1]["name"], "desk");
-    assert_eq!(profiles[1]["toml"], right);
+    assert_eq!(profiles[2]["name"], "desk");
+    assert_eq!(profiles[2]["toml"], right);
 
     let deleted = ctrlassist(&socket, &["profile", "delete", "desk"]);
     assert!(deleted.status.success(), "{}", text(&deleted.stderr));

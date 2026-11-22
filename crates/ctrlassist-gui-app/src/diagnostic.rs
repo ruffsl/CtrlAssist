@@ -291,6 +291,7 @@ mod tests {
             profiles: vec![Profile {
                 name: "couch".into(),
                 toml: "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\n".into(),
+                unset: Vec::new(),
                 problem: None,
             }],
             machine: Machine {

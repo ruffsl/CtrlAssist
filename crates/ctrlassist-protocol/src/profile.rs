@@ -155,6 +155,14 @@ impl Hide {
     }
 }
 
+/// The name of the profile a daemon always keeps: made where there is
+/// none, never deleted. It is the one the tray is quickest to.
+pub const DEFAULT: &str = "default";
+
+/// The default profile as a daemon makes it: the first preset, with its
+/// pads still to choose.
+pub const DEFAULT_TOML: &str = "mode = \"priority\"\n";
+
 /// The profiles whose graph is implied by a name.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -578,6 +586,35 @@ impl Profile {
     /// do.
     pub fn check(text: &str) -> Result<Plan, ProfileError> {
         Self::from_toml(text)?.plan()
+    }
+
+    /// The pads a preset still wants chosen, by their keys, where that
+    /// is all `text` lacks to be a profile: it can be kept, and shown
+    /// with its pads to choose, but not run. Empty for a profile that
+    /// lacks nothing, and for one that is wrong some other way.
+    #[must_use]
+    pub fn unchosen(text: &str) -> Vec<String> {
+        let Ok(mut table) = text.parse::<toml::Table>() else {
+            return Vec::new();
+        };
+        let Some(preset) = table.get(crate::form::PRESET).and_then(toml::Value::as_str) else {
+            return Vec::new();
+        };
+        let wanted: Vec<String> = crate::form::fields()
+            .into_iter()
+            .filter(|field| field.kind == crate::form::Kind::Pad && field.applies_to(preset))
+            .map(|field| field.key)
+            .filter(|key| !table.contains_key(key))
+            .collect();
+        // With a pad of its own in each place, is it a profile?
+        for (at, key) in wanted.iter().enumerate() {
+            let stand_in = format!("model:0000:{:04x}", at + 1);
+            table.insert(key.clone(), toml::Value::String(stand_in));
+        }
+        if wanted.is_empty() || Self::check(&table.to_string()).is_err() {
+            return Vec::new();
+        }
+        wanted
     }
 
     /// Reads a profile from TOML.
