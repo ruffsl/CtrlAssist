@@ -232,6 +232,7 @@ mod tests {
             sources: Vec::new(),
             sinks: Vec::new(),
             nodes: Vec::new(),
+            stale: false,
         };
         let setup_changed = Some(StateEvent::SetupChanged {
             setup: "couch".to_string(),

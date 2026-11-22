@@ -144,6 +144,11 @@ pub struct Setup {
     /// isn't listed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<SetupNode>,
+    /// Whether the profile as it is kept now is another than the one
+    /// this setup runs, or is gone: an `update` would change something,
+    /// or be refused for want of a profile.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
 }
 
 /// A node of a setup that selects: a mux that follows its switch, or a

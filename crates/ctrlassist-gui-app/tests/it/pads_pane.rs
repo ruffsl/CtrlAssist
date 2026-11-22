@@ -45,6 +45,7 @@ fn quick() -> Setup {
         ],
         sinks: Vec::new(),
         nodes: Vec::new(),
+        stale: false,
     }
 }
 

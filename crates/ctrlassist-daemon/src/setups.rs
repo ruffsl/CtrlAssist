@@ -70,6 +70,10 @@ struct Entry {
     /// A change it is taking as it runs, until the input thread has the
     /// new graph.
     taking: Option<Taking>,
+    /// The profile's text it runs.
+    toml: String,
+    /// Whether the profile as kept now is another text, or gone.
+    stale: bool,
 }
 
 /// A change a running setup is taking: what it will be once the input
@@ -79,6 +83,8 @@ struct Entry {
 #[derive(Debug)]
 struct Taking {
     responder: Updating,
+    /// The profile's text it will run.
+    toml: String,
     /// Its pads as they will be, by the new graph's source number.
     slots: Vec<Slot>,
     /// By the new graph's source number: which slot it has now whose pad
@@ -342,6 +348,7 @@ impl Setups {
                 })
                 .collect(),
             sinks: entry.sinks.clone(),
+            stale: entry.stale,
             nodes: entry
                 .nodes
                 .iter()
@@ -805,6 +812,21 @@ impl Reactor {
         });
     }
 
+    /// Works out again whether a setup's profile, as kept now, is the
+    /// one it runs, and says so if that changed: for when a profile is
+    /// put, deleted or read again.
+    pub(crate) async fn profile_changed(&mut self, name: &str) {
+        let kept = self.profiles.profile(name).map(|profile| profile.toml);
+        let Some(entry) = self.setups.entries.get_mut(name) else {
+            return;
+        };
+        let stale = kept.as_deref() != Some(entry.toml.as_str());
+        if entry.stale != stale {
+            entry.stale = stale;
+            self.publish_setup(name).await;
+        }
+    }
+
     async fn publish_setup(&mut self, name: &str) {
         let outcome = match self.setups.setup(name) {
             Some(setup) => self.publish(keys::setup(name), &setup).await,
@@ -926,6 +948,8 @@ impl Reactor {
             nodes: choosers(&plan),
             stopping: None,
             taking: None,
+            toml: profile.toml,
+            stale: false,
         };
         self.setups.entries.insert(name.clone(), entry);
         self.publish_setup(&name).await;
@@ -1058,11 +1082,9 @@ impl Reactor {
             return responder.err(&unknown(&name)).await;
         };
         // What is kept now must be right before what runs is given up.
-        let kept = self
-            .profiles
-            .profile(&name)
-            .map(|profile| Profile::check(&profile.toml));
-        let plan = match kept {
+        let kept = self.profiles.profile(&name).map(|profile| profile.toml);
+        let toml = kept.clone().unwrap_or_default();
+        let plan = match kept.map(|toml| Profile::check(&toml)) {
             None => {
                 let refusal = WireError::refusal(
                     ErrorCode::UnknownProfile,
@@ -1127,6 +1149,7 @@ impl Reactor {
                 }
                 entry.taking = Some(Taking {
                     responder,
+                    toml,
                     slots,
                     keep,
                     sinks,
@@ -1307,6 +1330,7 @@ impl Reactor {
         };
         let Taking {
             responder,
+            toml,
             mut slots,
             keep,
             sinks,
@@ -1348,6 +1372,8 @@ impl Reactor {
         }
         let sources = slots.len();
         entry.slots = slots;
+        entry.toml = toml;
+        entry.stale = false;
         for (sink, name) in entry.sinks.iter_mut().zip(sinks) {
             sink.name = name;
         }
@@ -2047,6 +2073,8 @@ mod tests {
             nodes: choosers(&plan),
             stopping: None,
             taking: None,
+            toml: String::new(),
+            stale: false,
         };
         reactor.setups.entries.insert("couch".to_string(), entry);
     }

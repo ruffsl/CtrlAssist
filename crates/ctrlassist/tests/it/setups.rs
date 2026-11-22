@@ -726,9 +726,18 @@ async fn an_update_is_taken_as_the_setup_runs_or_restarts_it_and_says_which() {
     primary.south(true).unwrap();
     south_is(&mut game_before, true).await;
 
+    assert!(!before.stale);
     // Putting a profile changes nothing that runs.
     let toggle = blended.replace("priority", "toggle");
     client.put_profile("couch", &toggle).await.unwrap();
+    // But the setup now says the kept profile is another than it runs.
+    eventually("the setup never said its profile had changed", async || {
+        client
+            .setup("couch")
+            .unwrap()
+            .is_some_and(|setup| setup.stale)
+    })
+    .await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(client.setup("couch").unwrap().unwrap().nodes.is_empty());
     // Asked what an update would cost, the daemon says, and does nothing:
@@ -752,6 +761,7 @@ async fn an_update_is_taken_as_the_setup_runs_or_restarts_it_and_says_which() {
     .await;
     let taken = client.setup("couch").unwrap().unwrap();
     assert_eq!(taken.sinks[0].node, before.sinks[0].node);
+    assert!(!taken.stale, "it runs the kept profile again");
     assert!(phys_connected(&phys));
     south_is(&mut game_before, true).await;
     // The new graph is what plays: handed to the assist, the primary's
@@ -812,6 +822,10 @@ async fn an_update_is_taken_as_the_setup_runs_or_restarts_it_and_says_which() {
     client.delete_profile("couch").await.unwrap();
     let gone = client.update_setup("couch", true).await.unwrap_err();
     assert_eq!(gone.rpc_code(), Some(ErrorCode::UnknownProfile));
+    assert!(
+        client.setup("couch").unwrap().unwrap().stale,
+        "its profile is gone"
+    );
     assert_eq!(client.setup("couch").unwrap().unwrap().sinks[0].node, node);
     daemon.stop().await;
 }
@@ -1240,6 +1254,9 @@ async fn a_reload_brings_a_running_setup_up_to_its_profile() {
     client.put_profile("couch", &blended).await.unwrap();
     client.start_setup("couch").await.unwrap();
     let before = in_phase(&client, "couch", Phase::Running).await;
+    // Once udev has announced the virtual pad, which is when it can be
+    // asked where it is.
+    let _game = game(&before).await;
     let phys = phys_of(Path::new(before.sinks[0].node.as_deref().unwrap())).unwrap();
     assert!(before.nodes.is_empty());
     let file = socket.with_file_name("config").join("profiles/couch.toml");

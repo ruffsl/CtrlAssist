@@ -346,6 +346,7 @@ impl Reactor {
                             warn!(profile = request.name, %error, "publishing a profile failed");
                         }
                         responder.ok(&rpc::Ack {}).await;
+                        self.profile_changed(&request.name).await;
                         self.start_if_it_can(&request.name).await;
                     }
                     Err(refusal) => responder.err(&refusal).await,
@@ -357,6 +358,7 @@ impl Reactor {
                         info!(profile = request.name, "a profile was deleted");
                         self.unpublish(&keys::profile(&request.name)).await;
                         responder.ok(&rpc::Ack {}).await;
+                        self.profile_changed(&request.name).await;
                     }
                     Err(refusal) => responder.err(&refusal).await,
                 }
@@ -472,6 +474,11 @@ impl Reactor {
             );
         }
         let updating = self.update_reloaded(&changed).await;
+        // One that wasn't updated, or whose profile is gone, runs
+        // another text than is kept.
+        for name in changed.iter().chain(&removed) {
+            self.profile_changed(name).await;
+        }
         for name in &changed {
             if !updating.contains(name) {
                 self.start_if_it_can(name).await;

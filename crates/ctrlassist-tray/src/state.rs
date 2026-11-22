@@ -249,6 +249,7 @@ pub(crate) mod tests {
                 choices: vec!["primary".to_string(), "assist".to_string()],
                 selected: 0,
             }],
+            stale: false,
         }
     }
 
