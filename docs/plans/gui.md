@@ -170,7 +170,14 @@ The hub itself saw all three in every case.
 - **Detail headers** are TisVlay's: the tile, the name, a quiet second line, two chips stacked at the right. A profile's rename and delete sit beside its name, and its second line is its pads as links.
 - **A profile's detail** leads with a STATUS group: Start or Stop as the one large button with a line of state, Update when the kept profile has changed, its pads and whether each is there, and who has control. Then the preset's fields as TisVlay's profile field rows: a 140 px label column, the control, and a reset at the row's end that is lit, with a mark in the gutter, where the field isn't at its default. Help is one "i" on the group's caption, beside Duplicate and Reset all; a choice's own sentence shows in the dropdown's list.
 - **A pad's detail** has STATUS (Identify, and whether games see it), PROFILES, INFO with a copy button a row, and a DANGER ZONE for Forget. A PROFILES row only reads and opens: the profile's name, the part the pad plays in it, how the profile is, and an edit button that opens it. Starting, stopping and changing a part are the profile's.
-- **Each pane has its own color,** as in TisVlay: blue for Pads, green for Profiles.
+- **One accent, the desktop's.** An earlier line here gave each pane a color of its own, blue for Pads and green for Profiles, "as in TisVlay". That was a misreading of two screenshots taken under two desktop accent colors: TisVlay has one accent, which it reads from the desktop through the settings portal (`accent.rs`) and follows as it changes. CtrlAssist's window doesn't read it yet and is to.
+
+**The rebuild's steps,** each a commit with the window's suite run:
+
+1. The shared pieces: the desktop's accent, a pad's tile and a profile's tile, TisVlay's `FormRow`, and the list's section header.
+2. The Pads pane: tiles on its rows, the REMEMBERED section, TisVlay's detail header, and the STATUS, PROFILES, INFO and DANGER ZONE groups, with every profile that names the pad.
+3. The Profiles pane: the RUNNING section and the list's words, TisVlay's detail header, the STATUS group with what the Setups pane did, the fields as TisVlay's field rows with a reset each, and no profile's text.
+4. The Setups pane removed: its Slint, its global and its place in the sidebar, the history and the links that led to it, and its tests moved to where its parts went.
 
 - **No profile's text is shown in the window** (answered 2026-11-22, revisiting "Its text, read-only, with its problem"). A profile in the full form has its STATUS group, a line saying it is written by hand, what the daemon finds wrong with it, and a button that shows its file.
 - **A profile that can't start says why in the list:** "Unfinished" in orange for one still missing a pick, "Wrong" in red for one the daemon refuses, beside Running, Held, Failed, Ready and Waits for a pad.
