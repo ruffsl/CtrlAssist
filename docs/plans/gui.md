@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** decisions settled with the maintainer on 2026-11-21; the build is under way. Build steps 1 to 7 are done: the window opens with its sidebar and five empty panes, is steered by keys, with couch mode, follows the daemon, and its Reload asks the daemon to reread its files.
-- **Next action:** build steps 1 to 9 are done: every pane is built. The maintainer has paused further polish (help, translations) to rethink the panes first: see "The panes are to be rethought". Packaging is to come before the other remaining steps. The daemon has no settings of its own: see "Rethought, 2026-11-22".
+- **Next action:** build steps 1 to 9 are done: every pane is built. The panes are being rebuilt in place to the layout in "The panes, rethought", four of them, which comes before packaging; help and translations wait for it. The daemon has no settings of its own: see "Rethought, 2026-11-22".
 - **Branch:** `feat/rewrite`, with the rewrite. Nothing is pushed.
 - **Template:** TisVlay at `5ddc2c0d` (`crates/tisvlay-gui`, `crates/tisvlay-gui-app`, `crates/tisvlay-icons`, `docs/gui/`).
 
@@ -172,7 +172,11 @@ The hub itself saw all three in every case.
 - **A pad's detail** has STATUS (Identify, and whether games see it), PROFILES, INFO with a copy button a row, and a DANGER ZONE for Forget. A PROFILES row only reads and opens: the profile's name, the part the pad plays in it, how the profile is, and an edit button that opens it. Starting, stopping and changing a part are the profile's.
 - **Each pane has its own color,** as in TisVlay: blue for Pads, green for Profiles.
 
-Still open: where a profile in the full form shows its text, the tile of a pad from an unknown maker, and whether an unfinished or wrong profile gets a word of its own in the list.
+- **No profile's text is shown in the window** (answered 2026-11-22, revisiting "Its text, read-only, with its problem"). A profile in the full form has its STATUS group, a line saying it is written by hand, what the daemon finds wrong with it, and a button that shows its file.
+- **A profile that can't start says why in the list:** "Unfinished" in orange for one still missing a pick, "Wrong" in red for one the daemon refuses, beside Running, Held, Failed, Ready and Waits for a pad.
+- **The window is reworked in place,** not started again: the Rust behind each pane and the tests of behavior stay, the Slint of the Pads and Profiles panes is replaced with TisVlay's components, and the Setups pane's parts fold into them. The rebuild comes before packaging.
+
+Still open: the tile of a pad from an unknown maker, which the mock-up draws as a plain gamepad icon.
 
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
