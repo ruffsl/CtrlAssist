@@ -12,7 +12,12 @@ fn directory(path: &Path) -> io::Result<&Path> {
 
 /// Writes `text` as the file at `path`, in place of whatever was there,
 /// making its directory if need be.
-pub(crate) fn write(path: &Path, text: &str) -> io::Result<()> {
+///
+/// # Errors
+///
+/// Fails if the file can't be written or put in place; what was there
+/// is then still there.
+pub fn write(path: &Path, text: &str) -> io::Result<()> {
     let directory = directory(path)?;
     fs::create_dir_all(directory)?;
     let mut partial = path.as_os_str().to_owned();
@@ -27,7 +32,11 @@ pub(crate) fn write(path: &Path, text: &str) -> io::Result<()> {
 }
 
 /// Removes the file at `path`.
-pub(crate) fn remove(path: &Path) -> io::Result<()> {
+///
+/// # Errors
+///
+/// Fails if there is no such file, or it can't be removed.
+pub fn remove(path: &Path) -> io::Result<()> {
     fs::remove_file(path)?;
     File::open(directory(path)?)?.sync_all()
 }

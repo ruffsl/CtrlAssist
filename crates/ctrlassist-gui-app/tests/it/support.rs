@@ -62,3 +62,31 @@ pub(crate) fn elapse(millis: u64) {
     i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(millis));
     slint::platform::update_timers_and_animations();
 }
+
+/// Shift+Tab, the way a keyboard or a gamepad's left shoulder sends it:
+/// Shift held around a Tab. Slint turns that into backtab itself; the
+/// `Backtab` key code never arrives from a real window.
+pub(crate) fn press_shift_tab(app: &AppWindow) {
+    let window = app.window();
+    let shift: SharedString = Key::Shift.into();
+    let tab: SharedString = Key::Tab.into();
+    window.dispatch_event(WindowEvent::KeyPressed {
+        text: shift.clone(),
+    });
+    window.dispatch_event(WindowEvent::KeyPressed { text: tab.clone() });
+    window.dispatch_event(WindowEvent::KeyReleased { text: tab });
+    window.dispatch_event(WindowEvent::KeyReleased { text: shift });
+    settle();
+}
+
+/// A key with Alt held around it.
+pub(crate) fn press_with_alt(app: &AppWindow, key: Key) {
+    let window = app.window();
+    let alt: SharedString = Key::Alt.into();
+    let text: SharedString = key.into();
+    window.dispatch_event(WindowEvent::KeyPressed { text: alt.clone() });
+    window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+    window.dispatch_event(WindowEvent::KeyReleased { text });
+    window.dispatch_event(WindowEvent::KeyReleased { text: alt });
+    settle();
+}

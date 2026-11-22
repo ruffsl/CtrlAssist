@@ -7,7 +7,7 @@
 mod blacklist;
 mod book;
 mod copied;
-mod durable;
+pub mod durable;
 mod hotplug;
 pub mod logging;
 mod profiles;

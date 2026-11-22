@@ -23,12 +23,16 @@ clap = { workspace = true }
 ctrlassist-daemon = { workspace = true }
 ctrlassist-gui = { workspace = true }
 ctrlassist-protocol = { workspace = true }
+serde = { workspace = true }
 slint = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 # Pinned with slint: its API has no semver promise.
 i-slint-backend-testing = "=1.19.0"
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

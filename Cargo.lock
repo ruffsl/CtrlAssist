@@ -1185,7 +1185,11 @@ dependencies = [
  "ctrlassist-gui",
  "ctrlassist-protocol",
  "i-slint-backend-testing",
+ "serde",
  "slint",
+ "tempfile",
+ "tokio",
+ "toml 1.2.2+spec-1.1.0",
  "tracing",
 ]
 
