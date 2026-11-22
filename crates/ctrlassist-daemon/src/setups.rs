@@ -22,7 +22,7 @@ use ctrlassist_hider::{Client, Token};
 use ctrlassist_protocol::endpoint::setup;
 use ctrlassist_protocol::error::{ErrorCode, WireError};
 use ctrlassist_protocol::payload::{self, Phase};
-use ctrlassist_protocol::profile::{Identity, PadRef, Plan, Profile};
+use ctrlassist_protocol::profile::{Hide, Identity, PadRef, Plan, Profile};
 use ctrlassist_protocol::serve::Responder;
 use ctrlassist_protocol::{keys, rpc};
 use tracing::{info, warn};
@@ -74,6 +74,9 @@ struct Entry {
     toml: String,
     /// Whether the profile as kept now is another text, or gone.
     stale: bool,
+    /// How its pads are kept from games, as its profile says: how each
+    /// was taken, and how one that returns is taken again.
+    hide: Hide,
 }
 
 /// A change a running setup is taking: what it will be once the input
@@ -573,13 +576,15 @@ fn give_raw(pad: &mut Pad, token: Token, hiding: &Hiding) {
     }
 }
 
-/// Takes a pad for a setup, keeping it from games: hidden by the hiding
-/// service, which hands back the only descriptor left open on it, or
-/// else grabbed. Returns the service's name for the pad if it hid it.
+/// Takes a pad for a setup, keeping it from games as far as the setup's
+/// profile asks: hidden by the hiding service, which hands back the
+/// only descriptor left open on it, or else grabbed; grabbed only; or
+/// left as it is. Returns the service's name for the pad if it hid it.
 fn take(
     wanted: &Wanted,
     database: &Database,
     hiding: &Hiding,
+    hide: Hide,
 ) -> Result<(Pad, Option<Token>), String> {
     let node = wanted.node.as_path();
     let fd = open(node)?;
@@ -597,7 +602,9 @@ fn take(
         ));
     }
     // Holding the pad open is what shows the service it is ours to hide.
-    if let Some(hidden) = hiding.ask(|client| client.hide(fd.as_fd())) {
+    if hide == Hide::Full
+        && let Some(hidden) = hiding.ask(|client| client.hide(fd.as_fd()))
+    {
         drop(opened);
         drop(fd);
         return match read(hidden.event, node, database) {
@@ -613,7 +620,9 @@ fn take(
     }
     drop(fd);
     let mut pad = opened;
-    if let Err(error) = pad.grab() {
+    if hide != Hide::None
+        && let Err(error) = pad.grab()
+    {
         warn!(node = %node.display(), %error, "a pad couldn't be grabbed; games will see it beside the virtual pad");
     }
     Ok((pad, None))
@@ -626,6 +635,7 @@ fn retake(
     token: Option<Token>,
     database: &Database,
     hiding: &Hiding,
+    hide: Hide,
 ) -> Result<(Pad, Option<Token>), String> {
     if let Some(token) = token
         && let Some(hidden) = hiding.ask(|client| client.reopen(token))
@@ -636,7 +646,7 @@ fn retake(
             (pad, Some(token))
         });
     }
-    let taken = take(wanted, database, hiding)?;
+    let taken = take(wanted, database, hiding, hide)?;
     // Hidden afresh, under a new name: the old one is given up, so that
     // what it hid isn't left for the connection's end to restore.
     if let (Some(old), Some(new)) = (token, taken.1)
@@ -683,6 +693,7 @@ fn make(
     dualsense: &(PathBuf, DualSenseData),
     blacklist: &Mutex<Blacklist>,
 ) -> Result<Made, String> {
+    let hide = plan.hide;
     let graph = Graph::build(plan.graph).map_err(|error| error.to_string())?;
     let mut pads = Vec::new();
     let mut taken = Vec::new();
@@ -690,7 +701,7 @@ fn make(
         // A pad that went between being chosen and being taken is one
         // the setup starts without.
         let pad = node.as_ref().and_then(|node| {
-            take(node, database, hiding)
+            take(node, database, hiding, hide)
                 .inspect_err(|error| warn!(error, "a setup starts without a pad"))
                 .ok()
         });
@@ -719,9 +730,14 @@ fn make(
     // A pad that is only grabbed is still Steam's to read some other
     // way, so Steam is told to leave its model alone, unless a virtual
     // pad of the setup is of that model too: Steam goes by the numbers.
+    // That is for a pad that was to be hidden and couldn't be: a
+    // profile that asks for less than hiding is left with what it asks.
     let made: Vec<(u16, u16)> = sinks.iter().map(|sink| sink.identity().model()).collect();
     let grabbed = pads.iter().zip(&taken).filter_map(|(pad, (_, token))| {
-        let ids = pad.as_ref().filter(|_| token.is_none())?.identifiers();
+        let ids = pad
+            .as_ref()
+            .filter(|_| hide == Hide::Full && token.is_none())?
+            .identifiers();
         let model = (ids.vendor, ids.product);
         (!made.contains(&model)).then(|| crate::blacklist::entry(model.0, model.1))
     });
@@ -950,6 +966,7 @@ impl Reactor {
             taking: None,
             toml: profile.toml,
             stale: false,
+            hide: plan.hide,
         };
         self.setups.entries.insert(name.clone(), entry);
         self.publish_setup(&name).await;
@@ -1098,8 +1115,11 @@ impl Reactor {
             }
             Some(Ok(plan)) => plan,
         };
+        // Its pads are taken one way for as long as it runs: another
+        // way is another start.
         let live = matches!(entry.phase, Phase::Running | Phase::Held)
-            && entry.has_the_virtual_pads_of(&plan);
+            && entry.has_the_virtual_pads_of(&plan)
+            && entry.hide == plan.hide;
         // The pads it would have, which a restart finds for itself.
         let bound = live.then(|| rebind(&self.book, &name, &entry.slots, &plan));
         let bound = match bound.transpose() {
@@ -1165,11 +1185,12 @@ impl Reactor {
                 }
                 let database = Arc::clone(&self.database);
                 let hiding = Arc::clone(&self.hiding);
+                let hide = plan.hide;
                 self.work.spawn_blocking(move || {
                     let pads = fresh
                         .iter()
                         .map(|wanted| {
-                            take(wanted.as_ref()?, &database, &hiding)
+                            take(wanted.as_ref()?, &database, &hiding, hide)
                                 .inspect_err(|error| warn!(error, "a setup changes without a pad"))
                                 .ok()
                         })
@@ -1618,6 +1639,7 @@ impl Reactor {
         if !matches!(entry.phase, Phase::Running | Phase::Held) || waits {
             return;
         }
+        let hide = entry.hide;
         let Some(slot) = entry.slots.get_mut(source) else {
             return;
         };
@@ -1641,7 +1663,9 @@ impl Reactor {
         self.work.spawn_blocking(move || {
             // A node from before the pad left doesn't open, or is some
             // other pad's by now; the pad's arrival will bring it back.
-            let (pad, token) = retake(&wanted, token, &database, &hiding).ok().unzip();
+            let (pad, token) = retake(&wanted, token, &database, &hiding, hide)
+                .ok()
+                .unzip();
             Done::Returned {
                 pad: pad.map(Box::new),
                 token: token.flatten(),
@@ -2075,6 +2099,7 @@ mod tests {
             taking: None,
             toml: String::new(),
             stale: false,
+            hide: plan.hide,
         };
         reactor.setups.entries.insert("couch".to_string(), entry);
     }
@@ -2492,6 +2517,24 @@ mod tests {
     fn graph_of(profile: &str) -> Box<NewGraph> {
         let graph = Graph::build(Profile::check(profile).unwrap().graph).unwrap();
         Box::new(NewGraph::new(graph, Vec::new(), Vec::new()))
+    }
+
+    /// How a setup's pads are kept from games is how they were taken,
+    /// so a profile that asks for another way costs a start afresh,
+    /// though its pads and its virtual pad are the same.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn another_way_of_hiding_is_another_start() {
+        let mut rig = rig().await;
+        follow(&mut rig.reactor, 7, Phase::Held);
+        assert_eq!(rig.reactor.setups.entries["couch"].hide, Hide::Full);
+        let said_again = format!("{PROFILE}hide = \"full\"\n");
+        rig.reactor.profiles.put("couch", &said_again).unwrap();
+        let cost = ask_update(&mut rig, false).await.await.unwrap().unwrap();
+        assert!(!cost.disruptive, "the same way, said outright");
+        let grabbed = format!("{PROFILE}hide = \"grab\"\n");
+        rig.reactor.profiles.put("couch", &grabbed).unwrap();
+        let cost = ask_update(&mut rig, false).await.await.unwrap().unwrap();
+        assert!(cost.disruptive, "its pads would be taken another way");
     }
 
     #[tokio::test(flavor = "multi_thread")]

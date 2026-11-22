@@ -29,6 +29,7 @@ primary = "0c:27:56:4f:bd:14"
 assist = "model:054c:09cc"
 identity = "xbox"       # optional
 rumble = "primary"      # optional
+hide = "grab"           # optional
 auto-start = true       # optional
 ```
 
@@ -43,6 +44,14 @@ auto-start = true       # optional
 `outputs` is how many virtual pads to make; 2 if left out.
 
 `rumble` is who feels what a game rumbles, for the three presets of two controllers: `both` (the default), `primary` or `assist`. A helper who only steps in now and then may not want the rumble; a player who can't feel it may want the helper to.
+
+`hide` is how the real controllers are kept from games while the arrangement runs, in any profile, a preset or not:
+
+| `hide` | Games see the real controllers? |
+|---|---|
+| `full` (the default) | No. The hiding service takes them away; where it isn't installed they are grabbed, and Steam is told to leave them alone. |
+| `grab` | Most don't. A program that reads controllers another way, as Steam does, still sees them. |
+| `none` | Yes, beside the virtual one. Use it when a game should read a real controller directly, and expect a game that reads both to take a press twice. |
 
 ## Naming a controller
 
@@ -136,7 +145,7 @@ ctrlassist update couch --dry-run   # what would it cost?
 ctrlassist update couch
 ```
 
-An update that keeps the same virtual controllers, as many and of the same identities, is applied as the setup runs, and a game notices nothing: other controllers, a mode, a threshold, a rule, a deadzone, who feels rumble, the switch button, even how the parts are wired. A controller that is swapped out is given back to the system and the new one hidden; one that only changes parts stays as it is. A toggle goes on with whoever had control. Changing a virtual controller's identity, or how many there are, restarts the setup, which a game sees as its controller disconnecting and a new one connecting. `update` says which it is, before and after. If the profile as kept is wrong or gone, the setup carries on as it was.
+An update that keeps the same virtual controllers, as many and of the same identities, is applied as the setup runs, and a game notices nothing: other controllers, a mode, a threshold, a rule, a deadzone, who feels rumble, the switch button, even how the parts are wired. A controller that is swapped out is given back to the system and the new one hidden; one that only changes parts stays as it is. A toggle goes on with whoever had control. Changing a virtual controller's identity, how many there are, or `hide`, restarts the setup, which a game sees as its controller disconnecting and a new one connecting. `update` says which it is, before and after. If the profile as kept is wrong or gone, the setup carries on as it was.
 
 ### Editing the files by hand
 

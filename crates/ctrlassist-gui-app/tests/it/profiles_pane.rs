@@ -110,6 +110,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
             "assist",
             "identity",
             "rumble",
+            "hide",
             "auto-start"
         ],
         "a preset of two pads has no pad count"
@@ -187,7 +188,10 @@ fn what_the_window_holds_shows_as_unfinished_until_it_is_a_profile() {
         .iter()
         .map(|field| field.key.to_string())
         .collect();
-    assert_eq!(keys, ["preset", "pad", "outputs", "identity", "auto-start"]);
+    assert_eq!(
+        keys,
+        ["preset", "pad", "outputs", "identity", "hide", "auto-start"]
+    );
     let outputs = field(den, "outputs");
     assert_eq!((outputs.number, outputs.min, outputs.max), (3, 1, 8));
     assert_eq!(field(den, "pad").value_label, "");

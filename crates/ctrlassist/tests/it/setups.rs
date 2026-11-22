@@ -523,6 +523,69 @@ async fn with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored
 
 /// The one node of `setup` that selects: what it selects between, and
 /// which is selected.
+/// A profile may ask for less than hiding, with the hiding service
+/// there to be asked: only a grab, or nothing, so that a game reads the
+/// pad beside the virtual one. Neither has the service or Steam told
+/// anything, and going from one to the other is another start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_profile_that_asks_for_less_than_hiding_is_left_with_what_it_asks() {
+    use ctrlassist_test::Asked;
+    const TEST: &str = "a_profile_that_asks_for_less_than_hiding_is_left_with_what_it_asks";
+    if !can_make_pads(TEST) {
+        return;
+    }
+    let mut primary = FakePad::new("Less Primary", VENDOR, 0x7f11).unwrap();
+    let _assist = FakePad::new("Less Assist", VENDOR, 0x7f12).unwrap();
+    let (_dir, socket) = socket();
+    let hider = ctrlassist_test::FakeHider::listen(&socket.with_file_name("hider.sock")).unwrap();
+    let steam = socket.with_file_name("config.vdf");
+    let untouched = "\"InstallConfigStore\"\n{\n\t\"controller_blacklist\"\t\t\"28de/1142\"\n}\n";
+    std::fs::write(&steam, untouched).unwrap();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    let hid = |hider: &ctrlassist_test::FakeHider| {
+        asked(hider)
+            .iter()
+            .any(|asked| matches!(asked, Asked::Hide(_)))
+    };
+
+    // Grabbed only: nobody else hears the pad, and the service that
+    // could have hidden it isn't asked to.
+    let grabbed = format!("{}hide = \"grab\"\n", priority(0x7f11, 0x7f12));
+    client.put_profile("couch", &grabbed).await.unwrap();
+    let mut other = bystander(&primary);
+    client.start_setup("couch").await.unwrap();
+    let setup = in_phase(&client, "couch", Phase::Running).await;
+    assert!(!hid(&hider), "{:?}", asked(&hider));
+    assert!(client.list_pads().unwrap().iter().all(|pad| !pad.hidden));
+    let mut seen = game(&setup).await;
+    primary.south(true).unwrap();
+    south_is(&mut seen, true).await;
+    other.read(|_| {}).unwrap();
+    assert!(other.state().get(gamepad::SOUTH) < 0.5);
+    primary.south(false).unwrap();
+    south_is(&mut seen, false).await;
+
+    // Not at all: taken up by a start afresh, and then a press is heard
+    // both through the virtual pad and on the pad itself.
+    let visible = format!("{}hide = \"none\"\n", priority(0x7f11, 0x7f12));
+    client.put_profile("couch", &visible).await.unwrap();
+    assert!(client.update_setup("couch", false).await.unwrap());
+    assert!(client.update_setup("couch", true).await.unwrap());
+    let setup = in_phase(&client, "couch", Phase::Running).await;
+    let mut seen = game(&setup).await;
+    primary.south(true).unwrap();
+    south_is(&mut seen, true).await;
+    south_is(&mut other, true).await;
+    assert!(!hid(&hider), "{:?}", asked(&hider));
+
+    // Steam was told nothing either time: that is for a pad that was to
+    // be hidden and couldn't be.
+    assert_eq!(std::fs::read_to_string(&steam).unwrap(), untouched);
+    client.stop_setup("couch").await.unwrap();
+    daemon.stop().await;
+}
+
 fn selecting(setup: &Setup) -> (Vec<&str>, usize) {
     assert_eq!(setup.nodes.len(), 1, "{:?}", setup.nodes);
     let node = &setup.nodes[0];

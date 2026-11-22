@@ -9,7 +9,7 @@ use ctrlassist_core::{
     DemuxConfig, DemuxMode, Graph, GraphSpec, Input, Kind, Layout, Mode, MuxConfig, MuxFeedback,
     NodeId, NodeSpec, Rule, SourceId, SourceSpec, Switch, gamepad,
 };
-use ctrlassist_protocol::profile::{Identity, PadRef, Plan, Profile, ProfileError};
+use ctrlassist_protocol::profile::{Hide, Identity, PadRef, Plan, Profile, ProfileError};
 
 fn plan(text: &str) -> Result<Plan, ProfileError> {
     Profile::from_toml(text)?.plan()
@@ -493,6 +493,25 @@ fn checking_a_profile_reads_it_and_works_it_out() {
         "preset"
     );
     assert_eq!(Profile::check("preset =").unwrap_err().at, "line 1");
+}
+
+/// Any profile may say how its pads are kept from games, a preset or
+/// the full form, and one that doesn't means as well as can be.
+#[test]
+fn a_profile_says_how_its_pads_are_hidden() {
+    let preset = |hide: &str| {
+        format!(
+            "preset = \"priority\"\nprimary = \"model:0001:0001\"\nassist = \"model:0002:0002\"\n{hide}"
+        )
+    };
+    assert_eq!(plan(&preset("")).unwrap().hide, Hide::Full);
+    for hide in Hide::ALL {
+        let said = format!("hide = \"{}\"\n", hide.as_str());
+        assert_eq!(plan(&preset(&said)).unwrap().hide, hide);
+        assert_eq!(plan(&format!("{said}{FULL}")).unwrap().hide, hide);
+    }
+    assert_eq!(plan(FULL).unwrap().hide, Hide::Full);
+    assert!(plan(&preset("hide = \"somewhat\"\n")).is_err());
 }
 
 /// A preset of two pads may say who feels rumble, and means what the

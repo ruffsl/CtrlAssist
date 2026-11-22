@@ -56,6 +56,9 @@ pub struct Profile {
     /// Who feels what a game rumbles, for a mux preset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rumble: Option<Rumble>,
+    /// How the setup's pads are kept from games.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hide: Option<Hide>,
 
     /// The pads, by name, for a profile in the full form.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -112,6 +115,37 @@ impl Rumble {
             Self::Both => "both",
             Self::Primary => "primary",
             Self::Assist => "assist",
+        }
+    }
+}
+
+/// How a setup's pads are kept from games while it runs, so that a game
+/// reads the virtual pad and not the pads behind it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Hide {
+    /// As well as can be: taken away by the hiding service, or grabbed
+    /// where that isn't there.
+    #[default]
+    Full,
+    /// Grabbed only, which hides a pad from most games and not from a
+    /// program that reads it some other way.
+    Grab,
+    /// Not at all: games see the pads beside the virtual pad.
+    None,
+}
+
+impl Hide {
+    /// Every choice, in the order a menu lists them.
+    pub const ALL: [Self; 3] = [Self::Full, Self::Grab, Self::None];
+
+    /// The choice as a profile writes it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Grab => "grab",
+            Self::None => "none",
         }
     }
 }
@@ -464,6 +498,8 @@ pub struct Plan {
     pub sinks: Vec<PlannedSink>,
     /// Whether to start it without being asked.
     pub auto_start: bool,
+    /// How its pads are kept from games.
+    pub hide: Hide,
 }
 
 /// Button names, as profiles write them.
@@ -723,6 +759,7 @@ impl Profile {
             nodes: node_names,
             sinks,
             auto_start: full.auto_start,
+            hide: full.hide.unwrap_or_default(),
         })
     }
 

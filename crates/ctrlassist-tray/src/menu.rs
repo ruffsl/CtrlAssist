@@ -544,6 +544,10 @@ Quick start >
     (o) Both pads
     ( ) Primary only
     ( ) Assist only
+  Real pads: Hidden >
+    (o) Hidden
+    ( ) Grabbed
+    ( ) Visible
   [ ] Start by itself
   ---
   - Start as `quick`

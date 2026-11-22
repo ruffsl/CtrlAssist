@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::profile::{Identity, Preset, Rumble};
+use crate::profile::{Hide, Identity, Preset, Rumble};
 
 /// One choice of a field that offers some.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -201,6 +201,33 @@ pub fn fields() -> Vec<Field> {
             },
             presets: names(&TWO_PADS),
             default: Rumble::default().as_str().to_string(),
+        },
+        Field {
+            key: "hide".to_string(),
+            label: "Real pads".to_string(),
+            help: "How the pads behind the virtual pad are kept from games while this runs."
+                .to_string(),
+            kind: Kind::Choice {
+                choices: vec![
+                    choice(
+                        Hide::Full.as_str(),
+                        "Hidden",
+                        "Games don't see them: the hiding service takes them away, or they are grabbed where it isn't there.",
+                    ),
+                    choice(
+                        Hide::Grab.as_str(),
+                        "Grabbed",
+                        "Most games don't see them. A program that reads pads another way, as Steam does, still does.",
+                    ),
+                    choice(
+                        Hide::None.as_str(),
+                        "Visible",
+                        "Games see them beside the virtual pad, and may take what is pressed twice.",
+                    ),
+                ],
+            },
+            presets: Vec::new(),
+            default: Hide::default().as_str().to_string(),
         },
         Field {
             key: "auto-start".to_string(),
