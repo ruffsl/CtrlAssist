@@ -2618,3 +2618,15 @@ export component FormRow {
         }
     }
 }
+
+// A word in one of the tones a chip has, small, for the state under a
+// list row's name and beside a detail row.
+export component ToneText inherits Text {
+    in property <string> tone;
+    color: tone == "success" ? Theme.success-text
+         : tone == "warn" ? Theme.warn-text
+         : tone == "danger" ? Theme.danger-text
+         : tone == "info" ? Theme.info-text
+         : Theme.text-faint;
+    font-size: Design.font-mini;
+}

@@ -19,6 +19,7 @@ pub mod profiles;
 pub mod settings;
 pub mod setups;
 pub mod state;
+pub mod status;
 mod toast;
 
 use anyhow::{Context, Result};

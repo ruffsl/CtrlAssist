@@ -6,11 +6,11 @@ use std::rc::Rc;
 
 use ctrlassist::{Pad, Phase, Setup, SetupNode, SetupSink, SetupSource};
 use ctrlassist_gui::state::Snapshot;
-use ctrlassist_gui::{AppWindow, Pads, Pane, Setups, keys, nav, pads, setups};
+use ctrlassist_gui::{AppWindow, Pane, Setups, keys, nav, pads, setups};
 use slint::platform::Key;
 use slint::{ComponentHandle, Model as _, SharedString};
 
-use crate::support::{activate_shown, find_all_by_accessible_id, press, press_with_alt, settle};
+use crate::support::{activate_shown, find_all_by_accessible_id, press, settle};
 
 fn pad(id: &str, name: &str, setup: Option<&str>) -> Pad {
     Pad {
@@ -229,47 +229,4 @@ fn a_setup_is_stopped_updated_and_steered_from_its_detail() {
     // Control is handed over by the choice's button.
     activate_shown(&app, "setups-node-mux-assist");
     assert_eq!(asked.borrow().last().unwrap(), "select couch mux assist");
-}
-
-#[test]
-fn a_pad_s_setup_and_a_setup_s_pad_are_a_click_apart_and_back_returns() {
-    let app = app(vec![
-        setup("couch", Phase::Running),
-        setup("den", Phase::Held),
-    ]);
-    let pads_pane = app.global::<Pads>();
-    let setups_pane = app.global::<Setups>();
-    assert_eq!(setups_pane.get_trouble(), "warn", "den is held");
-
-    // From the DualSense's detail to its setup.
-    pads_pane.set_selected_index(0);
-    settle();
-    activate_shown(&app, "pads-setup-link");
-    assert_eq!(app.get_active_pane(), Pane::Setups);
-    assert_eq!(setups_pane.get_selected_index(), 0);
-
-    // From the setup's assist to that pad.
-    activate_shown(&app, "setups-pad-assist");
-    assert_eq!(app.get_active_pane(), Pane::Pads);
-    assert_eq!(
-        pads_pane
-            .get_rows()
-            .row_data(usize::try_from(pads_pane.get_selected_index()).unwrap())
-            .unwrap()
-            .name,
-        "Wireless Controller"
-    );
-
-    // Back, to the setup; back again, to the pad first looked at.
-    press_with_alt(&app, Key::LeftArrow);
-    assert_eq!(app.get_active_pane(), Pane::Setups);
-    assert_eq!(setups_pane.get_selected_index(), 0);
-    // Focus is put back where it was on that page a tick later; a key
-    // before then would find nothing focused.
-    for _ in 0..4 {
-        settle();
-    }
-    press_with_alt(&app, Key::LeftArrow);
-    assert_eq!(app.get_active_pane(), Pane::Pads);
-    assert_eq!(pads_pane.get_selected_index(), 0);
 }

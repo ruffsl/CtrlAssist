@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ctrlassist::{Pad, Phase, Setup, SetupSource};
+use ctrlassist::{Pad, Phase, Profile, Setup, SetupSource};
 use ctrlassist_gui::pads::{rows, show};
 use ctrlassist_gui::{AppWindow, Nav, Pads, keys, nav};
 use slint::platform::Key;
@@ -49,6 +49,27 @@ fn quick() -> Setup {
     }
 }
 
+/// The profile `quick` runs, and another that names its primary.
+fn profiles() -> Vec<Profile> {
+    let kept = |name: &str, toml: &str| Profile {
+        name: name.to_string(),
+        toml: toml.to_string(),
+        problem: None,
+    };
+    vec![
+        kept(
+            "desk",
+            "preset = \"unicast\"\npad = \"address:0c:27:56:4f:bd:14\"\n",
+        ),
+        kept(
+            "quick",
+            "preset = \"priority\"\nprimary = \"address:0c:27:56:4f:bd:14\"\nassist = \"address:1c:96:5a:a1:35:da\"\n",
+        ),
+        // One the daemon finds wrong names no pad that can be told.
+        kept("broken", "preset = \"priority\"\n"),
+    ]
+}
+
 fn some_pads() -> Vec<Pad> {
     vec![
         pad("serial:045e:02dd:7EED821FFB17", "Xbox pad", false, None),
@@ -70,7 +91,7 @@ fn some_pads() -> Vec<Pad> {
 
 #[test]
 fn rows_put_connected_pads_first_and_say_what_each_is() {
-    let made = rows(&some_pads(), &[quick()]);
+    let made = rows(&some_pads(), &[quick()], &profiles());
     let names: Vec<&str> = made.iter().map(|row| row.name.as_str()).collect();
     assert_eq!(
         names,
@@ -93,6 +114,32 @@ fn rows_put_connected_pads_first_and_say_what_each_is() {
     assert_eq!(dualsense.address, "0c:27:56:4f:bd:14");
     assert_eq!(dualsense.tag, "bd:14");
     assert_eq!(dualsense.key, "address-0c-27-56-4f-bd-14");
+    // What it is doing, its maker's tile, and whether games see it.
+    assert_eq!(
+        (dualsense.word.as_str(), dualsense.tone.as_str()),
+        ("In quick", "success")
+    );
+    assert_eq!(dualsense.maker, "sony");
+    assert_eq!(dualsense.games, "Hidden from them");
+    // Every profile that names it, with its part and how the profile is.
+    let named: Vec<String> = dualsense
+        .profiles
+        .iter()
+        .map(|row| format!("{} {} {} {}", row.name, row.part, row.word, row.tone))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            "desk Pad Waits for a pad neutral",
+            "quick Primary Running success"
+        ]
+    );
+    let free = &made[2];
+    assert_eq!((free.word.as_str(), free.tone.as_str()), ("Free", "info"));
+    assert_eq!(free.games, "See this pad");
+    assert_eq!(free.profiles.row_count(), 1);
+    assert_eq!(made[0].profiles.row_count(), 0);
+    assert_eq!(made[0].maker, "sony");
     // Known by its model alone: nothing tells it from another, and it
     // has no address.
     assert_eq!((made[0].tag.as_str(), made[0].address.as_str()), ("", ""));
@@ -101,6 +148,10 @@ fn rows_put_connected_pads_first_and_say_what_each_is() {
     assert!(!xbox.connected);
     assert_eq!(xbox.connection, "");
     assert_eq!(xbox.tag, "FFB17");
+    assert_eq!(
+        (xbox.word.as_str(), xbox.tone.as_str()),
+        ("Remembered", "neutral")
+    );
 
     // A bus that is neither, and rumble the daemon couldn't tell.
     let odd = Pad {
@@ -108,7 +159,7 @@ fn rows_put_connected_pads_first_and_say_what_each_is() {
         rumble: None,
         ..pad("port:usb-1/input0", "Odd", true, None)
     };
-    let row = &rows(&[odd], &[])[0];
+    let row = &rows(&[odd], &[], &[])[0];
     assert_eq!((row.connection.as_str(), row.rumble.as_str()), ("", ""));
 }
 
@@ -118,7 +169,7 @@ fn app() -> AppWindow {
     let _ = nav::wire(&app);
     keys::bind_key_router(&app);
     app.set_daemon_available(true);
-    show(&app, rows(&some_pads(), &[quick()]));
+    show(&app, rows(&some_pads(), &[quick()], &profiles()));
     app
 }
 
@@ -133,7 +184,7 @@ fn the_selection_stays_on_its_pad_as_rows_move_and_goes_with_it() {
     // The DualSense goes: the Wireless Controller is second now.
     let mut fewer = some_pads();
     fewer.remove(2);
-    show(&app, rows(&fewer, &[]));
+    show(&app, rows(&fewer, &[], &[]));
     assert_eq!(pads.get_selected_index(), 1);
     assert_eq!(
         pads.get_rows().row_data(1).unwrap().name,
@@ -141,7 +192,7 @@ fn the_selection_stays_on_its_pad_as_rows_move_and_goes_with_it() {
     );
     // It is forgotten: nothing is selected.
     fewer.remove(1);
-    show(&app, rows(&fewer, &[]));
+    show(&app, rows(&fewer, &[], &[]));
     assert_eq!(pads.get_selected_index(), -1);
 }
 
@@ -189,6 +240,33 @@ fn identify_needs_the_pad_there_and_forget_needs_it_gone_and_asks_first() {
         asked.borrow().last().unwrap(),
         "forget serial:045e:02dd:7EED821FFB17"
     );
+}
+
+/// A pad's detail lists the profiles that name it, and a row opens its
+/// profile; the pads that are only remembered sit under their own
+/// caption.
+#[test]
+fn a_pad_s_profiles_open_from_its_detail() {
+    let app = app();
+    let pads = app.global::<Pads>();
+    let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+    let seen = opened.clone();
+    pads.on_open_profile(move |name| seen.borrow_mut().push(name.to_string()));
+    pads.set_selected_index(1);
+    settle();
+    assert!(find_by_accessible_id(&app, "pads-no-profiles").is_none());
+    crate::support::activate_shown(&app, "pads-profile-desk");
+    crate::support::activate_shown(&app, "pads-profile-quick");
+    assert_eq!(*opened.borrow(), ["desk", "quick"]);
+    // A pad no profile names says so.
+    pads.set_selected_index(0);
+    settle();
+    assert!(find_by_accessible_id(&app, "pads-no-profiles").is_some());
+    let caption = i_slint_backend_testing::ElementQuery::from_root(&app)
+        .match_descendants()
+        .match_predicate(|element| element.accessible_label().as_deref() == Some("REMEMBERED"))
+        .find_first();
+    assert!(caption.is_some(), "the remembered pad sits under a caption");
 }
 
 #[test]

@@ -129,7 +129,10 @@ impl Snapshot {
             tray.set_config_path(SharedString::from(self.tray_config.as_str()));
         }
         crate::about::refresh(app);
-        crate::pads::show(app, crate::pads::rows(&self.pads, &self.setups));
+        crate::pads::show(
+            app,
+            crate::pads::rows(&self.pads, &self.setups, &self.profiles),
+        );
         crate::setups::show(
             app,
             crate::setups::rows(

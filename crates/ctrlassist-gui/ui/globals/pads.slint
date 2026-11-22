@@ -4,6 +4,17 @@
 
 // One known pad, as the pane shows it. Everything is text made in
 // Rust, so the pane only lays it out.
+// A profile that names a pad, as the pad's detail lists it.
+export struct PadProfileRow {
+    name: string,
+    // The part the pad plays in it: "Primary", "Assist", "Pad", or a
+    // source's own name in a profile written by hand.
+    part: string,
+    // How the profile is, in a word, and the word's tone.
+    word: string,
+    tone: string,
+}
+
 export struct PadRow {
     // What the daemon knows the pad by across reconnects, as a profile
     // names it; the rpcs take it.
@@ -23,6 +34,17 @@ export struct PadRow {
     connected: bool,
     // "Yes", "No", or empty when the daemon couldn't tell.
     rumble: string,
+    // Its maker, for its tile: "sony", "microsoft", "nintendo",
+    // "8bitdo", "valve", or empty for any other.
+    maker: string,
+    // What it is doing, in a word, and the word's tone: "In couch",
+    // "Free", "Remembered".
+    word: string,
+    tone: string,
+    // Whether games see it, in a few words.
+    games: string,
+    // Every profile that names it.
+    profiles: [PadProfileRow],
     // The setup that has it, and its role there; empty for none.
     setup: string,
     role: string,
@@ -43,6 +65,6 @@ export global Pads {
     callback identify(string);
     // Stop remembering a pad that isn't connected.
     callback forget(string);
-    // Show the setup in the Setups pane.
-    callback open-setup(string);
+    // Show a profile in the Profiles pane.
+    callback open-profile(string);
 }

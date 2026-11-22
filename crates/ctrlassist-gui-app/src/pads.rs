@@ -3,12 +3,13 @@
 
 use std::time::Duration;
 
-use ctrlassist::{DaemonClient, Pad, Setup};
-use slint::{ComponentHandle, Model as _, SharedString};
+use ctrlassist::{DaemonClient, Pad, Profile, Setup};
+use ctrlassist_protocol::profile::{Hide, Plan};
+use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
 use tracing::warn;
 
 use crate::nav::NavHandles;
-use crate::{AppWindow, ErrorState, Errors, PadRow, Pads, on_ui};
+use crate::{AppWindow, ErrorState, Errors, PadProfileRow, PadRow, Pads, on_ui, status};
 
 /// How long Identify buzzes a pad: the command line's default.
 const IDENTIFY: Duration = Duration::from_millis(600);
@@ -42,11 +43,42 @@ pub(crate) fn tag_of(id: &str) -> String {
     tail.into_iter().rev().collect()
 }
 
+/// A pad's maker, for its tile, by its vendor number; empty for one
+/// with no mark of its own.
+fn maker_of(vendor: u16) -> &'static str {
+    match vendor {
+        0x054c => "sony",
+        0x045e => "microsoft",
+        0x057e => "nintendo",
+        0x2dc8 => "8bitdo",
+        0x28de => "valve",
+        _ => "",
+    }
+}
+
+/// A source's name as a row says it: `primary` as "Primary".
+fn capitalized(name: &str) -> String {
+    let mut letters = name.chars();
+    letters
+        .next()
+        .map(|first| first.to_uppercase().chain(letters).collect())
+        .unwrap_or_default()
+}
+
 /// The pane's rows: connected pads first, then the remembered ones,
 /// each group in name order and then by id, so two of one name keep
 /// their places.
 #[must_use]
-pub fn rows(pads: &[Pad], setups: &[Setup]) -> Vec<PadRow> {
+pub fn rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow> {
+    // Each profile worked out once; one the daemon finds wrong names no
+    // pad that can be told.
+    let plans: Vec<(&str, Plan)> = profiles
+        .iter()
+        .filter_map(|profile| {
+            let plan = ctrlassist_protocol::profile::Profile::check(&profile.toml).ok()?;
+            Some((profile.name.as_str(), plan))
+        })
+        .collect();
     let mut sorted: Vec<&Pad> = pads.iter().collect();
     sorted.sort_by(|a, b| {
         b.connected
@@ -71,7 +103,45 @@ pub fn rows(pads: &[Pad], setups: &[Setup]) -> Vec<PadRow> {
                 })
                 .map(|source| source.name.clone())
                 .unwrap_or_default();
+            let named: Vec<PadProfileRow> = plans
+                .iter()
+                .filter_map(|(name, plan)| {
+                    let source = plan
+                        .sources
+                        .iter()
+                        .find(|source| status::names(&source.pad, pad))?;
+                    let (word, tone) = status::of(name, Some(plan), setups, pads);
+                    Some(PadProfileRow {
+                        name: SharedString::from(*name),
+                        part: SharedString::from(capitalized(&source.name)),
+                        word: SharedString::from(word),
+                        tone: SharedString::from(tone),
+                    })
+                })
+                .collect();
+            let (word, tone) = match (&pad.setup, pad.connected) {
+                (_, false) => ("Remembered".to_string(), "neutral"),
+                (Some(setup), true) => (format!("In {setup}"), "success"),
+                (None, true) => ("Free".to_string(), "info"),
+            };
+            // What its setup's profile asks, and what came of it.
+            let asked = pad.setup.as_deref().and_then(|setup| {
+                plans
+                    .iter()
+                    .find(|(name, _)| *name == setup)
+                    .map(|(_, plan)| plan.hide)
+            });
+            let games = match (pad.setup.is_some(), pad.hidden, asked) {
+                (false, ..) | (true, false, Some(Hide::None)) => "See this pad",
+                (true, true, _) => "Hidden from them",
+                (true, false, _) => "Only grabbed",
+            };
             PadRow {
+                maker: SharedString::from(maker_of(pad.vendor)),
+                word: SharedString::from(word),
+                tone: SharedString::from(tone),
+                games: SharedString::from(games),
+                profiles: ModelRc::new(VecModel::from(named)),
                 id: SharedString::from(pad.id.as_str()),
                 key: SharedString::from(key_of(&pad.id)),
                 name: SharedString::from(pad.name.as_str()),
@@ -154,10 +224,10 @@ fn refused(what: &str, error: &ctrlassist::Error) -> ErrorState {
 
 /// Binds the link from a pad to its setup. It needs no daemon.
 pub fn bind_links(app: &AppWindow, nav: &NavHandles) {
-    let (weak, go_setup) = (app.as_weak(), nav.go_setup.clone());
-    app.global::<Pads>().on_open_setup(move |setup| {
+    let (weak, go_profile) = (app.as_weak(), nav.go_profile.clone());
+    app.global::<Pads>().on_open_profile(move |profile| {
         if let Some(app) = weak.upgrade() {
-            go_setup(&app, setup);
+            go_profile(&app, profile);
         }
     });
 }
