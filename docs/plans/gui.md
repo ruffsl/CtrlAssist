@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** decisions settled with the maintainer on 2026-11-21; the build is under way. Build steps 1 to 7 are done: the window opens with its sidebar and five empty panes, is steered by keys, with couch mode, follows the daemon, and its Reload asks the daemon to reread its files.
-- **Next action:** build steps 1 to 9 are done, the panes are rebuilt to the layout in "The panes, rethought", and the window is packaged and opened as TisVlay's is (build step 12), with its VM check. Help and translations are next, then the book. The daemon has no settings of its own: see "Rethought, 2026-11-22".
+- **Next action:** build steps 1 to 9 are done, the panes are rebuilt to the layout in "The panes, rethought", and the window is packaged and opened as TisVlay's is (build step 12), with its VM check. Building is paused for the maintainer to use the window; help, translations and the book follow. The daemon has no settings of its own: see "Rethought, 2026-11-22".
 - **Branch:** `feat/rewrite`, with the rewrite. Nothing is pushed.
 - **Template:** TisVlay at `5ddc2c0d` (`crates/tisvlay-gui`, `crates/tisvlay-gui-app`, `crates/tisvlay-icons`, `docs/gui/`).
 
@@ -186,6 +186,8 @@ The hub itself saw all three in every case.
 Still open: the tile of a pad from an unknown maker, which the mock-up draws as a plain gamepad icon.
 
 **Answered, 2026-11-22, after the rebuild.** The Profiles list's one header with the count and the add button stays as built. Where a choice's own sentence shows is [an idea](../ideas/choice-descriptions.md) for later. The window is opened four ways, all as TisVlay has them: a desktop entry; an entry in the tray's menu, named "Settings" as TisVlay's is; a left click on the tray's icon; and D-Bus activation, so that a second launch raises the window that is open. The window is in the one package and installed with it always.
+
+**Answered, 2026-11-22, after packaging.** With no session bus the window opens anyway, as built. Help goes where it is now and in the gaps that are left: the header's chips, Identify, and the Settings pane's groups. Translations are the plumbing only: the domain, the template, the extract recipe and its gate, and a pseudo-locale run, with no language shipped and what Rust words left in English. Building stops here for the maintainer to use the window; help, translations and the book follow what that turns up.
 
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
