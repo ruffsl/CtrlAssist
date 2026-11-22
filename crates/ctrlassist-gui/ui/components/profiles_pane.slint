@@ -977,8 +977,7 @@ export component ProfilesPane {
     in property <ServiceHealth> daemon-health;
 
     property <string> pending-delete: "";
-    // The profile a Stop is waiting on the dialog for.
-    property <string> pending-stop: "";
+
     // The name dialog: "new", "duplicate" or "rename", and what of.
     property <string> naming: "";
     property <string> naming-source: "";
@@ -1102,7 +1101,8 @@ export component ProfilesPane {
                     daemon-available: root.daemon-available;
                     focus-tick: root.focus-detail-tick;
                     request-delete => { root.pending-delete = profile.name; }
-                    request-stop => { root.pending-stop = profile.name; }
+                    // Done as pressed: Start beside it undoes it.
+                    request-stop => { Setups.stop(profile.name); }
                     request-duplicate => {
                         root.naming-source = profile.name;
                         root.naming-name = profile.name + "-copy";
@@ -1120,19 +1120,6 @@ export component ProfilesPane {
         }
     }
 
-    ConfirmDialog {
-        open: root.pending-stop != "";
-        title: @tr("Stop profile");
-        message: @tr("Stop '{}'? A game using its virtual pad sees the pad disconnect, and the real pads are shown again.", root.pending-stop);
-        confirm-label: @tr("Stop");
-        confirmed => {
-            Setups.stop(root.pending-stop);
-            root.pending-stop = "";
-        }
-        cancelled => {
-            root.pending-stop = "";
-        }
-    }
 
     // What an update costs is asked of the daemon as the button is
     // pressed, and said here before it is done.

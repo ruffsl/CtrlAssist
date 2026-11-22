@@ -483,9 +483,9 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
     assert!(find_by_accessible_id(&app, "profiles-start").is_none());
     assert!(enabled("profiles-stop"));
     assert!(!enabled("profiles-rename"));
+    // Stop is done as pressed, with no dialog: Start undoes it.
     activate_shown(&app, "profiles-stop");
-    assert!(asked.borrow().is_empty(), "nothing stops until confirmed");
-    activate_shown(&app, "dialog-confirm");
+    assert!(find_by_accessible_id(&app, "dialog-confirm").is_none());
     activate_shown(&app, "profiles-update");
     activate_shown(&app, "profiles-pad-assist");
     activate_shown(&app, "profiles-pad-primary");

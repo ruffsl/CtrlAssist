@@ -240,7 +240,7 @@ pub fn rows(parts: &Parts) -> Vec<AboutComponentRow> {
         ),
         (
             "hider",
-            "Hiding service",
+            "Hiding",
             String::new(),
             "Runs as root to make a setup's pads absent to games.".to_string(),
             hider,
@@ -254,7 +254,7 @@ pub fn rows(parts: &Parts) -> Vec<AboutComponentRow> {
         ),
         (
             "gui",
-            "Window",
+            "GUI",
             crate::APP_ID.to_string(),
             "This window.".to_string(),
             window,

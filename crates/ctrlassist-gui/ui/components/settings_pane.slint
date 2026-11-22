@@ -79,50 +79,6 @@ export component SettingsPane inherits Rectangle {
             font-weight: 700;
         }
 
-        // -- COUCH MODE group --
-        //
-        // The layout for a TV across the room. Rust owns the decision
-        // (`couch::active`) and the window side; the pane only edits
-        // the preference through the `Couch` callbacks.
-        Group {
-            title: @tr("COUCH MODE");
-
-            SettingRow {
-                label: @tr("Couch mode");
-                helper: @tr("Maximized and scaled up, with the keys arranged for a remote or a pad. Following the session turns it on under a TV shell such as Plasma Bigscreen.");
-                couch-select := ThemedSelect {
-                    accessible-label: @tr("Couch mode");
-                    accessible-id: "settings-couch-mode";
-                    width: 200px;
-                    model: root.couch-modes;
-                    current-value: root.couch-modes[root.mode-index];
-                    selected-index(i) => {
-                        Couch.mode-changed(i == 1 ? "on" : i == 2 ? "off" : "auto");
-                    }
-                }
-            }
-
-            SettingRow {
-                label: @tr("Scale");
-                helper: @tr("On top of the display's own scale, in percent. Larger for a farther couch or a smaller screen.");
-                ThemedSpinBox {
-                    width: 200px;
-                    value: Couch.scale-percent;
-                    minimum: Couch.scale-min-percent;
-                    maximum: Couch.scale-max-percent;
-                    step: 10;
-                    accessible-label: @tr("Scale");
-                    accessible-id: "settings-couch-scale";
-                    committed(v) => { Couch.scale-changed(v); }
-                }
-            }
-
-            KeptIn {
-                accessible-id: "settings-couch-path";
-                path: Couch.config-path;
-            }
-        }
-
         // With no tray the switches below stay in view, disabled, as
         // they were last known.
         if !Tray.available: InlineError {
@@ -197,10 +153,49 @@ export component SettingsPane inherits Rectangle {
                     }
                 }
             }
+        }
+
+        // -- COUCH MODE group --
+        //
+        // The layout for a TV across the room. Rust owns the decision
+        // (`couch::active`) and the window side; the pane only edits
+        // the preference through the `Couch` callbacks.
+        Group {
+            title: @tr("COUCH MODE");
+
+            SettingRow {
+                label: @tr("Couch mode");
+                helper: @tr("Maximized and scaled up, with the keys arranged for a remote or a pad. Following the session turns it on under a TV shell such as Plasma Bigscreen.");
+                couch-select := ThemedSelect {
+                    accessible-label: @tr("Couch mode");
+                    accessible-id: "settings-couch-mode";
+                    width: 200px;
+                    model: root.couch-modes;
+                    current-value: root.couch-modes[root.mode-index];
+                    selected-index(i) => {
+                        Couch.mode-changed(i == 1 ? "on" : i == 2 ? "off" : "auto");
+                    }
+                }
+            }
+
+            SettingRow {
+                label: @tr("Scale");
+                helper: @tr("On top of the display's own scale, in percent. Larger for a farther couch or a smaller screen.");
+                ThemedSpinBox {
+                    width: 200px;
+                    value: Couch.scale-percent;
+                    minimum: Couch.scale-min-percent;
+                    maximum: Couch.scale-max-percent;
+                    step: 10;
+                    accessible-label: @tr("Scale");
+                    accessible-id: "settings-couch-scale";
+                    committed(v) => { Couch.scale-changed(v); }
+                }
+            }
 
             KeptIn {
-                accessible-id: "settings-tray-path";
-                path: Tray.config-path;
+                accessible-id: "settings-couch-path";
+                path: Couch.config-path;
             }
         }
     }

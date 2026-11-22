@@ -237,6 +237,12 @@ Duplicate and Show its file moved from the PRESET card's caption to the header, 
 
 **The tray's icon is always the colored pad glyph** (2026-11-22, the maintainer's), with a warning or an error in its place for a setup held or failed. It was symbolic while nothing ran, as 0.4.0's and TisVlay's are; the menu's rows stay symbolic.
 
+**Smaller things from using the window** (2026-11-22, the maintainer's).
+
+- **Stop asks nothing.** A profile's Stop is done as pressed, where it opened a dialog first: Start beside it undoes it. Update that restarts, Delete and dropping changes still ask.
+- **About's rows are named as TisVlay's:** "Hiding" for the hiding service and "GUI" for the window. The hiding service's chip is to read its release as the other rows' do; it has none a client can read yet, which is open.
+- **Settings has NOTIFY ME WHEN above COUCH MODE,** and the notifications card no longer says where its file is kept. The file is beside the daemon's, whose folder About's Daemon row opens.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps
