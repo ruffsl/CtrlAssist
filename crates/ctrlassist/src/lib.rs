@@ -23,7 +23,7 @@ pub use ctrlassist_protocol::payload::{
     SetupSink, SetupSource,
 };
 use ctrlassist_protocol::rpc;
-pub use ctrlassist_protocol::rpc::ServiceInfo;
+pub use ctrlassist_protocol::rpc::{Reloaded, ServiceInfo};
 pub use error::{BoxError, Error, Result};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, warn};
@@ -439,7 +439,7 @@ impl DaemonClient {
     /// # Errors
     ///
     /// Fails as any rpc can.
-    pub async fn reload(&self) -> Result<rpc::Reloaded> {
+    pub async fn reload(&self) -> Result<Reloaded> {
         self.call::<daemon::Reload>(&()).await
     }
 

@@ -1,0 +1,189 @@
+//! The daemon's state as the window shows it: read from the SDK's
+//! mirror into one [`Snapshot`], and put on the window from that.
+//!
+//! The window renders level-triggered. The watch loop drains each burst
+//! of the mirror's events and reads everything once, so it never needs
+//! to know what an event changed, and an event that was dropped costs
+//! nothing: the next one reads the same whole.
+
+use ctrlassist::{DaemonClient, Hiding, StateWatcher, StateWatcherConfig};
+use ctrlassist_protocol::{VERSION, compatible};
+use slint::{ComponentHandle, SharedString};
+use tracing::{debug, warn};
+
+use crate::toast::show_toast;
+use crate::{AppWindow, ErrorState, Errors, ServiceHealth, on_ui};
+
+/// What the window shows of the daemon, read at one moment.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Snapshot {
+    /// The daemon is there.
+    pub available: bool,
+    /// All it publishes has arrived, so an empty list means empty.
+    pub hydrated: bool,
+    /// Its release, once it has said.
+    pub version: Option<String>,
+    /// Whether the hiding service hides setups' pads, or they are only
+    /// grabbed; unknown until the daemon's own state has arrived.
+    pub hidden: Option<bool>,
+}
+
+impl Snapshot {
+    /// Reads the mirror.
+    #[must_use]
+    pub fn read(daemon: &DaemonClient) -> Self {
+        let state = daemon.daemon_state().ok().flatten();
+        Self {
+            available: daemon.is_available(),
+            hydrated: daemon.is_hydrated(),
+            version: daemon.service_info().map(|info| info.version),
+            hidden: state.map(|state| state.hiding == Hiding::Service),
+        }
+    }
+
+    /// The daemon's health: whether it runs, and whether this window
+    /// can talk to it.
+    #[must_use]
+    pub fn daemon_health(&self) -> ServiceHealth {
+        health(self.available, self.version.as_deref())
+    }
+
+    /// The hiding service's health, as the daemon finds it: absent with
+    /// no daemon to ask, and while the daemon hasn't said.
+    #[must_use]
+    pub fn hider_health(&self) -> ServiceHealth {
+        match (self.available, self.hidden) {
+            (true, Some(true)) => ServiceHealth::Ok,
+            _ => ServiceHealth::Offline,
+        }
+    }
+
+    /// Puts the snapshot on the window.
+    pub fn show(&self, app: &AppWindow) {
+        app.set_daemon_available(self.available);
+        app.set_daemon_loading(self.available && !self.hydrated);
+        app.set_daemon_health(self.daemon_health());
+        app.set_hider_health(self.hider_health());
+        let banner = match (&self.version, self.daemon_health()) {
+            (Some(theirs), ServiceHealth::Incompatible) => ErrorState {
+                kind: SharedString::from("version"),
+                tone: SharedString::from("error"),
+                title: SharedString::from("The daemon is on another release"),
+                message: SharedString::from(format!(
+                    "This window is {VERSION} and the daemon is {theirs}, so nothing here can reach it. Restart the daemon, or this window, after an upgrade."
+                )),
+                action_label: SharedString::default(),
+            },
+            _ => ErrorState::default(),
+        };
+        app.global::<Errors>().set_version(banner);
+    }
+}
+
+/// A service's health from whether it runs and the release it reports:
+/// unusable on another release line, usable with a note on another
+/// patch release, and taken as fine until it has said.
+#[must_use]
+pub fn health(available: bool, version: Option<&str>) -> ServiceHealth {
+    match version {
+        _ if !available => ServiceHealth::Offline,
+        None => ServiceHealth::Ok,
+        Some(theirs) if !compatible(VERSION, theirs) => ServiceHealth::Incompatible,
+        Some(theirs) if theirs != VERSION => ServiceHealth::Skew,
+        Some(_) => ServiceHealth::Ok,
+    }
+}
+
+/// Follows the daemon for as long as the window lives, showing each
+/// change.
+pub(crate) async fn follow(daemon: DaemonClient, app: slint::Weak<AppWindow>) {
+    let mut watcher = StateWatcher::new(&daemon, StateWatcherConfig::default());
+    let mut shown = None;
+    loop {
+        // One read for a burst of events.
+        while watcher.try_next().is_some() {}
+        let snapshot = Snapshot::read(&daemon);
+        if shown.as_ref() != Some(&snapshot) {
+            debug!(?snapshot, "the daemon's state changed");
+            shown = Some(snapshot.clone());
+            on_ui(&app, move |app| snapshot.show(&app));
+        }
+        if watcher.next().await.is_none() {
+            return;
+        }
+    }
+}
+
+/// What a reload found, in a line for the toast.
+#[must_use]
+pub fn reload_summary(reloaded: &ctrlassist::Reloaded) -> String {
+    let read = reloaded.changed.len();
+    let gone = reloaded.removed.len();
+    if read == 0 && gone == 0 {
+        return "Nothing changed on disk".to_string();
+    }
+    let mut parts = Vec::new();
+    if read > 0 {
+        parts.push(format!("{read} read again"));
+    }
+    if gone > 0 {
+        parts.push(format!("{gone} gone"));
+    }
+    if !reloaded.updating.is_empty() {
+        parts.push(format!("{} running updated", reloaded.updating.len()));
+    }
+    format!("Profiles: {}", parts.join(", "))
+}
+
+/// The reload banner for profiles a reload found wrong, one per line as
+/// the daemon reports them; empty when none is.
+#[must_use]
+pub fn reload_banner(reloaded: &ctrlassist::Reloaded) -> ErrorState {
+    let lines: Vec<String> = reloaded
+        .wrong
+        .iter()
+        .filter_map(|profile| {
+            let problem = profile.problem.as_ref()?;
+            Some(format!("{}.toml: {problem}", profile.name))
+        })
+        .collect();
+    if lines.is_empty() {
+        return ErrorState::default();
+    }
+    ErrorState {
+        kind: SharedString::from("reload"),
+        tone: SharedString::from("error"),
+        title: SharedString::from("Some profiles can't be run as they are"),
+        message: SharedString::from(lines.join("\n")),
+        action_label: SharedString::default(),
+    }
+}
+
+/// The sidebar's Reload: asks the daemon, then says what it found.
+pub(crate) fn wire_reload(app: &AppWindow, daemon: &DaemonClient) {
+    let weak = app.as_weak();
+    let daemon = daemon.clone();
+    app.global::<crate::Daemon>().on_reload_config(move || {
+        let (weak, daemon) = (weak.clone(), daemon.clone());
+        tokio::spawn(async move {
+            match daemon.reload().await {
+                Ok(reloaded) => {
+                    show_toast(weak.clone(), &reload_summary(&reloaded));
+                    let banner = reload_banner(&reloaded);
+                    on_ui(&weak, move |app| app.global::<Errors>().set_reload(banner));
+                }
+                Err(error) => {
+                    warn!(%error, "the reload failed");
+                    let banner = ErrorState {
+                        kind: SharedString::from("reload"),
+                        tone: SharedString::from("error"),
+                        title: SharedString::from("The daemon couldn't reload"),
+                        message: SharedString::from(error.to_string()),
+                        action_label: SharedString::default(),
+                    };
+                    on_ui(&weak, move |app| app.global::<Errors>().set_reload(banner));
+                }
+            }
+        });
+    });
+}

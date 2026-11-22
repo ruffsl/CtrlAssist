@@ -7,6 +7,8 @@
 mod couch;
 pub mod keys;
 pub mod nav;
+pub mod state;
+mod toast;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -14,6 +16,23 @@ use slint::{ComponentHandle, SharedString};
 use tracing::{debug, info, warn};
 
 pub use ctrlassist_gui_ui::*;
+
+/// Marshal a UI-touching closure onto the Slint event loop. Clones the
+/// weak ref internally so callers can pass it by reference; if the
+/// `AppWindow` has been dropped by the time the closure runs, it is
+/// silently skipped.
+pub(crate) fn on_ui<F>(weak: &slint::Weak<AppWindow>, f: F)
+where
+    F: FnOnce(AppWindow) + Send + 'static,
+{
+    let weak = weak.clone();
+    slint::invoke_from_event_loop(move || {
+        if let Some(app) = weak.upgrade() {
+            f(app);
+        }
+    })
+    .ok();
+}
 
 /// The application id: the Wayland app id, and the name of the desktop
 /// entry that launches the window.
@@ -79,6 +98,14 @@ pub fn run() -> Result<()> {
 
     let app = AppWindow::new()?;
     let nav = nav::wire(&app);
+
+    // The daemon: connected to whether or not it is there yet, and
+    // followed from then on.
+    let daemon = rt
+        .block_on(ctrlassist::DaemonClient::connect(&socket))
+        .context("couldn't open a session for the daemon's socket")?;
+    state::wire_reload(&app, &daemon);
+    rt.spawn(state::follow(daemon, app.as_weak()));
 
     keys::bind_key_router(&app);
     // Escape on the sidebar with nothing to go back to, in couch mode:

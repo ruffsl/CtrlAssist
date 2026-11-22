@@ -359,7 +359,9 @@ export component AppWindow inherits Window {
     // Presence plus release compatibility, for the footer dots. The
     // `*-available` flags above stay presence only.
     in property <ServiceHealth> daemon-health: ServiceHealth.offline;
-    in property <ServiceHealth> tray-health: ServiceHealth.offline;
+    // The hiding service, as the daemon finds it: without it a setup's
+    // pads are grabbed, not hidden.
+    in property <ServiceHealth> hider-health: ServiceHealth.offline;
     in-out property <Pane> active-pane: Pane.pads;
     // Navigating panes retires any open help bubble: the owning info
     // button is gone (or no longer hovered/focused), so its own
@@ -621,7 +623,7 @@ export component AppWindow inherits Window {
                     }
 
                     // Footer status block — two peer indicators (Daemon /
-                    // Tray) grouped together and centered within
+                    // Hiding service) grouped together and centered within
                     // the sidebar. Each dot renders its service's health:
                     // filled while it runs, colored by whether this GUI
                     // can use it. Each row is a single left-aligned Text
@@ -643,8 +645,8 @@ export component AppWindow inherits Window {
                                 horizontal-alignment: left;
                             }
                             Text {
-                                text: Health.dot(root.tray-health) + " " + @tr("Tray");
-                                color: Health.color(root.tray-health);
+                                text: Health.dot(root.hider-health) + " " + @tr("Hiding");
+                                color: Health.color(root.hider-health);
                                 font-size: Design.font-caption;
                                 horizontal-alignment: left;
                             }

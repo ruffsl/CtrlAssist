@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** decisions settled with the maintainer on 2026-11-21; the build is under way. Build steps 1 to 3 are done: the window opens with its sidebar and five empty panes, and is steered by keys, with couch mode.
-- **Next action:** build step 4, a reload rpc and the daemon's state in the window.
+- **Status:** decisions settled with the maintainer on 2026-11-21; the build is under way. Build steps 1 to 4 are done: the window opens with its sidebar and five empty panes, is steered by keys, with couch mode, follows the daemon, and its Reload asks the daemon to reread its files.
+- **Next action:** build step 5, the About pane, which brings the icons crate.
 - **Branch:** `feat/rewrite`, with the rewrite. Nothing is pushed.
 - **Template:** TisVlay at `5ddc2c0d` (`crates/tisvlay-gui`, `crates/tisvlay-gui-app`, `crates/tisvlay-icons`, `docs/gui/`).
 
@@ -121,6 +121,9 @@ Each is a commit or a few, with the gates run and the TisVlay commit named. Orde
 - **Answered, 2026-11-21:** the 2 s wait at exit stays, as TisVlay's; `gui.toml` written plain is fine.
 - **One duration came with couch mode:** on exit the window waits up to 2 s for the last preference write to reach the disk, as TisVlay's does, and says so in the log if it didn't. It bounds a write to a disk that has stopped answering; without it a hung filesystem would hold the window's process open. Flagged since a new duration is to be asked about.
 - **The reload rpc** (build step 4). `reload` rereads the profiles directory and replies with what changed, what is gone, which changed profiles are wrong, and which running setups it set about updating; the updates go on after the reply, and the setups' published state says how they fare. An update a reload asks for goes down the same path as a client's, with nobody owed a reply: its outcome is logged. A setup that is busy (starting, stopping, or mid-update) when the reload comes is not updated and not retried; `update` or another `reload` does it. A profile whose file is gone leaves its setup running, as deleting it through the daemon does. Settings join the reload when they exist. Not carried over from TisVlay: SIGHUP as another way to ask.
+- **The daemon's state in the window** (build step 4). The window's state code is written for CtrlAssist, on TisVlay's rule and not its files: level-triggered, one read of the whole mirror into a `Snapshot` for each burst of events, and the window set from that. TisVlay's `state.rs` and `state_watch.rs` are about TVs nearly throughout. `health`, the reload summary and banner, the toast and `on_ui` are its as they stand. Seen on the maintainer's desktop against the dev daemon: both dots green, and Reload answered with a toast.
+- **The tray's dot waits for the tray to be a service.** The sidebar shows the daemon and the hiding service. The tray says nothing on the bus yet that a client could see it by; it gets a liveliness token when it starts serving its notification switches, and its dot comes with that step. The hiding service's dot is what the daemon reports: green when it hides pads, hollow when they are only grabbed.
+- **The toast stays up for 2.5 s,** TisVlay's figure: how long a line of text is shown, the reader's time and not a wait for anything. Flagged as a duration all the same.
 - **`just gui-start` names the package,** `-p ctrlassist-gui-app`, where TisVlay's doesn't: the window isn't in `default-members` until the packaging step puts it in the package.
 
 ## Deviations

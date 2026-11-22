@@ -1181,7 +1181,9 @@ version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
+ "ctrlassist",
  "ctrlassist-daemon",
+ "ctrlassist-device",
  "ctrlassist-gui",
  "ctrlassist-protocol",
  "i-slint-backend-testing",
