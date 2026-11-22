@@ -86,6 +86,8 @@ Answered by the maintainer on 2026-11-21 unless marked otherwise.
 
 Identify from the Pads pane buzzed the maintainer's DualSense, which a running setup held (2026-11-21).
 
+**The preset form** (2026-11-21). The preset is a dropdown with the chosen one's sentence under it, and the fields that don't belong to it disappear. A role's pad is picked from the known pads, by name and tag, the absent ones marked; "any pad of this model" stays something written by hand, and a profile that uses it shows that field read-only. Each change applies at once: there is no draft, every pick is put, and a setup running the profile is updated, as the tray's quick menu does, which restarts its virtual pads where the change needs it (another identity, another count of them). The tray's `quick` is an ordinary profile in the list, with a note that the tray's menu edits it.
+
 ## What is copied, replaced and new
 
 | TisVlay | Here |
