@@ -245,6 +245,16 @@ Duplicate and Show its file moved from the PRESET card's caption to the header, 
 
 **The hiding service says its release** (2026-11-22, the maintainer's choice of route). TisVlay has nothing to copy: each of its services is a peer on the session that serves `info`, as the daemon and the tray do here, and it has no root helper. The hiding service is kept off the session on purpose, so it gained a request on its own wire, `version`, whose reply carries the release packed into the token's 32 bits. The daemon asks on finding the service and publishes it as `hider_version` in its state; About's Hiding row shows it as a chip and judges it against the window's release, so a service left running from before an upgrade shows as a mismatch. A service too old to be asked shows as running with no release. Putting the root service on the session, and showing the daemon's release in its place, were both turned down.
 
+**The default profile, in place of `quick`** (decided 2026-11-22 with the maintainer; to build).
+
+TisVlay's default profile (at `5ddc2c0d`) is reserved by its daemon under a fixed id and the name `default`, made at every start so it always exists, refused a delete or a rename with a typed error, and its name refused to any other profile; it is what other profiles inherit unset fields from; and its window lists it first with a check mark after its name and its Delete and rename disabled. `quick` here was special only to the tray, which wrote it from its Quick start menu: the daemon kept it as any other profile, and it existed only once something had been started from that menu.
+
+- **`quick` becomes `default`,** with the job `quick` had: the profile the tray is quickest to, and where a middle click's mark starts when nothing was used before. Nothing inherits from it, there being no inheritance here.
+- **The daemon reserves it and always has it.** It makes `default` at start where there is none, refuses to delete or rename it, and refuses its name to another profile, with a typed error.
+- **Before its pads are chosen it is a preset with no pads,** which the daemon keeps and reports as not set up, where it reports a profile it finds wrong as wrong. It can't be started until its pads are chosen.
+- **The window lists it first, with a check mark after its name,** and its Delete and rename disabled, as TisVlay's.
+- **The tray has no Quick start menu.** Every profile's own menu has its fields as the window's detail has them, each a submenu by its kind, for a profile in the preset form; one written by hand keeps Start or Stop and its parts. `default` is first. A pick is written and applied at once to a profile that runs, as Quick start's were.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps
