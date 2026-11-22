@@ -28,8 +28,7 @@ enum NavSel {
     None,
     /// The Pads pane: the pad selected, by its id; empty for none.
     Pad(SharedString),
-    /// The Setups pane: the setup selected, by name; empty for none.
-    Setup(SharedString),
+
     /// The Profiles pane: the profile selected, by name; empty for none.
     Profile(SharedString),
 }
@@ -172,7 +171,7 @@ type GoToFn = Rc<dyn Fn(&AppWindow, SharedString)>;
 /// hook replays it through `back` / `forward`.
 pub struct NavHandles {
     pub(crate) go_pad: GoToFn,
-    pub(crate) go_setup: GoToFn,
+
     pub(crate) go_profile: GoToFn,
     pub(crate) back: NavActionFn,
     pub(crate) forward: NavActionFn,
@@ -207,7 +206,7 @@ pub fn wire(app: &AppWindow) -> NavHandles {
         match sel {
             NavSel::None => {}
             NavSel::Pad(id) => crate::pads::select(app, id),
-            NavSel::Setup(name) => crate::setups::select(app, name),
+
             NavSel::Profile(name) => crate::profiles::select(app, name),
         }
     });
@@ -293,10 +292,6 @@ pub fn wire(app: &AppWindow) -> NavHandles {
         let go = go.clone();
         Rc::new(move |app, id| go(app, Pane::Pads, NavSel::Pad(id), true))
     };
-    let go_setup: GoToFn = {
-        let go = go.clone();
-        Rc::new(move |app, name| go(app, Pane::Setups, NavSel::Setup(name), true))
-    };
 
     let go_profile: GoToFn = {
         let go = go.clone();
@@ -305,7 +300,7 @@ pub fn wire(app: &AppWindow) -> NavHandles {
 
     NavHandles {
         go_pad,
-        go_setup,
+
         go_profile,
         back,
         forward,
@@ -316,7 +311,7 @@ pub fn wire(app: &AppWindow) -> NavHandles {
 fn read_current_sel(app: &AppWindow, pane: Pane) -> NavSel {
     match pane {
         Pane::Pads => NavSel::Pad(crate::pads::selected(app)),
-        Pane::Setups => NavSel::Setup(crate::setups::selected(app)),
+
         Pane::Profiles => NavSel::Profile(crate::profiles::selected(app)),
         _ => NavSel::None,
     }

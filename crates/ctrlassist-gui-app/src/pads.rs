@@ -56,15 +56,6 @@ fn maker_of(vendor: u16) -> &'static str {
     }
 }
 
-/// A source's name as a row says it: `primary` as "Primary".
-fn capitalized(name: &str) -> String {
-    let mut letters = name.chars();
-    letters
-        .next()
-        .map(|first| first.to_uppercase().chain(letters).collect())
-        .unwrap_or_default()
-}
-
 /// The pane's rows: connected pads first, then the remembered ones,
 /// each group in name order and then by id, so two of one name keep
 /// their places.
@@ -113,7 +104,7 @@ pub fn rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow>
                     let (word, tone) = status::of(name, Some(plan), setups, pads);
                     Some(PadProfileRow {
                         name: SharedString::from(*name),
-                        part: SharedString::from(capitalized(&source.name)),
+                        part: SharedString::from(status::capitalized(&source.name)),
                         word: SharedString::from(word),
                         tone: SharedString::from(tone),
                     })

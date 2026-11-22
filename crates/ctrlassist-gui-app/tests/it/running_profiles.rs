@@ -1,16 +1,10 @@
-//! The Setups pane: its rows from the daemon's setups, the pane in the
-//! window, and the click-throughs between it and the Pads pane.
-
-use std::cell::RefCell;
-use std::rc::Rc;
+//! The running profiles: a row for each of the daemon's setups, as the
+//! Profiles pane's STATUS group shows it. What the group does with them
+//! is tested with that pane.
 
 use ctrlassist::{Pad, Phase, Setup, SetupNode, SetupSink, SetupSource};
-use ctrlassist_gui::state::Snapshot;
-use ctrlassist_gui::{AppWindow, Pane, Setups, keys, nav, pads, setups};
-use slint::platform::Key;
-use slint::{ComponentHandle, Model as _, SharedString};
-
-use crate::support::{activate_shown, find_all_by_accessible_id, press, settle};
+use ctrlassist_gui::setups;
+use slint::Model as _;
 
 fn pad(id: &str, name: &str, setup: Option<&str>) -> Pad {
     Pad {
@@ -107,7 +101,7 @@ fn rows_say_each_setup_s_phase_pads_virtual_pads_and_selections() {
     );
     assert!(couch.stale && couch.profile_kept);
     let pads: Vec<_> = couch.pads.iter().collect();
-    assert_eq!(pads[0].role, "assist");
+    assert_eq!(pads[0].role, "Assist");
     assert_eq!(pads[0].name, "Wireless Controller");
     assert!(pads[0].present);
     let sink = couch.sinks.row_data(0).unwrap();
@@ -138,95 +132,4 @@ fn rows_say_each_setup_s_phase_pads_virtual_pads_and_selections() {
     assert_eq!(setups::trouble(&all[..2]), "warn");
     assert_eq!(setups::trouble(&[setup("couch", Phase::Running)]), "");
     assert_eq!(setups::trouble(&[]), "");
-}
-
-fn app(setups_now: Vec<Setup>) -> AppWindow {
-    i_slint_backend_testing::init_no_event_loop();
-    let app = AppWindow::new().expect("the window builds on the testing backend");
-    let handles = nav::wire(&app);
-    keys::bind_key_router(&app);
-    pads::bind_links(&app, &handles);
-    setups::bind_links(&app, &handles);
-    Snapshot {
-        available: true,
-        hydrated: true,
-        pads: some_pads(),
-        profiles: setups_now
-            .iter()
-            .map(|setup| ctrlassist::Profile {
-                name: setup.name.clone(),
-                toml: String::new(),
-                problem: None,
-            })
-            .collect(),
-        setups: setups_now,
-        ..Snapshot::default()
-    }
-    .show(&app);
-    app
-}
-
-fn enabled(app: &AppWindow, id: &str) -> bool {
-    find_all_by_accessible_id(app, id)
-        .into_iter()
-        .filter(|control| control.computed_opacity() > 0.0)
-        .any(|control| control.accessible_enabled().unwrap_or(false))
-}
-
-#[test]
-fn a_setup_is_stopped_updated_and_steered_from_its_detail() {
-    let app = app(vec![
-        Setup {
-            stale: true,
-            ..setup("couch", Phase::Running)
-        },
-        setup("den", Phase::Running),
-    ]);
-    app.set_active_pane(Pane::Setups);
-    let pane = app.global::<Setups>();
-    let asked: Rc<RefCell<Vec<String>>> = Rc::default();
-    let log = |what: &'static str| {
-        let asked = asked.clone();
-        move |name: SharedString| asked.borrow_mut().push(format!("{what} {name}"))
-    };
-    pane.on_stop(log("stop"));
-    pane.on_ask_update(log("ask-update"));
-    pane.on_update(log("update"));
-    let selected = asked.clone();
-    pane.on_select(move |name, node, choice| {
-        selected
-            .borrow_mut()
-            .push(format!("select {name} {node} {choice}"));
-    });
-
-    // The one whose profile is as it runs has nothing to update.
-    pane.set_selected_index(1);
-    settle();
-    assert!(!enabled(&app, "setups-update"));
-    pane.set_selected_index(0);
-    settle();
-    assert!(enabled(&app, "setups-update"));
-
-    // Update asks the cost first; the dialog is Rust's to open, and
-    // confirming it updates.
-    activate_shown(&app, "setups-update");
-    assert_eq!(*asked.borrow(), ["ask-update couch"]);
-    pane.set_pending_update_cost("restart".into());
-    pane.set_pending_update("couch".into());
-    settle();
-    activate_shown(&app, "dialog-confirm");
-    assert_eq!(asked.borrow().last().unwrap(), "update couch");
-    assert_eq!(pane.get_pending_update(), "");
-
-    // Stop asks first, and a stray Return on the dialog stops nothing.
-    activate_shown(&app, "setups-stop");
-    press(&app, Key::Return);
-    assert_eq!(asked.borrow().len(), 2);
-    activate_shown(&app, "setups-stop");
-    activate_shown(&app, "dialog-confirm");
-    assert_eq!(asked.borrow().last().unwrap(), "stop couch");
-
-    // Control is handed over by the choice's button.
-    activate_shown(&app, "setups-node-mux-assist");
-    assert_eq!(asked.borrow().last().unwrap(), "select couch mux assist");
 }

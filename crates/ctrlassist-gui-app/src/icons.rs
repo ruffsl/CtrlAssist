@@ -17,7 +17,6 @@ pub(crate) fn load(app: &AppWindow) {
         "input-gamepad",
         "applications-games",
     ]));
-    app.set_setups_icon(load_symbolic_icon(&["media-playback-start", "system-run"]));
     app.set_profiles_icon(load_symbolic_icon(&[
         "view-list-details",
         "document-properties",

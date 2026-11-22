@@ -57,7 +57,7 @@ fn tab_cycles_the_panes_in_couch_mode_only() {
     app.invoke_focus_active_sidebar_item();
     settle();
     press(&app, Key::Tab);
-    assert_eq!(app.get_active_pane(), Pane::Setups);
+    assert_eq!(app.get_active_pane(), Pane::Profiles);
     press_shift_tab(&app);
     assert_eq!(app.get_active_pane(), Pane::Pads);
     // Around the end.

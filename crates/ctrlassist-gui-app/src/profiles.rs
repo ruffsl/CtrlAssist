@@ -19,7 +19,9 @@ use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
 use tracing::warn;
 
 use crate::nav::NavHandles;
-use crate::{AppWindow, ErrorState, Errors, ProfileFieldRow, ProfileRow, Profiles, on_ui};
+use crate::{
+    AppWindow, ErrorState, Errors, ProfileFieldRow, ProfileRow, ProfileUseRow, Profiles, on_ui,
+};
 
 /// The profile the tray's quick menu writes.
 const QUICK: &str = "quick";
@@ -88,6 +90,8 @@ fn field_row(field: &Field, value: &str, pads: &[Pad]) -> ProfileFieldRow {
         label: SharedString::from(field.label.as_str()),
         help: SharedString::from(field.help.as_str()),
         value: SharedString::from(value),
+        default_value: SharedString::from(field.default.as_str()),
+        at_default: value == field.default,
         ..ProfileFieldRow::default()
     };
     match &field.kind {
@@ -134,8 +138,66 @@ fn field_row(field: &Field, value: &str, pads: &[Pad]) -> ProfileFieldRow {
     row
 }
 
-/// The pane's rows, in name order: every kept profile, and every one
-/// the window holds that isn't kept yet.
+/// A line of how a running profile is, beside its Stop.
+fn setup_note(setup: &Setup) -> String {
+    match setup.phase {
+        ctrlassist::Phase::Held => {
+            "Held: a pad it needs is missing. Its virtual pad stays, and the rest plays on."
+                .to_string()
+        }
+        ctrlassist::Phase::Failed => format!(
+            "Failed: {}. Stop it to clear it.",
+            setup.reason.as_deref().unwrap_or("it stopped working")
+        ),
+        ctrlassist::Phase::Running => {
+            let sinks: Vec<String> = setup
+                .sinks
+                .iter()
+                .map(|sink| match &sink.node {
+                    Some(node) => {
+                        let node = node.rsplit('/').next().unwrap_or(node);
+                        format!("{} pad at {node}", crate::status::identity(&sink.identity))
+                    }
+                    None => format!("{} pad", crate::status::identity(&sink.identity)),
+                })
+                .collect();
+            format!("Games see a {}.", sinks.join(" and a "))
+        }
+        _ => "Starting.".to_string(),
+    }
+}
+
+/// A pad a profile names, for the header's link: the pad its setup has
+/// for that part while it runs, or else the pad the name means.
+fn use_row(
+    source: &ctrlassist_protocol::profile::PlannedSource,
+    setup: Option<&Setup>,
+    pads: &[Pad],
+) -> ProfileUseRow {
+    let taken = setup
+        .and_then(|setup| setup.sources.iter().find(|taken| taken.name == source.name))
+        .and_then(|taken| taken.pad.as_deref())
+        .and_then(|id| pads.iter().find(|pad| pad.id == id));
+    let pad = taken.or_else(|| {
+        pads.iter()
+            .find(|pad| crate::status::names(&source.pad, pad))
+    });
+    ProfileUseRow {
+        part: SharedString::from(crate::status::capitalized(&source.name)),
+        pad: SharedString::from(pad.map_or("", |pad| pad.id.as_str())),
+        name: SharedString::from(match (pad, &source.pad) {
+            (Some(pad), _) => pad.name.clone(),
+            (None, ctrlassist_protocol::profile::PadRef::Exact(id)) => id.clone(),
+            (None, ctrlassist_protocol::profile::PadRef::Model(vendor, product)) => {
+                format!("model:{vendor:04x}:{product:04x}")
+            }
+        }),
+    }
+}
+
+/// The pane's rows, those with a setup first and each group in name
+/// order: every kept profile, and every one the window holds that isn't
+/// kept yet.
 #[must_use]
 pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
     let mut names: Vec<&str> = known
@@ -144,8 +206,17 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
         .map(|profile| profile.name.as_str())
         .chain(held.keys().map(String::as_str))
         .collect();
-    names.sort_unstable();
+    let runs = |name: &str| known.setups.iter().any(|setup| setup.name == name);
+    // Those with a setup first, as the list shows them.
+    names.sort_unstable_by(|a, b| runs(b).cmp(&runs(a)).then_with(|| a.cmp(b)));
     names.dedup();
+    // A setup's place among the Setups rows, which go by name.
+    let mut running: Vec<&str> = known
+        .setups
+        .iter()
+        .map(|setup| setup.name.as_str())
+        .collect();
+    running.sort_unstable();
     names
         .into_iter()
         .map(|name| {
@@ -180,11 +251,57 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
             let summary = match &values {
                 Some(values) => match values.get("identity") {
                     Some(identity) => format!("{preset} · {identity}"),
-                    None => preset,
+                    None => preset.clone(),
                 },
                 None => "full form".to_string(),
             };
+            let plan =
+                kept.and_then(|kept| ctrlassist_protocol::profile::Profile::check(&kept.toml).ok());
+            let (word, word_tone) = if why.is_some() || kept.is_none() {
+                ("Unfinished", "warn")
+            } else {
+                crate::status::of(name, plan.as_ref(), &known.setups, &known.pads)
+            };
+            let shape = match plan.as_ref() {
+                Some(plan) if plan.sources.len() > 1 => "merge",
+                Some(plan) if plan.sinks.len() > 1 => "split",
+                _ => match preset.as_str() {
+                    "priority" | "average" | "toggle" => "merge",
+                    "unicast" | "multicast" => "split",
+                    _ => "",
+                },
+            };
+            let note = match (setup, word) {
+                (Some(setup), _) => setup_note(setup),
+                (None, "Ready") => "Its pads are connected and free.".to_string(),
+                (None, "Unfinished") => "It isn't a profile yet.".to_string(),
+                (None, "Wrong") => "The daemon can't run it as it is written.".to_string(),
+                (None, _) => {
+                    "A pad it names is missing, or in a profile that is running.".to_string()
+                }
+            };
+            let uses: Vec<ProfileUseRow> = plan
+                .as_ref()
+                .map(|plan| {
+                    plan.sources
+                        .iter()
+                        .map(|source| use_row(source, setup, &known.pads))
+                        .collect()
+                })
+                .unwrap_or_default();
             ProfileRow {
+                shape: SharedString::from(shape),
+                word: SharedString::from(word),
+                word_tone: SharedString::from(word_tone),
+                note: SharedString::from(note),
+                auto_start: plan.as_ref().is_some_and(|plan| plan.auto_start),
+                can_start: setup.is_none() && matches!(word, "Ready" | "Waits for a pad"),
+                setup_index: running
+                    .iter()
+                    .position(|running| *running == name)
+                    .and_then(|at| i32::try_from(at).ok())
+                    .unwrap_or(-1),
+                uses: ModelRc::new(VecModel::from(uses)),
                 name: SharedString::from(name),
                 kind: SharedString::from(if values.is_some() { "preset" } else { "full" }),
                 unfinished: why.is_some(),
@@ -201,7 +318,6 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 tone: SharedString::from(tone),
                 is_quick: name == QUICK,
                 fields: ModelRc::new(VecModel::from(fields)),
-                toml: SharedString::from(kept.map_or("", |kept| kept.toml.as_str())),
             }
         })
         .collect()
@@ -228,6 +344,8 @@ fn render(app: &AppWindow) {
         .filter(|_| !was.is_empty())
         .and_then(|at| i32::try_from(at).ok())
         .unwrap_or(-1);
+    let running = rows.iter().filter(|row| row.setup_index >= 0).count();
+    profiles.set_running_count(i32::try_from(running).unwrap_or(i32::MAX));
     profiles.set_rows(crate::models::sync(&current, rows, |a, b| a.name == b.name));
     profiles.set_selected_index(index);
 }
@@ -446,10 +564,10 @@ pub fn bind_local(app: &AppWindow, nav: &NavHandles) {
         }
     });
 
-    let (weak, go_setup) = (app.as_weak(), nav.go_setup.clone());
-    profiles.on_open_setup(move |name| {
+    let (weak, go_pad) = (app.as_weak(), nav.go_pad.clone());
+    profiles.on_open_pad(move |id| {
         if let Some(app) = weak.upgrade() {
-            go_setup(&app, name);
+            go_pad(&app, id);
         }
     });
 }
@@ -463,6 +581,20 @@ pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient, nav: &NavHandles) {
     profiles.on_set_field(move |name, key, value| {
         if let Some(app) = weak.upgrade() {
             set_field(&app, &client, &name, &key, &value);
+        }
+    });
+    // Back to its default: what leaving the field out means.
+    let (weak, client) = (app.as_weak(), daemon.clone());
+    profiles.on_reset_field(move |name, key| {
+        let default = KNOWN.with_borrow(|known| {
+            known
+                .fields
+                .iter()
+                .find(|field| field.key == key.as_str())
+                .map(|field| field.default.clone())
+        });
+        if let (Some(app), Some(default)) = (weak.upgrade(), default.filter(|d| !d.is_empty())) {
+            set_field(&app, &client, &name, &key, &default);
         }
     });
     let (weak, client) = (app.as_weak(), daemon.clone());

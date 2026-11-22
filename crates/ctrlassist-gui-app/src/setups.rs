@@ -1,11 +1,11 @@
-//! The Setups pane: its rows from the daemon's mirror, and what it asks
+//! The running profiles: a row for each setup from the daemon's mirror,
+//! which the Profiles pane's STATUS group shows, and what that group asks
 //! of the daemon.
 
 use ctrlassist::{DaemonClient, Pad, Phase, Setup};
 use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
 use tracing::warn;
 
-use crate::nav::NavHandles;
 use crate::{
     AppWindow, ErrorState, Errors, SetupNodeRow, SetupPadRow, SetupRow, SetupSinkRow, Setups, on_ui,
 };
@@ -42,7 +42,7 @@ pub fn rows(setups: &[Setup], pads: &[Pad], kept: &[String]) -> Vec<SetupRow> {
                         .find(|pad| pad.id == id)
                         .map_or_else(|| id.clone(), |pad| pad.name.clone());
                     SetupPadRow {
-                        role: SharedString::from(source.name.as_str()),
+                        role: SharedString::from(crate::status::capitalized(&source.name)),
                         pad: SharedString::from(id),
                         name: SharedString::from(name),
                         present: source.present,
@@ -100,8 +100,7 @@ pub fn trouble(setups: &[Setup]) -> &'static str {
     }
 }
 
-/// Puts the rows on the window, keeping the selection on the setup it
-/// was on; one that is gone leaves nothing selected.
+/// Puts the rows on the window.
 pub fn show(app: &AppWindow, mut rows: Vec<SetupRow>, trouble: &str) {
     let setups = app.global::<Setups>();
     // In place, down to each setup's pads, virtual pads, nodes and a
@@ -126,39 +125,8 @@ pub fn show(app: &AppWindow, mut rows: Vec<SetupRow>, trouble: &str) {
         }
         row.nodes = crate::models::sync(&old.nodes, nodes, |a, b| a.name == b.name);
     }
-    let selected = setups
-        .get_rows()
-        .row_data(usize::try_from(setups.get_selected_index()).unwrap_or(usize::MAX))
-        .map(|row| row.name);
-    let index = selected
-        .and_then(|name| rows.iter().position(|row| row.name == name))
-        .and_then(|at| i32::try_from(at).ok())
-        .unwrap_or(-1);
     setups.set_trouble(SharedString::from(trouble));
     setups.set_rows(crate::models::sync(&current, rows, |a, b| a.name == b.name));
-    setups.set_selected_index(index);
-}
-
-/// The name of the setup selected, empty for none.
-pub(crate) fn selected(app: &AppWindow) -> SharedString {
-    let setups = app.global::<Setups>();
-    setups
-        .get_rows()
-        .row_data(usize::try_from(setups.get_selected_index()).unwrap_or(usize::MAX))
-        .map(|row| row.name)
-        .unwrap_or_default()
-}
-
-/// Selects the setup of that name, or nothing when there is none.
-pub(crate) fn select(app: &AppWindow, name: &str) {
-    let setups = app.global::<Setups>();
-    let index = setups
-        .get_rows()
-        .iter()
-        .position(|row| row.name == name)
-        .and_then(|at| i32::try_from(at).ok())
-        .unwrap_or(-1);
-    setups.set_selected_index(index);
 }
 
 /// The pane's banner for something the daemon refused, or the empty
@@ -181,7 +149,7 @@ fn banner(outcome: Result<(), (&str, ctrlassist::Error)>) -> ErrorState {
 
 /// Binds the pane's actions. What each changes comes back through the
 /// mirror, as any change does.
-pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient, nav: &NavHandles) {
+pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient) {
     let setups = app.global::<Setups>();
 
     let (weak, client) = (app.as_weak(), daemon.clone());
@@ -246,25 +214,5 @@ pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient, nav: &NavHandles) {
             let banner = banner(outcome);
             on_ui(&weak, move |app| app.global::<Errors>().set_setups(banner));
         });
-    });
-
-    bind_links(app, nav);
-}
-
-/// Binds the links from a setup to its pads and its profile. They need
-/// no daemon.
-pub fn bind_links(app: &AppWindow, nav: &NavHandles) {
-    let setups = app.global::<Setups>();
-    let (weak, go_pad) = (app.as_weak(), nav.go_pad.clone());
-    setups.on_open_pad(move |id| {
-        if let Some(app) = weak.upgrade() {
-            go_pad(&app, id);
-        }
-    });
-    let (weak, go_profile) = (app.as_weak(), nav.go_profile.clone());
-    setups.on_open_profile(move |name| {
-        if let Some(app) = weak.upgrade() {
-            go_profile(&app, name);
-        }
     });
 }

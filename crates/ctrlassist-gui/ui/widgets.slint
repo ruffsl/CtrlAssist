@@ -2630,3 +2630,16 @@ export component ToneText inherits Text {
          : Theme.text-faint;
     font-size: Design.font-mini;
 }
+
+// The dot before a toned word: a state's color at a glance.
+export component ToneDot inherits Rectangle {
+    in property <string> tone;
+    width: Design.size-status-dot;
+    height: Design.size-status-dot;
+    border-radius: 3px;
+    background: tone == "success" ? Theme.success
+        : tone == "warn" ? Theme.warn
+        : tone == "danger" ? Theme.danger
+        : tone == "info" ? Theme.info
+        : Theme.text-faint;
+}

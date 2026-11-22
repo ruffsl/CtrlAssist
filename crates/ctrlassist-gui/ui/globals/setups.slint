@@ -1,4 +1,5 @@
-// The Setups pane's model and callbacks. Rust pushes `rows` from the
+// The running profiles: each setup as the Profiles pane.s STATUS group
+// shows it, and what that group asks. Rust pushes `rows` from the
 // daemon's mirror on every change and binds the callbacks.
 
 // A pad of a setup, by the role the profile gives it.
@@ -47,7 +48,6 @@ export struct SetupRow {
 
 export global Setups {
     in property <[SetupRow]> rows;
-    in-out property <int> selected-index: -1;
     // The worst of what the setups are in, for the sidebar's badge:
     // "" for none, "warn" while one is held, "danger" while one failed.
     in property <string> trouble;
@@ -63,7 +63,4 @@ export global Setups {
     callback update(string);
     // Have a node select a choice: setup, node, choice.
     callback select(string, string, string);
-    // Show a pad in the Pads pane, a profile in the Profiles pane.
-    callback open-pad(string);
-    callback open-profile(string);
 }

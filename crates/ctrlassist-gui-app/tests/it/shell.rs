@@ -19,12 +19,14 @@ fn app() -> AppWindow {
 #[test]
 fn the_sidebar_lists_every_pane_and_reload() {
     let app = app();
-    for id in ["pads", "setups", "profiles", "settings", "about", "reload"] {
+    for id in ["pads", "profiles", "settings", "about", "reload"] {
         assert!(
             find_by_accessible_id(&app, &format!("sidebar-{id}")).is_some(),
             "sidebar-{id}"
         );
     }
+    // A running profile has no pane of its own.
+    assert!(find_by_accessible_id(&app, "sidebar-setups").is_none());
     assert_eq!(app.get_active_pane(), Pane::Pads);
 }
 
@@ -43,9 +45,9 @@ fn the_pane_follows_focus_down_the_rail() {
     app.invoke_focus_active_sidebar_item();
     settle();
     press(&app, Key::DownArrow);
-    assert_eq!(app.get_active_pane(), Pane::Setups);
-    press(&app, Key::DownArrow);
     assert_eq!(app.get_active_pane(), Pane::Profiles);
+    press(&app, Key::DownArrow);
+    assert_eq!(app.get_active_pane(), Pane::Settings);
     press(&app, Key::UpArrow);
-    assert_eq!(app.get_active_pane(), Pane::Setups);
+    assert_eq!(app.get_active_pane(), Pane::Profiles);
 }

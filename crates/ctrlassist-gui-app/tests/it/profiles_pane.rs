@@ -7,9 +7,11 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use ctrlassist::form::{self, Values};
-use ctrlassist::{Pad, Phase, Problem, Profile, Setup};
+use ctrlassist::{Pad, Phase, Problem, Profile, Setup, SetupNode, SetupSink, SetupSource};
 use ctrlassist_gui::profiles::{self, Known};
-use ctrlassist_gui::{AppWindow, Pane, ProfileFieldRow, ProfileRow, Profiles, keys, nav};
+use ctrlassist_gui::{
+    AppWindow, Pane, ProfileFieldRow, ProfileRow, Profiles, Setups, keys, nav, setups,
+};
 use slint::{ComponentHandle, Model as _, SharedString};
 
 use crate::support::{activate_shown, find_by_accessible_id, settle};
@@ -60,10 +62,30 @@ fn known() -> Known {
             name: "quick".to_string(),
             phase: Phase::Running,
             reason: None,
-            sources: Vec::new(),
-            sinks: Vec::new(),
-            nodes: Vec::new(),
-            stale: false,
+            sources: vec![
+                SetupSource {
+                    name: "assist".to_string(),
+                    pad: Some("address:1c:96:5a:a1:35:da".to_string()),
+                    present: true,
+                },
+                SetupSource {
+                    name: "primary".to_string(),
+                    pad: Some("address:0c:27:56:4f:bd:14".to_string()),
+                    present: true,
+                },
+            ],
+            sinks: vec![SetupSink {
+                name: "virtual".to_string(),
+                identity: "generic".to_string(),
+                node: Some("/dev/input/event31".to_string()),
+            }],
+            nodes: vec![SetupNode {
+                name: "mux".to_string(),
+                choices: vec!["primary".to_string(), "assist".to_string()],
+                selected: 0,
+            }],
+            // Its profile has changed since it started.
+            stale: true,
         }],
         pads: vec![
             pad("serial:045e:02dd:7EED821FFB17", "Xbox pad", false),
@@ -91,7 +113,8 @@ fn field(row: &ProfileRow, key: &str) -> ProfileFieldRow {
 fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     let rows = profiles::rows(&known(), &BTreeMap::new());
     let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
-    assert_eq!(names, ["attic", "broken", "couch", "quick"]);
+    // The one that runs first, then the rest by name.
+    assert_eq!(names, ["quick", "attic", "broken", "couch"]);
 
     let couch = row(&rows, "couch");
     assert_eq!(couch.kind, "preset");
@@ -148,7 +171,54 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     assert_eq!(field(couch, "rumble").value_label, "Both pads");
     assert!(!field(couch, "auto-start").checked);
 
+    // How each is, in a word, for the list and the chip.
+    let said = |name: &str| {
+        let row = row(&rows, name);
+        format!("{} {}", row.word, row.word_tone)
+    };
+    assert_eq!(said("quick"), "Running success");
+    assert_eq!(said("broken"), "Wrong danger");
+    assert_eq!(said("couch"), "Waits for a pad neutral");
+    assert!(row(&rows, "couch").can_start && !row(&rows, "broken").can_start);
+    assert_eq!(row(&rows, "couch").shape, "merge");
+    // A field that has a default says whether it stands at it.
+    assert!(field(couch, "rumble").at_default);
+    let identity = field(couch, "identity");
+    assert!(!identity.at_default);
+    assert_eq!(identity.default_value, "generic");
+    assert_eq!(field(couch, "primary").default_value, "");
+
     let quick = row(&rows, "quick");
+    assert_eq!(quick.setup_index, 0);
+    assert_eq!(row(&rows, "couch").setup_index, -1);
+    assert_eq!(quick.note, "Games see a generic pad at event31.");
+    // The pads it names, as its setup has them, for the header's links.
+    let uses: Vec<String> = quick
+        .uses
+        .iter()
+        .map(|used| format!("{} {} {}", used.part, used.name, used.pad))
+        .collect();
+    assert_eq!(
+        uses,
+        [
+            "Assist Wireless Controller address:1c:96:5a:a1:35:da",
+            "Primary DualSense address:0c:27:56:4f:bd:14"
+        ]
+    );
+    // Any pad of a model the daemon knows none of goes by what the
+    // profile calls it, and links nowhere.
+    let couch_uses: Vec<String> = row(&rows, "couch")
+        .uses
+        .iter()
+        .map(|used| format!("{} {} [{}]", used.part, used.name, used.pad))
+        .collect();
+    assert_eq!(
+        couch_uses,
+        [
+            "Assist model:054c:09cc []",
+            "Primary DualSense [address:0c:27:56:4f:bd:14]"
+        ]
+    );
     assert!(quick.is_quick && quick.running);
     assert_eq!(
         (quick.phase_label.as_str(), quick.tone.as_str()),
@@ -161,7 +231,10 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
         ("full", "full form")
     );
     assert_eq!(attic.fields.row_count(), 0);
-    assert_eq!(attic.toml, FULL);
+    // Written by hand: a shape for its tile and how it is, and nothing
+    // of its text.
+    assert_eq!(attic.shape, "merge", "it names more than one pad");
+    assert_eq!(attic.word, "Waits for a pad");
 
     let broken = row(&rows, "broken");
     assert_eq!(
@@ -227,7 +300,14 @@ fn app() -> AppWindow {
     // the tree the tests search.
     app.window()
         .set_size(slint::LogicalSize::new(1000.0, 1600.0));
-    profiles::show(&app, known());
+    let known = known();
+    let kept: Vec<String> = known
+        .profiles
+        .iter()
+        .map(|profile| profile.name.clone())
+        .collect();
+    setups::show(&app, setups::rows(&known.setups, &known.pads, &kept), "");
+    profiles::show(&app, known);
     app
 }
 
@@ -323,21 +403,61 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
         settle();
     };
 
-    // Running: can't be started again, nor renamed from under its setup.
+    // Running: its one button is Stop, which asks first; it can't be
+    // renamed from under its setup; and what its setup has is here: an
+    // update to take, its pads, who has control.
+    let running = app.global::<Setups>();
+    running.on_stop(log("stop"));
+    running.on_ask_update(log("ask-update"));
+    let handed = asked.clone();
+    running.on_select(move |name, node, choice| {
+        handed
+            .borrow_mut()
+            .push(format!("select {name} {node} {choice}"));
+    });
+    let opened = asked.clone();
+    pane.on_open_pad(move |id| opened.borrow_mut().push(format!("pad {id}")));
     select("quick");
-    assert!(!enabled("profiles-start"));
+    assert!(find_by_accessible_id(&app, "profiles-start").is_none());
+    assert!(enabled("profiles-stop"));
     assert!(!enabled("profiles-rename"));
-    assert!(find_by_accessible_id(&app, "profiles-setup-chip").is_some());
+    activate_shown(&app, "profiles-stop");
+    assert!(asked.borrow().is_empty(), "nothing stops until confirmed");
+    activate_shown(&app, "dialog-confirm");
+    activate_shown(&app, "profiles-update");
+    activate_shown(&app, "profiles-part-Assist");
+    activate_shown(&app, "profiles-pad-Primary");
+    assert!(find_by_accessible_id(&app, "profiles-select-mux").is_some());
+    assert_eq!(
+        *asked.borrow(),
+        [
+            "stop quick",
+            "ask-update quick",
+            "pad address:1c:96:5a:a1:35:da",
+            "pad address:0c:27:56:4f:bd:14"
+        ]
+    );
+    asked.borrow_mut().clear();
+    // What the update costs is said before it is done.
+    running.on_update(log("update"));
+    running.set_pending_update_cost("restart".into());
+    running.set_pending_update("quick".into());
+    settle();
+    activate_shown(&app, "dialog-confirm");
+    assert_eq!(*asked.borrow(), ["update quick"]);
+    assert_eq!(running.get_pending_update(), "");
+    asked.borrow_mut().clear();
 
-    // Something wrong with it: not startable.
+    // Something wrong with it: not startable, and it says what.
     select("broken");
     assert!(!enabled("profiles-start"));
     assert!(find_by_accessible_id(&app, "profiles-problem").is_some());
 
-    // The full form shows its text and no form.
+    // Written by hand: no form, and none of its text.
     select("attic");
-    assert!(find_by_accessible_id(&app, "profiles-text").is_some());
+    assert!(find_by_accessible_id(&app, "profiles-by-hand").is_some());
     assert!(find_by_accessible_id(&app, "profiles-field-preset").is_none());
+    assert!(find_by_accessible_id(&app, "profiles-update").is_none());
 
     select("couch");
     assert!(enabled("profiles-start"));
@@ -359,6 +479,16 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
     // A switch in the form sets its field at once.
     activate_shown(&app, "profiles-field-auto-start");
     assert_eq!(asked.borrow().last().unwrap(), "set couch auto-start true");
+
+    // A field that isn't at its default can be put back; one that is
+    // has nothing to reset.
+    let reset = asked.clone();
+    pane.on_reset_field(move |name, key| reset.borrow_mut().push(format!("reset {name} {key}")));
+    assert!(enabled("profiles-reset-identity"));
+    assert!(!enabled("profiles-reset-rumble"));
+    assert!(find_by_accessible_id(&app, "profiles-reset-primary").is_none());
+    activate_shown(&app, "profiles-reset-identity");
+    assert_eq!(asked.borrow().last().unwrap(), "reset couch identity");
 }
 
 /// A dropdown opens with its cursor on the current choice, the second
@@ -399,4 +529,80 @@ fn a_dropdown_opens_on_its_current_choice_every_time() {
         crate::support::press(&app, Key::Escape);
         assert!(!select.get_open());
     }
+}
+
+/// A profile's pad and a pad's profile are a click apart, and back
+/// returns to each in turn: what the Setups pane's links did, between
+/// the two panes that are left.
+#[test]
+fn a_profile_s_pad_and_a_pad_s_profile_are_a_click_apart_and_back_returns() {
+    use ctrlassist_gui::{Pads, pads};
+    use slint::platform::Key;
+
+    use crate::support::press_with_alt;
+
+    i_slint_backend_testing::init_no_event_loop();
+    profiles::forget_held();
+    let app = AppWindow::new().expect("the window builds on the testing backend");
+    let handles = nav::wire(&app);
+    keys::bind_key_router(&app);
+    profiles::bind_local(&app, &handles);
+    pads::bind_links(&app, &handles);
+    app.set_daemon_available(true);
+    app.window()
+        .set_size(slint::LogicalSize::new(1000.0, 1600.0));
+    let known = known();
+    let kept: Vec<String> = known
+        .profiles
+        .iter()
+        .map(|profile| profile.name.clone())
+        .collect();
+    setups::show(&app, setups::rows(&known.setups, &known.pads, &kept), "");
+    pads::show(
+        &app,
+        pads::rows(&known.pads, &known.setups, &known.profiles),
+    );
+    profiles::show(&app, known);
+    let pads_pane = app.global::<Pads>();
+    let profiles_pane = app.global::<Profiles>();
+    let pad_shown = || {
+        pads_pane
+            .get_rows()
+            .row_data(usize::try_from(pads_pane.get_selected_index()).unwrap())
+            .unwrap()
+            .name
+    };
+    let profile_shown = || {
+        profiles_pane
+            .get_rows()
+            .row_data(usize::try_from(profiles_pane.get_selected_index()).unwrap())
+            .unwrap()
+            .name
+    };
+
+    // From the DualSense's detail to the profile running with it.
+    pads_pane.set_selected_index(0);
+    settle();
+    assert_eq!(pad_shown(), "DualSense");
+    activate_shown(&app, "pads-profile-quick");
+    assert_eq!(app.get_active_pane(), Pane::Profiles);
+    assert_eq!(profile_shown(), "quick");
+
+    // From that profile's header to its assist.
+    activate_shown(&app, "profiles-pad-Assist");
+    assert_eq!(app.get_active_pane(), Pane::Pads);
+    assert_eq!(pad_shown(), "Wireless Controller");
+
+    // Back, to the profile; back again, to the pad first looked at.
+    press_with_alt(&app, Key::LeftArrow);
+    assert_eq!(app.get_active_pane(), Pane::Profiles);
+    assert_eq!(profile_shown(), "quick");
+    // Focus is put back where it was on that page a tick later; a key
+    // before then would find nothing focused.
+    for _ in 0..4 {
+        settle();
+    }
+    press_with_alt(&app, Key::LeftArrow);
+    assert_eq!(app.get_active_pane(), Pane::Pads);
+    assert_eq!(pad_shown(), "DualSense");
 }

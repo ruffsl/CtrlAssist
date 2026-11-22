@@ -127,7 +127,7 @@ pub fn run() -> Result<()> {
     settings::wire(&app, tray.as_ref());
     about::wire(&app, &daemon);
     pads::wire(&app, &daemon, &nav);
-    setups::wire(&app, &daemon, &nav);
+    setups::wire(&app, &daemon);
     profiles::wire(&app, &daemon, &nav);
     rt.spawn(state::follow(daemon, tray, app.as_weak()));
     // The desktop's accent color, from the settings portal: with no

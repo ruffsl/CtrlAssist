@@ -47,3 +47,23 @@ pub fn of(name: &str, plan: Option<&Plan>, setups: &[Setup], pads: &[Pad]) -> Wo
         ("Waits for a pad", "neutral")
     }
 }
+
+/// A source's name as a row says it: `primary` as "Primary".
+#[must_use]
+pub fn capitalized(name: &str) -> String {
+    let mut letters = name.chars();
+    letters
+        .next()
+        .map(|first| first.to_uppercase().chain(letters).collect())
+        .unwrap_or_default()
+}
+
+/// An identity as a sentence says it: `dualsense` as "DualSense".
+#[must_use]
+pub fn identity(id: &str) -> &str {
+    match id {
+        "xbox" => "Xbox",
+        "dualsense" => "DualSense",
+        other => other,
+    }
+}

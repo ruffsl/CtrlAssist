@@ -26,18 +26,17 @@ import { Select, SelectOverlay } from "globals/select.slint";
 import { AboutPane, AboutComponentRow } from "components/about_pane.slint";
 import { PadsPane } from "components/pads_pane.slint";
 import { Pads, PadRow, PadProfileRow } from "globals/pads.slint";
-import { SetupsPane } from "components/setups_pane.slint";
+
 import { ProfilesPane } from "components/profiles_pane.slint";
 import { SettingsPane } from "components/settings_pane.slint";
 import { Tray, TrayNotificationSettings } from "globals/tray.slint";
-import { Profiles, ProfileRow, ProfileFieldRow } from "globals/profiles.slint";
+import { Profiles, ProfileRow, ProfileFieldRow, ProfileUseRow } from "globals/profiles.slint";
 import { Setups, SetupRow, SetupPadRow, SetupSinkRow, SetupNodeRow } from "globals/setups.slint";
 
-export { Select, AboutComponentRow, Profiles, ProfileRow, ProfileFieldRow, Pads, PadRow, PadProfileRow, Setups, SetupRow, SetupPadRow, SetupSinkRow, SetupNodeRow, Theme, Daemon, Clipboard, Errors, Icons, Toast, Help, ServiceHealth, Nav, Couch, Tray, TrayNotificationSettings }
+export { Select, AboutComponentRow, Profiles, ProfileRow, ProfileFieldRow, ProfileUseRow, Pads, PadRow, PadProfileRow, Setups, SetupRow, SetupPadRow, SetupSinkRow, SetupNodeRow, Theme, Daemon, Clipboard, Errors, Icons, Toast, Help, ServiceHealth, Nav, Couch, Tray, TrayNotificationSettings }
 
 export enum Pane {
     pads,
-    setups,
     profiles,
     settings,
     about,
@@ -240,16 +239,14 @@ export component AppWindow inherits Window {
     // `focus-pane-item` and `focused-pane-index`. Reload sits past the
     // last pane, on the rail but outside the cycle.
     pure function pane-index(p: Pane) -> int {
-        return p == Pane.pads ? 0 : p == Pane.setups ? 1 : p == Pane.profiles ? 2 : p == Pane.settings ? 3 : 4;
+        return p == Pane.pads ? 0 : p == Pane.profiles ? 1 : p == Pane.settings ? 2 : 3;
     }
     pure function pane-at(i: int) -> Pane {
-        return i <= 0 ? Pane.pads : i == 1 ? Pane.setups : i == 2 ? Pane.profiles : i == 3 ? Pane.settings : Pane.about;
+        return i <= 0 ? Pane.pads : i == 1 ? Pane.profiles : i == 2 ? Pane.settings : Pane.about;
     }
     function focus-pane-item(p: Pane) {
         if (p == Pane.pads) {
             pads-item.focus();
-        } else if (p == Pane.setups) {
-            setups-item.focus();
         } else if (p == Pane.profiles) {
             profiles-item.focus();
         } else if (p == Pane.settings) {
@@ -261,7 +258,7 @@ export component AppWindow inherits Window {
     // The index of the pane item that has focus; -1 for none.
     function focused-pane-index() -> int {
         return pads-item.focused ? root.pane-index(Pane.pads)
-            : setups-item.focused ? root.pane-index(Pane.setups)
+
             : profiles-item.focused ? root.pane-index(Pane.profiles)
             : settings-item.focused ? root.pane-index(Pane.settings)
             : about-item.focused ? root.pane-index(Pane.about)
@@ -425,7 +422,6 @@ export component AppWindow inherits Window {
     // images render as blank, so missing names degrade to
     // label-only without errors.
     in property <image> pads-icon;
-    in property <image> setups-icon;
     in property <image> profiles-icon;
     in property <image> settings-icon;
     in property <image> about-icon;
@@ -559,18 +555,13 @@ export component AppWindow inherits Window {
                         accessible-id: "sidebar-pads";
                         clicked => { root.navigate(Pane.pads); }
                     }
-                    setups-item := SidebarItem {
-                        icon: root.setups-icon;
-                        label: @tr("Setups");
-                        selected: root.active-pane == Pane.setups;
-                        badge: Setups.trouble;
-                        accessible-id: "sidebar-setups";
-                        clicked => { root.navigate(Pane.setups); }
-                    }
                     profiles-item := SidebarItem {
                         icon: root.profiles-icon;
                         label: @tr("Profiles");
                         selected: root.active-pane == Pane.profiles;
+                        // A running profile that is held or failed,
+                        // seen from every pane.
+                        badge: Setups.trouble;
                         accessible-id: "sidebar-profiles";
                         clicked => { root.navigate(Pane.profiles); }
                     }
@@ -736,13 +727,7 @@ export component AppWindow inherits Window {
                         daemon-loading: root.daemon-loading;
                         daemon-health: root.daemon-health;
                     }
-                    if root.active-pane == Pane.setups: SetupsPane {
-                        width: 100%;
-                        height: 100%;
-                        daemon-available: root.daemon-available;
-                        daemon-loading: root.daemon-loading;
-                        daemon-health: root.daemon-health;
-                    }
+
                     if root.active-pane == Pane.profiles: ProfilesPane {
                         width: 100%;
                         height: 100%;
