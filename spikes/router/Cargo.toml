@@ -1,0 +1,16 @@
+# A spike: whether what one client of the daemon's socket serves reaches
+# another when the daemon is a zenoh router. Thrown away once the answer
+# is built on. Its own workspace, so it shares nothing with the project.
+[package]
+name = "spike-router"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+zenoh = { version = "1.10", default-features = false, features = ["transport_unixsock-stream"] }
+zenoh-ext = { version = "~1.10", default-features = false, features = ["unstable"] }

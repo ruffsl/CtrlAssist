@@ -121,6 +121,36 @@ Identify from the Pads pane buzzed the maintainer's DualSense, which a running s
 1. **The live view's spike**: what it must show before the step is designed (sampling at a display rate, only while a client asks, from a copy the input thread writes without waiting).
 2. **The license bundle,** which TisVlay pins a cargo-about release for because of Slint's license files.
 
+## Spike: serving from one client to another
+
+**Question.** The maintainer chose to make the daemon a zenoh router so that the tray can serve its own notification switches to the window, as TisVlay's tray does on its second socket. Does that work on CtrlAssist's zenoh, and what does it take?
+
+**Method.** [`spikes/router`](../../spikes/router): a hub on a Unix socket, a window on a connect-only peer link as every client has today, and a tray serving a liveliness token, a queryable and a cached publication. What the window saw of the three, zenoh 1.10.2, the same on three runs:
+
+| Hub | Tray's link | Token | Reply | Cached state |
+|---|---|---|---|---|
+| peer (as now) | connect-only peer (as now) | not seen | not seen | not seen |
+| peer (as now) | client mode | seen | seen | seen |
+| router | connect-only peer | not seen | not seen | not seen |
+| router | client mode | seen | seen | seen |
+
+The hub itself saw all three in every case.
+
+**Finding.**
+
+- **It is the tray's link that decides, not the hub's mode.** A leaf on a client-mode link has what it serves relayed to the other leaves, by a peer hub as by a router. A leaf on a connect-only peer link doesn't, under either. So the daemon need not become a router: it can stay the peer it is, and nothing about the existing clients or the daemon's session changes.
+- **This differs from TisVlay's note,** which says a serving leaf needs a client-mode link *into a router*. That was written for zenoh 1.9, and TisVlay's hub for the tray is a router, so the peer-hub case may never have been tried there. Here it was tried and it relays.
+- **A client-mode link has no hub to wait for.** Opening one with no hub fails at once, where a connect-only peer opens and dials forever. So the tray, which starts before or without the daemon, needs a second session for serving, opened when the daemon appears (its liveliness token on the tray's first session is the event; no retry timer is needed).
+- **The link survived the hub restarting.** With the hub closed and opened again on the same socket, the tray's client session, left alone, was seen by the window again with all it served, within the 2.5 s the spike waited. TisVlay reopens its link in a loop; here that wasn't needed in the one restart tried. How it behaves across a longer absence wasn't measured.
+
+**What it leaves open.**
+
+- Whether to still make the daemon a router. The spike finds no need. A router also changes how timestamping and routing are configured for every existing client, which is the risk the maintainer's choice carried, and it buys nothing the client link doesn't.
+- The tray's serving session across a daemon that is gone for longer, and whether one opened on the daemon's token ever needs opening again.
+- The window's side: the SDK's mirror and release check for a second service, which TisVlay has as `TrayClient` and CtrlAssist's SDK doesn't.
+
+**Proposed.** Keep the daemon a peer. Give the tray a serving session on a client-mode link, opened when the daemon appears, and copy TisVlay's tray settings service and its `TrayClient` onto that. The tray's presence, now reported by the daemon, could then come from the tray's own token, and the daemon's relay of it be removed.
+
 ## Steps
 
 Each is a commit or a few, with the gates run and the TisVlay commit named. Order may change as the open questions are answered.
