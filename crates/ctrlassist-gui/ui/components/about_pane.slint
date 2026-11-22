@@ -1,0 +1,424 @@
+import { AboutSlint } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+import { Group, Chip, Focusable, UriBtn, IconBtn } from "../widgets.slint";
+import { Clipboard } from "../globals/clipboard.slint";
+import { Icons } from "../globals/icons.slint";
+import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
+import { Health, ServiceHealth } from "../globals/health.slint";
+import { Nav } from "../globals/nav.slint";
+
+// One row in the COMPONENTS table. Two visual lines per row: title
+// (friendly name + monospace wire identity in parens) above a rich
+// description, with a single state-pill anchored at the top-right
+// (version when the peer is online, `offline` when it isn't).
+//
+// Field semantics:
+//   - `name`: the part's identifier (`daemon`, `hider` etc.), which
+//     the diagnostic bundle looks rows up by. Not displayed.
+//   - `friendly_name`: human-readable label ("Daemon" / "Hiding
+//     service" / "Tray" / "Window" / "Command line") shown as the
+//     row title.
+//   - `bus_address`: where the part is found, in monospace parens:
+//     the daemon's liveliness key, the window's application id, the
+//     command's name. Empty where there is nothing to name.
+//   - `description`: rich one-line sentence describing what this
+//     component does ("Device management, WoL at boot, …").
+//   - `version`: probed runtime version ("—" while a live peer's
+//     probe hasn't landed; empty when offline). Feeds the
+//     diagnostics blob.
+//   - `health`: presence plus release compatibility against this
+//     GUI's release, the same value the sidebar dot renders. Colors
+//     the status circle and the version chip.
+//   - `online`: presence (liveliness, or `ctrlassist --version` parsed
+//     cleanly for the command line). Feeds the diagnostics blob.
+//   - `chip`: the chip's label ("v0.3.0", "offline", "not found").
+//   - `tip`: the chip's hover hint, saying why it's colored.
+//   - `config_path`: absolute path to the peer's config file.
+//     Drives the folder-open IconBtn — present and enabled when
+//     non-empty, present-but-disabled (40% opacity) for a peer
+//     without a config file, absent for the CLI
+//     (which has no config of its own).
+export struct AboutComponentRow {
+    name: string,
+    friendly_name: string,
+    bus_address: string,
+    description: string,
+    version: string,
+    health: ServiceHealth,
+    online: bool,
+    chip: string,
+    tip: string,
+    config_path: string,
+}
+
+// Single row of the COMPONENTS table. Two-line layout: title row
+// (friendly name + bus address + folder-open IconBtn) and description
+// row (rich sentence). Left: 28px ✓/!/✗ status circle. Right: single
+// chip slot — version pill when online, `offline` pill when not.
+// The status circle already conveys presence, so a separate "online"
+// pill would duplicate the green check; consolidating to one chip
+// keeps the slot's vertical anchor steady across both states.
+//
+// `show-divider` draws a 1px hairline above the row using
+// `Theme.border` — the parent for-loop sets it on every entry except
+// the first, so the rows read as separated.
+//
+// `open-config-folder(path)` fires when the title-row IconBtn is
+// clicked. AboutPane re-emits it; Rust hands it to the file
+// manager's `ShowItems`.
+component ComponentRow {
+    in property <AboutComponentRow> entry;
+    in property <bool> show-divider;
+    callback open-config-folder(string);
+
+    VerticalLayout {
+        // Mirrors `Group`'s internal between-children spacing so the
+        // divider sits exactly halfway between the previous row's
+        // content and this row's content — equal whitespace above
+        // and below the line. Using `Design.gap-stack` (8px) here
+        // would render asymmetrically against `gap-block`'s 12px.
+        spacing: Design.gap-block;
+
+        if root.show-divider: Rectangle {
+            height: Design.border-thin;
+            background: Theme.border;
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+
+            // Status indicator — colored circle with a ✓ / ! / ✗
+            // glyph for the row's health (the sidebar dot's value),
+            // vertically centered in the row so it reads as the
+            // row's at-a-glance marker rather than an anchor on
+            // the title line. Wrapper VerticalLayout owns the
+            // alignment (same intrinsic-stretch discipline the
+            // right-column chip uses, just centered instead of
+            // top).
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 0;
+                Rectangle {
+                    width: Design.size-tile-md;
+                    height: Design.size-tile-md;
+                    border-radius: self.width / 2;
+                    background: Health.soft(entry.health);
+                    horizontal-stretch: 0;
+                    vertical-stretch: 0;
+
+                    Text {
+                        text: Health.mark(entry.health);
+                        color: Health.text(entry.health);
+                        font-weight: 700;
+                        // Glyph scale tracks the circle: half the
+                        // parent's width keeps the proportion stable
+                        // whatever `size-tile-md` is set to.
+                        font-size: parent.width / 1.5;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Left column: title + description, stacked.
+            VerticalLayout {
+                spacing: Design.gap-form;
+                horizontal-stretch: 1;
+
+                // Title row: friendly name + wire identity + (for
+                // service peers) a folder-open IconBtn that reveals the
+                // peer's config file in the user's file manager. The
+                // button is rendered disabled (40% opacity, no click)
+                // for peers that don't have a config file on disk yet —
+                // GUI today, others if the peer's info rpc reports an
+                // empty path. CLI rows skip the button entirely (no
+                // served surface, no per-binary config of its own).
+                HorizontalLayout {
+                    spacing: Design.gap-tight;
+                    alignment: start;
+                    Text {
+                        text: entry.friendly_name;
+                        color: Theme.text;
+                        font-size: Design.font-body;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    if entry.bus_address != "": Text {
+                        text: entry.bus_address;
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        font-family: Theme.mono-font;
+                        vertical-alignment: center;
+                    }
+                    if entry.bus_address != "": IconBtn {
+                        source: Icons.folder-open;
+                        label: @tr("Config");
+                        tip: @tr("Open component config");
+                        enabled: entry.config_path != "";
+                        opacity: entry.config_path != "" ? 1 : Design.opacity-disabled;
+                        accessible-id: "about-component-" + entry.name + "-config-button";
+                        clicked => { root.open-config-folder(entry.config_path); }
+                    }
+                }
+
+                Text {
+                    text: entry.description;
+                    color: Theme.text-dim;
+                    font-size: Design.font-helper;
+                    wrap: word-wrap;
+                }
+            }
+
+            // Right column: single chip, top-aligned to the title
+            // row, colored by the row's health. Online → version
+            // pill; offline → `offline` pill. Same anchor, same width
+            // band, content is what flips — so the column reads as a
+            // stable status column whether the row's peer is up or
+            // down. The CLI's old "invisible online chip" trick is no
+            // longer needed: under the new rule a CLI row that probes
+            // cleanly just shows its version pill outright.
+            VerticalLayout {
+                horizontal-stretch: 0;
+                alignment: start;
+
+                HorizontalLayout {
+                    alignment: end;
+                    Chip {
+                        label: entry.chip;
+                        tone: Health.tone(entry.health);
+                        tip: entry.tip;
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component AboutPane inherits Rectangle {
+    in property <string> gui-version;
+    in property <[AboutComponentRow]> components;
+    in property <image> logo;
+
+    // A column request lands on the pane's first control; one for the
+    // sidebar is the shell's.
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 0) {
+            return;
+        }
+        Nav.column-served = Nav.column-tick;
+        brand.focus();
+    }
+    // The header's two lines are two rows for the arrows: the brand
+    // link with the version chip, then Report issue.
+    property <int> header-row-1;
+    property <int> header-row-2;
+    init => {
+        root.header-row-1 = Nav.next-row-id();
+        root.header-row-2 = Nav.next-row-id();
+    }
+
+    callback view-source-clicked();
+    callback view-release-clicked();
+    callback report-issue-clicked();
+    callback open-config-folder(string);
+
+    background: Theme.surface-alt;
+
+    HelpScrollView {
+        VerticalLayout {
+            width: 100%;
+            padding-left: Design.pad-pane;
+            padding-right: Design.pad-pane;
+            padding-top: Design.pad-card;
+            padding-bottom: Design.pad-pane;
+            spacing: Design.gap-pane;
+            // Pack all sections at the top instead of stretch-
+            // distributing extra vertical space when the window is
+            // taller than the content. Without this, the default
+            // `alignment: stretch` lets the first Group (whose
+            // wrap: word-wrap descendants give it an unbounded
+            // vertical-stretch hint) absorb the entire surplus —
+            // visible as a huge gap between the page header and the
+            // CONNECTIONS card on a tall window.
+            alignment: start;
+
+            // -- Header row: clickable [logo · title + tagline] (opens
+            // repo URL)
+            // and a right-aligned column with version chip stacked
+            // over the action buttons. `padding-right: pad-card`
+            // matches the body padding inside the Groups below, so
+            // the header's right column shares an x-coord with the
+            // per-row chips. (Slint's border doesn't inset content,
+            // so no `+ border-thin` adjustment is needed — the
+            // Groups' 1px border sits flush with the card's outer
+            // edge.)
+            HorizontalLayout {
+                spacing: Design.gap-pane;
+                padding-right: Design.pad-card;
+
+                // Brand area is the click target for "View source".
+                // The whole region — logo + text — gets a hand
+                // cursor; the title brightens to accent on hover so
+                // the affordance reads even before the cursor change
+                // registers.
+                brand := Focusable {
+                    nav-row: root.header-row-1;
+                    horizontal-stretch: 1;
+                    border-radius: Design.radius-card;
+                    mouse-cursor: pointer;
+                    accessible-label: @tr("Open CtrlAssist's repository");
+                    accessible-id: "about-brand-link";
+                    activated => {
+                        root.view-source-clicked();
+                        brand-help.hover-leave();
+                    }
+                    hover-changed(hovering) => {
+                        brand-help.set-hover(hovering);
+                    }
+                    HorizontalLayout {
+                        width: 100%;
+                        height: 100%;
+                        spacing: Design.gap-pane;
+                        Image {
+                            source: root.logo;
+                            // Brand-area asset size — one-off larger
+                            // than any `size-*` token. Not promoted.
+                            width: 56px;
+                            height: 56px;
+                            horizontal-stretch: 0;
+                            vertical-stretch: 0;
+                        }
+                        VerticalLayout {
+                            // Tighter than `gap-form` (4px) — the
+                            // tagline reads as a continuation of the
+                            // title rather than a separate field.
+                            spacing: 2px;
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            // Title line: brand name + a trailing
+                            // external-link glyph hinting the brand area
+                            // is a link. Both track the hover accent so
+                            // the affordance reads as one unit.
+                            HorizontalLayout {
+                                spacing: Design.gap-tight;
+                                alignment: start;
+                                Text {
+                                    // Brand name; intentionally not translated.
+                                    text: "CtrlAssist";
+                                    font-size: Design.font-title-1;
+                                    font-weight: 700;
+                                    color: brand.hovered ? Theme.accent : Theme.text;
+                                    animate color { duration: 150ms; }
+                                    vertical-alignment: center;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Image {
+                                        source: Icons.open-link;
+                                        width: Design.size-glyph;
+                                        height: Design.size-glyph;
+                                        colorize: brand.hovered ? Theme.accent : Theme.text;
+                                        animate colorize { duration: 150ms; }
+                                    }
+                                }
+                            }
+                            Text {
+                                text: @tr("Controller assist for gaming on Linux.");
+                                color: Theme.text-dim;
+                                font-size: Design.font-body;
+                            }
+                        }
+                    }
+                    // Hover hint for the brand-area "View source" target.
+                    brand-help := HelpTrigger {
+                        width: 100%;
+                        height: 100%;
+                        text: @tr("Open CtrlAssist's repository");
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: start;
+                    horizontal-stretch: 0;
+                    spacing: Design.gap-stack;
+                    HorizontalLayout {
+                        alignment: end;
+                        Chip {
+                            nav-row: root.header-row-1;
+                            label: "v" + root.gui-version;
+                            // `info`: a link to the release notes, not
+                            // a status like the COMPONENTS chips.
+                            tone: "info";
+                            interactive: true;
+                            tip: @tr("Open release notes");
+                            accessible-id: "about-version-chip";
+                            clicked => { root.view-release-clicked(); }
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: Design.gap-stack;
+                        UriBtn {
+                            nav-row: root.header-row-2;
+                            text: @tr("Report issue");
+                            tip: @tr("Open issue tracker");
+                            icon: Icons.open-link;
+                            accessible-id: "about-issue-button";
+                            clicked => { root.report-issue-clicked(); }
+                        }
+                    }
+                }
+            }
+
+            // -- COMPONENTS (data-driven; one row per peer with stacked status + version pills) --
+            Group {
+                title: @tr("COMPONENTS");
+
+                for c[i] in root.components: ComponentRow {
+                    entry: c;
+                    show-divider: i > 0;
+                    open-config-folder(p) => { root.open-config-folder(p); }
+                }
+            }
+
+            // -- LICENSE (project copyright + Slint upstream
+            // attribution; actions live in the header) --
+            Group {
+                title: @tr("LICENSE");
+
+                HorizontalLayout {
+                    spacing: Design.gap-row;
+                    Text {
+                        // Year range and project name; intentionally not translated.
+                        text: "Apache-2.0 · © 2026 CtrlAssist contributors";
+                        color: Theme.text;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Slint Royalty-free 2.0 license requires an `AboutSlint`
+                // widget to appear in the application's About pane.
+                // Tracks slint-ui/slint LicenseRef-Slint-Royalty-free-2.0.
+                //
+                // The widget's source declares `preferred-width: 100%;
+                // preferred-height: 100%;` so without bounds it scales
+                // to fill whatever space is left in the pane —
+                // overwhelming the rest of the page on a maximized
+                // window. Bound it to badge-like dimensions and center
+                // horizontally; matches the visual weight Slint
+                // upstream uses in their own demo pane.
+                HorizontalLayout {
+                    alignment: center;
+                    AboutSlint {
+                        max-width: 280px;
+                        max-height: 96px;
+                    }
+                }
+            }
+        }
+    }
+}

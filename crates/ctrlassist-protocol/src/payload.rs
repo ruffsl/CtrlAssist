@@ -12,6 +12,11 @@ pub struct Daemon {
     pub realtime: bool,
     /// How the pads of a running setup are kept from games.
     pub hiding: Hiding,
+    /// The directory it keeps the user's files in, the profiles among
+    /// them, for a client that offers to show it. Empty from a daemon
+    /// that doesn't say.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub config: String,
 }
 
 /// How the pads of a running setup are kept from games.

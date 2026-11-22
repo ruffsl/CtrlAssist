@@ -4,7 +4,11 @@
 //! So far that is the shell: a sidebar and its panes, empty, steered by
 //! keys alone, with couch mode for a TV across the room.
 
+pub mod about;
 mod couch;
+mod file_manager;
+mod icon_theme;
+mod icons;
 pub mod keys;
 pub mod nav;
 pub mod state;
@@ -98,6 +102,8 @@ pub fn run() -> Result<()> {
 
     let app = AppWindow::new()?;
     let nav = nav::wire(&app);
+    icons::load(&app);
+    about::wire(&app);
 
     // The daemon: connected to whether or not it is there yet, and
     // followed from then on.

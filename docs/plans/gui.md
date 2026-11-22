@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** decisions settled with the maintainer on 2026-11-21; the build is under way. Build steps 1 to 4 are done: the window opens with its sidebar and five empty panes, is steered by keys, with couch mode, follows the daemon, and its Reload asks the daemon to reread its files.
-- **Next action:** build step 5, the About pane, which brings the icons crate.
+- **Next action:** build step 5 is part done: the About pane shows its rows and opens its links. Still owed in it: the diagnostic bundle with its Copy button, and the third-party notices with theirs. Then build step 6, the Pads pane.
 - **Branch:** `feat/rewrite`, with the rewrite. Nothing is pushed.
 - **Template:** TisVlay at `5ddc2c0d` (`crates/tisvlay-gui`, `crates/tisvlay-gui-app`, `crates/tisvlay-icons`, `docs/gui/`).
 
@@ -130,6 +130,7 @@ Each is a commit or a few, with the gates run and the TisVlay commit named. Orde
 - **The daemon's state in the window** (build step 4). The window's state code is written for CtrlAssist, on TisVlay's rule and not its files: level-triggered, one read of the whole mirror into a `Snapshot` for each burst of events, and the window set from that. TisVlay's `state.rs` and `state_watch.rs` are about TVs nearly throughout. `health`, the reload summary and banner, the toast and `on_ui` are its as they stand. Seen on the maintainer's desktop against the dev daemon: both dots green, and Reload answered with a toast.
 - **The tray's dot waits for the tray to be a service.** The sidebar shows the daemon and the hiding service. The tray says nothing on the bus yet that a client could see it by; it gets a liveliness token when it starts serving its notification switches, and its dot comes with that step. The hiding service's dot is what the daemon reports: green when it hides pads, hollow when they are only grabbed.
 - **The toast stays up for 2.5 s,** TisVlay's figure: how long a line of text is shown, the reader's time and not a wait for anything. Flagged as a duration all the same.
+- **The About pane, so far** (build step 5). `ctrlassist-icons` is TisVlay's crate as it stands, and the sidebar and the action glyphs now come from the desktop's theme. The pane's Slint is TisVlay's with its text changed; the Diagnostics and third-party notices buttons are taken out until what they do is built, so no button is dead. `about.rs` is written for CtrlAssist's parts on TisVlay's model: the rows are made from what the window already shows, so they can't disagree with the sidebar's dots. There are five rows, not the four asked for: the window itself has one, as TisVlay's has, since its `gui.toml` is a file a user may want shown. The tray's row says "not seen" in red though the tray may well be running, since nothing tells a client; that is misleading until the tray is a service, and the row could instead be left out until then. The daemon's published state gained `config`, the directory it keeps the user's files in, so the Config button shows the right folder for a daemon started with another one. Strings are plain until the translations step wraps them.
 - **`just gui-start` names the package,** `-p ctrlassist-gui-app`, where TisVlay's doesn't: the window isn't in `default-members` until the packaging step puts it in the package.
 
 ## Deviations

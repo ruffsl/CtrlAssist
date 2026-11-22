@@ -26,6 +26,10 @@ pub struct Snapshot {
     /// Whether the hiding service hides setups' pads, or they are only
     /// grabbed; unknown until the daemon's own state has arrived.
     pub hidden: Option<bool>,
+    /// Where it keeps the user's files, when it says.
+    pub config: String,
+    /// Whether its input thread has real-time scheduling.
+    pub realtime: bool,
 }
 
 impl Snapshot {
@@ -37,7 +41,12 @@ impl Snapshot {
             available: daemon.is_available(),
             hydrated: daemon.is_hydrated(),
             version: daemon.service_info().map(|info| info.version),
-            hidden: state.map(|state| state.hiding == Hiding::Service),
+            hidden: state.as_ref().map(|state| state.hiding == Hiding::Service),
+            config: state
+                .as_ref()
+                .map(|state| state.config.clone())
+                .unwrap_or_default(),
+            realtime: state.is_some_and(|state| state.realtime),
         }
     }
 
@@ -64,6 +73,10 @@ impl Snapshot {
         app.set_daemon_loading(self.available && !self.hydrated);
         app.set_daemon_health(self.daemon_health());
         app.set_hider_health(self.hider_health());
+        app.set_daemon_version(SharedString::from(self.version.clone().unwrap_or_default()));
+        app.set_daemon_config(SharedString::from(self.config.as_str()));
+        app.set_daemon_realtime(self.realtime);
+        crate::about::refresh(app);
         let banner = match (&self.version, self.daemon_health()) {
             (Some(theirs), ServiceHealth::Incompatible) => ErrorState {
                 kind: SharedString::from("version"),

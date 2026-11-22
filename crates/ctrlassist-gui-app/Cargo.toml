@@ -23,12 +23,15 @@ clap = { workspace = true }
 ctrlassist = { workspace = true }
 ctrlassist-daemon = { workspace = true }
 ctrlassist-gui = { workspace = true }
+ctrlassist-icons = { workspace = true }
 ctrlassist-protocol = { workspace = true }
 serde = { workspace = true }
 slint = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
+webbrowser = { workspace = true }
+zbus = { workspace = true }
 
 [dev-dependencies]
 # Pinned with slint: its API has no semver promise.

@@ -35,6 +35,8 @@ crates/
                               # ctrlassist-gui binary (lib name ctrlassist_gui)
   ctrlassist-hider/           # the hiding service: its wire types and client as a library,
                               # and the root binary
+  ctrlassist-icons/           # freedesktop icon-theme lookup: a name, with fallbacks, to
+                              # a file in the desktop's theme
   ctrlassist-protocol/        # what the daemon and its clients agree on: the profile
                               # schema; session configuration, keys, the rpc table,
                               # typed wire errors and the version check

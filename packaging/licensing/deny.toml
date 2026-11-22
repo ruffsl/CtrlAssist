@@ -94,6 +94,10 @@ skip = [
     { crate = "calloop@0.13.0", reason = "SCTK 0.19 counterpart (winit)" },
     { crate = "calloop-wayland-source@0.3.0", reason = "SCTK 0.19 counterpart (winit)" },
     { crate = "miniz_oxide@0.8.9", reason = "png 0.18 (Slint's image stack) pins miniz_oxide 0.8; the rest of the tree is on 0.9" },
+
+    # The icon-theme lookup behind the window's icons.
+    { crate = "dirs@5.0.1", reason = "freedesktop-icons 0.4 pins dirs 5; zenoh-util's shellexpand is on 6" },
+    { crate = "dirs-sys@0.4.1", reason = "dirs 5 counterpart (freedesktop-icons)" },
 ]
 
 [advisories]

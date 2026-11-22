@@ -42,6 +42,7 @@ fn the_window_shows_a_snapshot_and_the_banner_for_another_release() {
         hydrated: false,
         version: None,
         hidden: None,
+        ..Snapshot::default()
     };
     loading.show(&app);
     assert!(app.get_daemon_available());
@@ -58,6 +59,7 @@ fn the_window_shows_a_snapshot_and_the_banner_for_another_release() {
         hydrated: true,
         version: Some(VERSION.to_string()),
         hidden: Some(true),
+        ..Snapshot::default()
     };
     running.show(&app);
     assert!(!app.get_daemon_loading());
@@ -150,6 +152,9 @@ async fn a_snapshot_reads_a_live_daemon_and_its_going() {
             version: Some(VERSION.to_string()),
             // No hiding service at that socket: pads would be grabbed.
             hidden: Some(false),
+            config: socket.with_file_name("config").display().to_string(),
+            // Granted or not is the machine's to say.
+            realtime: snapshot.realtime,
         }
     );
     assert_eq!(snapshot.daemon_health(), ServiceHealth::Ok);

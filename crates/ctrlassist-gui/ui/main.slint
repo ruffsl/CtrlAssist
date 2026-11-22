@@ -23,8 +23,9 @@ import { Nav } from "globals/nav.slint";
 import { Couch } from "globals/couch.slint";
 import { Health, ServiceHealth } from "globals/health.slint";
 import { Select, SelectOverlay } from "globals/select.slint";
+import { AboutPane, AboutComponentRow } from "components/about_pane.slint";
 
-export { Theme, Daemon, Clipboard, Errors, Icons, Toast, Help, ServiceHealth, Nav, Couch }
+export { AboutComponentRow, Theme, Daemon, Clipboard, Errors, Icons, Toast, Help, ServiceHealth, Nav, Couch }
 
 export enum Pane {
     pads,
@@ -362,6 +363,23 @@ export component AppWindow inherits Window {
     // The hiding service, as the daemon finds it: without it a setup's
     // pads are grabbed, not hidden.
     in property <ServiceHealth> hider-health: ServiceHealth.offline;
+    // The About pane: this window's release, its rows, and the links
+    // Rust opens.
+    in property <string> gui-version;
+    in property <[AboutComponentRow]> about-components;
+    in property <image> app-logo;
+    // What the rows are made from, beside the health above: the
+    // daemon's release and where it keeps the user's files, and the
+    // release of the `ctrlassist` on PATH, empty for none found.
+    in-out property <string> daemon-version;
+    in-out property <string> daemon-config;
+    in-out property <bool> daemon-realtime;
+    in-out property <string> cli-version;
+    callback view-source-clicked();
+    callback view-release-clicked();
+    callback report-issue-clicked();
+    // Reveal a part's files in the file manager.
+    callback open-config-folder(string);
     in-out property <Pane> active-pane: Pane.pads;
     // Navigating panes retires any open help bubble: the owning info
     // button is gone (or no longer hovered/focused), so its own
@@ -713,10 +731,16 @@ export component AppWindow inherits Window {
                         height: 100%;
                         title: @tr("Settings");
                     }
-                    if root.active-pane == Pane.about: EmptyPane {
+                    if root.active-pane == Pane.about: AboutPane {
                         width: 100%;
                         height: 100%;
-                        title: @tr("About");
+                        gui-version: root.gui-version;
+                        components: root.about-components;
+                        logo: root.app-logo;
+                        view-source-clicked => { root.view-source-clicked(); }
+                        view-release-clicked => { root.view-release-clicked(); }
+                        report-issue-clicked => { root.report-issue-clicked(); }
+                        open-config-folder(p) => { root.open-config-folder(p); }
                     }
                 }
             }

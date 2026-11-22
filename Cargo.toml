@@ -27,6 +27,7 @@ publish = false
 ctrlassist = { path = "crates/ctrlassist" }
 ctrlassist-cli = { path = "crates/ctrlassist-cli" }
 ctrlassist-gui = { path = "crates/ctrlassist-gui" }
+ctrlassist-icons = { path = "crates/ctrlassist-icons" }
 ctrlassist-core = { path = "crates/ctrlassist-core" }
 ctrlassist-daemon = { path = "crates/ctrlassist-daemon" }
 ctrlassist-device = { path = "crates/ctrlassist-device" }
@@ -67,6 +68,16 @@ notify-rust = { version = ">=4.18, <4.19", default-features = false, features = 
 # stability promise, so slint is pinned exactly: bump it together with
 # slint-build and i-slint-backend-testing. TisVlay's pin and features.
 slint = { version = "=1.19.0", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
+
+# Freedesktop icon-theme lookup, a name to a file's path, through
+# ctrlassist-icons. TisVlay's pin.
+freedesktop-icons = "0.4"
+
+# The window's calls on the desktop: the file manager over D-Bus, on
+# tokio as the tray's crates are, and the user's browser for a link.
+# TisVlay's pins.
+webbrowser = "1"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 # Tests
 tempfile = "3"

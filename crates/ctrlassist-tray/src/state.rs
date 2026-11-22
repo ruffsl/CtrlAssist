@@ -263,6 +263,7 @@ pub(crate) mod tests {
                 version: "0.5.0".to_string(),
                 realtime: true,
                 hiding,
+                config: String::new(),
             }),
             pads: vec![
                 pad("address:dualsense", "DualSense", true, in_couch),
