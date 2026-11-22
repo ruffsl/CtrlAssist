@@ -69,6 +69,28 @@ pub struct Field {
     /// it; empty for a field that must be given.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub default: String,
+    /// The card a form shows it in: [`INPUTS`], [`OUTPUTS`] or
+    /// [`ARRANGEMENT`]; empty for one a form places by itself, as
+    /// whether the profile is managed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
+}
+
+/// The group of the fields that name the profile's pads.
+pub const INPUTS: &str = "inputs";
+/// The group of the fields about its virtual pads.
+pub const OUTPUTS: &str = "outputs";
+/// The group of the fields that say how the two are arranged.
+pub const ARRANGEMENT: &str = "preset";
+
+/// The card a field belongs in, by its key.
+fn group_of(field: &Field) -> &'static str {
+    match (&field.kind, field.key.as_str()) {
+        (Kind::Pad, _) => INPUTS,
+        (_, "identity" | "outputs") => OUTPUTS,
+        (_, "managed") => "",
+        _ => ARRANGEMENT,
+    }
 }
 
 impl Field {
@@ -80,7 +102,7 @@ impl Field {
 }
 
 /// The key of the field that picks the preset.
-pub const PRESET: &str = "preset";
+pub const PRESET: &str = "mode";
 
 fn choice(value: &str, label: &str, description: &str) -> Choice {
     Choice {
@@ -101,6 +123,15 @@ fn names(presets: &[&str]) -> Vec<String> {
 /// A preset's fields, in the order a form shows them.
 #[must_use]
 pub fn fields() -> Vec<Field> {
+    let mut fields = described();
+    for field in &mut fields {
+        field.group = group_of(field).to_string();
+    }
+    fields
+}
+
+/// The fields, each still to be told its card.
+fn described() -> Vec<Field> {
     let pad = |key: &str, label: &str, help: &str, presets: &[&str]| Field {
         key: key.to_string(),
         label: label.to_string(),
@@ -108,11 +139,12 @@ pub fn fields() -> Vec<Field> {
         kind: Kind::Pad,
         presets: names(presets),
         default: String::new(),
+        group: String::new(),
     };
     vec![
         Field {
             key: PRESET.to_string(),
-            label: "Preset".to_string(),
+            label: "Mode".to_string(),
             help: "How the pads and the virtual pads are arranged.".to_string(),
             kind: Kind::Choice {
                 choices: vec![
@@ -145,6 +177,7 @@ pub fn fields() -> Vec<Field> {
             },
             presets: Vec::new(),
             default: String::new(),
+            group: String::new(),
         },
         pad("primary", "Primary", "The player's pad.", &TWO_PADS),
         pad(
@@ -161,6 +194,7 @@ pub fn fields() -> Vec<Field> {
             kind: Kind::Number { min: 1, max: 8 },
             presets: names(&ONE_PAD),
             default: "2".to_string(),
+            group: String::new(),
         },
         Field {
             key: "identity".to_string(),
@@ -187,6 +221,7 @@ pub fn fields() -> Vec<Field> {
             },
             presets: Vec::new(),
             default: Identity::default().as_str().to_string(),
+            group: String::new(),
         },
         Field {
             key: "rumble".to_string(),
@@ -197,10 +232,12 @@ pub fn fields() -> Vec<Field> {
                     choice(Rumble::Both.as_str(), "Both pads", ""),
                     choice(Rumble::Primary.as_str(), "Primary only", ""),
                     choice(Rumble::Assist.as_str(), "Assist only", ""),
+                    choice(Rumble::None.as_str(), "Neither", ""),
                 ],
             },
             presets: names(&TWO_PADS),
             default: Rumble::default().as_str().to_string(),
+            group: String::new(),
         },
         Field {
             key: "hide".to_string(),
@@ -228,6 +265,7 @@ pub fn fields() -> Vec<Field> {
             },
             presets: Vec::new(),
             default: Hide::default().as_str().to_string(),
+            group: String::new(),
         },
         Field {
             key: "managed".to_string(),
@@ -237,6 +275,7 @@ pub fn fields() -> Vec<Field> {
             kind: Kind::Switch,
             presets: Vec::new(),
             default: "false".to_string(),
+            group: String::new(),
         },
     ]
 }

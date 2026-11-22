@@ -45,11 +45,11 @@ async fn a_profile_is_checked_kept_replaced_and_deleted() {
 
     // A wrong one is refused with where and what, and the kept one stays.
     let refused = client
-        .put_profile("couch", "preset = \"priority\"\n")
+        .put_profile("couch", "mode = \"priority\"\n")
         .await
         .unwrap_err();
     assert_eq!(refused.rpc_code(), Some(ErrorCode::InvalidProfile));
-    assert!(refused.to_string().starts_with("preset: "), "{refused}");
+    assert!(refused.to_string().starts_with("mode: "), "{refused}");
     let refused = client.put_profile("Not A Name", RIGHT).await.unwrap_err();
     assert_eq!(refused.rpc_code(), Some(ErrorCode::BadRequest));
     assert_eq!(client.profile("couch").unwrap().unwrap().toml, RIGHT);
@@ -113,7 +113,7 @@ async fn a_reload_takes_up_profiles_written_by_hand() {
     let profiles = socket.with_file_name("config").join("profiles");
     let other = RIGHT.replace("priority", "average");
     std::fs::write(profiles.join("couch.toml"), &other).unwrap();
-    std::fs::write(profiles.join("den.toml"), "preset = \"priority\"\n").unwrap();
+    std::fs::write(profiles.join("den.toml"), "mode = \"priority\"\n").unwrap();
     std::fs::write(profiles.join("Not A Name.toml"), RIGHT).unwrap();
     std::fs::remove_file(profiles.join("desk.toml")).unwrap();
     // Until asked, the daemon goes by what it read.
@@ -154,7 +154,7 @@ async fn the_daemon_serves_a_preset_s_fields_and_keeps_what_they_write() {
 
     let mut values = form::Values::new();
     for (key, value) in [
-        ("preset", "average"),
+        ("mode", "average"),
         ("primary", "0c:27:56:4f:bd:14"),
         ("assist", "model:054c:09cc"),
         ("rumble", "assist"),

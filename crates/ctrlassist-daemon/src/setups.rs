@@ -2020,7 +2020,7 @@ mod tests {
     use crate::store::Store;
 
     const PROFILE: &str =
-        "preset = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
+        "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
 
     struct Rig {
         _dir: TempDir,
@@ -2511,7 +2511,7 @@ mod tests {
     /// A profile of the same pads and virtual pad as [`PROFILE`], as a
     /// toggle.
     const TOGGLE: &str =
-        "preset = \"toggle\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
+        "mode = \"toggle\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
 
     /// A graph as the input thread hands one back.
     fn graph_of(profile: &str) -> Box<NewGraph> {
@@ -2735,7 +2735,7 @@ mod tests {
         let book = Book::new(Vec::new());
         let plan = |primary: &str, assist: &str| {
             let toml =
-                format!("preset = \"priority\"\nprimary = \"{primary}\"\nassist = \"{assist}\"\n");
+                format!("mode = \"priority\"\nprimary = \"{primary}\"\nassist = \"{assist}\"\n");
             Profile::check(&toml).unwrap()
         };
         let bound = |plan: &Plan| {

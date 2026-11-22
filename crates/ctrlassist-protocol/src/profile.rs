@@ -36,8 +36,9 @@ pub struct Profile {
     #[serde(default, skip_serializing_if = "is_false")]
     pub managed: bool,
 
-    /// The preset, for a profile in the short form.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The preset, for a profile in the short form: the mode its pads
+    /// and virtual pads are arranged in, which the file writes as `mode`.
+    #[serde(default, rename = "mode", skip_serializing_if = "Option::is_none")]
     pub preset: Option<Preset>,
     /// A mux preset's first pad.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -103,11 +104,13 @@ pub enum Rumble {
     Primary,
     /// The assist alone.
     Assist,
+    /// Neither: what a game rumbles is felt by nobody.
+    None,
 }
 
 impl Rumble {
     /// Every choice, in the order a menu lists them.
-    pub const ALL: [Self; 3] = [Self::Both, Self::Primary, Self::Assist];
+    pub const ALL: [Self; 4] = [Self::Both, Self::Primary, Self::Assist, Self::None];
 
     /// The choice as a profile writes it.
     #[must_use]
@@ -116,6 +119,7 @@ impl Rumble {
             Self::Both => "both",
             Self::Primary => "primary",
             Self::Assist => "assist",
+            Self::None => "none",
         }
     }
 }
@@ -788,7 +792,7 @@ impl Profile {
         };
         if has_full {
             return error(
-                "preset",
+                "mode",
                 "a profile is a preset or names its own sources, nodes and sinks, not both",
             );
         }
@@ -817,7 +821,7 @@ impl Profile {
                 }
                 let (Some(primary), Some(assist)) = (self.primary.take(), self.assist.take())
                 else {
-                    return error("preset", "this preset needs `primary` and `assist`");
+                    return error("mode", "this preset needs `primary` and `assist`");
                 };
                 self.source.insert("primary".to_string(), source(primary));
                 self.source.insert("assist".to_string(), source(assist));
@@ -826,6 +830,7 @@ impl Profile {
                     Rumble::Both => None,
                     Rumble::Primary => Some(Feedback::Inputs(vec!["primary".to_string()])),
                     Rumble::Assist => Some(Feedback::Inputs(vec!["assist".to_string()])),
+                    Rumble::None => Some(Feedback::Named(FeedbackName::None)),
                 };
                 let node = Node {
                     mux: Some(mode),
@@ -851,7 +856,7 @@ impl Profile {
                     }
                 }
                 let Some(pad) = self.pad.take() else {
-                    return error("preset", "this preset needs `pad`");
+                    return error("mode", "this preset needs `pad`");
                 };
                 let outputs = self.outputs.take().unwrap_or(2);
                 if !(1..=8).contains(&outputs) {

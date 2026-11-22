@@ -130,7 +130,7 @@ fn the_full_form_is_the_graph_it_describes() {
 fn every_preset_plans_to_a_graph_that_builds() {
     for preset in ["priority", "average", "toggle"] {
         let text = format!(
-            "preset = \"{preset}\"\nprimary = \"model:045e:0b12\"\nassist = \"model:054c:0ce6\"\nidentity = \"xbox\"\n"
+            "mode = \"{preset}\"\nprimary = \"model:045e:0b12\"\nassist = \"model:054c:0ce6\"\nidentity = \"xbox\"\n"
         );
         let plan = plan(&text).unwrap();
         assert_eq!(plan.sinks[0].identity, Identity::Xbox, "{preset}");
@@ -138,7 +138,7 @@ fn every_preset_plans_to_a_graph_that_builds() {
     }
     for preset in ["unicast", "multicast"] {
         let plan = plan(&format!(
-            "preset = \"{preset}\"\npad = \"model:045e:0b12\"\noutputs = 3\n"
+            "mode = \"{preset}\"\npad = \"model:045e:0b12\"\noutputs = 3\n"
         ))
         .unwrap();
         let names: Vec<&str> = plan.sinks.iter().map(|sink| sink.name.as_str()).collect();
@@ -155,7 +155,7 @@ fn every_preset_plans_to_a_graph_that_builds() {
     }
     // Two virtual pads unless told otherwise.
     assert_eq!(
-        plan("preset = \"unicast\"\npad = \"model:045e:0b12\"\n")
+        plan("mode = \"unicast\"\npad = \"model:045e:0b12\"\n")
             .unwrap()
             .sinks
             .len(),
@@ -381,23 +381,23 @@ fn the_two_forms_do_not_mix_and_each_preset_has_its_own_keys() {
         assert!(problem.contains(want), "{at}: {problem}");
     };
     said(
-        "preset = \"priority\"\nprimary = \"model:0001:0001\"\n",
-        "preset",
+        "mode = \"priority\"\nprimary = \"model:0001:0001\"\n",
+        "mode",
         "needs `primary` and `assist`",
     );
-    said("preset = \"unicast\"\n", "preset", "needs `pad`");
+    said("mode = \"unicast\"\n", "mode", "needs `pad`");
     said(
-        "preset = \"unicast\"\npad = \"model:0001:0001\"\nassist = \"model:0001:0001\"\n",
+        "mode = \"unicast\"\npad = \"model:0001:0001\"\nassist = \"model:0001:0001\"\n",
         "assist",
         "priority, average and toggle",
     );
     said(
-        "preset = \"priority\"\nprimary = \"model:0001:0001\"\nassist = \"model:0001:0001\"\noutputs = 2\n",
+        "mode = \"priority\"\nprimary = \"model:0001:0001\"\nassist = \"model:0001:0001\"\noutputs = 2\n",
         "outputs",
         "unicast and multicast",
     );
     said(
-        "preset = \"unicast\"\npad = \"model:0001:0001\"\noutputs = 9\n",
+        "mode = \"unicast\"\npad = \"model:0001:0001\"\noutputs = 9\n",
         "outputs",
         "between 1 and 8",
     );
@@ -407,12 +407,12 @@ fn the_two_forms_do_not_mix_and_each_preset_has_its_own_keys() {
         "belongs to a preset",
     );
     said(
-        "preset = \"priority\"\nprimary = \"model:0001:0001\"\nassist = \"model:0002:0002\"\n[source.x]\npad = \"model:0003:0003\"\n",
-        "preset",
+        "mode = \"priority\"\nprimary = \"model:0001:0001\"\nassist = \"model:0002:0002\"\n[source.x]\npad = \"model:0003:0003\"\n",
+        "mode",
         "not both",
     );
     said(
-        "preset = \"priority\"\nprimary = \"nonsense\"\nassist = \"model:0002:0002\"\n",
+        "mode = \"priority\"\nprimary = \"nonsense\"\nassist = \"model:0002:0002\"\n",
         "source.primary.pad",
         "isn't a pad",
     );
@@ -421,10 +421,10 @@ fn the_two_forms_do_not_mix_and_each_preset_has_its_own_keys() {
 #[test]
 fn text_that_is_not_a_profile_is_refused_with_its_line() {
     let refused = |text: &str| Profile::from_toml(text).unwrap_err();
-    let error = refused("preset = \"priority\"\nprimry = \"x\"\n");
+    let error = refused("mode = \"priority\"\nprimry = \"x\"\n");
     assert_eq!(error.at, "line 2");
     assert!(error.problem.contains("primry"), "{error}");
-    assert_eq!(refused("preset = \"sideways\"\n").at, "line 1");
+    assert_eq!(refused("mode = \"sideways\"\n").at, "line 1");
     assert_eq!(refused("[source.a]\npad = 5\n").at, "line 2");
     assert_eq!(
         refused("[source.a]\npad = \"x\"\nwibble = 1\n").at,
@@ -448,8 +448,8 @@ fn a_profile_written_out_reads_back_the_same() {
         // The schema version is left out while it is the current one.
         assert!(!written.contains("schema"), "{written}");
     }
-    let older = Profile::from_toml("schema = 1\npreset = \"unicast\"\npad = \"model:0001:0001\"\n")
-        .unwrap();
+    let older =
+        Profile::from_toml("schema = 1\nmode = \"unicast\"\npad = \"model:0001:0001\"\n").unwrap();
     assert_eq!(older.schema, 1);
 }
 
@@ -489,8 +489,8 @@ fn checking_a_profile_reads_it_and_works_it_out() {
     let preset = include_str!("fixtures/preset.toml");
     assert_eq!(Profile::check(preset).unwrap().sinks.len(), 1);
     assert_eq!(
-        Profile::check("preset = \"priority\"").unwrap_err().at,
-        "preset"
+        Profile::check("mode = \"priority\"").unwrap_err().at,
+        "mode"
     );
     assert_eq!(Profile::check("preset =").unwrap_err().at, "line 1");
 }
@@ -501,7 +501,7 @@ fn checking_a_profile_reads_it_and_works_it_out() {
 fn a_profile_says_how_its_pads_are_hidden() {
     let preset = |hide: &str| {
         format!(
-            "preset = \"priority\"\nprimary = \"model:0001:0001\"\nassist = \"model:0002:0002\"\n{hide}"
+            "mode = \"priority\"\nprimary = \"model:0001:0001\"\nassist = \"model:0002:0002\"\n{hide}"
         )
     };
     assert_eq!(plan(&preset("")).unwrap().hide, Hide::Full);
@@ -520,7 +520,7 @@ fn a_profile_says_how_its_pads_are_hidden() {
 fn a_preset_s_rumble_is_the_mux_s_feedback() {
     let preset = |rumble: &str| {
         format!(
-            "preset = \"toggle\"\nprimary = \"model:0001:0001\"\nassist = \"model:0002:0002\"\n{rumble}"
+            "mode = \"toggle\"\nprimary = \"model:0001:0001\"\nassist = \"model:0002:0002\"\n{rumble}"
         )
     };
     let full = |feedback: &str| {
@@ -533,6 +533,7 @@ fn a_preset_s_rumble_is_the_mux_s_feedback() {
         ("rumble = \"both\"\n", ""),
         ("rumble = \"primary\"\n", "feedback = [\"primary\"]\n"),
         ("rumble = \"assist\"\n", "feedback = [\"assist\"]\n"),
+        ("rumble = \"none\"\n", "feedback = \"none\"\n"),
     ] {
         assert_eq!(
             plan(&preset(rumble)).unwrap().graph,
@@ -548,7 +549,7 @@ fn a_preset_s_rumble_is_the_mux_s_feedback() {
 
     // It belongs to those presets alone.
     let (at, problem) =
-        refusal("preset = \"unicast\"\npad = \"model:0001:0001\"\nrumble = \"primary\"\n");
+        refusal("mode = \"unicast\"\npad = \"model:0001:0001\"\nrumble = \"primary\"\n");
     assert_eq!(at, "rumble");
     assert!(
         problem.contains("priority, average and toggle"),
@@ -625,7 +626,7 @@ mod form {
         let fields = form::fields();
         let mut values = Values::new();
         for (key, value) in [
-            ("preset", "toggle"),
+            ("mode", "toggle"),
             ("primary", "0c:27:56:4f:bd:14"),
             ("assist", "model:054c:09cc"),
             ("identity", "generic"),
@@ -639,7 +640,7 @@ mod form {
         let toml = form::to_toml(&fields, &values);
         assert_eq!(
             toml,
-            "preset = \"toggle\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n"
+            "mode = \"toggle\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n"
         );
         let read = form::from_toml(&fields, &toml).unwrap();
         assert_eq!(read["identity"], "generic");
@@ -656,9 +657,9 @@ mod form {
             // The full form.
             include_str!("fixtures/full.toml"),
             // A preset with a key that is no field.
-            "preset = \"priority\"\nprimary = \"a\"\nassist = \"b\"\n[source.x]\npad = \"c\"\n",
+            "mode = \"priority\"\nprimary = \"a\"\nassist = \"b\"\n[source.x]\npad = \"c\"\n",
             // A field holding what no field holds.
-            "preset = \"priority\"\nprimary = [\"a\"]\n",
+            "mode = \"priority\"\nprimary = [\"a\"]\n",
             "primary = \"a\"\n",
         ] {
             assert_eq!(form::from_toml(&fields, toml), None, "{toml}");

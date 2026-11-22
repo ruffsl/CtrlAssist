@@ -21,7 +21,7 @@ const VENDOR: u16 = 0x1209;
 /// A priority profile over two models of fake pad.
 fn priority(primary: u16, assist: u16) -> String {
     format!(
-        "preset = \"priority\"\nprimary = \"model:{VENDOR:04x}:{primary:04x}\"\nassist = \"model:{VENDOR:04x}:{assist:04x}\"\n"
+        "mode = \"priority\"\nprimary = \"model:{VENDOR:04x}:{primary:04x}\"\nassist = \"model:{VENDOR:04x}:{assist:04x}\"\n"
     )
 }
 
@@ -150,7 +150,7 @@ async fn a_profile_runs_from_a_press_on_a_pad_to_the_virtual_pad() {
     client
         .put_profile(
             "other",
-            "preset = \"unicast\"\npad = \"model:1209:7c01:Setup Primary\"\n",
+            "mode = \"unicast\"\npad = \"model:1209:7c01:Setup Primary\"\n",
         )
         .await
         .unwrap();
@@ -266,7 +266,7 @@ async fn a_setup_that_cannot_start_says_why_and_leaves_nothing() {
     client
         .put_profile(
             "twice",
-            "preset = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"address:0c:27:56:4f:bd:14\"\n",
+            "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"address:0c:27:56:4f:bd:14\"\n",
         )
         .await
         .unwrap();
@@ -982,16 +982,13 @@ async fn another_pad_is_taken_as_the_setup_runs_and_the_one_given_up_is_shown_ag
 
     // A pad another setup has can't be taken, and the setup stays as it is.
     client
-        .put_profile(
-            "solo",
-            "preset = \"multicast\"\npad = \"model:1209:8902\"\n",
-        )
+        .put_profile("solo", "mode = \"multicast\"\npad = \"model:1209:8902\"\n")
         .await
         .unwrap();
     client.start_setup("solo").await.unwrap();
     in_phase(&client, "solo", Phase::Running).await;
     let exact = format!(
-        "preset = \"priority\"\nprimary = \"{}\"\nassist = \"{third_id}\"\n",
+        "mode = \"priority\"\nprimary = \"{}\"\nassist = \"{third_id}\"\n",
         id(0x8902, "Change Assist")
     );
     client.put_profile("couch", &exact).await.unwrap();
@@ -1020,7 +1017,7 @@ async fn a_pad_in_a_setup_is_buzzed_through_the_setup() {
     client
         .put_profile(
             "solo",
-            "preset = \"multicast\"\npad = \"model:1209:8501\"\noutputs = 2\n",
+            "mode = \"multicast\"\npad = \"model:1209:8501\"\noutputs = 2\n",
         )
         .await
         .unwrap();
@@ -1142,7 +1139,7 @@ async fn a_connected_dualsense_is_copied_and_virtual_ones_are_made_from_it() {
     client
         .put_profile(
             "twin",
-            "preset = \"multicast\"\npad = \"02:ca:7e:00:51:01\"\nidentity = \"dualsense\"\n",
+            "mode = \"multicast\"\npad = \"02:ca:7e:00:51:01\"\nidentity = \"dualsense\"\n",
         )
         .await
         .unwrap();
@@ -1202,7 +1199,7 @@ async fn a_connected_dualsense_is_copied_and_virtual_ones_are_made_from_it() {
     fresh
         .put_profile(
             "solo",
-            "preset = \"multicast\"\npad = \"model:1209:8a01\"\noutputs = 1\nidentity = \"dualsense\"\n",
+            "mode = \"multicast\"\npad = \"model:1209:8a01\"\noutputs = 1\nidentity = \"dualsense\"\n",
         )
         .await
         .unwrap();
@@ -1242,7 +1239,7 @@ async fn a_game_s_lights_reach_a_dualsense_behind_a_virtual_one() {
     client
         .put_profile(
             "solo",
-            "preset = \"multicast\"\npad = \"02:ca:7e:00:51:02\"\noutputs = 1\nidentity = \"dualsense\"\n",
+            "mode = \"multicast\"\npad = \"02:ca:7e:00:51:02\"\noutputs = 1\nidentity = \"dualsense\"\n",
         )
         .await
         .unwrap();
@@ -1365,7 +1362,7 @@ async fn a_reload_brings_a_running_setup_up_to_its_profile() {
     );
 
     // A profile that is wrong now leaves what runs as it was.
-    std::fs::write(&file, "preset = \"priority\"\n").unwrap();
+    std::fs::write(&file, "mode = \"priority\"\n").unwrap();
     let reloaded = client.reload().await.unwrap();
     assert_eq!(reloaded.wrong.len(), 1);
     tokio::time::sleep(Duration::from_millis(100)).await;

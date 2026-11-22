@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn a_preset_of_two_pads_gives_its_choices_and_nothing_else_gives_any() {
         let fields = form::fields();
-        let preset = "preset = \"average\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\nrumble = \"assist\"\n";
+        let preset = "mode = \"average\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\nrumble = \"assist\"\n";
         let read = Quick::from_profile(&fields, preset).unwrap();
         assert_eq!(read.preset(&fields), "average");
         assert_eq!(read.values["rumble"], "assist");
@@ -207,13 +207,13 @@ mod tests {
         // What it writes is the short form, and the same picks compare
         // equal however they were come by.
         let written = chosen().profile(&fields).unwrap();
-        assert!(written.starts_with("preset = \"priority\"\n"), "{written}");
+        assert!(written.starts_with("mode = \"priority\"\n"), "{written}");
         assert!(!written.contains("[node"), "{written}");
         assert!(!written.contains("identity"), "{written}");
         assert_eq!(read.text(&fields), preset);
 
         assert_eq!(Quick::from_profile(&fields, "not toml ="), None);
-        let one_pad = "preset = \"unicast\"\npad = \"model:054c:09cc\"\n";
+        let one_pad = "mode = \"unicast\"\npad = \"model:054c:09cc\"\n";
         assert_eq!(Quick::from_profile(&fields, one_pad), None);
         let full = "[source.primary]\npad = \"model:0001:0001\"\n[source.assist]\npad = \"model:0002:0002\"\n[node.mux]\nmux = \"priority\"\ninputs = [\"primary\", \"assist\"]\n[sink.virtual]\ninput = \"mux\"\n";
         assert_eq!(Quick::from_profile(&fields, full), None);

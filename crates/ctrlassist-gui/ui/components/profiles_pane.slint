@@ -18,7 +18,7 @@ import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { ServiceHealth } from "../globals/health.slint";
 import { Errors } from "../globals/errors.slint";
 import { Nav } from "../globals/nav.slint";
-import { Profiles, ProfileRow, ProfileFieldRow, ProfileUseRow } from "../globals/profiles.slint";
+import { Profiles, ProfileRow, ProfileFieldRow, ProfileUseRow, ProfileOutputRow } from "../globals/profiles.slint";
 
 component ProfileListRow inherits ListRow {
     in property <ProfileRow> profile;
@@ -272,9 +272,30 @@ component ProfileList inherits Rectangle {
 
 // One field of the form: its label, its control by its kind, and under
 // the control the chosen choice's sentence or the field's help.
-// One field of a preset: its label, its control by its kind, and at the
-// row's end a reset, lit where the field isn't at its default, with a
-// mark in the gutter. TisVlay's profile field row.
+// A pad's connection, in a dot and a word, under the row's control.
+component StatusLine inherits HorizontalLayout {
+    in property <string> word;
+    in property <string> tone;
+    in property <length> indent;
+
+    padding-left: root.indent;
+    spacing: Design.gap-tight;
+    alignment: start;
+    ToneDot {
+        y: (parent.height - self.height) / 2;
+        tone: root.tone;
+    }
+    ToneText {
+        text: root.word;
+        tone: root.tone;
+    }
+}
+
+// One field of a preset: its label, its control by its kind, and a slot
+// at the row's end. For a pad that slot opens the pad, and its
+// connection is said under the control; for a field with a default it
+// is the reset, lit where the field isn't at its default, with a mark
+// in the gutter. TisVlay's profile field row.
 component FieldRow inherits Rectangle {
     in property <string> profile;
     in property <ProfileFieldRow> field;
@@ -285,7 +306,7 @@ component FieldRow inherits Rectangle {
     // Set to something other than what leaving it out means.
     property <bool> set-here: root.field.default-value != "" && !root.field.at-default;
 
-    height: row.preferred-height;
+    height: column.preferred-height;
 
     // The gutter mark of a field set here.
     Rectangle {
@@ -294,86 +315,140 @@ component FieldRow inherits Rectangle {
         background: root.set-here ? Theme.accent : transparent;
     }
 
-    row := FormRow {
+    column := VerticalLayout {
         width: 100%;
-        id-prefix: root.id-prefix;
-        label: root.field.label;
-        key: root.field.key;
-        label-width: Design.width-label-col-profile;
+        spacing: Design.gap-form;
 
-        // The control takes the row's width, whichever kind it is.
-        HorizontalLayout {
-            horizontal-stretch: 1;
-            if (root.field.kind == "choice" || root.field.kind == "pad") && !root.field.read-only: ThemedSelect {
+        row := FormRow {
+            id-prefix: root.id-prefix;
+            label: root.field.label;
+            key: root.field.key;
+            label-width: Design.width-label-col-profile;
+
+            // The control takes the row's width, whichever kind it is.
+            HorizontalLayout {
                 horizontal-stretch: 1;
-                accessible-label: root.field.label;
-                accessible-id: root.control-id;
-                nav-row: row.row-id;
-                enabled: root.enabled;
-                model: root.field.options;
-                current-value: root.field.value-label;
-                selected-index(i) => {
-                    Profiles.set-field(root.profile, root.field.key, root.field.option-values[i]);
-                }
-            }
-            // A pad the form can't offer, such as any pad of a model: it is
-            // named as the file names it, and changed there.
-            if root.field.read-only: VerticalLayout {
-                horizontal-stretch: 1;
-                alignment: center;
-                Text {
-                    text: root.field.value;
-                    color: Theme.text-dim;
-                    font-size: Design.font-body;
-                    font-family: Theme.mono-font;
-                    overflow: elide;
+                if (root.field.kind == "choice" || root.field.kind == "pad") && !root.field.read-only: ThemedSelect {
+                    horizontal-stretch: 1;
+                    accessible-label: root.field.label;
                     accessible-id: root.control-id;
+                    nav-row: row.row-id;
+                    enabled: root.enabled;
+                    model: root.field.options;
+                    current-value: root.field.value-label;
+                    selected-index(i) => {
+                        Profiles.set-field(root.profile, root.field.key, root.field.option-values[i]);
+                    }
+                }
+                // A pad the form can't offer, such as any pad of a
+                // model: it is named as the file names it, and changed
+                // there.
+                if root.field.read-only: VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: root.field.value;
+                        color: Theme.text-dim;
+                        font-size: Design.font-body;
+                        font-family: Theme.mono-font;
+                        overflow: elide;
+                        accessible-id: root.control-id;
+                    }
+                }
+                if root.field.kind == "number" && !root.field.read-only: ThemedSpinBox {
+                    horizontal-stretch: 1;
+                    accessible-label: root.field.label;
+                    accessible-id: root.control-id;
+                    nav-row: row.row-id;
+                    enabled: root.enabled;
+                    value: root.field.number;
+                    minimum: root.field.min;
+                    maximum: root.field.max;
+                    committed(v) => { Profiles.set-number(root.profile, root.field.key, v); }
                 }
             }
-            if root.field.kind == "number" && !root.field.read-only: ThemedSpinBox {
-                horizontal-stretch: 1;
-                accessible-label: root.field.label;
-                accessible-id: root.control-id;
-                nav-row: row.row-id;
-                enabled: root.enabled;
-                value: root.field.number;
-                minimum: root.field.min;
-                maximum: root.field.max;
-                committed(v) => { Profiles.set-number(root.profile, root.field.key, v); }
-            }
-            if root.field.kind == "switch" && !root.field.read-only: HorizontalLayout {
-                horizontal-stretch: 1;
-                alignment: start;
-                VerticalLayout {
-                    alignment: center;
-                    ThemedSwitch {
-                        accessible-label: root.field.label;
-                        accessible-id: root.control-id;
-                        nav-row: row.row-id;
-                        enabled: root.enabled;
-                        checked: root.field.checked;
-                        toggled(on) => {
-                            Profiles.set-field(root.profile, root.field.key, on ? "true" : "false");
-                        }
-                    }
+            // The slot at the row's end is there on every row, so the
+            // controls end at one edge.
+            VerticalLayout {
+                alignment: center;
+                width: 24px;
+                if root.field.kind == "pad" && root.field.pad != "": IconBtn {
+                    nav-row: row.row-id;
+                    source: Icons.edit;
+                    accessible-label: @tr("Show {}", root.field.value-label);
+                    tip: @tr("Show this pad");
+                    accessible-id: root.id-prefix + "profiles-pad-" + root.field.key;
+                    clicked => { Profiles.open-pad(root.field.pad); }
+                }
+                if root.field.default-value != "" && !root.field.read-only: IconBtn {
+                    nav-row: row.row-id;
+                    source: Icons.reset;
+                    active: root.set-here;
+                    enabled: root.enabled && root.set-here;
+                    accessible-label: @tr("Reset {} to its default", root.field.label);
+                    tip: @tr("Reset to the default");
+                    accessible-id: root.id-prefix + "profiles-reset-" + root.field.key;
+                    clicked => { Profiles.reset-field(root.profile, root.field.key); }
                 }
             }
         }
-        // The reset's slot is there on every row, so the controls end
-        // at one edge.
+        if root.field.status-word != "": StatusLine {
+            word: root.field.status-word;
+            tone: root.field.status-tone;
+            indent: Design.width-label-col-profile + Design.gap-row;
+            accessible-role: text;
+            accessible-label: root.field.status-word;
+            accessible-id: root.id-prefix + "profiles-status-" + root.field.key;
+        }
+    }
+}
+
+// A card of a profile's detail: a small capital caption, an "i" where
+// the card has help, and its rows.
+component Card inherits VerticalLayout {
+    in property <string> title;
+    in property <string> help;
+    in property <string> id-prefix;
+    in property <string> key;
+    in property <int> nav-row;
+
+    spacing: Design.gap-stack;
+
+    HorizontalLayout {
+        height: Design.size-card-header;
+        padding-left: 2px;
+        spacing: Design.gap-form;
+        alignment: start;
         VerticalLayout {
             alignment: center;
-            width: 24px;
-            if root.field.default-value != "" && !root.field.read-only: IconBtn {
-                nav-row: row.row-id;
-                source: Icons.reset;
-                active: root.set-here;
-                enabled: root.enabled && root.set-here;
-                accessible-label: @tr("Reset {} to its default", root.field.label);
-                tip: @tr("Reset to the default");
-                accessible-id: root.id-prefix + "profiles-reset-" + root.field.key;
-                clicked => { Profiles.reset-field(root.profile, root.field.key); }
+            Text {
+                text: root.title;
+                color: Theme.text-dim;
+                font-size: Design.font-mini;
+                font-weight: 600;
+                letter-spacing: 0.6px;
             }
+        }
+        if root.help != "": VerticalLayout {
+            alignment: center;
+            ContextualHelpButton {
+                nav-row: root.nav-row;
+                text: root.help;
+                accessible-id: root.id-prefix + "profiles-help-" + root.key;
+            }
+        }
+    }
+    Rectangle {
+        background: Theme.surface;
+        border-color: Theme.border;
+        border-width: Design.border-thin;
+        border-radius: Design.radius-card;
+        height: body.preferred-height;
+        body := VerticalLayout {
+            width: 100%;
+            padding: Design.pad-card;
+            spacing: Design.gap-block;
+            @children
         }
     }
 }
@@ -387,6 +462,7 @@ component ProfileDetailHeader inherits Rectangle {
     in property <string> id-prefix;
     in property <int> nav-row;
     callback request-rename();
+    callback request-duplicate();
     callback request-delete();
 
     height: header-layout.preferred-height;
@@ -438,6 +514,29 @@ component ProfileDetailHeader inherits Rectangle {
                         tip: root.profile.setup-index < 0 ? @tr("Rename profile") : @tr("Stop it to rename it");
                         accessible-id: root.id-prefix + "profiles-rename";
                         clicked => { root.request-rename(); }
+                    }
+                }
+                if root.profile.kept: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        nav-row: root.nav-row;
+                        source: Icons.copy;
+                        enabled: root.daemon-available;
+                        accessible-label: @tr("Duplicate profile");
+                        tip: @tr("Duplicate profile");
+                        accessible-id: root.id-prefix + "profiles-duplicate";
+                        clicked => { root.request-duplicate(); }
+                    }
+                }
+                if root.profile.kept: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        nav-row: root.nav-row;
+                        source: Icons.folder_open;
+                        accessible-label: @tr("Show its file");
+                        tip: @tr("Show its file");
+                        accessible-id: root.id-prefix + "profiles-reveal";
+                        clicked => { Profiles.reveal(root.profile.name); }
                     }
                 }
                 if root.profile.kept: VerticalLayout {
@@ -565,6 +664,7 @@ component ProfileDetail inherits Rectangle {
             id-prefix: root.id-prefix;
             nav-row: root.header-row;
             request-rename => { root.request-rename(); }
+            request-duplicate => { root.request-duplicate(); }
             request-delete => { root.request-delete(); }
         }
 
@@ -706,47 +806,6 @@ component ProfileDetail inherits Rectangle {
 
                     if root.live: VerticalLayout {
                         spacing: Design.gap-block;
-                        for part in root.setup.pads: part-row := FormRow {
-                            id-prefix: root.id-prefix;
-                            label: part.role;
-                            key: "part-" + part.role;
-                            label-width: Design.width-label-col;
-                            HorizontalLayout {
-                                horizontal-stretch: 1;
-                                spacing: Design.gap-row;
-                                // The name takes what room there is
-                                // and is cut at its edge.
-                                Rectangle {
-                                    horizontal-stretch: 1;
-                                    min-height: 24px;
-                                    clip: true;
-                                    LinkText {
-                                        x: 0;
-                                        y: (parent.height - self.height) / 2;
-                                        nav-row: part-row.row-id;
-                                        text: part.name;
-                                        font-size: Design.font-body;
-                                        tip: @tr("Show this pad");
-                                        accessible-id: root.id-prefix + "profiles-part-" + part.role;
-                                        clicked => { Profiles.open-pad(part.pad); }
-                                    }
-                                }
-                                HorizontalLayout {
-                                    width: 64px;
-                                    spacing: Design.gap-tight;
-                                    alignment: start;
-                                    ToneDot {
-                                        y: (parent.height - self.height) / 2;
-                                        tone: part.present ? "success" : "warn";
-                                    }
-                                    ToneText {
-                                        text: part.present ? @tr("There") : @tr("Missing");
-                                        tone: part.present ? "success" : "warn";
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
                         for node in root.setup.nodes: node-row := FormRow {
                             id-prefix: root.id-prefix;
                             label: root.setup.nodes.length == 1 ? @tr("Has control") : node.name;
@@ -770,100 +829,145 @@ component ProfileDetail inherits Rectangle {
                     }
                 }
 
-                // -- PRESET PROFILE --
+                // -- INPUTS --
                 //
-                // The caption carries the group's one "i", and the two
-                // things done with a whole profile: a copy, and its file.
-                VerticalLayout {
-                    spacing: Design.gap-stack;
+                // The pads it takes. A preset's are chosen here, each
+                // with its connection under it and a pencil that opens
+                // the pad; a profile written by hand lists the pads it
+                // names.
+                Card {
+                    title: @tr("INPUTS");
+                    id-prefix: root.id-prefix;
+                    key: "inputs";
 
-                    HorizontalLayout {
-                        height: Design.size-card-header;
-                        padding-left: 2px;
-                        spacing: Design.gap-form;
-                        VerticalLayout {
-                            alignment: center;
-                            Text {
-                                text: root.profile.kind == "preset" ? @tr("PRESET PROFILE") : @tr("PROFILE");
-                                color: Theme.text-dim;
-                                font-size: Design.font-mini;
-                                font-weight: 600;
-                                letter-spacing: 0.6px;
+                    for field in root.profile.input-fields: FieldRow {
+                        profile: root.profile.name;
+                        field: field;
+                        enabled: root.daemon-available;
+                        id-prefix: root.id-prefix;
+                    }
+                    if root.profile.kind != "preset" && root.profile.uses.length == 0: Text {
+                        text: @tr("The pads it names can't be told while something is wrong with it.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                    }
+                    if root.profile.kind != "preset": VerticalLayout {
+                        spacing: Design.gap-block;
+                        for use in root.profile.uses: VerticalLayout {
+                            spacing: Design.gap-form;
+                            use-row := FormRow {
+                                id-prefix: root.id-prefix;
+                                label: use.part;
+                                key: "use-" + use.part;
+                                label-width: Design.width-label-col-profile;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    Text {
+                                        text: use.name;
+                                        color: Theme.text;
+                                        font-size: Design.font-body;
+                                        font-family: use.pad == "" ? Theme.mono-font : "";
+                                        overflow: elide;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    width: 24px;
+                                    if use.pad != "": IconBtn {
+                                        nav-row: use-row.row-id;
+                                        source: Icons.edit;
+                                        accessible-label: @tr("Show {}", use.name);
+                                        tip: @tr("Show this pad");
+                                        accessible-id: root.id-prefix + "profiles-input-" + use.part;
+                                        clicked => { Profiles.open-pad(use.pad); }
+                                    }
+                                }
                             }
-                        }
-                        if root.profile.kind == "preset": VerticalLayout {
-                            alignment: center;
-                            ContextualHelpButton {
-                                nav-row: root.caption-row;
-                                text: root.profile.is-quick
-                                    ? @tr("A preset's choices. A change applies at once, and to the profile as it runs; one that changes its virtual pad restarts it. The tray's quick start edits this profile too.")
-                                    : @tr("A preset's choices. A change applies at once, and to the profile as it runs; one that changes its virtual pad restarts it.");
-                                accessible-id: root.id-prefix + "profiles-help";
-                            }
-                        }
-                        Rectangle {
-                            horizontal-stretch: 1;
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            duplicate := IconBtn {
-                                nav-row: root.caption-row;
-                                source: Icons.copy;
-                                enabled: root.daemon-available && root.profile.kept;
-                                accessible-label: @tr("Duplicate profile");
-                                tip: @tr("Duplicate profile");
-                                accessible-id: root.id-prefix + "profiles-duplicate";
-                                clicked => { root.request-duplicate(); }
-                            }
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            IconBtn {
-                                nav-row: root.caption-row;
-                                source: Icons.folder_open;
-                                enabled: root.profile.kept;
-                                accessible-label: @tr("Show its file");
-                                tip: @tr("Show its file");
-                                accessible-id: root.id-prefix + "profiles-reveal";
-                                clicked => { Profiles.reveal(root.profile.name); }
+                            StatusLine {
+                                word: use.word;
+                                tone: use.tone;
+                                indent: Design.width-label-col-profile + Design.gap-row;
                             }
                         }
                     }
+                }
 
-                    Rectangle {
-                        background: Theme.surface;
-                        border-color: Theme.border;
-                        border-width: Design.border-thin;
-                        border-radius: Design.radius-card;
-                        height: card.preferred-height;
-                        card := VerticalLayout {
-                            width: 100%;
-                            padding: Design.pad-card;
-                            spacing: Design.gap-block;
+                // -- OUTPUTS --
+                //
+                // The virtual pads: what a preset's present themselves
+                // as and how many there are, and each one a game can
+                // see while the profile runs.
+                Card {
+                    title: @tr("OUTPUTS");
+                    id-prefix: root.id-prefix;
+                    key: "outputs";
 
-                            if root.profile.problem != "": Text {
-                                text: root.profile.problem;
-                                color: Theme.danger-text;
-                                font-size: Design.font-helper;
-                                wrap: word-wrap;
-                                accessible-id: root.id-prefix + "profiles-problem";
-                            }
-                            for field in root.profile.fields: FieldRow {
-                                profile: root.profile.name;
-                                field: field;
-                                enabled: root.daemon-available;
-                                id-prefix: root.id-prefix;
-                            }
-                            // Written by hand: the window shows none of
-                            // it, and says where it is.
-                            if root.profile.kind == "full": Text {
-                                text: @tr("This profile is written by hand, with its own sources, nodes and sinks, which this window doesn't show. Change it in its file, then Reload.");
-                                color: Theme.text-dim;
-                                font-size: Design.font-helper;
-                                wrap: word-wrap;
-                                accessible-id: root.id-prefix + "profiles-by-hand";
+                    for field in root.profile.output-fields: FieldRow {
+                        profile: root.profile.name;
+                        field: field;
+                        enabled: root.daemon-available;
+                        id-prefix: root.id-prefix;
+                    }
+                    if root.profile.kind != "preset" || root.live: VerticalLayout {
+                        spacing: Design.gap-block;
+                        for output in root.profile.outputs: FormRow {
+                            id-prefix: root.id-prefix;
+                            label: output.name;
+                            key: "output-" + output.name;
+                            label-width: Design.width-label-col-profile;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                Text {
+                                    text: output.node == "" ? output.identity
+                                        : @tr("{} at {}", output.identity, output.node);
+                                    color: Theme.text;
+                                    font-size: Design.font-body;
+                                    overflow: elide;
+                                    accessible-id: root.id-prefix + "profiles-output-" + output.name;
+                                }
                             }
                         }
+                    }
+                }
+
+                // -- PRESET --
+                //
+                // How the two are arranged, for a profile that is a
+                // preset; one written by hand says so instead.
+                Card {
+                    title: root.profile.kind == "preset" ? @tr("PRESET") : @tr("PROFILE");
+                    help: root.profile.kind != "preset" ? ""
+                        : root.profile.is-quick
+                            ? @tr("How the pads and the virtual pads are arranged. A change to any card applies at once, and to the profile as it runs; one that changes its virtual pad, or how its pads are hidden, restarts it. The tray's quick start edits this profile too.")
+                            : @tr("How the pads and the virtual pads are arranged. A change to any card applies at once, and to the profile as it runs; one that changes its virtual pad, or how its pads are hidden, restarts it.");
+                    id-prefix: root.id-prefix;
+                    key: "preset";
+                    nav-row: root.caption-row;
+
+                    if root.profile.problem != "": Text {
+                        text: root.profile.problem;
+                        color: Theme.danger-text;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                        accessible-id: root.id-prefix + "profiles-problem";
+                    }
+                    for field in root.profile.preset-fields: FieldRow {
+                        profile: root.profile.name;
+                        field: field;
+                        enabled: root.daemon-available;
+                        id-prefix: root.id-prefix;
+                    }
+                    // Written by hand: the window shows what it names
+                    // and none of its text, and says where it is.
+                    if root.profile.kind == "full": Text {
+                        text: @tr("This profile is written by hand, with its own sources, nodes and sinks. Change it in its file, then Reload.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                        accessible-id: root.id-prefix + "profiles-by-hand";
                     }
                 }
             }

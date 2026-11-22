@@ -16,7 +16,7 @@ use slint::{ComponentHandle, Model as _, SharedString};
 
 use crate::support::{activate_shown, find_by_accessible_id, settle};
 
-const COUCH: &str = "preset = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\nidentity = \"xbox\"\n";
+const COUCH: &str = "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\nidentity = \"xbox\"\n";
 const FULL: &str = include_str!("../../../ctrlassist-protocol/tests/it/fixtures/full.toml");
 
 fn pad(id: &str, name: &str, connected: bool) -> Pad {
@@ -46,16 +46,16 @@ fn known() -> Known {
         profiles: vec![
             profile(
                 "quick",
-                "preset = \"toggle\"\nprimary = \"address:0c:27:56:4f:bd:14\"\nassist = \"address:1c:96:5a:a1:35:da\"\n",
+                "mode = \"toggle\"\nprimary = \"address:0c:27:56:4f:bd:14\"\nassist = \"address:1c:96:5a:a1:35:da\"\n",
             ),
             profile("couch", COUCH),
             profile("attic", FULL),
             Profile {
                 problem: Some(Problem {
-                    at: "preset".into(),
+                    at: "mode".into(),
                     message: "this preset needs `primary` and `assist`".into(),
                 }),
-                ..profile("broken", "preset = \"priority\"\n")
+                ..profile("broken", "mode = \"priority\"\n")
             },
         ],
         setups: vec![Setup {
@@ -127,10 +127,10 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
         .collect();
     assert_eq!(
         keys,
-        ["preset", "primary", "assist", "identity", "rumble", "hide"],
+        ["mode", "primary", "assist", "identity", "rumble", "hide"],
         "a preset of two pads has no pad count"
     );
-    let preset = field(couch, "preset");
+    let preset = field(couch, "mode");
     assert_eq!(
         (preset.kind.as_str(), preset.value_label.as_str()),
         ("choice", "Priority")
@@ -163,6 +163,60 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     assert_eq!(field(couch, "rumble").value_label, "Both pads");
     // Whether it is managed is the row's own, not a field of the form.
     assert!(!couch.managed);
+
+    // Each field says which card it is shown in, and a pad's field how
+    // the pad chosen is: its connection, and its id for the pencil.
+    let card = |key: &str| field(couch, key).group.to_string();
+    assert_eq!(
+        [
+            card("mode"),
+            card("primary"),
+            card("identity"),
+            card("hide")
+        ],
+        ["preset", "inputs", "outputs", "preset"]
+    );
+    let primary = field(couch, "primary");
+    assert_eq!(primary.pad, "address:0c:27:56:4f:bd:14");
+    assert_eq!(
+        (primary.status_word.as_str(), primary.status_tone.as_str()),
+        ("Connected", "success")
+    );
+    // A pad the profile that runs has is that profile's, to any other.
+    let mut taken = known();
+    taken.pads[2].setup = Some("quick".to_string());
+    let taken = profiles::rows(&taken, &BTreeMap::new());
+    let elsewhere = field(row(&taken, "couch"), "primary");
+    assert_eq!(
+        (
+            elsewhere.status_word.as_str(),
+            elsewhere.status_tone.as_str()
+        ),
+        ("In quick", "warn")
+    );
+    assert_eq!(
+        field(row(&taken, "quick"), "primary").status_word,
+        "Connected"
+    );
+    // The assist of the profile that runs is connected too.
+    assert_eq!(
+        field(row(&rows, "quick"), "assist").status_word,
+        "Connected"
+    );
+    // Any pad of a model the daemon knows none of.
+    let assist = field(couch, "assist");
+    assert_eq!(
+        (assist.pad.as_str(), assist.status_word.as_str()),
+        ("", "Not known")
+    );
+
+    // Its virtual pad, and where it is while it runs.
+    let outputs: Vec<String> = row(&rows, "quick")
+        .outputs
+        .iter()
+        .map(|output| format!("{} {} {}", output.name, output.identity, output.node))
+        .collect();
+    assert_eq!(outputs, ["Virtual generic event31"]);
 
     // How each is, in a word, for the list and the chip.
     let said = |name: &str| {
@@ -228,11 +282,15 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     // of its text.
     assert_eq!(attic.shape, "merge", "it names more than one pad");
     assert_eq!(attic.word, "Waits for a pad");
+    // What it names is listed, each pad with its connection.
+    assert_eq!(attic.uses.row_count(), 3);
+    assert!(attic.uses.iter().all(|used| !used.word.is_empty()));
+    assert_eq!(attic.outputs.row_count(), 2);
 
     let broken = row(&rows, "broken");
     assert_eq!(
         broken.problem,
-        "preset: this preset needs `primary` and `assist`"
+        "mode: this preset needs `primary` and `assist`"
     );
 }
 
@@ -242,19 +300,19 @@ fn what_the_window_holds_shows_as_unfinished_until_it_is_a_profile() {
     // A new profile: a preset chosen, no pads.
     let mut held = BTreeMap::new();
     let mut new = Values::new();
-    new.insert("preset".into(), "unicast".into());
+    new.insert("mode".into(), "unicast".into());
     new.insert("outputs".into(), "3".into());
     held.insert("den".to_string(), new.clone());
     let rows = profiles::rows(&known(), &held);
     let den = row(&rows, "den");
     assert!(den.unfinished && !den.kept);
-    assert_eq!(den.unfinished_why, "preset: this preset needs `pad`");
+    assert_eq!(den.unfinished_why, "mode: this preset needs `pad`");
     let keys: Vec<String> = den
         .fields
         .iter()
         .map(|field| field.key.to_string())
         .collect();
-    assert_eq!(keys, ["preset", "pad", "outputs", "identity", "hide"]);
+    assert_eq!(keys, ["mode", "pad", "outputs", "identity", "hide"]);
     let outputs = field(den, "outputs");
     assert_eq!((outputs.number, outputs.min, outputs.max), (3, 1, 8));
     assert_eq!(field(den, "pad").value_label, "");
@@ -319,7 +377,7 @@ fn a_new_profile_is_a_draft_that_is_named_checked_and_can_be_dropped() {
     let rows: Vec<ProfileRow> = pane.get_rows().iter().collect();
     let den = row(&rows, "den");
     assert!(den.unfinished && !den.kept);
-    assert_eq!(field(den, "preset").value, "priority");
+    assert_eq!(field(den, "mode").value, "priority");
     // It is selected, to be filled in; and its name is now taken.
     assert_eq!(
         pane.get_rows()
@@ -415,7 +473,7 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
     assert!(asked.borrow().is_empty(), "nothing stops until confirmed");
     activate_shown(&app, "dialog-confirm");
     activate_shown(&app, "profiles-update");
-    activate_shown(&app, "profiles-part-Assist");
+    activate_shown(&app, "profiles-pad-assist");
     activate_shown(&app, "profiles-pad-Primary");
     assert!(find_by_accessible_id(&app, "profiles-select-mux").is_some());
     assert_eq!(
@@ -446,14 +504,14 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
     // Written by hand: no form, and none of its text.
     select("attic");
     assert!(find_by_accessible_id(&app, "profiles-by-hand").is_some());
-    assert!(find_by_accessible_id(&app, "profiles-field-preset").is_none());
+    assert!(find_by_accessible_id(&app, "profiles-field-mode").is_none());
     assert!(find_by_accessible_id(&app, "profiles-update").is_none());
 
     select("couch");
     assert!(enabled("profiles-start"));
     activate_shown(&app, "profiles-start");
     assert_eq!(*asked.borrow(), ["start couch"]);
-    assert!(find_by_accessible_id(&app, "profiles-field-preset").is_some());
+    assert!(find_by_accessible_id(&app, "profiles-field-mode").is_some());
 
     // Delete asks first.
     activate_shown(&app, "profiles-delete");
@@ -491,7 +549,7 @@ fn a_dropdown_opens_on_its_current_choice_every_time() {
     let mut known_now = known();
     known_now.profiles.push(profile(
         "den",
-        "preset = \"priority\"\nprimary = \"address:0c:27:56:4f:bd:14\"\nassist = \"address:1c:96:5a:a1:35:da\"\nrumble = \"assist\"\n",
+        "mode = \"priority\"\nprimary = \"address:0c:27:56:4f:bd:14\"\nassist = \"address:1c:96:5a:a1:35:da\"\nrumble = \"assist\"\n",
     ));
     profiles::show(&app, known_now);
     app.global::<Profiles>().invoke_select("den".into());

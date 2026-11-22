@@ -150,7 +150,7 @@ mod tests {
     use super::*;
 
     const RIGHT: &str =
-        "preset = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
+        "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
 
     #[test]
     fn a_profile_put_is_kept_across_a_restart_until_deleted() {
@@ -191,9 +191,9 @@ mod tests {
         let mut profiles = Profiles::open(dir.path());
         profiles.put("couch", RIGHT).unwrap();
 
-        let wrong = profiles.put("couch", "preset = \"priority\"").unwrap_err();
+        let wrong = profiles.put("couch", "mode = \"priority\"").unwrap_err();
         assert_eq!(wrong.code, ErrorCode::InvalidProfile);
-        assert!(wrong.message.starts_with("preset: "), "{}", wrong.message);
+        assert!(wrong.message.starts_with("mode: "), "{}", wrong.message);
         let long = format!("{RIGHT}# {}\n", "x".repeat(MOST_BYTES));
         let refused = profiles.put("couch", &long).unwrap_err();
         assert_eq!(refused.code, ErrorCode::InvalidProfile);
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn a_file_that_arrived_some_other_way_is_listed_with_what_is_wrong() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("edited.toml"), "preset = \"sideways\"\n").unwrap();
+        fs::write(dir.path().join("edited.toml"), "mode = \"sideways\"\n").unwrap();
         fs::write(
             dir.path().join("later.toml"),
             format!("schema = 9\n{RIGHT}"),

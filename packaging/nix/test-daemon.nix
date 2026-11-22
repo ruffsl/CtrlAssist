@@ -155,11 +155,11 @@ pkgs.testers.runNixOSTest {
 
     with subtest("a profile is put, and one that is wrong is refused with where"):
         machine.succeed(
-            "printf '%s\\n' 'preset = \"priority\"' 'primary = \"02:00:00:00:00:01\"' "
+            "printf '%s\\n' 'mode = \"priority\"' 'primary = \"02:00:00:00:00:01\"' "
             "'assist = \"model:1209:5eed\"' > /tmp/couch.toml"
         )
-        machine.succeed("printf '%s\\n' 'preset = \"priority\"' > /tmp/wrong.toml")
-        assert "preset: " in cli("profile", "validate", "/tmp/wrong.toml", fails=True)
+        machine.succeed("printf '%s\\n' 'mode = \"priority\"' > /tmp/wrong.toml")
+        assert "mode: " in cli("profile", "validate", "/tmp/wrong.toml", fails=True)
         cli("profile", "put", "/tmp/couch.toml")
         assert "couch" in cli("profile", "list")
 
@@ -207,7 +207,7 @@ pkgs.testers.runNixOSTest {
 
     with subtest("its pads change parts as it runs, staying hidden"):
         machine.succeed(
-            "printf '%s\\n' 'preset = \"priority\"' 'assist = \"02:00:00:00:00:01\"' "
+            "printf '%s\\n' 'mode = \"priority\"' 'assist = \"02:00:00:00:00:01\"' "
             "'primary = \"model:1209:5eed\"' > /tmp/couch.toml"
         )
         cli("profile", "put", "/tmp/couch.toml")
@@ -221,7 +221,7 @@ pkgs.testers.runNixOSTest {
         assert known()[HID]["hidden"] and known()[PLAIN]["hidden"]
         assert len(rules()) == 2, rules()
         machine.succeed(
-            "printf '%s\\n' 'preset = \"priority\"' 'primary = \"02:00:00:00:00:01\"' "
+            "printf '%s\\n' 'mode = \"priority\"' 'primary = \"02:00:00:00:00:01\"' "
             "'assist = \"model:1209:5eed\"' > /tmp/couch.toml"
         )
 
@@ -245,7 +245,7 @@ pkgs.testers.runNixOSTest {
         # The copy is of the stand-in, whose descriptor isn't the shipped one.
         machine.succeed("su -l alice -c 'grep -q ^descriptor.*0600ff0901a101 ~/.local/state/ctrlassist/identities/dualsense.toml'")
         machine.succeed(
-            "printf '%s\\n' 'preset = \"multicast\"' 'pad = \"02:ca:7e:00:00:01\"' "
+            "printf '%s\\n' 'mode = \"multicast\"' 'pad = \"02:ca:7e:00:00:01\"' "
             "'identity = \"dualsense\"' > /tmp/twin.toml"
         )
         cli("profile", "put", "/tmp/twin.toml")

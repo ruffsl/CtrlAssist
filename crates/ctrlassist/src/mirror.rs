@@ -242,7 +242,7 @@ mod tests {
 
         let couch = payload::Profile {
             name: "couch".to_string(),
-            toml: "preset = \"priority\"".to_string(),
+            toml: "mode = \"priority\"".to_string(),
             problem: None,
         };
         let profile_changed = Some(StateEvent::ProfileChanged {

@@ -20,7 +20,8 @@ use tracing::warn;
 
 use crate::nav::NavHandles;
 use crate::{
-    AppWindow, ErrorState, Errors, ProfileFieldRow, ProfileRow, ProfileUseRow, Profiles, on_ui,
+    AppWindow, ErrorState, Errors, ProfileFieldRow, ProfileOutputRow, ProfileRow, ProfileUseRow,
+    Profiles, on_ui,
 };
 
 /// The profile the tray's quick menu writes.
@@ -87,8 +88,9 @@ fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
 }
 
 /// One field of the form, holding `value`.
-fn field_row(field: &Field, value: &str, pads: &[Pad]) -> ProfileFieldRow {
+fn field_row(field: &Field, value: &str, pads: &[Pad], profile: &str) -> ProfileFieldRow {
     let mut row = ProfileFieldRow {
+        group: SharedString::from(field.group.as_str()),
         key: SharedString::from(field.key.as_str()),
         label: SharedString::from(field.label.as_str()),
         help: SharedString::from(field.help.as_str()),
@@ -119,10 +121,28 @@ fn field_row(field: &Field, value: &str, pads: &[Pad]) -> ProfileFieldRow {
             });
             row.options = strings(sorted.iter().map(|pad| pad_label(pad)));
             row.option_values = strings(sorted.iter().map(|pad| pad.id.clone()));
-            match sorted.iter().find(|pad| names_pad(value, pad)) {
-                Some(pad) => row.value_label = SharedString::from(pad_label(pad)),
+            let chosen = sorted.iter().find(|pad| names_pad(value, pad)).copied();
+            match chosen {
+                Some(pad) => {
+                    row.value_label = SharedString::from(pad_label(pad));
+                    row.pad = SharedString::from(pad.id.as_str());
+                }
                 // Any pad of a model, or one the daemon has never seen.
                 None => row.read_only = !value.is_empty(),
+            }
+            // Nothing picked has nothing to say of. Any pad of a model
+            // is spoken for by a pad of that model, if one is known.
+            if !value.is_empty() {
+                let meant = chosen.or_else(|| {
+                    let wanted = ctrlassist_protocol::profile::PadRef::parse(value)?;
+                    sorted
+                        .iter()
+                        .find(|pad| crate::status::names(&wanted, pad))
+                        .copied()
+                });
+                let (word, tone) = connection(meant, profile);
+                row.status_word = SharedString::from(word);
+                row.status_tone = SharedString::from(tone);
             }
         }
         Kind::Number { min, max } => {
@@ -139,6 +159,32 @@ fn field_row(field: &Field, value: &str, pads: &[Pad]) -> ProfileFieldRow {
         _ => row.read_only = true,
     }
     row
+}
+
+/// A pad's connection as a profile's row says it: connected,
+/// disconnected, or in another profile that is running, which is why a
+/// start would be refused. `pad` is none for one the daemon doesn't
+/// know.
+fn connection(pad: Option<&Pad>, profile: &str) -> (String, &'static str) {
+    match pad {
+        None => ("Not known".to_string(), "neutral"),
+        Some(pad) if !pad.connected => ("Disconnected".to_string(), "neutral"),
+        Some(pad) => match pad.setup.as_deref() {
+            Some(other) if other != profile => (format!("In {other}"), "warn"),
+            _ => ("Connected".to_string(), "success"),
+        },
+    }
+}
+
+/// The fields of one card, in the order they are served.
+fn in_card(fields: &[ProfileFieldRow], belongs: impl Fn(&str) -> bool) -> ModelRc<ProfileFieldRow> {
+    ModelRc::new(VecModel::from(
+        fields
+            .iter()
+            .filter(|field| belongs(field.group.as_str()))
+            .cloned()
+            .collect::<Vec<_>>(),
+    ))
 }
 
 /// A line of how a running profile is, beside its Stop.
@@ -176,6 +222,7 @@ fn use_row(
     source: &ctrlassist_protocol::profile::PlannedSource,
     setup: Option<&Setup>,
     pads: &[Pad],
+    profile: &str,
 ) -> ProfileUseRow {
     let taken = setup
         .and_then(|setup| setup.sources.iter().find(|taken| taken.name == source.name))
@@ -185,7 +232,10 @@ fn use_row(
         pads.iter()
             .find(|pad| crate::status::names(&source.pad, pad))
     });
+    let (word, tone) = connection(pad, profile);
     ProfileUseRow {
+        word: SharedString::from(word),
+        tone: SharedString::from(tone),
         part: SharedString::from(crate::status::capitalized(&source.name)),
         pad: SharedString::from(pad.map_or("", |pad| pad.id.as_str())),
         name: SharedString::from(match (pad, &source.pad) {
@@ -248,7 +298,7 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                         .filter(|field| field.applies_to(&preset) && field.key != MANAGED)
                         .map(|field| {
                             let value = values.get(&field.key).map_or("", String::as_str);
-                            field_row(field, value, &known.pads)
+                            field_row(field, value, &known.pads, name)
                         })
                         .collect()
                 })
@@ -290,7 +340,31 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 .map(|plan| {
                     plan.sources
                         .iter()
-                        .map(|source| use_row(source, setup, &known.pads))
+                        .map(|source| use_row(source, setup, &known.pads, name))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Its virtual pads, and where each is while it runs.
+            let outputs: Vec<ProfileOutputRow> = plan
+                .as_ref()
+                .map(|plan| {
+                    plan.sinks
+                        .iter()
+                        .map(|sink| ProfileOutputRow {
+                            name: SharedString::from(crate::status::capitalized(&sink.name)),
+                            identity: SharedString::from(crate::status::identity(
+                                sink.identity.as_str(),
+                            )),
+                            node: SharedString::from(
+                                setup
+                                    .and_then(|setup| {
+                                        setup.sinks.iter().find(|made| made.name == sink.name)
+                                    })
+                                    .and_then(|made| made.node.as_deref())
+                                    .map(|node| node.rsplit('/').next().unwrap_or(node))
+                                    .unwrap_or_default(),
+                            ),
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
@@ -314,6 +388,7 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                     .and_then(|at| i32::try_from(at).ok())
                     .unwrap_or(-1),
                 uses: ModelRc::new(VecModel::from(uses)),
+                outputs: ModelRc::new(VecModel::from(outputs)),
                 name: SharedString::from(name),
                 kind: SharedString::from(if values.is_some() { "preset" } else { "full" }),
                 unfinished: why.is_some(),
@@ -329,6 +404,11 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 phase_label: SharedString::from(phase_label),
                 tone: SharedString::from(tone),
                 is_quick: name == QUICK,
+                input_fields: in_card(&fields, |group| group == form::INPUTS),
+                output_fields: in_card(&fields, |group| group == form::OUTPUTS),
+                preset_fields: in_card(&fields, |group| {
+                    group != form::INPUTS && group != form::OUTPUTS
+                }),
                 fields: ModelRc::new(VecModel::from(fields)),
             }
         })
@@ -345,9 +425,16 @@ fn render(app: &AppWindow) {
     let current = profiles.get_rows();
     for row in &mut rows {
         if let Some(old) = current.iter().find(|old| old.name == row.name) {
-            row.fields = crate::models::sync(&old.fields, row.fields.iter().collect(), |a, b| {
+            let same = |a: &ProfileFieldRow, b: &ProfileFieldRow| {
                 a.key == b.key && a.kind == b.kind && a.read_only == b.read_only
-            });
+            };
+            row.fields = crate::models::sync(&old.fields, row.fields.iter().collect(), same);
+            row.input_fields =
+                crate::models::sync(&old.input_fields, row.input_fields.iter().collect(), same);
+            row.output_fields =
+                crate::models::sync(&old.output_fields, row.output_fields.iter().collect(), same);
+            row.preset_fields =
+                crate::models::sync(&old.preset_fields, row.preset_fields.iter().collect(), same);
         }
     }
     let index = rows

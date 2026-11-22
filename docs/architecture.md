@@ -341,7 +341,7 @@ zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the d
 | `ctrlassist/setup/<name>` | state | starting, running, held or failed with a reason; which pad each source is and whether it is there; each virtual pad's identity and node; each node's selected input |
 | `ctrlassist/mirror/<pad>` | stream | the pad's current state |
 | `ctrlassist/rpc/profile/{validate,put,delete}` | rpc | check a profile and say where it is wrong; write one |
-| `ctrlassist/rpc/profile/schema` | rpc | a preset's fields, for a client's form: each one's key, label, help, kind, choices, default, and the presets it belongs to. A client renders them and writes the profile; the daemon checks it like any other |
+| `ctrlassist/rpc/profile/schema` | rpc | a preset's fields, for a client's form: each one's key, label, help, kind, choices, default, the presets it belongs to, and the card a form shows it in. A client renders them and writes the profile; the daemon checks it like any other |
 | `ctrlassist/rpc/setup/{start,stop,update,select}` | rpc | run a profile; stop it; have it take up its profile as kept now, or ask what that would cost, replying live or disruptive; select a node's input |
 | `ctrlassist/rpc/pad/{identify,forget}` | rpc | buzz a pad so the user can tell which is which; drop a remembered pad |
 
@@ -356,7 +356,7 @@ Key segments marked `<id>` are derived by the daemon, never taken raw from a pad
 A profile is a TOML file the daemon owns, kept under a name of lowercase letters, digits and hyphens, which is also its key. Clients write profiles through the daemon, never the files: `put` checks a profile before it is kept, so what the daemon wrote is right, and keeps the text as it was given, comments included. A preset is a profile whose graph is implied by its name:
 
 ```toml
-preset = "priority"          # two pads, one mux, one virtual pad
+mode = "priority"          # two pads, one mux, one virtual pad
 primary = "0c:27:56:4f:bd:14"
 assist  = "model:054c:09cc"  # any pad of this model
 managed = true            # once the daemon is up and both are connected

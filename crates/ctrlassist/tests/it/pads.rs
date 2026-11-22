@@ -265,7 +265,7 @@ async fn a_daemon_that_was_not_asked_to_takes_no_fake_pad_for_a_pad() {
     client
         .put_profile(
             "solo",
-            "preset = \"multicast\"\npad = \"model:1209:8c01\"\nmanaged = true\n",
+            "mode = \"multicast\"\npad = \"model:1209:8c01\"\nmanaged = true\n",
         )
         .await
         .unwrap();

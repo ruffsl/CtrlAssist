@@ -281,11 +281,11 @@ async fn a_profile_file_is_checked_put_shown_listed_and_deleted() {
     let (dir, socket) = socket();
     let daemon = start(&socket).await;
     let right =
-        "preset = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
+        "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
     let file = dir.path().join("couch.toml");
     std::fs::write(&file, right).unwrap();
     let wrong = dir.path().join("wrong.toml");
-    std::fs::write(&wrong, "preset = \"priority\"\n").unwrap();
+    std::fs::write(&wrong, "mode = \"priority\"\n").unwrap();
     let path = |file: &Path| file.to_str().unwrap().to_string();
 
     let empty = ctrlassist(&socket, &["profile", "list"]);
@@ -347,7 +347,7 @@ async fn a_profile_is_started_listed_and_stopped() {
     let file = dir.path().join("couch.toml");
     std::fs::write(
         &file,
-        "preset = \"priority\"\nprimary = \"model:1209:7e01\"\nassist = \"model:1209:7e02\"\n",
+        "mode = \"priority\"\nprimary = \"model:1209:7e01\"\nassist = \"model:1209:7e02\"\n",
     )
     .unwrap();
     let put = ctrlassist(&socket, &["profile", "put", file.to_str().unwrap()]);
@@ -394,7 +394,7 @@ async fn a_profile_is_started_listed_and_stopped() {
     let before = node_of(&setups);
     std::fs::write(
         &file,
-        "preset = \"toggle\"\nprimary = \"model:1209:7e01\"\nassist = \"model:1209:7e02\"\n",
+        "mode = \"toggle\"\nprimary = \"model:1209:7e01\"\nassist = \"model:1209:7e02\"\n",
     )
     .unwrap();
     let put = ctrlassist(&socket, &["profile", "put", file.to_str().unwrap()]);
@@ -420,7 +420,7 @@ async fn a_profile_is_started_listed_and_stopped() {
     // Another identity is another virtual pad, which is a restart.
     std::fs::write(
         &file,
-        "preset = \"toggle\"\nprimary = \"model:1209:7e01\"\nassist = \"model:1209:7e02\"\nidentity = \"xbox\"\n",
+        "mode = \"toggle\"\nprimary = \"model:1209:7e01\"\nassist = \"model:1209:7e02\"\nidentity = \"xbox\"\n",
     )
     .unwrap();
     let put = ctrlassist(&socket, &["profile", "put", file.to_str().unwrap()]);
@@ -459,7 +459,7 @@ async fn a_node_that_selects_is_listed_and_told_what_to_select() {
     let file = dir.path().join("turns.toml");
     std::fs::write(
         &file,
-        "preset = \"toggle\"\nprimary = \"model:1209:7e11\"\nassist = \"model:1209:7e12\"\n",
+        "mode = \"toggle\"\nprimary = \"model:1209:7e11\"\nassist = \"model:1209:7e12\"\n",
     )
     .unwrap();
     let put = ctrlassist(&socket, &["profile", "put", file.to_str().unwrap()]);
@@ -528,7 +528,7 @@ async fn the_shell_completes_names_from_the_daemon() {
     let file = dir.path().join("couch.toml");
     std::fs::write(
         &file,
-        "preset = \"priority\"\nprimary = \"model:1209:7e21\"\nassist = \"model:1209:7e22\"\n",
+        "mode = \"priority\"\nprimary = \"model:1209:7e21\"\nassist = \"model:1209:7e22\"\n",
     )
     .unwrap();
     for arguments in [
@@ -597,10 +597,10 @@ async fn reload_says_what_the_daemon_found_changed_in_its_files() {
     std::fs::create_dir_all(&profiles).unwrap();
     std::fs::write(
         profiles.join("couch.toml"),
-        "preset = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n",
+        "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n",
     )
     .unwrap();
-    std::fs::write(profiles.join("den.toml"), "preset = \"priority\"\n").unwrap();
+    std::fs::write(profiles.join("den.toml"), "mode = \"priority\"\n").unwrap();
     let found = ctrlassist(&socket, &["reload"]);
     assert!(found.status.success(), "{}", text(&found.stderr));
     let said = text(&found.stdout);

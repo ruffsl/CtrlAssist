@@ -391,8 +391,7 @@ mod tests {
         // pad it has: nothing waits for a click.
         let node = |tray: &PadTray| tray.view.setup("quick").unwrap().sinks[0].node.clone();
         let before = node(&*rig.tray.lock().await);
-        rig.click(Command::Quick(Edit::set("preset", "toggle")))
-            .await;
+        rig.click(Command::Quick(Edit::set("mode", "toggle"))).await;
         let menu = rig.shows("Has control >").await;
         assert!(menu.contains("- Running as `quick`"), "{menu}");
         assert_eq!(node(&*rig.tray.lock().await), before);

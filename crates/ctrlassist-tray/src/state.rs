@@ -280,7 +280,7 @@ pub(crate) mod tests {
             name: name.to_string(),
             toml: String::new(),
             problem: problem.map(|message| Problem {
-                at: "preset".to_string(),
+                at: "mode".to_string(),
                 message: message.to_string(),
             }),
         }

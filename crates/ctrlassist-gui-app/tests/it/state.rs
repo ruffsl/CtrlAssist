@@ -101,7 +101,7 @@ fn a_reload_is_summed_up_and_its_wrong_profiles_listed() {
             name: "den".into(),
             toml: String::new(),
             problem: Some(Problem {
-                at: "preset".into(),
+                at: "mode".into(),
                 message: "needs a primary".into(),
             }),
         }],
@@ -113,7 +113,7 @@ fn a_reload_is_summed_up_and_its_wrong_profiles_listed() {
     );
     assert_eq!(reload_banner(&Reloaded::default()).title, "");
     let banner = reload_banner(&reloaded);
-    assert_eq!(banner.message, "den.toml: preset: needs a primary");
+    assert_eq!(banner.message, "den.toml: mode: needs a primary");
 }
 
 #[tokio::test(flavor = "multi_thread")]

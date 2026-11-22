@@ -6,7 +6,7 @@ This pairs two controllers so that a helper can assist a player, in about a minu
 
 1. Connect both controllers.
 2. Click the CtrlAssist tray icon and open **Quick start**.
-3. Under **Preset**, pick how the two combine:
+3. Under **Mode**, pick how the two combine:
    - **Priority**: the primary plays, and the assist takes over whatever it touches.
    - **Average**: sticks and triggers are blended between the two.
    - **Toggle**: one plays at a time; the Mode (guide) button, or **Has control** in the tray, hands over.
@@ -20,7 +20,7 @@ To stop, open **quick** in the tray and click **Stop**. The real controllers com
 
 Two more choices in Quick start:
 
-- **Rumble goes to** picks who feels the game's rumble: both, the primary only, or the assist only.
+- **Rumble goes to** picks who feels the game's rumble: both, the primary only, the assist only, or neither.
 - **Managed** has CtrlAssist start this arrangement itself whenever both controllers are plugged in, from then on. Unmanaged, you start it.
 
 Your choices are remembered: the next time you open Quick start they are as you left them.
@@ -31,7 +31,7 @@ The same thing as a profile, a short file saying who plays which part:
 
 ```toml
 # couch.toml
-preset = "priority"
+mode = "priority"
 primary = "model:054c:0ce6"   # any DualSense
 assist = "model:045e:0b12"    # any Xbox Series pad
 ```

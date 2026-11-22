@@ -21,10 +21,10 @@ Putting a profile doesn't change a setup that is already running. `ctrlassist up
 
 ## Presets
 
-A preset is a whole arrangement in a few lines.
+A preset is a whole arrangement in a few lines: `mode` names one of five arrangements, and the rest fill it in.
 
 ```toml
-preset = "priority"
+mode = "priority"
 primary = "0c:27:56:4f:bd:14"
 assist = "model:054c:09cc"
 identity = "xbox"       # optional
@@ -33,7 +33,7 @@ hide = "grab"           # optional
 managed = true       # optional
 ```
 
-| Preset | Takes | Does |
+| Mode | Takes | Does |
 |---|---|---|
 | `priority` | `primary`, `assist` | Two pads as one. The assist takes over whatever it touches. |
 | `average` | `primary`, `assist` | Two pads as one. Sticks and triggers blend. |
@@ -43,7 +43,7 @@ managed = true       # optional
 
 `outputs` is how many virtual pads to make; 2 if left out.
 
-`rumble` is who feels what a game rumbles, for the three presets of two controllers: `both` (the default), `primary` or `assist`. A helper who only steps in now and then may not want the rumble; a player who can't feel it may want the helper to.
+`rumble` is who feels what a game rumbles, for the three presets of two controllers: `both` (the default), `primary`, `assist` or `none`. A helper who only steps in now and then may not want the rumble; a player who can't feel it may want the helper to.
 
 `hide` is how the real controllers are kept from games while the arrangement runs, in any profile, a preset or not:
 

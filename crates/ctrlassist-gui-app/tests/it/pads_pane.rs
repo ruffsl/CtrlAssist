@@ -59,14 +59,14 @@ fn profiles() -> Vec<Profile> {
     vec![
         kept(
             "desk",
-            "preset = \"unicast\"\npad = \"address:0c:27:56:4f:bd:14\"\n",
+            "mode = \"unicast\"\npad = \"address:0c:27:56:4f:bd:14\"\n",
         ),
         kept(
             "quick",
-            "preset = \"priority\"\nprimary = \"address:0c:27:56:4f:bd:14\"\nassist = \"address:1c:96:5a:a1:35:da\"\n",
+            "mode = \"priority\"\nprimary = \"address:0c:27:56:4f:bd:14\"\nassist = \"address:1c:96:5a:a1:35:da\"\n",
         ),
         // One the daemon finds wrong names no pad that can be told.
-        kept("broken", "preset = \"priority\"\n"),
+        kept("broken", "mode = \"priority\"\n"),
     ]
 }
 

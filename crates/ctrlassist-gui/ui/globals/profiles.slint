@@ -32,6 +32,23 @@ export struct ProfileFieldRow {
     default-value: string,
     // The field stands at its default.
     at-default: bool,
+    // The card it is shown in: "inputs", "outputs", or anything else
+    // for the preset's own.
+    group: string,
+    // For a pad: the id of the known pad chosen, for the row's pencil,
+    // empty when none is; and that pad's connection, in a word and the
+    // word's tone.
+    pad: string,
+    status-word: string,
+    status-tone: string,
+}
+
+// A virtual pad of a profile: its name there, what it presents itself
+// as, and where it is while the profile runs.
+export struct ProfileOutputRow {
+    name: string,
+    identity: string,
+    node: string,
 }
 
 // A pad a profile names, for its header's links.
@@ -43,6 +60,9 @@ export struct ProfileUseRow {
     pad: string,
     // The pad's name, or what the profile calls it.
     name: string,
+    // Its connection, in a word and the word's tone.
+    word: string,
+    tone: string,
 }
 
 export struct ProfileRow {
@@ -67,6 +87,8 @@ export struct ProfileRow {
     setup-index: int,
     // The pads it names.
     uses: [ProfileUseRow],
+    // Its virtual pads.
+    outputs: [ProfileOutputRow],
     // The window holds changes to it that aren't a profile the daemon
     // would keep yet; `unfinished-why` says what is missing. A profile
     // that isn't kept at all yet is one of these.
@@ -83,7 +105,12 @@ export struct ProfileRow {
     tone: string,
     // The tray's quick menu edits this one.
     is-quick: bool,
+    // A preset's fields, all of them and then by the card each is
+    // shown in.
     fields: [ProfileFieldRow],
+    input-fields: [ProfileFieldRow],
+    output-fields: [ProfileFieldRow],
+    preset-fields: [ProfileFieldRow],
 }
 
 export global Profiles {

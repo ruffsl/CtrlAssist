@@ -191,6 +191,19 @@ Still open: the tile of a pad from an unknown maker, which the mock-up draws as 
 
 **Managed, for a profile the daemon starts itself** (2026-11-22, the maintainer's, from using the window). "Starts by itself" and "started by hand" give way to TisVlay's word for the like switch on a TV: a profile is **managed** when the daemon starts it whenever its pads are connected, and unmanaged when it is started by hand, as an unmanaged TV is still controlled by hand. The file's key is `managed`, where it was `auto-start`; nothing was released with the old one, and no alias reads it. The window's switch is in the STATUS group, as a TV's is, and no longer a row of the preset's fields; the header's first chip reads Managed or Unmanaged, beside the status. TisVlay's third word, Automated, for a managed TV whose automation is acting, isn't taken: Running says it.
 
+**A profile's cards, rearranged** (2026-11-22, the maintainer's, from using the window). Under STATUS a profile's detail has three cards, for what goes in, what comes out, and how the two are joined:
+
+- **INPUTS:** a row for each pad the preset takes, with its dropdown, a pencil at the row's end that opens the pad chosen, and under the dropdown the pad's connection in a dot and a word: Connected, Disconnected, or "In couch" for a pad another running profile has, which is why a start would be refused. The STATUS card no longer names the pads.
+- **OUTPUTS:** Identity, the number of virtual pads for a preset of one pad, and each virtual pad with where it is while the profile runs.
+- **PRESET:** Mode, Rumble and how the real pads are hidden, with the group's one "i".
+- **STATUS keeps** Start or Stop, Managed, Update, and who has control.
+- **A profile written by hand shows INPUTS and OUTPUTS read-only:** the pads it names, each with its connection and a pencil, and its virtual pads with their identities. None of its text, as before.
+- **The file's key is `mode`,** where it was `preset`, and the row and the tray's menu read "Mode". A preset is still what the short form of a profile is called. Nothing was released with the old key, and nothing reads it.
+- **Rumble has a fourth choice, `none`:** neither pad feels what a game rumbles.
+- **Each served field says which card it is shown in,** so a field added later lands in the right card with no change to the window.
+
+Duplicate and Show its file moved from the PRESET card's caption to the header, beside Rename and Delete, since a profile written by hand has no such card.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps

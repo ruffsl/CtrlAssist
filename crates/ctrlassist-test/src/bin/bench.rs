@@ -156,7 +156,7 @@ impl Daemon {
         std::fs::write(
             &profile,
             format!(
-                "preset = \"priority\"\nprimary = \"model:{:04x}:{:04x}\"\nassist = \"model:{:04x}:{:04x}\"\n",
+                "mode = \"priority\"\nprimary = \"model:{:04x}:{:04x}\"\nassist = \"model:{:04x}:{:04x}\"\n",
                 primary.0, primary.1, assist.0, assist.1
             ),
         )?;

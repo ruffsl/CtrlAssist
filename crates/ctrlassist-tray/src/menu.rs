@@ -529,7 +529,7 @@ desk >
   Start
 ---
 Quick start >
-  Preset: Priority >
+  Mode: Priority >
     (o) Priority
     ( ) Average
     ( ) Toggle
@@ -549,6 +549,7 @@ Quick start >
     (o) Both pads
     ( ) Primary only
     ( ) Assist only
+    ( ) Neither
   Real pads: Hidden >
     (o) Hidden
     ( ) Grabbed
@@ -612,7 +613,7 @@ Quit tray
             "{menu}"
         );
         assert!(
-            menu.contains("broken >\n  - Can't run: preset: no such preset\n"),
+            menu.contains("broken >\n  - Can't run: mode: no such preset\n"),
             "{menu}"
         );
     }
