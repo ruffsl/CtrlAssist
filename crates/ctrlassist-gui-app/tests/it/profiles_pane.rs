@@ -356,3 +356,43 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
     activate_shown(&app, "profiles-field-auto-start");
     assert_eq!(asked.borrow().last().unwrap(), "set couch auto-start true");
 }
+
+/// A dropdown opens with its cursor on the current choice, the second
+/// time as the first.
+#[test]
+fn a_dropdown_opens_on_its_current_choice_every_time() {
+    use ctrlassist_gui::Select;
+    use slint::platform::Key;
+    let app = app();
+    let mut known_now = known();
+    known_now.profiles.push(profile(
+        "den",
+        "preset = \"priority\"\nprimary = \"address:0c:27:56:4f:bd:14\"\nassist = \"address:1c:96:5a:a1:35:da\"\nrumble = \"assist\"\n",
+    ));
+    profiles::show(&app, known_now);
+    app.global::<Profiles>().invoke_select("den".into());
+    settle();
+    // By keys to the dropdown: the sidebar, the list, the detail, then
+    // down the form.
+    app.show().expect("the testing backend shows a window");
+    app.invoke_focus_active_sidebar_item();
+    settle();
+    let nav = app.global::<ctrlassist_gui::Nav>();
+    crate::support::press(&app, Key::RightArrow);
+    crate::support::press(&app, Key::RightArrow);
+    for _ in 0..12 {
+        if nav.get_focus_id() == "profiles-field-rumble" {
+            break;
+        }
+        crate::support::press(&app, Key::DownArrow);
+    }
+    assert_eq!(nav.get_focus_id(), "profiles-field-rumble");
+    let select = app.global::<Select>();
+    for time in ["first", "second"] {
+        crate::support::press(&app, Key::Return);
+        assert!(select.get_open(), "the {time} time");
+        assert_eq!(select.get_highlight(), 2, "the {time} time");
+        crate::support::press(&app, Key::Escape);
+        assert!(!select.get_open());
+    }
+}
