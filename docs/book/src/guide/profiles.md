@@ -28,6 +28,7 @@ preset = "priority"
 primary = "0c:27:56:4f:bd:14"
 assist = "model:054c:09cc"
 identity = "xbox"       # optional
+rumble = "primary"      # optional
 auto-start = true       # optional
 ```
 
@@ -40,6 +41,8 @@ auto-start = true       # optional
 | `multicast` | `pad`, `outputs` | One pad as several virtual pads, all at once. |
 
 `outputs` is how many virtual pads to make; 2 if left out.
+
+`rumble` is who feels what a game rumbles, for the three presets of two controllers: `both` (the default), `primary` or `assist`. A helper who only steps in now and then may not want the rumble; a player who can't feel it may want the helper to.
 
 ## Naming a controller
 

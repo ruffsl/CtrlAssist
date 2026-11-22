@@ -53,6 +53,9 @@ pub struct Profile {
     /// What a preset's virtual pads present themselves as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<Identity>,
+    /// Who feels what a game rumbles, for a mux preset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rumble: Option<Rumble>,
 
     /// The pads, by name, for a profile in the full form.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -83,6 +86,34 @@ fn is_current(version: &u32) -> bool {
 )]
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// Who feels what a game rumbles, in a preset of two pads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Rumble {
+    /// Both pads: whoever reaches the virtual pad.
+    #[default]
+    Both,
+    /// The primary alone.
+    Primary,
+    /// The assist alone.
+    Assist,
+}
+
+impl Rumble {
+    /// Every choice, in the order a menu lists them.
+    pub const ALL: [Self; 3] = [Self::Both, Self::Primary, Self::Assist];
+
+    /// The choice as a profile writes it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Both => "both",
+            Self::Primary => "primary",
+            Self::Assist => "assist",
+        }
+    }
 }
 
 /// The profiles whose graph is implied by a name.
@@ -683,6 +714,7 @@ impl Profile {
                 ("pad", self.pad.is_some()),
                 ("outputs", self.outputs.is_some()),
                 ("identity", self.identity.is_some()),
+                ("rumble", self.rumble.is_some()),
             ] {
                 if present {
                     return error(
@@ -728,9 +760,16 @@ impl Profile {
                 };
                 self.source.insert("primary".to_string(), source(primary));
                 self.source.insert("assist".to_string(), source(assist));
+                let feedback = match self.rumble.take().unwrap_or_default() {
+                    // A mux's own default: whoever reaches the output.
+                    Rumble::Both => None,
+                    Rumble::Primary => Some(Feedback::Inputs(vec!["primary".to_string()])),
+                    Rumble::Assist => Some(Feedback::Inputs(vec!["assist".to_string()])),
+                };
                 let node = Node {
                     mux: Some(mode),
                     inputs: vec!["primary".to_string(), "assist".to_string()],
+                    feedback,
                     ..Node::default()
                 };
                 self.node.insert("mux".to_string(), node);
@@ -741,6 +780,7 @@ impl Profile {
                 for (key, present) in [
                     ("primary", self.primary.is_some()),
                     ("assist", self.assist.is_some()),
+                    ("rumble", self.rumble.is_some()),
                 ] {
                     if present {
                         return error(

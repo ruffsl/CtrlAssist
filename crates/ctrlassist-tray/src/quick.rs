@@ -1,39 +1,22 @@
 //! Quick start: two pads, a mode and a few choices, made into a profile.
 //!
-//! The choices become one kept profile, `quick`, written in the full form
-//! so that who feels rumble can be said. The same profile read back is
-//! where the choices come from when the tray starts, so nothing of them
-//! is stored anywhere else.
+//! The choices become one kept profile, `quick`, written as a preset. The
+//! same profile read back is where the choices come from when the tray
+//! starts, so nothing of them is stored anywhere else.
 
-use ctrlassist_protocol::profile::{Feedback, Identity, MuxMode, Node, Profile, Sink, Source};
+pub use ctrlassist_protocol::profile::Rumble;
+use ctrlassist_protocol::profile::{Identity, MuxMode, Preset, Profile};
 
 /// The name of the profile quick start writes and runs.
 pub const NAME: &str = "quick";
 
-/// Who feels what a game rumbles.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Rumble {
-    /// Both pads.
-    #[default]
-    Both,
-    /// The primary alone.
-    Primary,
-    /// The assist alone.
-    Assist,
-}
-
-impl Rumble {
-    /// Every choice, in the order the menu lists them.
-    pub const ALL: [Self; 3] = [Self::Both, Self::Primary, Self::Assist];
-
-    /// The choice as the menu words it.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Both => "both pads",
-            Self::Primary => "primary only",
-            Self::Assist => "assist only",
-        }
+/// Who feels rumble, as the menu words the choice.
+#[must_use]
+pub const fn rumble_label(rumble: Rumble) -> &'static str {
+    match rumble {
+        Rumble::Both => "both pads",
+        Rumble::Primary => "primary only",
+        Rumble::Assist => "assist only",
     }
 }
 
@@ -89,64 +72,43 @@ impl Quick {
         if primary == assist {
             return None;
         }
-        let source = |pad: &String| Source {
-            pad: pad.clone(),
-            deadzone: None,
-        };
-        let feedback = match self.rumble {
-            // A mux's own default: whoever reaches the output.
-            Rumble::Both => None,
-            Rumble::Primary => Some(Feedback::Inputs(vec!["primary".to_string()])),
-            Rumble::Assist => Some(Feedback::Inputs(vec!["assist".to_string()])),
-        };
-        let mut profile = Profile {
+        let profile = Profile {
+            schema: ctrlassist_protocol::profile::SCHEMA,
             auto_start: self.auto_start,
+            preset: Some(match self.mode {
+                MuxMode::Priority => Preset::Priority,
+                MuxMode::Average => Preset::Average,
+                MuxMode::Toggle => Preset::Toggle,
+            }),
+            primary: Some(primary.clone()),
+            assist: Some(assist.clone()),
+            // What a preset means by leaving a key out is left out.
+            identity: (self.identity != Identity::default()).then_some(self.identity),
+            rumble: (self.rumble != Rumble::default()).then_some(self.rumble),
             ..Profile::default()
         };
-        profile.schema = ctrlassist_protocol::profile::SCHEMA;
-        profile
-            .source
-            .insert("primary".to_string(), source(primary));
-        profile.source.insert("assist".to_string(), source(assist));
-        profile.node.insert(
-            "mux".to_string(),
-            Node {
-                mux: Some(self.mode),
-                // The later input outranks the earlier one.
-                inputs: vec!["primary".to_string(), "assist".to_string()],
-                feedback,
-                ..Node::default()
-            },
-        );
-        profile.sink.insert(
-            "virtual".to_string(),
-            Sink {
-                input: "mux".to_string(),
-                identity: self.identity,
-            },
-        );
         profile.to_toml().ok()
     }
 
-    /// The choices a kept `quick` profile was written from; nothing for
-    /// text that quick start didn't write.
+    /// The choices a kept `quick` profile holds: any preset of two pads
+    /// reads back. Nothing for one that isn't, such as a profile in the
+    /// full form or a preset of one pad, which the menu couldn't show.
     #[must_use]
     pub fn from_profile(toml: &str) -> Option<Self> {
         let profile = Profile::from_toml(toml).ok()?;
-        let node = profile.node.get("mux")?;
-        let rumble = match &node.feedback {
-            None => Rumble::Both,
-            Some(Feedback::Inputs(inputs)) if inputs == &["primary"] => Rumble::Primary,
-            Some(Feedback::Inputs(inputs)) if inputs == &["assist"] => Rumble::Assist,
-            Some(_) => return None,
+        let mode = match profile.preset? {
+            Preset::Priority => MuxMode::Priority,
+            Preset::Average => MuxMode::Average,
+            Preset::Toggle => MuxMode::Toggle,
+            Preset::Unicast | Preset::Multicast => return None,
         };
         Some(Self {
-            primary: Some(profile.source.get("primary")?.pad.clone()),
-            assist: Some(profile.source.get("assist")?.pad.clone()),
-            mode: node.mux?,
-            identity: profile.sink.get("virtual")?.identity,
+            primary: Some(profile.primary?),
+            assist: Some(profile.assist?),
+            mode,
+            identity: profile.identity.unwrap_or_default(),
             auto_start: profile.auto_start,
-            rumble,
+            rumble: profile.rumble.unwrap_or_default(),
         })
     }
 }
@@ -203,16 +165,23 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_quick_start_did_not_write_gives_no_choices() {
-        let preset = "preset = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
-        assert_eq!(Quick::from_profile(preset), None);
+    fn a_preset_of_two_pads_gives_its_choices_and_nothing_else_gives_any() {
+        let preset = "preset = \"average\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\nrumble = \"assist\"\n";
+        let read = Quick::from_profile(preset).unwrap();
+        assert_eq!((read.mode, read.rumble), (MuxMode::Average, Rumble::Assist));
+        assert_eq!(read.identity, Identity::Generic);
+        assert_eq!(read.assist.as_deref(), Some("model:054c:09cc"));
+        // What it writes is the short form.
+        let written = chosen().profile().unwrap();
+        assert!(written.starts_with("preset = \"priority\"\n"), "{written}");
+        assert!(!written.contains("[node"), "{written}");
+
         assert_eq!(Quick::from_profile("not toml ="), None);
-        let odd = chosen()
-            .profile()
-            .unwrap()
-            .replace("inputs = ", "feedback = \"none\"\ninputs = ");
-        assert_eq!(Quick::from_profile(&odd), None);
+        let one_pad = "preset = \"unicast\"\npad = \"model:054c:09cc\"\n";
+        assert_eq!(Quick::from_profile(one_pad), None);
+        let full = "[source.primary]\npad = \"model:0001:0001\"\n[source.assist]\npad = \"model:0002:0002\"\n[node.mux]\nmux = \"priority\"\ninputs = [\"primary\", \"assist\"]\n[sink.virtual]\ninput = \"mux\"\n";
+        assert_eq!(Quick::from_profile(full), None);
         assert_eq!(mode_label(MuxMode::Toggle), "toggle");
-        assert_eq!(Rumble::Assist.label(), "assist only");
+        assert_eq!(rumble_label(Rumble::Assist), "assist only");
     }
 }

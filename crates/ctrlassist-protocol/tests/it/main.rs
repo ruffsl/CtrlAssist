@@ -494,3 +494,53 @@ fn checking_a_profile_reads_it_and_works_it_out() {
     );
     assert_eq!(Profile::check("preset =").unwrap_err().at, "line 1");
 }
+
+/// A preset of two pads may say who feels rumble, and means what the
+/// full form means by a mux's `feedback`.
+#[test]
+fn a_preset_s_rumble_is_the_mux_s_feedback() {
+    let preset = |rumble: &str| {
+        format!(
+            "preset = \"toggle\"\nprimary = \"model:0001:0001\"\nassist = \"model:0002:0002\"\n{rumble}"
+        )
+    };
+    let full = |feedback: &str| {
+        format!(
+            "[source.primary]\npad = \"model:0001:0001\"\n[source.assist]\npad = \"model:0002:0002\"\n[node.mux]\nmux = \"toggle\"\ninputs = [\"primary\", \"assist\"]\n{feedback}[sink.virtual]\ninput = \"mux\"\n"
+        )
+    };
+    for (rumble, feedback) in [
+        ("", ""),
+        ("rumble = \"both\"\n", ""),
+        ("rumble = \"primary\"\n", "feedback = [\"primary\"]\n"),
+        ("rumble = \"assist\"\n", "feedback = [\"assist\"]\n"),
+    ] {
+        assert_eq!(
+            plan(&preset(rumble)).unwrap().graph,
+            plan(&full(feedback)).unwrap().graph,
+            "{rumble}"
+        );
+    }
+    // The two that differ really do.
+    assert_ne!(
+        plan(&preset("rumble = \"primary\"\n")).unwrap().graph,
+        plan(&preset("rumble = \"assist\"\n")).unwrap().graph
+    );
+
+    // It belongs to those presets alone.
+    let (at, problem) =
+        refusal("preset = \"unicast\"\npad = \"model:0001:0001\"\nrumble = \"primary\"\n");
+    assert_eq!(at, "rumble");
+    assert!(
+        problem.contains("priority, average and toggle"),
+        "{problem}"
+    );
+    let (at, problem) = refusal("rumble = \"both\"\n[sink.o]\ninput = \"a\"\n");
+    assert_eq!(at, "rumble");
+    assert!(problem.contains("belongs to a preset"), "{problem}");
+    let (_, problem) = refusal(&preset("rumble = \"everyone\"\n"));
+    assert!(
+        problem.contains("rumble") || problem.contains("everyone"),
+        "{problem}"
+    );
+}

@@ -5,7 +5,7 @@
 use ctrlassist::{Phase, Setup};
 use ctrlassist_protocol::profile::{Identity, MuxMode};
 
-use crate::quick::{self, MODES, Quick, Rumble, mode_label};
+use crate::quick::{self, MODES, Quick, Rumble, mode_label, rumble_label};
 use crate::state::View;
 
 /// What activating an entry asks for.
@@ -316,11 +316,11 @@ fn quick_entries(view: &View, quick: &Quick) -> Vec<Entry> {
             )],
         ),
         sub(
-            format!("Rumble goes to: {}", quick.rumble.label()),
+            format!("Rumble goes to: {}", rumble_label(quick.rumble)),
             vec![radio(
                 Rumble::ALL
                     .into_iter()
-                    .map(|rumble| (rumble.label().to_string(), true, Edit::Rumble(rumble)))
+                    .map(|rumble| (rumble_label(rumble).to_string(), true, Edit::Rumble(rumble)))
                     .collect(),
                 Rumble::ALL
                     .iter()
