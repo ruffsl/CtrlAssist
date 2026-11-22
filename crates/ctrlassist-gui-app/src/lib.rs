@@ -7,6 +7,7 @@
 pub mod about;
 mod accent;
 mod couch;
+mod dbus;
 pub mod diagnostic;
 mod file_manager;
 mod icon_theme;
@@ -79,9 +80,34 @@ pub fn run() -> Result<()> {
         .context("couldn't build the tokio runtime")?;
     let _enter = rt.enter();
 
+    // The window's name on the session bus, claimed with its interfaces
+    // already in place and before any window exists: a launcher's
+    // Activate is queued for the name, and is lost if the name is there
+    // before what answers it. A second launch finds the name taken,
+    // hands its activation to the window that has it, and ends without
+    // a window of its own. With no session bus there is nothing to
+    // claim, and the window opens all the same.
+    let gui_config_path = couch::default_config_path();
+    let claimed = rt.block_on(dbus::try_claim_and_serve(Some(gui_config_path.clone())));
+    let (_gui_dbus, activation) = match claimed {
+        Ok((dbus::ClaimResult::Primary(connection), activation)) => {
+            (Some(connection), Some(activation))
+        }
+        Ok((dbus::ClaimResult::Proxied, _)) => {
+            info!("ctrlassist-gui is open already: handed over to that window");
+            return Ok(());
+        }
+        Err(error) => {
+            warn!(
+                error = format!("{error:#}"),
+                "no name on the session bus: a second launch opens a second window"
+            );
+            (None, None)
+        }
+    };
+
     // Couch mode: the GUI's own preference file, read before the window
     // exists since it decides how the window opens.
-    let gui_config_path = couch::default_config_path();
     let couch_prefs = couch::load(&gui_config_path);
     let couch_override = std::env::var(couch::ENV_OVERRIDE).ok();
     let session_signals = couch::SessionSignals::from_env();
@@ -100,7 +126,23 @@ pub fn run() -> Result<()> {
     // the id against; it also starts Slint's MCP server when the binary
     // is built with `--features slint/mcp` and `SLINT_MCP_PORT` is set
     // (`just gui-start`; inert otherwise).
+    // The hook hands the window the token of the launch that started
+    // this process, so the compositor lets it come to the front.
+    let cold_spawn_token = activation
+        .as_ref()
+        .map(|activation| activation.cold_spawn_token.clone());
     slint::BackendSelector::new()
+        .with_winit_window_attributes_hook(move |attrs| {
+            use slint::winit_030::winit::platform::startup_notify::WindowAttributesExtStartupNotify;
+            use slint::winit_030::winit::window::ActivationToken;
+            let token = cold_spawn_token
+                .as_ref()
+                .and_then(|slot| slot.lock().ok().and_then(|mut token| token.take()));
+            match token {
+                Some(token) => attrs.with_activation_token(ActivationToken::from_raw(token)),
+                None => attrs,
+            }
+        })
         .select()
         .context("couldn't initialize the Slint backend")?;
     // Before the window shows: winit reads the app id as it builds the
@@ -109,6 +151,11 @@ pub fn run() -> Result<()> {
     slint::set_xdg_app_id(APP_ID).context("couldn't set the Wayland app id")?;
 
     let app = AppWindow::new()?;
+    // So that a later Activate, answered on the bus's own task, can
+    // raise this window.
+    if let Some(activation) = &activation {
+        let _ = activation.window.set(app.as_weak());
+    }
     let nav = nav::wire(&app);
     icons::load(&app);
 

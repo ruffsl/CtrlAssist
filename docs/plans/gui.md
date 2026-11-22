@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** decisions settled with the maintainer on 2026-11-21; the build is under way. Build steps 1 to 7 are done: the window opens with its sidebar and five empty panes, is steered by keys, with couch mode, follows the daemon, and its Reload asks the daemon to reread its files.
-- **Next action:** build steps 1 to 9 are done, and the panes are rebuilt to the layout in "The panes, rethought": four of them, on TisVlay's components. Packaging is next, then help and translations. The daemon has no settings of its own: see "Rethought, 2026-11-22".
+- **Next action:** build steps 1 to 9 are done, the panes are rebuilt to the layout in "The panes, rethought", and the window is packaged and opened as TisVlay's is (build step 12), short of its VM check. Help and translations are next, then the book. The daemon has no settings of its own: see "Rethought, 2026-11-22".
 - **Branch:** `feat/rewrite`, with the rewrite. Nothing is pushed.
 - **Template:** TisVlay at `5ddc2c0d` (`crates/tisvlay-gui`, `crates/tisvlay-gui-app`, `crates/tisvlay-icons`, `docs/gui/`).
 
@@ -247,6 +247,14 @@ Each is a commit or a few, with the gates run and the TisVlay commit named. Orde
   - **The Setups model stays,** as the running profiles behind the STATUS group, with its Stop, Update and selection; only the pane, its place in the sidebar and in the history, and its links went.
   - **The desktop's accent is read through the settings portal,** with `ashpd` added for it.
   Seen on the maintainer's desktop against the dev daemon: the Pads pane with a pad of `quick` selected, and the Profiles pane on `quick`, which is written by hand, and on a preset made for the look and removed after.
+- **Activation and packaging** (build step 12, 2026-11-22). The window's D-Bus side is TisVlay's `dbus.rs` (`5ddc2c0d`) under CtrlAssist's names, and the desktop entry and the bus's service file are TisVlay's shapes; the window is in `default-members`, the Nix package and the deb, rpm and Arch lists, with TisVlay's library names for each. What differs or is missing:
+  - **No session bus is not fatal.** TisVlay's window fails to start without one; this one says so in the log and opens, and a second launch then opens a second window.
+  - **The tray falls back to starting the binary beside its own** when the bus knows no service for the window, which TisVlay's doesn't. From a build tree outside the dev shell that start fails for want of the Wayland libraries, which the log says; an installed tray never takes that path.
+  - **A left click on the icon opens the window,** as asked; TisVlay's tray doesn't do this.
+  - **The tests that need a private session bus weren't carried over** (TisVlay's `tisvlay-test` has one): the name's claim and the hand-off were tried by hand instead. A second launch of the packaged window, with the dev window open, ended at once and the open window logged the call; the tray's Settings, clicked over D-Bus, did the same.
+  - **No VM check that the window opens** yet, which the step asked for. The Nix package builds and holds the window, its entry and the service file with the store path in it.
+  - **The package tests in containers (`just package-test`) weren't run** with the new file lists and dependencies.
+  - While trying the hand-off, the packaged window was once started when no window owned the name, and so opened on the maintainer's desktop for the 20 seconds the trial allowed it.
 - **`just gui-start` names the package,** `-p ctrlassist-gui-app`, where TisVlay's doesn't: the window isn't in `default-members` until the packaging step puts it in the package.
 
 ## Deviations

@@ -1,12 +1,16 @@
 # CtrlAssist as a package: the `ctrlassist` command, which is also the
-# daemon and the tray, the hiding service, their systemd units, the udev
-# rule, and shell completions.
+# daemon and the tray, the hiding service, the settings window with its
+# desktop entry, their systemd units, the udev rule, and shell
+# completions.
 {
   lib,
+  callPackage,
   rustPlatform,
   pkg-config,
   udev,
   installShellFiles,
+  copyDesktopItems,
+  makeDesktopItem,
   cargo-about,
   # Cargo profile for the shipped binaries. `release` builds fastest, for
   # hosts that compile it themselves (the module's default package); the
@@ -15,6 +19,11 @@
   cargoProfile ? "release",
 }:
 
+let
+  # What the window loads at run time, which patchelf can't see; the dev
+  # shell has the same set.
+  rpathLibs = callPackage ./slint-runtime.nix { };
+in
 rustPlatform.buildRustPackage {
   pname = "ctrlassist";
   # The workspace version, so a release bump needs no edit here.
@@ -49,11 +58,47 @@ rustPlatform.buildRustPackage {
     # Writes the third-party license bundle in preBuild.
     cargo-about
     pkg-config
+    # Copies `desktopItems` into $out/share/applications.
+    copyDesktopItems
     # Provides installShellCompletion, used in postInstall.
     installShellFiles
   ];
-  # libudev, and libsystemd for the hiding service's session check.
-  buildInputs = [ udev ];
+  # libudev, and libsystemd for the hiding service's session check; and
+  # the window's run-time libraries, some of which it also links.
+  buildInputs = [ udev ] ++ rpathLibs;
+
+  # The window's entry in the launcher, as TisVlay's package makes its
+  # own: by nixpkgs' helper, which checks it, and kept the same by hand
+  # as packaging/freedesktop/io.github.ctrlassist.Gui.desktop, which the
+  # deb and rpm ship. `exec` is bare: the package's bin is on the PATH a
+  # launcher searches.
+  desktopItems = [
+    (makeDesktopItem {
+      name = "io.github.ctrlassist.Gui";
+      desktopName = "CtrlAssist";
+      genericName = "Controller Assist";
+      comment = "Several game controllers as one, or one as several";
+      exec = "ctrlassist-gui";
+      tryExec = "ctrlassist-gui";
+      icon = "input-gaming";
+      categories = [
+        "Settings"
+        "HardwareSettings"
+      ];
+      keywords = [
+        "gamepad"
+        "controller"
+        "joystick"
+        "assist"
+        "copilot"
+      ];
+      startupNotify = true;
+      startupWMClass = "io.github.ctrlassist.Gui";
+      dbusActivatable = true;
+      singleMainWindow = true;
+      implements = [ "org.freedesktop.Application" ];
+    })
+  ];
 
   # cargo-about reads only the vendored sources, so it runs in the
   # sandbox with no network.
@@ -81,6 +126,12 @@ rustPlatform.buildRustPackage {
       $out/lib/systemd/user/ctrlassist-tray.service \
       --replace-fail /usr/bin/ $out/bin/
 
+    # How the session bus starts the window: a second launch, and the
+    # tray, raise the one that is open.
+    install -Dm0644 packaging/systemd/io.github.ctrlassist.Gui.service -t $out/share/dbus-1/services/
+    substituteInPlace $out/share/dbus-1/services/io.github.ctrlassist.Gui.service \
+      --replace-fail 'Exec=/usr/bin/ctrlassist-gui' "Exec=$out/bin/ctrlassist-gui"
+
     install -Dm0644 packaging/udev/70-ctrlassist.rules -t $out/lib/udev/rules.d/
 
     install -Dm0644 packaging/licensing/NOTICE -t $out/share/doc/ctrlassist/
@@ -94,6 +145,14 @@ rustPlatform.buildRustPackage {
       --zsh <(COMPLETE=zsh $out/bin/ctrlassist) \
       --fish <(COMPLETE=fish $out/bin/ctrlassist)
   '';
+
+  # The libraries the window loads by name go on its rpath by hand, and
+  # the usual pass, which would take off what it finds no use of, is
+  # skipped.
+  postFixup = ''
+    patchelf --add-rpath "${lib.makeLibraryPath rpathLibs}" $out/bin/ctrlassist-gui
+  '';
+  dontPatchELF = true;
 
   meta = {
     description = "Controller assist for gaming on Linux: several game controllers as one, or one as several";

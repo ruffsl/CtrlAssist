@@ -65,8 +65,10 @@ packaging/
                               # NixOS), crate.nix (one crate's binaries, for the VM
                               # checks' fixture), the VM checks (test-*.nix), and the
                               # pinned tools: slint-lsp, slint-viewer, cargo-about
-  systemd/                    # the hiding service's socket and service units, and
-                              # the daemon's and the tray's user units
+  systemd/                    # the hiding service's socket and service units, the
+                              # daemon's and the tray's user units, and the session
+                              # bus service file that starts the settings window
+  freedesktop/                # the settings window's desktop entry
   udev/                       # the rule that gives the seat user uinput and uhid
   scripts/, modules-load/     # what the deb, rpm and Arch packages run at install and
                               # removal, and the modules they have loaded at boot

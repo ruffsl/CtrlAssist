@@ -33,6 +33,8 @@ pub enum Command {
     Quick(Edit),
     /// Write the quick-start choices as the profile `quick` and run it.
     QuickStart,
+    /// Open the settings window, or raise it if it is open.
+    Settings,
     /// End the tray.
     Quit,
 }
@@ -421,6 +423,9 @@ pub fn menu(view: &View, quick: &Quick) -> Vec<Entry> {
         }
     }
     entries.push(Entry::Separator);
+    // There whatever the daemon is doing: the window says more about a
+    // daemon that isn't running than the menu can.
+    entries.push(action("Settings", Command::Settings));
     entries.push(action("Quit tray", Command::Quit));
     entries
 }
@@ -563,6 +568,7 @@ Pads (2 connected) >
 ---
 - Hiding: service · Real-time: yes
 ---
+Settings
 Quit tray
 ";
         assert_eq!(menu, expected, "\n{menu}");
@@ -634,7 +640,7 @@ Quit tray
         down.alive = false;
         assert_eq!(
             outline(&menu(&down, &quick())),
-            "- The CtrlAssist daemon isn't running\n---\nQuit tray\n"
+            "- The CtrlAssist daemon isn't running\n---\nSettings\nQuit tray\n"
         );
         let mut arriving = view(None, Hiding::Service);
         arriving.hydrated = false;

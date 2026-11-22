@@ -19,6 +19,8 @@ The tray is the everyday way to use CtrlAssist. Its icon shows the state at a gl
 
 The last line says how controllers are being hidden (`service` or `grab`) and whether the daemon got real-time scheduling. [How It Works](../reference/how-it-works.md) explains both.
 
+**Settings** opens the CtrlAssist window, or brings it to the front if it is open. A left click on the tray's icon does the same.
+
 ## Notifications
 
 CtrlAssist tells you when:

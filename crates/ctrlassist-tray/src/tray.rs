@@ -35,6 +35,8 @@ pub enum Action {
     /// Keep this TOML as the profile `quick`, and run it: started if it
     /// isn't running, and if it is, changed as it runs or restarted.
     Quick(String),
+    /// Open the settings window, or raise it if it is open.
+    Settings,
     /// End the tray.
     Quit,
 }
@@ -54,6 +56,7 @@ impl Action {
             Self::Identify(pad) => format!("identify {pad}"),
             Self::Forget(pad) => format!("forget {pad}"),
             Self::Quick(_) => format!("keep and run `{}` as picked", quick::NAME),
+            Self::Settings => "open the settings window".to_string(),
             Self::Quit => "quit".to_string(),
         }
     }
@@ -126,6 +129,7 @@ impl PadTray {
             },
             Command::Identify(pad) => Action::Identify(pad),
             Command::Forget(pad) => Action::Forget(pad),
+            Command::Settings => Action::Settings,
             Command::Quit => Action::Quit,
         };
         let _ = self.actions.send(action);
@@ -237,6 +241,12 @@ impl Tray for PadTray {
 
     fn watcher_online(&self) {
         info!("a StatusNotifier host is there; the tray icon is registered");
+    }
+
+    /// A left click on the icon opens the settings window; the menu is
+    /// the right click's.
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.actions.send(Action::Settings);
     }
 
     fn category(&self) -> ksni::Category {
@@ -451,6 +461,10 @@ mod toolkit_tests {
         assert!(asked.contains(&Action::Start("desk".into())), "{asked:?}");
         assert!(asked.contains(&Action::Identify("address:dualsense".into())));
         assert!(asked.contains(&Action::Quit));
+        assert!(asked.contains(&Action::Settings));
+        // A left click on the icon asks for the same.
+        Tray::activate(&mut tray, 0, 0);
+        assert_eq!(clicked.try_recv(), Ok(Action::Settings));
         assert!(
             asked.iter().any(|action| matches!(
                 action,

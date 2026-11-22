@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=CtrlAssist
+GenericName=Controller Assist
+Comment=Several game controllers as one, or one as several
+Exec=ctrlassist-gui
+TryExec=ctrlassist-gui
+Icon=input-gaming
+Categories=Settings;HardwareSettings;
+Keywords=gamepad;controller;joystick;assist;copilot;
+StartupNotify=true
+StartupWMClass=io.github.ctrlassist.Gui
+DBusActivatable=true
+SingleMainWindow=true
+Implements=org.freedesktop.Application;

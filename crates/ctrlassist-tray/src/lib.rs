@@ -7,6 +7,7 @@ pub mod menu;
 pub mod notify;
 pub mod quick;
 pub mod service;
+mod settings;
 pub mod state;
 pub mod tray;
 
@@ -141,6 +142,7 @@ pub(crate) async fn act(
     notifier: Notifier,
     quit: Arc<Notify>,
 ) {
+    let opening = Arc::new(std::sync::atomic::AtomicBool::new(false));
     while let Some(action) = clicked.recv().await {
         // Said as it is taken up, so that a click that led nowhere can
         // be told from one that was never made.
@@ -149,6 +151,31 @@ pub(crate) async fn act(
             Action::Quit => {
                 quit.notify_one();
                 return;
+            }
+            Action::Settings => {
+                // On a task of its own: a window that is starting takes
+                // a while to answer, and the menu's other clicks don't
+                // wait for it. One opening at a time: clicks while one
+                // is under way are that one's.
+                if !opening.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    let (opening, notifier) = (Arc::clone(&opening), notifier.clone());
+                    tokio::spawn(async move {
+                        if let Err(error) = settings::open().await {
+                            warn!(
+                                error = format!("{error:#}"),
+                                "the settings window didn't open"
+                            );
+                            notifier.notify(Toast {
+                                category: notify::Category::Refused,
+                                summary: "Couldn't open CtrlAssist's settings".to_string(),
+                                body: format!("{error:#}"),
+                                icon: "dialog-error",
+                            });
+                        }
+                        opening.store(false, std::sync::atomic::Ordering::Release);
+                    });
+                }
+                continue;
             }
             Action::Start(name) => (
                 format!("Couldn't start {name}"),

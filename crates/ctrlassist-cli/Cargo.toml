@@ -23,6 +23,12 @@ contents = [
     # target/nfpm-dist links to the packaged triple's dist/ (`just
     # package-build` sets it).
     { src = "target/nfpm-dist/ctrlassist-hider", dst = "/usr/bin/ctrlassist-hider" },
+    # The settings window, its entry in the launcher, and the session
+    # bus's way of starting it, by which a second launch and the tray
+    # raise the window that is open.
+    { src = "target/nfpm-dist/ctrlassist-gui", dst = "/usr/bin/ctrlassist-gui" },
+    { src = "packaging/freedesktop/io.github.ctrlassist.Gui.desktop", dst = "/usr/share/applications/io.github.ctrlassist.Gui.desktop" },
+    { src = "packaging/systemd/io.github.ctrlassist.Gui.service", dst = "/usr/share/dbus-1/services/io.github.ctrlassist.Gui.service" },
     # The hiding service: root, started on demand from its socket.
     { src = "packaging/systemd/ctrlassist-hider.socket", dst = "/usr/lib/systemd/system/ctrlassist-hider.socket" },
     { src = "packaging/systemd/ctrlassist-hider.service", dst = "/usr/lib/systemd/system/ctrlassist-hider.service" },
@@ -54,7 +60,9 @@ postinstall = "packaging/scripts/postinstall.sh"
 preremove = "packaging/scripts/preremove.sh"
 
 # Runtime libraries: libudev for the daemon and the hiding service, and
-# libsystemd for the hiding service's session check. Names follow Debian
+# libsystemd for the hiding service's session check. The window loads
+# its own at run time, which no linker lists: fontconfig, OpenGL and EGL,
+# and the Wayland client libraries, as TisVlay's does. Names follow Debian
 # and Ubuntu (deb), Fedora (rpm) and Arch; check them against the target
 # distribution before each release.
 #
@@ -62,7 +70,16 @@ preremove = "packaging/scripts/preremove.sh"
 # schema: cargo-nfpm's per-format tables have no `depends` field, so keys
 # placed there are silently dropped.
 [package.metadata.nfpm.overrides.deb]
-depends = ["libc6", "libudev1", "libsystemd0"]
+depends = [
+    "libc6",
+    "libudev1",
+    "libsystemd0",
+    "libfontconfig1",
+    "libgl1",
+    "libegl1",
+    "libwayland-client0",
+    "libwayland-egl1",
+]
 # Weak: the bash-completion loader, so the shipped registration autoloads.
 recommends = ["bash-completion"]
 # GNOME only: the tray icon needs a StatusNotifier host, which vanilla
@@ -71,14 +88,28 @@ recommends = ["bash-completion"]
 suggests = ["gnome-shell-extension-appindicator"]
 
 [package.metadata.nfpm.overrides.rpm]
-depends = ["glibc", "systemd-libs"]
+depends = [
+    "glibc",
+    "systemd-libs",
+    "fontconfig",
+    "mesa-libGL",
+    "mesa-libEGL",
+    "libwayland-client",
+    "libwayland-egl",
+]
 recommends = ["bash-completion"]
 suggests = ["gnome-shell-extension-appindicator"]
 
 # Hard dependencies only: cargo-nfpm's archlinux packager emits no weak
 # ones.
 [package.metadata.nfpm.overrides.archlinux]
-depends = ["glibc", "systemd-libs"]
+depends = [
+    "glibc",
+    "systemd-libs",
+    "fontconfig",
+    "libglvnd",
+    "wayland",
+]
 
 [[bin]]
 name = "ctrlassist"

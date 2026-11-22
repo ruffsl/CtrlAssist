@@ -4,7 +4,11 @@ members = ["crates/*"]
 # The shipping binaries. A bare `cargo build` (without `--workspace`)
 # scopes to these and what they depend on, so the Nix package reads one
 # list instead of repeating it. `just` recipes pass `--workspace`.
-default-members = ["crates/ctrlassist-cli", "crates/ctrlassist-hider"]
+default-members = [
+    "crates/ctrlassist-cli",
+    "crates/ctrlassist-gui-app",
+    "crates/ctrlassist-hider",
+]
 # The spikes are throwaway workspaces of their own, deleted as the crates
 # that replace them land.
 exclude = ["spikes", "vendor"]
