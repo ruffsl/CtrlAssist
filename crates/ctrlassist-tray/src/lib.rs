@@ -217,11 +217,28 @@ mod tests {
     }
 
     async fn rig() -> Rig {
+        rig_remembering(0).await
+    }
+
+    /// A rig whose daemon starts out remembering this many pads.
+    async fn rig_remembering(pads: usize) -> Rig {
         let dir = tempfile::Builder::new()
             .prefix("ca")
             .tempdir_in("/tmp")
             .unwrap();
         let at = |name: &str| dir.path().join(name);
+        if pads > 0 {
+            use std::fmt::Write as _;
+            let mut known = "schema = 1\n".to_string();
+            for pad in 0..pads {
+                let _ = write!(
+                    known,
+                    "\n[[pad]]\nid = \"port:1209:5eed:somewhere/{pad}\"\nname = \"Remembered Pad {pad}\"\nmodel = \"1209:5eed\"\n"
+                );
+            }
+            std::fs::create_dir_all(at("state")).unwrap();
+            std::fs::write(at("state").join("pads.toml"), known).unwrap();
+        }
         let paths = Paths {
             socket: at("zenoh.sock"),
             state: at("state"),
@@ -491,5 +508,16 @@ mod tests {
         assert!(menu.contains("Primary: Tray Kept Primary >"), "{menu}");
         assert!(menu.contains("Rumble goes to: primary only >"), "{menu}");
         assert!(menu.contains("[x] Start by itself"), "{menu}");
+    }
+
+    /// A daemon that knows hundreds of pads is followed like any other:
+    /// the tray reads all of its state and shows it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_daemon_that_knows_hundreds_of_pads_is_still_followed() {
+        let rig = rig_remembering(450).await;
+        // More than the 256 samples zenoh queues for a subscription
+        // that isn't being read yet, all under the one key.
+        let menu = rig.shows("Remembered Pad 449").await;
+        assert!(menu.contains("Pads ("), "the daemon is followed");
     }
 }

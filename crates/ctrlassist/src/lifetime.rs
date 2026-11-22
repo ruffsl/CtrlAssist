@@ -30,7 +30,7 @@ use std::time::Duration;
 use ctrlassist_protocol::caller::{Caller, RpcError};
 use ctrlassist_protocol::endpoint::daemon;
 use ctrlassist_protocol::keys;
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{Notify, broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::warn;
 use zenoh::Session;
@@ -265,13 +265,11 @@ impl<M: Mirror> LifetimeMirror<M> {
             let caller = Arc::clone(caller);
             let pumps = Arc::clone(&pumps);
             async move {
-                for subscriber in subscribe::<M>(&session).await {
-                    let pump = tokio::spawn(this.clone().pump(subscriber));
-                    pumps
-                        .lock()
-                        .expect("nothing panics while the pump list is held")
-                        .push(pump);
-                }
+                let started = this.subscribe(&session).await;
+                pumps
+                    .lock()
+                    .expect("nothing panics while the pump list is held")
+                    .extend(started);
                 // Before announcing, so the release check's settling can't
                 // be missed.
                 let events = this.events.subscribe();
@@ -339,8 +337,65 @@ impl<M: Mirror> LifetimeMirror<M> {
         let _ = self.events.send(StateEvent::Hydrated);
     }
 
-    async fn pump(self, subscriber: AdvancedSubscriber<FifoChannelHandler<Sample>>) {
-        while let Ok(sample) = subscriber.recv_async().await {
+    /// Subscribes to every key `M` mirrors, from history on and with
+    /// recovery, retrying until all are declared, and returns the tasks
+    /// that read them.
+    ///
+    /// What a subscription delivers is queued without bound. Its history
+    /// arrives while it is still being declared, before there is
+    /// anything to read it from, and zenoh's own queue holds 256 samples
+    /// and stops the session's reader when full: a daemon with more
+    /// state under one key than that stopped the declaration for good,
+    /// and the client never found the daemon alive. What a daemon
+    /// publishes is its state, which is what bounds the queue.
+    async fn subscribe(&self, session: &Session) -> Vec<JoinHandle<()>> {
+        let mut backoff = SUBSCRIBE_RETRY_FIRST;
+        loop {
+            let mut pumps = Vec::new();
+            let mut failed = None;
+            for key in M::keys() {
+                let (samples, arriving) = mpsc::unbounded_channel();
+                let declared = session
+                    .declare_subscriber(key)
+                    .callback(move |sample| {
+                        // Nobody is reading once the pump has gone.
+                        let _ = samples.send(sample);
+                    })
+                    .history(HistoryConfig::default().detect_late_publishers())
+                    .recovery(RecoveryConfig::default().heartbeat())
+                    .await;
+                match declared {
+                    Ok(subscriber) => {
+                        pumps.push(tokio::spawn(self.clone().pump(subscriber, arriving)));
+                    }
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
+                    }
+                }
+            }
+            let Some(error) = failed else {
+                return pumps;
+            };
+            warn!(%error, ?backoff, "couldn't subscribe to the daemon's keys; retrying");
+            // Each takes its subscription with it.
+            for pump in pumps {
+                pump.abort();
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(SUBSCRIBE_RETRY_MAX);
+        }
+    }
+
+    /// Applies what a subscription delivers, for as long as it lives:
+    /// the subscription is held here, and goes with this task.
+    async fn pump(
+        self,
+        subscriber: AdvancedSubscriber<()>,
+        mut arriving: mpsc::UnboundedReceiver<Sample>,
+    ) {
+        let _subscriber = subscriber;
+        while let Some(sample) = arriving.recv().await {
             let event = {
                 let mut tracked = self.lock();
                 tracked.seen.insert(sample.key_expr().to_string());
@@ -351,39 +406,6 @@ impl<M: Mirror> LifetimeMirror<M> {
                 let _ = self.events.send(event);
             }
         }
-    }
-}
-
-/// Subscribe to every key `M` mirrors, from history on and with recovery,
-/// retrying until all are declared.
-async fn subscribe<M: Mirror>(
-    session: &Session,
-) -> Vec<AdvancedSubscriber<FifoChannelHandler<Sample>>> {
-    let mut backoff = SUBSCRIBE_RETRY_FIRST;
-    loop {
-        let mut subscribers = Vec::new();
-        let mut failed = None;
-        for key in M::keys() {
-            let declared = session
-                .declare_subscriber(key)
-                .history(HistoryConfig::default().detect_late_publishers())
-                .recovery(RecoveryConfig::default().heartbeat())
-                .await;
-            match declared {
-                Ok(subscriber) => subscribers.push(subscriber),
-                Err(e) => {
-                    failed = Some(e);
-                    break;
-                }
-            }
-        }
-        let Some(error) = failed else {
-            return subscribers;
-        };
-        warn!(%error, ?backoff, "couldn't subscribe to the daemon's keys; retrying");
-        drop(subscribers);
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(SUBSCRIBE_RETRY_MAX);
     }
 }
 
