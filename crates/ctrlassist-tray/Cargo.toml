@@ -17,8 +17,13 @@ ctrlassist-daemon = { workspace = true }
 ctrlassist-protocol = { workspace = true }
 ksni = { workspace = true }
 notify-rust = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
+toml = { workspace = true }
 tracing = { workspace = true }
+zenoh = { workspace = true }
+zenoh-ext = { workspace = true }
 
 [dev-dependencies]
 ctrlassist-device = { workspace = true }

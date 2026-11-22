@@ -285,7 +285,7 @@ async fn hydrated(socket: &Path) -> Option<DaemonClient> {
     let client = DaemonClient::with_session(session).await.ok()?;
     let mut config = StateWatcherConfig::default();
     config.fallback_poll_interval = Duration::ZERO;
-    let mut watcher = StateWatcher::new(&client, config);
+    let mut watcher = StateWatcher::new(&client, None, config);
     while !client.is_hydrated() {
         if matches!(
             watcher.next().await,

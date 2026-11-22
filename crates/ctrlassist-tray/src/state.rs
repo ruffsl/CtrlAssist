@@ -3,6 +3,7 @@
 
 use ctrlassist::{DaemonState, Hiding, Identity, Pad, Phase, Profile, Setup};
 
+use crate::notify::Category;
 use crate::quick::{self, Quick};
 
 /// One snapshot of what the daemon publishes.
@@ -29,6 +30,8 @@ pub struct View {
 /// Something to tell the person at the machine.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Toast {
+    /// The kind of thing it says, which a person can switch off.
+    pub category: Category,
     /// The line that says it.
     pub summary: String,
     /// What else there is to say.
@@ -37,8 +40,14 @@ pub struct Toast {
     pub icon: &'static str,
 }
 
-fn toast(summary: String, body: impl Into<String>, icon: &'static str) -> Toast {
+fn toast(
+    category: Category,
+    summary: String,
+    body: impl Into<String>,
+    icon: &'static str,
+) -> Toast {
     Toast {
+        category,
         summary,
         body: body.into(),
         icon,
@@ -80,8 +89,9 @@ impl View {
     }
 
     /// What happened between `before` and this view that is worth a
-    /// notification: a setup held, running again or failed, and a setup
-    /// started whose pads are only grabbed or can't rumble.
+    /// notification: a setup started or stopped, held, running again or
+    /// failed; a setup started whose pads are only grabbed or can't
+    /// rumble; and a pad that no setup uses connecting or leaving.
     #[must_use]
     pub fn news(&self, before: &Self) -> Vec<Toast> {
         let mut news = Vec::new();
@@ -109,6 +119,7 @@ impl View {
                         })
                         .collect();
                     news.push(toast(
+                        Category::SetupTrouble,
                         format!("{name} is held"),
                         format!(
                             "{} disconnected. The virtual pad stays, and the rest plays on.",
@@ -118,11 +129,13 @@ impl View {
                     ));
                 }
                 (Some(Phase::Held), Phase::Running) => news.push(toast(
+                    Category::SetupTrouble,
                     format!("{name} is running again"),
                     "Its pad is back and has taken its place.",
                     GOOD,
                 )),
                 (Some(was), Phase::Failed) if was != Phase::Failed => news.push(toast(
+                    Category::SetupTrouble,
                     format!("{name} failed"),
                     format!(
                         "{}. Its pads are visible to games again; stop it to clear it.",
@@ -135,12 +148,23 @@ impl View {
             if !started {
                 continue;
             }
+            news.push(toast(
+                Category::SetupStarted,
+                format!("{name} started"),
+                if setup.phase == Phase::Held {
+                    "Its virtual pad is there; a pad it needs isn't connected yet."
+                } else {
+                    "Games see its virtual pad in place of the pads it uses."
+                },
+                GOOD,
+            ));
             if self
                 .daemon
                 .as_ref()
                 .is_some_and(|daemon| daemon.hiding == Hiding::Grab)
             {
                 news.push(toast(
+                    Category::SetupTrouble,
                     format!("{name}: its pads are grabbed, not hidden"),
                     "The hiding service isn't there. A program that reads a pad some other way, as Steam reads a PlayStation pad, still sees it beside the virtual pad.",
                     WARNING,
@@ -155,11 +179,47 @@ impl View {
                 .collect();
             if !silent.is_empty() {
                 news.push(toast(
+                    Category::SetupTrouble,
                     format!("{name}: no rumble on {}", silent.join(" or ")),
                     "What a game rumbles won't be felt there.",
                     WARNING,
                 ));
             }
+        }
+        for setup in &before.setups {
+            if self.setup(&setup.name).is_none() {
+                news.push(toast(
+                    Category::SetupStarted,
+                    format!("{} stopped", setup.name),
+                    "Its virtual pad is gone and its pads are visible to games again.",
+                    GOOD,
+                ));
+            }
+        }
+        for pad in &self.pads {
+            let was = before.pad(&pad.id);
+            // A setup speaks for its pads: held, and running again.
+            if pad.setup.is_some() || was.is_some_and(|was| was.setup.is_some()) {
+                continue;
+            }
+            if pad.connected == was.is_some_and(|was| was.connected) {
+                continue;
+            }
+            news.push(if pad.connected {
+                toast(
+                    Category::PadConnection,
+                    format!("{} connected", pad.name),
+                    "",
+                    GOOD,
+                )
+            } else {
+                toast(
+                    Category::PadConnection,
+                    format!("{} disconnected", pad.name),
+                    "",
+                    WARNING,
+                )
+            });
         }
         news
     }
@@ -172,6 +232,7 @@ impl View {
 pub fn daemon_news(was: Option<bool>, alive: bool, had_setups: bool) -> Option<Toast> {
     match (was?, alive) {
         (true, false) => Some(toast(
+            Category::SetupTrouble,
             "The CtrlAssist daemon stopped".to_string(),
             if had_setups {
                 "Its virtual pads are gone and the pads are visible to games again."
@@ -181,6 +242,7 @@ pub fn daemon_news(was: Option<bool>, alive: bool, had_setups: bool) -> Option<T
             ERROR,
         )),
         (false, true) => Some(toast(
+            Category::SetupTrouble,
             "The CtrlAssist daemon is back".to_string(),
             "Profiles that start by themselves will.",
             GOOD,
@@ -266,7 +328,6 @@ pub(crate) mod tests {
                 realtime: true,
                 hiding,
                 config: String::new(),
-                tray: None,
             }),
             pads: vec![
                 pad("address:dualsense", "DualSense", true, in_couch),
@@ -307,34 +368,71 @@ pub(crate) mod tests {
         for same in [&running, &held, &failed] {
             assert!(same.news(same).is_empty());
         }
-        // Nor is a setup stopped by whoever asked for that.
-        assert!(view(None, Hiding::Service).news(&running).is_empty());
+        // A setup stopped is said, as one kind with its starting.
+        let news = view(None, Hiding::Service).news(&running);
+        assert_eq!(summaries(&news), ["couch stopped"]);
+        assert_eq!(news[0].category, Category::SetupStarted);
+    }
+
+    #[test]
+    fn a_pad_coming_or_going_is_news_unless_a_setup_speaks_for_it() {
+        let idle = view(None, Hiding::Service);
+        let mut without = idle.clone();
+        without.pads[1].connected = false;
+        let news = idle.news(&without);
+        assert_eq!(summaries(&news), ["8BitDo Pro 2 connected"]);
+        assert_eq!(news[0].category, Category::PadConnection);
+        assert_eq!(
+            summaries(&without.news(&idle)),
+            ["8BitDo Pro 2 disconnected"]
+        );
+        // A pad first heard of, connected.
+        let mut fewer = idle.clone();
+        fewer.pads.remove(1);
+        assert_eq!(summaries(&idle.news(&fewer)), ["8BitDo Pro 2 connected"]);
+        // One that is remembered and then forgotten was never there.
+        assert!(fewer.news(&without).is_empty());
+        // A setup's pad leaving is the setup held, said once.
+        let running = view(Some(Phase::Running), Hiding::Service);
+        let held = view(Some(Phase::Held), Hiding::Service);
+        assert_eq!(summaries(&held.news(&running)), ["couch is held"]);
     }
 
     #[test]
     fn a_setup_starting_says_what_it_could_not_do_for_its_pads() {
         let none = view(None, Hiding::Grab);
         let started = view(Some(Phase::Running), Hiding::Grab);
+        let news = started.news(&none);
         assert_eq!(
-            summaries(&started.news(&none)),
-            ["couch: its pads are grabbed, not hidden"]
+            summaries(&news),
+            ["couch started", "couch: its pads are grabbed, not hidden"]
         );
+        assert_eq!(news[0].category, Category::SetupStarted);
+        assert_eq!(news[1].category, Category::SetupTrouble);
         // Through its starting phase, it is said once.
         let starting = view(Some(Phase::Starting), Hiding::Grab);
         assert!(starting.news(&none).is_empty());
-        assert_eq!(started.news(&starting).len(), 1);
+        assert_eq!(started.news(&starting).len(), 2);
         // With the hiding service there is nothing to warn of.
-        assert!(
-            view(Some(Phase::Running), Hiding::Service)
-                .news(&view(None, Hiding::Service))
-                .is_empty()
+        assert_eq!(
+            summaries(
+                &view(Some(Phase::Running), Hiding::Service).news(&view(None, Hiding::Service))
+            ),
+            ["couch started"]
         );
+        // A setup that starts short of a pad says so.
+        let news = view(Some(Phase::Held), Hiding::Service).news(&view(None, Hiding::Service));
+        assert_eq!(summaries(&news), ["couch started"]);
+        assert!(news[0].body.contains("isn't connected yet"), "{news:?}");
 
         // A pad that can't rumble is named.
         let mut silent = view(Some(Phase::Running), Hiding::Service);
         silent.setups[0].sources[0].pad = Some("address:8bitdo".to_string());
         let news = silent.news(&view(None, Hiding::Service));
-        assert_eq!(summaries(&news), ["couch: no rumble on 8BitDo Pro 2"]);
+        assert_eq!(
+            summaries(&news),
+            ["couch started", "couch: no rumble on 8BitDo Pro 2"]
+        );
     }
 
     #[test]

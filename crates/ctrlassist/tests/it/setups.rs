@@ -189,7 +189,7 @@ async fn a_setup_is_held_while_a_pad_is_missing_and_takes_it_back() {
     let (_dir, socket) = socket();
     let daemon = start_daemon(&socket).await;
     let client = hydrated(&socket).await;
-    let mut watcher = StateWatcher::new(&client, StateWatcherConfig::default());
+    let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());
     client
         .put_profile("couch", &priority(0x7d01, 0x7d02))
         .await

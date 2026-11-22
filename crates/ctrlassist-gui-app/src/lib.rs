@@ -119,7 +119,13 @@ pub fn run() -> Result<()> {
     pads::wire(&app, &daemon, &nav);
     setups::wire(&app, &daemon, &nav);
     profiles::wire(&app, &daemon, &nav);
-    rt.spawn(state::follow(daemon, app.as_weak()));
+    // The tray, on the same session: it serves through the daemon. With
+    // no client for it the window still works, and shows no tray.
+    let tray = rt
+        .block_on(ctrlassist::TrayClient::beside(&daemon))
+        .map_err(|error| tracing::warn!(%error, "the tray can't be followed"))
+        .ok();
+    rt.spawn(state::follow(daemon, tray, app.as_weak()));
 
     keys::bind_key_router(&app);
     // Escape on the sidebar with nothing to go back to, in couch mode:

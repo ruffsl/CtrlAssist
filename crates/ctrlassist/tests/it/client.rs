@@ -86,18 +86,24 @@ pub(crate) async fn start_daemon_taking(socket: &std::path::Path, test_pads: boo
 async fn a_client_follows_the_daemon_through_its_lifetimes() {
     let (_dir, socket) = socket();
     let client = DaemonClient::connect(&socket).await.unwrap();
-    let mut watcher = StateWatcher::new(&client, StateWatcherConfig::default());
+    let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());
     assert!(!client.is_available(), "nothing is listening yet");
     assert!(!client.is_hydrated());
     assert!(client.service_info().is_none());
     assert_eq!(client.daemon_state().unwrap(), None);
-    assert!(matches!(client.version().await, Err(Error::Unavailable)));
+    assert!(matches!(
+        client.version().await,
+        Err(Error::Unavailable { .. })
+    ));
 
     for lifetime in 1..=2 {
         let daemon = start_daemon(&socket).await;
         next_matching(&mut watcher, |e| *e == StateEvent::DaemonAppeared).await;
         assert!(client.is_available(), "lifetime {lifetime}");
-        next_matching(&mut watcher, |e| *e == StateEvent::Hydrated).await;
+        next_matching(&mut watcher, |e| {
+            *e == StateEvent::Hydrated(ctrlassist::Service::Daemon)
+        })
+        .await;
         assert!(client.is_hydrated(), "lifetime {lifetime}");
         // Hydrated means the listed state is in: no wait before the read.
         let state = client.daemon_state().unwrap().expect("hydrated");
@@ -136,9 +142,12 @@ async fn a_watcher_built_late_hears_what_already_happened() {
     eventually("the client never hydrated", async || client.is_hydrated()).await;
     assert!(!client.daemon_state().unwrap().unwrap().realtime);
 
-    let mut watcher = StateWatcher::new(&client, StateWatcherConfig::default());
+    let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());
     next_matching(&mut watcher, |e| *e == StateEvent::DaemonAppeared).await;
-    next_matching(&mut watcher, |e| *e == StateEvent::ReleaseChecked).await;
+    next_matching(&mut watcher, |e| {
+        *e == StateEvent::ReleaseChecked(ctrlassist::Service::Daemon)
+    })
+    .await;
 
     daemon
         .put(
@@ -185,11 +194,14 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
     let (_dir, socket) = socket();
     let daemon = FakeDaemon::start(&socket, "99.0.0").await;
     let client = DaemonClient::connect(&socket).await.unwrap();
-    let mut watcher = StateWatcher::new(&client, StateWatcherConfig::default());
+    let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());
 
     // The check runs as soon as the daemon appears, so the watcher hears
     // of its release, and of the mismatch, without a call.
-    next_matching(&mut watcher, |e| *e == StateEvent::ReleaseChecked).await;
+    next_matching(&mut watcher, |e| {
+        *e == StateEvent::ReleaseChecked(ctrlassist::Service::Daemon)
+    })
+    .await;
     let event = next_matching(&mut watcher, |e| {
         matches!(e, StateEvent::VersionMismatch { .. })
     })
@@ -197,6 +209,7 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
     assert_eq!(
         event,
         StateEvent::VersionMismatch {
+            service: ctrlassist::Service::Daemon,
             ours: VERSION.to_string(),
             theirs: "99.0.0".to_string(),
         }
@@ -226,7 +239,10 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
     assert!(client.service_info().is_none());
     let _restarted = FakeDaemon::start(&socket, VERSION).await;
     next_matching(&mut watcher, |e| *e == StateEvent::DaemonAppeared).await;
-    next_matching(&mut watcher, |e| *e == StateEvent::ReleaseChecked).await;
+    next_matching(&mut watcher, |e| {
+        *e == StateEvent::ReleaseChecked(ctrlassist::Service::Daemon)
+    })
+    .await;
     assert_eq!(client.service_info().unwrap().version, VERSION);
     client.check_release().await.unwrap();
     assert!(client.daemon_state().is_ok());
@@ -244,8 +260,11 @@ async fn a_watcher_built_late_still_hears_of_a_known_mismatch() {
         client.check_release().await,
         Err(Error::VersionMismatch { .. })
     ));
-    let mut watcher = StateWatcher::new(&client, StateWatcherConfig::default());
-    next_matching(&mut watcher, |e| *e == StateEvent::ReleaseChecked).await;
+    let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());
+    next_matching(&mut watcher, |e| {
+        *e == StateEvent::ReleaseChecked(ctrlassist::Service::Daemon)
+    })
+    .await;
     let event = next_matching(&mut watcher, |e| {
         matches!(e, StateEvent::VersionMismatch { .. })
     })
@@ -271,14 +290,17 @@ async fn a_failed_release_check_is_retried() {
         .await
         .unwrap();
     let client = DaemonClient::connect(&socket).await.unwrap();
-    let mut watcher = StateWatcher::new(&client, StateWatcherConfig::default());
+    let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());
     next_matching(&mut watcher, |e| *e == StateEvent::DaemonAppeared).await;
     // Outlast the first check, which waits out the matching deadline.
     tokio::time::sleep(ctrlassist_protocol::caller::MATCHING_DEADLINE + Duration::from_millis(500))
         .await;
     assert!(client.service_info().is_none());
     let _serve = answer_info(&session, VERSION, &Arc::new(Mutex::new(BTreeSet::new()))).await;
-    next_matching(&mut watcher, |e| *e == StateEvent::ReleaseChecked).await;
+    next_matching(&mut watcher, |e| {
+        *e == StateEvent::ReleaseChecked(ctrlassist::Service::Daemon)
+    })
+    .await;
     assert_eq!(client.service_info().unwrap().version, VERSION);
 }
 
@@ -305,55 +327,14 @@ async fn hydration_ends_at_the_deadline_without_a_listed_key() {
 async fn try_next_drains_without_waiting() {
     let (_dir, socket) = socket();
     let client = DaemonClient::connect(&socket).await.unwrap();
-    let mut idle = StateWatcher::new(&client, StateWatcherConfig::default());
+    let mut idle = StateWatcher::new(&client, None, StateWatcherConfig::default());
     assert!(idle.try_next().is_none(), "no daemon, no events");
     let mut config = StateWatcherConfig::default();
     config.fallback_poll_interval = Duration::ZERO;
-    let mut silent = StateWatcher::new(&client, config.clone());
+    let mut silent = StateWatcher::new(&client, None, config.clone());
     config.fallback_poll_interval = Duration::from_millis(20);
-    let mut polling = StateWatcher::new(&client, config);
+    let mut polling = StateWatcher::new(&client, None, config);
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(polling.try_next(), Some(StateEvent::FallbackPoll));
     assert!(silent.try_next().is_none(), "zero turns the poll off");
-}
-
-/// A tray's announcement reaches other clients through the daemon's own
-/// state, since one client of the daemon's socket can't see another:
-/// there while the tray is, gone when it goes, and there again in a
-/// daemon that starts later.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_tray_s_presence_is_the_daemon_s_to_report() {
-    let (_dir, socket) = socket();
-    let daemon = start_daemon(&socket).await;
-    let window = DaemonClient::connect(&socket).await.unwrap();
-    let tray_of =
-        |client: &DaemonClient| client.daemon_state().unwrap().and_then(|state| state.tray);
-    eventually("the daemon's state never arrived", async || {
-        window.daemon_state().unwrap().is_some()
-    })
-    .await;
-    assert_eq!(tray_of(&window), None);
-
-    let tray = DaemonClient::connect(&socket).await.unwrap();
-    let presence = tray.announce_tray().await.unwrap();
-    eventually("the tray was never reported", async || {
-        tray_of(&window).as_deref() == Some(VERSION)
-    })
-    .await;
-
-    // A daemon that starts later hears of the tray that was already there.
-    daemon.stop().await;
-    eventually("the daemon never went", async || !window.is_available()).await;
-    let daemon = start_daemon(&socket).await;
-    eventually("the tray wasn't reported by the next daemon", async || {
-        tray_of(&window).as_deref() == Some(VERSION)
-    })
-    .await;
-
-    drop(presence);
-    eventually("the tray was still reported after it went", async || {
-        window.is_available() && tray_of(&window).is_none()
-    })
-    .await;
-    daemon.stop().await;
 }

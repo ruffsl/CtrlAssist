@@ -12,15 +12,15 @@ use notify_rust::Notification;
 use tokio::sync::{Notify, mpsc};
 use tracing::{debug, info, warn};
 
-use crate::notify::Notifier;
+use crate::notify::{self, NotificationSettings, Notifier};
 use crate::tray::PadTray;
 use crate::{Handle, act, follow};
 
 /// Shows each toast on the desktop, through the session bus's
 /// notification daemon. One at a time: a burst while no notification
 /// daemon answers is a row of short failures, not as many stalls.
-fn show_toasts() -> Notifier {
-    let (notifier, mut toasts) = Notifier::capturing();
+fn show_toasts(initial: NotificationSettings) -> Notifier {
+    let (notifier, mut toasts) = Notifier::capturing(initial);
     tokio::spawn(async move {
         while let Some(toast) = toasts.recv().await {
             let shown = Notification::new()
@@ -43,6 +43,8 @@ fn show_toasts() -> Notifier {
 pub struct TrayOptions {
     /// The daemon's socket.
     pub socket: PathBuf,
+    /// The tray's own file, `tray.toml`: its notification switches.
+    pub config: PathBuf,
 }
 
 /// Runs the tray until it is interrupted or quit from its menu.
@@ -55,13 +57,24 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     let daemon = DaemonClient::connect(&options.socket)
         .await
         .map_err(|error| anyhow!("connecting to {}: {error}", options.socket.display()))?;
-    // For as long as the tray runs, so the daemon can say one is there.
-    let _presence = daemon
-        .announce_tray()
-        .await
-        .map_err(|error| anyhow!("announcing the tray: {error}"))?;
     let (actions, clicked) = mpsc::unbounded_channel();
-    let notifier = show_toasts();
+    let notifier = show_toasts(
+        notify::load_settings(&options.config).unwrap_or_else(|error| {
+            warn!(
+                error = format!("{error:#}"),
+                "the defaults are used instead"
+            );
+            NotificationSettings::default()
+        }),
+    );
+    // Before the icon, which it doesn't need: the window reaches the
+    // tray's switches on a desktop with no StatusNotifier host too.
+    tokio::spawn(notify::serve_while_daemon(
+        daemon.clone(),
+        options.socket.clone(),
+        options.config.clone(),
+        notifier.clone(),
+    ));
     // With no StatusNotifier host the spawn still succeeds: the icon
     // registers if a host appears later, and notifications work meanwhile.
     // Only a failure of the session bus itself ends up here.

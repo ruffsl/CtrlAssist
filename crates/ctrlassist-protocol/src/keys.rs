@@ -6,23 +6,33 @@ pub fn daemon_alive() -> String {
     "ctrlassist/alive/daemon".to_string()
 }
 
-/// Liveliness token declared by a running tray, on its link to the
-/// daemon. It carries the tray's release, since a token has no body.
-/// Only the daemon sees it: what one client of the daemon's socket
-/// declares doesn't reach another, so the daemon says in its own state
-/// that a tray is there.
-pub fn tray_alive(version: &str) -> String {
-    format!("ctrlassist/alive/tray/{version}")
+/// Liveliness token declared by a running tray's settings service, on
+/// the client-mode link it serves on, which the daemon relays to its
+/// other clients.
+pub fn tray_alive() -> String {
+    "ctrlassist/alive/tray".to_string()
 }
 
-/// Wildcard over every tray's token.
-pub fn tray_alive_wild() -> String {
-    "ctrlassist/alive/tray/*".to_string()
+/// The tray's notification switches, a
+/// [`NotificationSettings`](crate::rpc::NotificationSettings): a cached
+/// publish, by the tray.
+pub fn tray_settings() -> String {
+    "ctrlassist/tray/settings".to_string()
 }
 
-/// Parse a [`tray_alive`] key into the tray's release.
-pub fn parse_tray_alive(key: &str) -> Option<&str> {
-    segment(key.strip_prefix("ctrlassist/alive/tray/")?)
+/// A tray rpc's key.
+pub(crate) fn tray_rpc(verb: &str) -> String {
+    format!("ctrlassist/rpc/tray/{verb}")
+}
+
+/// Wildcard the tray's rpc queryable is declared on.
+pub fn tray_rpc_wild() -> String {
+    "ctrlassist/rpc/tray/*".to_string()
+}
+
+/// Parse a [`tray_rpc`] key into its verb.
+pub(crate) fn parse_tray_rpc(key: &str) -> Option<&str> {
+    key.strip_prefix("ctrlassist/rpc/tray/")
 }
 
 /// The daemon's own state, a [`Daemon`](crate::payload::Daemon): a cached
@@ -187,6 +197,14 @@ mod tests {
         assert_eq!(parse_daemon_rpc("ctrlassist/rpc/setup/start"), None);
         assert!(daemon_rpc_wild().starts_with("ctrlassist/rpc/daemon/"));
         assert_ne!(daemon_alive(), daemon());
+
+        let key = tray_rpc("update");
+        assert_eq!(key, "ctrlassist/rpc/tray/update");
+        assert_eq!(parse_tray_rpc(&key), Some("update"));
+        assert_eq!(parse_tray_rpc(&daemon_rpc("info")), None);
+        assert_eq!(parse_daemon_rpc(&key), None);
+        assert!(tray_rpc_wild().starts_with("ctrlassist/rpc/tray/"));
+        assert_ne!(tray_alive(), tray_settings());
 
         let key = pad_rpc("identify");
         assert_eq!(parse_pad_rpc(&key), Some("identify"));

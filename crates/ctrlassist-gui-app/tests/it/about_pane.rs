@@ -122,6 +122,7 @@ fn the_pane_shows_the_rows_the_window_holds() {
         hidden: Some(true),
         config: "/somewhere".to_string(),
         realtime: true,
+        tray_available: true,
         tray: Some(VERSION.to_string()),
         ..Snapshot::default()
     }

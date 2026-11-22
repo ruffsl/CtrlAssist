@@ -67,7 +67,7 @@ fn snapshot(daemon: &DaemonClient) -> View {
 /// Keeps the tray showing what the client mirrors, rebuilt on each of
 /// the client's events, and says what changed that is worth saying.
 pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notifier) {
-    let mut watcher = StateWatcher::new(&daemon, StateWatcherConfig::default());
+    let mut watcher = StateWatcher::new(&daemon, None, StateWatcherConfig::default());
     // Whether the daemon was there at the last look. Not known at the
     // first, so a tray started without a daemon has nothing to say of it.
     let mut was_alive: Option<bool> = None;
@@ -112,6 +112,7 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
 /// What to say when something asked from the menu didn't happen.
 fn refused(what: String, error: &ctrlassist::Error) -> Toast {
     Toast {
+        category: notify::Category::Refused,
         summary: what,
         body: error.to_string(),
         icon: "dialog-error",
@@ -250,7 +251,7 @@ mod tests {
         let daemon = start_daemon(&paths).await;
         let client = DaemonClient::connect(&paths.socket).await.unwrap();
         let (actions, clicked) = mpsc::unbounded_channel();
-        let (notifier, toasts) = Notifier::capturing();
+        let (notifier, toasts) = Notifier::capturing(notify::NotificationSettings::default());
         let tray = Arc::new(Mutex::new(PadTray::new(actions)));
         let handle = Handle::Headless(Arc::clone(&tray));
         tokio::spawn(follow(client.clone(), handle, notifier.clone()));
@@ -489,7 +490,7 @@ mod tests {
             .await
             .unwrap();
         let (actions, _clicked) = mpsc::unbounded_channel();
-        let (notifier, _toasts) = Notifier::capturing();
+        let (notifier, _toasts) = Notifier::capturing(notify::NotificationSettings::default());
         let later = Arc::new(Mutex::new(PadTray::new(actions)));
         tokio::spawn(follow(
             client,

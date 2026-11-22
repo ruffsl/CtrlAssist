@@ -18,8 +18,11 @@ async fn a_profile_is_checked_kept_replaced_and_deleted() {
     let (_dir, socket) = socket();
     let daemon = start_daemon(&socket).await;
     let client = DaemonClient::connect(&socket).await.unwrap();
-    let mut watcher = StateWatcher::new(&client, StateWatcherConfig::default());
-    next_matching(&mut watcher, |e| *e == StateEvent::Hydrated).await;
+    let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());
+    next_matching(&mut watcher, |e| {
+        *e == StateEvent::Hydrated(ctrlassist::Service::Daemon)
+    })
+    .await;
     assert!(client.list_profiles().unwrap().is_empty());
     assert_eq!(client.profile("couch").unwrap(), None);
 
@@ -56,7 +59,10 @@ async fn a_profile_is_checked_kept_replaced_and_deleted() {
     next_matching(&mut watcher, |e| *e == StateEvent::DaemonDisappeared).await;
     assert!(client.list_profiles().unwrap().is_empty());
     let daemon = start_daemon(&socket).await;
-    next_matching(&mut watcher, |e| *e == StateEvent::Hydrated).await;
+    next_matching(&mut watcher, |e| {
+        *e == StateEvent::Hydrated(ctrlassist::Service::Daemon)
+    })
+    .await;
     let names: Vec<String> = client
         .list_profiles()
         .unwrap()
@@ -90,8 +96,11 @@ async fn a_reload_takes_up_profiles_written_by_hand() {
     let (_dir, socket) = socket();
     let daemon = start_daemon(&socket).await;
     let client = DaemonClient::connect(&socket).await.unwrap();
-    let mut watcher = StateWatcher::new(&client, StateWatcherConfig::default());
-    next_matching(&mut watcher, |e| *e == StateEvent::Hydrated).await;
+    let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());
+    next_matching(&mut watcher, |e| {
+        *e == StateEvent::Hydrated(ctrlassist::Service::Daemon)
+    })
+    .await;
     client.put_profile("couch", RIGHT).await.unwrap();
     client.put_profile("desk", RIGHT).await.unwrap();
     eventually("the profiles never arrived", async || {

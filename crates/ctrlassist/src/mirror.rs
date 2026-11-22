@@ -4,11 +4,12 @@
 
 use std::collections::BTreeMap;
 
+use ctrlassist_protocol::rpc::NotificationSettings;
 use ctrlassist_protocol::{keys, payload};
 use zenoh::sample::{Sample, SampleKind};
 
-use crate::StateEvent;
 use crate::lifetime::Mirror;
+use crate::{Service, StateEvent};
 
 /// What the daemon publishes.
 #[derive(Debug, Clone, Default)]
@@ -45,6 +46,8 @@ fn assign<T: serde::de::DeserializeOwned>(
 }
 
 impl Mirror for DaemonMirror {
+    const SERVICE: Service = Service::Daemon;
+
     fn keys() -> Vec<String> {
         vec![
             keys::daemon(),
@@ -115,6 +118,38 @@ impl Mirror for DaemonMirror {
             SampleKind::Delete => None,
         };
         Some(StateEvent::DaemonStateChanged)
+    }
+}
+
+/// What the tray's settings service publishes.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TrayMirror {
+    /// The notification switches, as last published. Absent until the
+    /// tray first publishes them, and while it's down.
+    pub settings: Option<NotificationSettings>,
+}
+
+impl Mirror for TrayMirror {
+    const SERVICE: Service = Service::Tray;
+
+    fn keys() -> Vec<String> {
+        vec![keys::tray_settings()]
+    }
+
+    fn clear(&mut self) -> Vec<StateEvent> {
+        self.settings
+            .take()
+            .map(|_| StateEvent::TrayNotificationSettingsChanged)
+            .into_iter()
+            .collect()
+    }
+
+    fn apply(&mut self, sample: &Sample) -> Option<StateEvent> {
+        self.settings = match sample.kind() {
+            SampleKind::Put => Some(serde_json::from_slice(&sample.payload().to_bytes()).ok()?),
+            SampleKind::Delete => None,
+        };
+        Some(StateEvent::TrayNotificationSettingsChanged)
     }
 }
 

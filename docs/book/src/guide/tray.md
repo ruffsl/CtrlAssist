@@ -23,11 +23,25 @@ The last line says how controllers are being hidden (`service` or `grab`) and wh
 
 CtrlAssist tells you when:
 
+- an arrangement **started** or **stopped**;
 - an arrangement is **held** because a controller disconnected, and when it is **running again**;
 - an arrangement **failed**;
 - the **daemon stopped**, which removes every virtual controller, or came back;
 - an arrangement started with controllers that are **only grabbed, not hidden**, or with one that **can't rumble**;
+- a controller that no arrangement uses **connected** or **disconnected**;
 - something you asked for from the menu **couldn't be done**, with the reason.
+
+Each kind can be turned off. The switches are kept in `tray.toml`, in `~/.config/ctrlassist` beside your profiles, and everything is on until you turn it off:
+
+```toml
+schema = 1
+setup_started = true    # an arrangement started or stopped
+setup_trouble = true    # held, failed, only grabbed, no rumble, the daemon stopped
+pad_connection = true   # a controller connected or disconnected
+refused = true          # something asked from the menu couldn't be done
+```
+
+The tray reads the file when it starts. After editing it by hand, restart the tray.
 
 ## Starting and stopping the tray
 

@@ -57,6 +57,7 @@ fn this_release() -> Result<ServiceInfo, WireError> {
     Ok(ServiceInfo {
         version: VERSION.to_string(),
         keys: Vec::new(),
+        config: String::new(),
     })
 }
 

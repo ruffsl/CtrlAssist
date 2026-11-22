@@ -25,10 +25,10 @@ pub(crate) async fn connect(socket: &Path) -> Result<(DaemonClient, StateWatcher
     // that call can't be missed.
     let mut config = StateWatcherConfig::default();
     config.fallback_poll_interval = Duration::ZERO;
-    let watcher = StateWatcher::new(&client, config);
+    let watcher = StateWatcher::new(&client, None, config);
     match client.check_release().await {
         Ok(()) => Ok((client, watcher)),
-        Err(Error::Unavailable) => bail!("no daemon is running on {}", socket.display()),
+        Err(Error::Unavailable { .. }) => bail!("no daemon is running on {}", socket.display()),
         Err(error) => Err(error.into()),
     }
 }

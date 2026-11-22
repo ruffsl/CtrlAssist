@@ -124,7 +124,7 @@ async fn a_snapshot_reads_a_live_daemon_and_its_going() {
         .unwrap();
     let socket = dir.path().join("zenoh.sock");
     let client = DaemonClient::connect(&socket).await.unwrap();
-    assert_eq!(Snapshot::read(&client), Snapshot::default());
+    assert_eq!(Snapshot::read(&client, None), Snapshot::default());
 
     let (input, reports) = InputThread::spawn().unwrap();
     let paths = Paths {
@@ -138,7 +138,7 @@ async fn a_snapshot_reads_a_live_daemon_and_its_going() {
     let daemon = Daemon::start(&paths, input, reports).await.unwrap();
     let mut snapshot = Snapshot::default();
     for _ in 0..500 {
-        snapshot = Snapshot::read(&client);
+        snapshot = Snapshot::read(&client, None);
         if snapshot.hydrated && snapshot.version.is_some() {
             break;
         }
@@ -155,6 +155,7 @@ async fn a_snapshot_reads_a_live_daemon_and_its_going() {
             config: socket.with_file_name("config").display().to_string(),
             // Granted or not is the machine's to say.
             realtime: snapshot.realtime,
+            tray_available: false,
             tray: None,
             // Whatever pads this machine has are its own.
             pads: snapshot.pads.clone(),
@@ -168,7 +169,7 @@ async fn a_snapshot_reads_a_live_daemon_and_its_going() {
 
     daemon.stop().await;
     for _ in 0..500 {
-        snapshot = Snapshot::read(&client);
+        snapshot = Snapshot::read(&client, None);
         if !snapshot.available {
             break;
         }

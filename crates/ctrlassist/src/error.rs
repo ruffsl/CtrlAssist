@@ -13,22 +13,28 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum Error {
-    /// The daemon refused the request. Nothing was applied; branch on
+    /// The service refused the request. Nothing was applied; branch on
     /// `code`.
     Rpc {
-        /// Why the daemon refused, for a caller to branch on.
+        /// Why the service refused, for a caller to branch on.
         code: ErrorCode,
-        /// The daemon's explanation, in English, for a person to read.
+        /// The service's explanation, in English, for a person to read.
         message: String,
     },
-    /// The daemon isn't running, or isn't reachable yet: nothing took the
-    /// call before the deadline, so a write wasn't applied. Retry once
-    /// the client's `is_available` turns true. A socket this process may
-    /// not open looks the same.
-    Unavailable,
-    /// No answer (timed out, or the daemon dropped the call). For a
+    /// The service isn't running, or isn't reachable yet: nothing took
+    /// the call before the deadline, so a write wasn't applied. Retry
+    /// once the client's `is_available` turns true. A socket this
+    /// process may not open looks the same.
+    Unavailable {
+        /// The service the call went to.
+        service: Service,
+    },
+    /// No answer (timed out, or the service dropped the call). For a
     /// write, the outcome is unknown.
-    Timeout,
+    Timeout {
+        /// The service the call went to.
+        service: Service,
+    },
     /// The local link failed: opening the session, a subscription, or a
     /// stream that ended early.
     Transport {
@@ -37,33 +43,67 @@ pub enum Error {
         /// The underlying failure, when there is one.
         source: Option<BoxError>,
     },
-    /// The daemon runs a release this client can't speak to (a different
-    /// `major.minor`). Restart the daemon or upgrade so the two match.
+    /// The service runs a release this client can't speak to (a
+    /// different `major.minor`). Restart the service or upgrade so the
+    /// two match.
     VersionMismatch {
+        /// The mismatched service.
+        service: Service,
         /// The protocol release this SDK speaks.
         ours: String,
-        /// The daemon's release.
+        /// The service's release.
         theirs: String,
     },
     /// A reply didn't decode as its rpc's response type.
     Protocol {
+        /// The service that sent the reply.
+        service: Service,
         /// The decode failure, naming the rpc.
         source: BoxError,
     },
+}
+
+/// Which service a call went to.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Service {
+    /// The daemon, which owns the pads, the profiles and the setups
+    /// ([`DaemonClient`]).
+    ///
+    /// [`DaemonClient`]: crate::DaemonClient
+    Daemon,
+    /// The tray's settings service, which owns its notification
+    /// switches ([`TrayClient`]).
+    ///
+    /// [`TrayClient`]: crate::TrayClient
+    Tray,
+}
+
+impl fmt::Display for Service {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Daemon => "daemon",
+            Self::Tray => "tray",
+        })
+    }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Rpc { code, message } => write!(f, "{message} ({code})"),
-            Self::Unavailable => f.write_str("the daemon is unavailable"),
-            Self::Timeout => f.write_str("the daemon didn't answer"),
+            Self::Unavailable { service } => write!(f, "the {service} is unavailable"),
+            Self::Timeout { service } => write!(f, "the {service} didn't answer"),
             Self::Transport { what, .. } => f.write_str(what),
-            Self::VersionMismatch { ours, theirs } => write!(
+            Self::VersionMismatch {
+                service,
+                ours,
+                theirs,
+            } => write!(
                 f,
-                "the daemon runs release {theirs}, which this client ({ours}) can't talk to"
+                "the {service} runs release {theirs}, which this client ({ours}) can't talk to"
             ),
-            Self::Protocol { .. } => f.write_str("malformed reply from the daemon"),
+            Self::Protocol { service, .. } => write!(f, "malformed reply from the {service}"),
         }
     }
 }
@@ -75,7 +115,7 @@ impl std::error::Error for Error {
                 source: Some(source),
                 ..
             }
-            | Self::Protocol { source } => Some(source.as_ref()),
+            | Self::Protocol { source, .. } => Some(source.as_ref()),
             _ => None,
         }
     }
@@ -85,7 +125,7 @@ impl std::error::Error for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
-    /// The daemon's refusal code, when the daemon refused.
+    /// The service's refusal code, when the service refused.
     #[must_use]
     pub fn rpc_code(&self) -> Option<ErrorCode> {
         match self {
@@ -102,18 +142,19 @@ impl Error {
         }
     }
 
-    /// Map a call's outcome to the SDK's error. A transport or decode
-    /// failure keeps the call's error (its key, and zenoh's or serde's
-    /// cause) as the source.
-    pub(crate) fn from_rpc(error: RpcError) -> Self {
+    /// Map a call's outcome to the SDK's error, naming the service. A
+    /// transport or decode failure keeps the call's error (its key, and
+    /// zenoh's or serde's cause) as the source.
+    pub(crate) fn from_rpc(service: Service, error: RpcError) -> Self {
         match error {
             RpcError::Service(refusal) => Self::Rpc {
                 code: refusal.code,
                 message: refusal.message,
             },
-            RpcError::Unavailable { .. } => Self::Unavailable,
-            RpcError::Timeout { .. } | RpcError::NoReply { .. } => Self::Timeout,
+            RpcError::Unavailable { .. } => Self::Unavailable { service },
+            RpcError::Timeout { .. } | RpcError::NoReply { .. } => Self::Timeout { service },
             error @ RpcError::Undecodable { .. } => Self::Protocol {
+                service,
                 source: Box::new(error),
             },
             // A transport failure, or one the protocol added later: keep
@@ -144,22 +185,30 @@ mod tests {
     #[test]
     fn call_outcomes_map_onto_what_a_caller_can_act_on() {
         let key = || "ctrlassist/rpc/daemon/info".to_string();
-        let refusal = Error::from_rpc(RpcError::Service(WireError::bad_request("no")));
+        let from_rpc = |error| Error::from_rpc(Service::Daemon, error);
+        let refusal = from_rpc(RpcError::Service(WireError::bad_request("no")));
         assert_eq!(refusal.rpc_code(), Some(ErrorCode::BadRequest));
         assert_eq!(refusal.to_string(), "no (bad-request)");
         assert!(std::error::Error::source(&refusal).is_none());
 
-        let dropped = Error::from_rpc(RpcError::NoReply { key: key() });
-        assert!(matches!(dropped, Error::Timeout));
+        let dropped = from_rpc(RpcError::NoReply { key: key() });
+        assert!(matches!(
+            dropped,
+            Error::Timeout {
+                service: Service::Daemon
+            }
+        ));
         assert_eq!(dropped.to_string(), "the daemon didn't answer");
-        let slow = Error::from_rpc(RpcError::Timeout { key: key() });
-        assert!(matches!(slow, Error::Timeout));
+        let slow = from_rpc(RpcError::Timeout { key: key() });
+        assert!(matches!(slow, Error::Timeout { .. }));
 
-        let absent = Error::from_rpc(RpcError::Unavailable { key: key() });
+        let absent = from_rpc(RpcError::Unavailable { key: key() });
         assert_eq!(absent.rpc_code(), None);
         assert_eq!(absent.to_string(), "the daemon is unavailable");
+        let no_tray = Error::from_rpc(Service::Tray, RpcError::Unavailable { key: key() });
+        assert_eq!(no_tray.to_string(), "the tray is unavailable");
 
-        let malformed = Error::from_rpc(RpcError::Undecodable {
+        let malformed = from_rpc(RpcError::Undecodable {
             key: key(),
             source: serde_json::from_str::<u8>("\"x\"").unwrap_err(),
         });
@@ -177,7 +226,7 @@ mod tests {
         assert!(chain.contains("daemon/info"), "{chain}");
         assert!(chain.contains("invalid type"), "{chain}");
 
-        let broken = Error::from_rpc(RpcError::Transport {
+        let broken = from_rpc(RpcError::Transport {
             key: key(),
             source: "the session closed".into(),
         });
@@ -187,6 +236,7 @@ mod tests {
         assert!(cause.to_string().contains("daemon/info"), "{cause}");
 
         let mismatch = Error::VersionMismatch {
+            service: Service::Daemon,
             ours: "0.5.0".into(),
             theirs: "9.0.0".into(),
         };

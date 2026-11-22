@@ -7,7 +7,9 @@
 //! nothing: the next one reads the same whole.
 
 use ctrlassist::form::Field;
-use ctrlassist::{DaemonClient, Hiding, Pad, Profile, Setup, StateWatcher, StateWatcherConfig};
+use ctrlassist::{
+    DaemonClient, Hiding, Pad, Profile, Setup, StateWatcher, StateWatcherConfig, TrayClient,
+};
 use ctrlassist_protocol::{VERSION, compatible};
 use slint::{ComponentHandle, SharedString};
 use tracing::{debug, warn};
@@ -31,7 +33,9 @@ pub struct Snapshot {
     pub config: String,
     /// Whether its input thread has real-time scheduling.
     pub realtime: bool,
-    /// The release of a tray connected to it, if one is.
+    /// A tray is there, serving its settings through the daemon.
+    pub tray_available: bool,
+    /// The tray's release, once it has said.
     pub tray: Option<String>,
     /// The pads it knows.
     pub pads: Vec<Pad>,
@@ -44,9 +48,10 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Reads the mirror.
+    /// Reads the mirrors: the daemon's, and the tray's when the window
+    /// follows one.
     #[must_use]
-    pub fn read(daemon: &DaemonClient) -> Self {
+    pub fn read(daemon: &DaemonClient, tray: Option<&TrayClient>) -> Self {
         let state = daemon.daemon_state().ok().flatten();
         Self {
             available: daemon.is_available(),
@@ -58,7 +63,10 @@ impl Snapshot {
                 .map(|state| state.config.clone())
                 .unwrap_or_default(),
             realtime: state.as_ref().is_some_and(|state| state.realtime),
-            tray: state.and_then(|state| state.tray),
+            tray_available: tray.is_some_and(TrayClient::is_available),
+            tray: tray
+                .and_then(TrayClient::service_info)
+                .map(|info| info.version),
             pads: daemon.list_pads().unwrap_or_default(),
             setups: daemon.list_setups().unwrap_or_default(),
             profiles: daemon.list_profiles().unwrap_or_default(),
@@ -83,11 +91,11 @@ impl Snapshot {
         }
     }
 
-    /// The tray's health, as the daemon reports it: absent with no
-    /// daemon to say.
+    /// The tray's health. A tray is seen through the daemon, so it is
+    /// absent with no daemon running.
     #[must_use]
     pub fn tray_health(&self) -> ServiceHealth {
-        health(self.available && self.tray.is_some(), self.tray.as_deref())
+        health(self.tray_available, self.tray.as_deref())
     }
 
     /// Puts the snapshot on the window.
@@ -155,17 +163,21 @@ pub fn health(available: bool, version: Option<&str>) -> ServiceHealth {
     }
 }
 
-/// Follows the daemon for as long as the window lives, showing each
-/// change.
-pub(crate) async fn follow(daemon: DaemonClient, app: slint::Weak<AppWindow>) {
-    let mut watcher = StateWatcher::new(&daemon, StateWatcherConfig::default());
+/// Follows the daemon, and the tray when there is a client for it, for
+/// as long as the window lives, showing each change.
+pub(crate) async fn follow(
+    daemon: DaemonClient,
+    tray: Option<TrayClient>,
+    app: slint::Weak<AppWindow>,
+) {
+    let mut watcher = StateWatcher::new(&daemon, tray.as_ref(), StateWatcherConfig::default());
     let mut shown = None;
     // A preset's fields, asked once of each daemon that comes.
     let mut fields: Vec<Field> = Vec::new();
     loop {
         // One read for a burst of events.
         while watcher.try_next().is_some() {}
-        let mut snapshot = Snapshot::read(&daemon);
+        let mut snapshot = Snapshot::read(&daemon, tray.as_ref());
         if !snapshot.available {
             fields.clear();
         } else if fields.is_empty() {

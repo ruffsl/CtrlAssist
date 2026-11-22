@@ -10,6 +10,11 @@ pub struct Args {
     /// directory.
     #[arg(long)]
     pub socket: Option<PathBuf>,
+
+    /// The tray's own file, which keeps its notification switches, in
+    /// place of `tray.toml` beside the daemon's files.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 }
 
 /// Runs the tray until it is told to stop, on a runtime of its own.
@@ -31,6 +36,9 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             )?;
             crate::run(crate::TrayOptions {
                 socket: args.socket.unwrap_or_else(ctrlassist::default_socket_path),
+                config: args
+                    .config
+                    .unwrap_or_else(crate::notify::default_config_path),
             })
             .await
         })

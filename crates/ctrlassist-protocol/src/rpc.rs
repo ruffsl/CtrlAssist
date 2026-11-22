@@ -127,7 +127,73 @@ pub struct Reloaded {
     pub updating: Vec<String>,
 }
 
-/// Reply to the daemon's `info` rpc: the handshake a client runs before
+/// The tray's notification switches, one for each kind of thing it says.
+/// All are on until one is turned off.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct NotificationSettings {
+    /// Say when a setup starts or stops.
+    pub setup_started: bool,
+    /// Say when something is wrong: a setup held for a missing pad, or
+    /// failed; a setup starting with pads that are only grabbed or can't
+    /// rumble; the daemon stopping, and coming back.
+    pub setup_trouble: bool,
+    /// Say when a pad connects or leaves.
+    pub pad_connection: bool,
+    /// Say when the daemon refuses something asked from the tray's menu.
+    pub refused: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            setup_started: true,
+            setup_trouble: true,
+            pad_connection: true,
+            refused: true,
+        }
+    }
+}
+
+impl NotificationSettings {
+    /// These switches with those `patch` sets changed.
+    #[must_use]
+    pub fn merged_with(self, patch: &NotificationSettingsPatch) -> Self {
+        Self {
+            setup_started: patch.setup_started.unwrap_or(self.setup_started),
+            setup_trouble: patch.setup_trouble.unwrap_or(self.setup_trouble),
+            pad_connection: patch.pad_connection.unwrap_or(self.pad_connection),
+            refused: patch.refused.unwrap_or(self.refused),
+        }
+    }
+}
+
+/// Body of the tray's `update`: only the switches being changed.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NotificationSettingsPatch {
+    /// See [`NotificationSettings::setup_started`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_started: Option<bool>,
+    /// See [`NotificationSettings::setup_trouble`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_trouble: Option<bool>,
+    /// See [`NotificationSettings::pad_connection`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pad_connection: Option<bool>,
+    /// See [`NotificationSettings::refused`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<bool>,
+}
+
+/// Reply to the tray's `reload`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReloadReport {
+    /// Whether the file said something other than what the tray held, so
+    /// the reload changed a switch.
+    pub changed: bool,
+}
+
+/// Reply to a service's `info` rpc: the handshake a client runs before
 /// anything else.
 ///
 /// This shape is frozen: a client of any release must still read it.
@@ -145,4 +211,9 @@ pub struct ServiceInfo {
     /// publishes none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<String>,
+    /// The file the service keeps its settings in, from one that has
+    /// one: the tray's. The daemon says where its files are in its own
+    /// state.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub config: String,
 }

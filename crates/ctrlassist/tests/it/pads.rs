@@ -54,7 +54,7 @@ async fn a_pad_is_listed_while_connected_and_remembered_until_forgotten() {
     );
 
     // It connects: listed, with what the kernel says of it.
-    let mut watcher = StateWatcher::new(&client, StateWatcherConfig::default());
+    let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());
     let fake = FakePad::new("SDK Listed Pad", VENDOR, PRODUCT).unwrap();
     let id = format!("{model}:SDK Listed Pad");
     let changed = StateEvent::PadChanged { pad: id.clone() };
@@ -96,7 +96,10 @@ async fn a_pad_is_listed_while_connected_and_remembered_until_forgotten() {
     // A daemon that starts later still knows it, from its first state on.
     daemon.stop().await;
     let daemon = start_daemon(&socket).await;
-    next_matching(&mut watcher, |e| *e == StateEvent::Hydrated).await;
+    next_matching(&mut watcher, |e| {
+        *e == StateEvent::Hydrated(ctrlassist::Service::Daemon)
+    })
+    .await;
     let remembered = of_model(&client, PRODUCT).unwrap();
     assert_eq!(remembered.id, id);
     assert!(!remembered.connected);
@@ -108,7 +111,10 @@ async fn a_pad_is_listed_while_connected_and_remembered_until_forgotten() {
     assert_eq!(of_model(&client, PRODUCT), None);
     daemon.stop().await;
     let daemon = start_daemon(&socket).await;
-    next_matching(&mut watcher, |e| *e == StateEvent::Hydrated).await;
+    next_matching(&mut watcher, |e| {
+        *e == StateEvent::Hydrated(ctrlassist::Service::Daemon)
+    })
+    .await;
     assert_eq!(of_model(&client, PRODUCT), None);
     daemon.stop().await;
 }
@@ -238,7 +244,7 @@ async fn the_identities_are_listed_with_whether_they_can_be_made() {
     assert_eq!(identities[2].name, "Microsoft Xbox Series S|X Controller");
 
     // Gone with the daemon, as everything it published is.
-    let mut watcher = StateWatcher::new(&client, StateWatcherConfig::default());
+    let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());
     daemon.stop().await;
     next_matching(&mut watcher, |e| *e == StateEvent::IdentitiesChanged).await;
     assert!(client.list_identities().unwrap().is_empty());

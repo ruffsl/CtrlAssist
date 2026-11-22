@@ -15,11 +15,12 @@ use std::sync::Mutex;
 use ctrlassist_protocol::{VERSION, rpc};
 use tokio::sync::broadcast;
 
-use crate::{Error, Result, StateEvent};
+use crate::{Error, Result, Service, StateEvent};
 
-/// What a client knows about the daemon's release.
-#[derive(Debug, Default)]
+/// What a client knows about its service's release.
+#[derive(Debug)]
 pub(crate) struct Handshake {
+    service: Service,
     /// Serializes checks, so calls wait for one in flight instead of each
     /// asking. Never held while `known` is locked.
     checking: tokio::sync::Mutex<()>,
@@ -43,7 +44,15 @@ struct Settled {
 }
 
 impl Handshake {
-    /// Check the daemon's release unless this lifetime already has an
+    pub(crate) fn new(service: Service) -> Self {
+        Self {
+            service,
+            checking: tokio::sync::Mutex::new(()),
+            known: Mutex::new(Known::default()),
+        }
+    }
+
+    /// Check the service's release unless this lifetime already has an
     /// answer, then pass a compatible one and fail a mismatch. Calls wait
     /// for a check in flight, so nothing is sent to a daemon whose
     /// release isn't known yet. Settling announces
@@ -152,9 +161,10 @@ impl Handshake {
     }
 
     fn events(&self, settled: &Settled) -> Vec<StateEvent> {
-        let mut events = vec![StateEvent::ReleaseChecked];
+        let mut events = vec![StateEvent::ReleaseChecked(self.service)];
         if !settled.compatible {
             events.push(StateEvent::VersionMismatch {
+                service: self.service,
                 ours: VERSION.to_owned(),
                 theirs: settled.info.version.clone(),
             });
@@ -164,6 +174,7 @@ impl Handshake {
 
     fn mismatch(&self, theirs: &str) -> Error {
         Error::VersionMismatch {
+            service: self.service,
             ours: VERSION.to_owned(),
             theirs: theirs.to_owned(),
         }

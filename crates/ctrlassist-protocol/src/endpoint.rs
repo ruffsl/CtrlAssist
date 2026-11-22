@@ -200,6 +200,32 @@ pub mod daemon {
     }
 }
 
+/// The tray's settings rpcs: `ctrlassist/rpc/tray/<verb>`. The tray
+/// serves them, not the daemon.
+pub mod tray {
+    use super::{keys, rpc};
+
+    family! {
+        /// A decoded tray rpc.
+        target: (),
+        key: |_target, verb| keys::tray_rpc(verb),
+        parse: keys::parse_tray_rpc,
+        wild: keys::tray_rpc_wild,
+        rpcs: {
+            /// The tray's notification switches.
+            Get = "get" (()) -> rpc::NotificationSettings, read;
+            /// Set some of the switches; replies with all of them.
+            Update = "update" (rpc::NotificationSettingsPatch) -> rpc::NotificationSettings, write;
+            /// Show a test notification, whatever the switches say.
+            Test = "test" (()) -> rpc::Ack, write;
+            /// The tray's release and its settings file.
+            Info = "info" (()) -> rpc::ServiceInfo, read;
+            /// Take up a hand edit of the tray's settings file.
+            Reload = "reload" (()) -> rpc::ReloadReport, write;
+        }
+    }
+}
+
 /// The profile rpcs: `ctrlassist/rpc/profile/<verb>`.
 pub mod profile {
     use super::{keys, rpc};

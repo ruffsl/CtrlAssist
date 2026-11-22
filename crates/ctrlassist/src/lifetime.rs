@@ -1,4 +1,4 @@
-//! Following the daemon's lifetime.
+//! Following one service's lifetime: the same way for every mirror.
 //!
 //! The daemon's lifetime is its liveliness token's presence. While the
 //! token is present, the mirror holds one subscription per key expression
@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ctrlassist_protocol::caller::{Caller, RpcError};
-use ctrlassist_protocol::endpoint::daemon;
+use ctrlassist_protocol::endpoint::{daemon, tray};
 use ctrlassist_protocol::keys;
 use tokio::sync::{Notify, broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -41,7 +41,7 @@ use zenoh::sample::{Sample, SampleKind};
 use zenoh_ext::{AdvancedSubscriber, AdvancedSubscriberBuilderExt, HistoryConfig, RecoveryConfig};
 
 use crate::handshake::Handshake;
-use crate::{EVENT_CAPACITY, Error, Result, ServiceInfo, StateEvent, on_liveliness};
+use crate::{EVENT_CAPACITY, Error, Result, Service, ServiceInfo, StateEvent, on_liveliness};
 
 /// The first wait before a failed subscription is retried, doubling up
 /// to [`SUBSCRIBE_RETRY_MAX`].
@@ -52,8 +52,11 @@ const SUBSCRIBE_RETRY_MAX: Duration = Duration::from_secs(5);
 /// it, the mirror counts as hydrated with whatever arrived.
 const HYDRATE_DEADLINE: Duration = Duration::from_secs(5);
 
-/// The daemon's mirrored state: what [`LifetimeMirror`] keeps current.
+/// One service's mirrored state: what [`LifetimeMirror`] keeps current.
 pub(crate) trait Mirror: Default + std::fmt::Debug + Send + 'static {
+    /// The service whose keys this mirrors.
+    const SERVICE: Service;
+
     /// The key expressions to subscribe.
     fn keys() -> Vec<String>;
 
@@ -157,20 +160,20 @@ impl Drop for Lifetime {
 }
 
 impl<M: Mirror> LifetimeMirror<M> {
-    /// Follow the daemon on `session`: its liveliness from history on,
+    /// Follow `M`'s service on `session`: its liveliness from history on,
     /// then a lifetime per token.
     pub(crate) async fn start(session: &Session, caller: &Arc<Caller>) -> Result<Self> {
         let liveliness = session
             .liveliness()
-            .declare_subscriber(keys::daemon_alive())
+            .declare_subscriber(alive_key(M::SERVICE))
             .history(true)
             .await
-            .map_err(|e| Error::transport("subscribe to the daemon's liveliness", e))?;
+            .map_err(|e| Error::transport("subscribe to the service's liveliness", e))?;
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let mut this = Self {
             tracked: Arc::new(Mutex::new(Tracked::default())),
             events,
-            handshake: Arc::new(Handshake::default()),
+            handshake: Arc::new(Handshake::new(M::SERVICE)),
             arrived: Arc::new(Notify::new()),
             owner: None,
         };
@@ -244,11 +247,12 @@ impl<M: Mirror> LifetimeMirror<M> {
             }
             on_liveliness(
                 false,
-                StateEvent::DaemonDisappeared,
+                disappeared(M::SERVICE),
                 &self.handshake,
                 &self.events,
                 &caller,
-                service_info,
+                M::SERVICE,
+                |caller| service_info(caller, M::SERVICE),
             );
         }
     }
@@ -276,11 +280,12 @@ impl<M: Mirror> LifetimeMirror<M> {
                 this.lock().alive = true;
                 on_liveliness(
                     true,
-                    StateEvent::DaemonAppeared,
+                    appeared(M::SERVICE),
                     &this.handshake,
                     &this.events,
                     &caller,
-                    service_info,
+                    M::SERVICE,
+                    |caller| service_info(caller, M::SERVICE),
                 );
                 this.hydrate(events, deadline).await;
             }
@@ -334,7 +339,7 @@ impl<M: Mirror> LifetimeMirror<M> {
             }
         }
         self.lock().hydrated = true;
-        let _ = self.events.send(StateEvent::Hydrated);
+        let _ = self.events.send(StateEvent::Hydrated(M::SERVICE));
     }
 
     /// Subscribes to every key `M` mirrors, from history on and with
@@ -377,7 +382,7 @@ impl<M: Mirror> LifetimeMirror<M> {
             let Some(error) = failed else {
                 return pumps;
             };
-            warn!(%error, ?backoff, "couldn't subscribe to the daemon's keys; retrying");
+            warn!(service = %M::SERVICE, %error, ?backoff, "couldn't subscribe to the service's keys; retrying");
             // Each takes its subscription with it.
             for pump in pumps {
                 pump.abort();
@@ -409,6 +414,33 @@ impl<M: Mirror> LifetimeMirror<M> {
     }
 }
 
-async fn service_info(caller: Arc<Caller>) -> std::result::Result<ServiceInfo, RpcError> {
-    caller.call::<daemon::Info>(&(), &()).await
+fn alive_key(service: Service) -> String {
+    match service {
+        Service::Daemon => keys::daemon_alive(),
+        Service::Tray => keys::tray_alive(),
+    }
+}
+
+fn appeared(service: Service) -> StateEvent {
+    match service {
+        Service::Daemon => StateEvent::DaemonAppeared,
+        Service::Tray => StateEvent::TrayAppeared,
+    }
+}
+
+fn disappeared(service: Service) -> StateEvent {
+    match service {
+        Service::Daemon => StateEvent::DaemonDisappeared,
+        Service::Tray => StateEvent::TrayDisappeared,
+    }
+}
+
+async fn service_info(
+    caller: Arc<Caller>,
+    service: Service,
+) -> std::result::Result<ServiceInfo, RpcError> {
+    match service {
+        Service::Daemon => caller.call::<daemon::Info>(&(), &()).await,
+        Service::Tray => caller.call::<tray::Info>(&(), &()).await,
+    }
 }

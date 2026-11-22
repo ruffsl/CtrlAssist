@@ -307,3 +307,4 @@ The system tray: what is running, start and stop, quick start, and notifications
 ###### **Options:**
 
 * `--socket <SOCKET>` — The daemon's socket, in place of the one in the user's runtime directory
+* `--config <CONFIG>` — The tray's own file, which keeps its notification switches, in place of `tray.toml` beside the daemon's files

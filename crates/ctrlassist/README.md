@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The client mirrors the daemon's published state in the background;
     // wait for that state to arrive (`StateEvent::Hydrated`) before
     // reading it, so an absent value means absent.
-    let mut events = StateWatcher::new(&daemon, StateWatcherConfig::default());
+    let mut events = StateWatcher::new(&daemon, None, StateWatcherConfig::default());
     while !daemon.is_hydrated() {
         events.next().await;
     }
@@ -30,7 +30,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 - **Connecting.** `DaemonClient::connect` returns once its local session is open. It neither waits for nor requires the daemon: the link dials in the background for as long as the client lives, availability follows the daemon's liveliness (`is_available`, and the `DaemonAppeared` and `DaemonDisappeared` events), and `is_hydrated` (the `Hydrated` event) says when the daemon's published state has arrived, so an empty read means empty rather than not yet known.
 - **Mirror reads** send nothing. The client keeps a mirror of the state the daemon publishes, so a read answers at once from the last published state. The mirror empties while the daemon is down, with an event for what it drops, and fills again from the daemon's caches when it returns, so nothing it shows outlives the daemon.
-- **Rpcs** are round trips. Any rpc can fail with `Error::Unavailable`, `Error::Timeout`, `Error::VersionMismatch`, `Error::Transport` or `Error::Protocol`. A refusal is `Error::Rpc`, carrying the daemon's `ErrorCode`.
+- **Rpcs** are round trips. Any rpc can fail with `Error::Unavailable`, `Error::Timeout`, `Error::VersionMismatch`, `Error::Transport` or `Error::Protocol`, each naming the service the call went to. A refusal is `Error::Rpc`, carrying the service's `ErrorCode`.
+- **The tray is a second service.** It serves its notification switches through the daemon, and `TrayClient` is to it what `DaemonClient` is to the daemon: availability, a mirror of the switches, and rpcs to set them. `TrayClient::beside` shares a daemon client's session, and a `StateWatcher` given both merges their events. A tray is only ever seen while a daemon runs.
 
 ## Requirements
 

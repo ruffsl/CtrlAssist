@@ -47,6 +47,7 @@ pub(crate) async fn answer_info(
                 let info = ctrlassist::ServiceInfo {
                     version: release.clone(),
                     keys: listed.lock().unwrap().iter().cloned().collect(),
+                    config: String::new(),
                 };
                 responder.ok(&info).await;
             }

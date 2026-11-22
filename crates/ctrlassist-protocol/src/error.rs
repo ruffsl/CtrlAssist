@@ -62,6 +62,9 @@ error_codes! {
     SetupFailed = "setup-failed",
     /// A pad the request needs is in use by a setup.
     PadInUse = "pad-in-use",
+    /// A settings file is missing or can't be read as settings; the
+    /// message says why.
+    SettingsUnreadable = "settings-unreadable",
     /// The daemon stopped before it could answer.
     DaemonShuttingDown = "daemon-shutting-down",
     /// The daemon failed on its side; the request itself may be fine.

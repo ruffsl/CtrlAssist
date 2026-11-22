@@ -242,7 +242,6 @@ impl Daemon {
             realtime,
             hiding: mechanism,
             config: paths.config.display().to_string(),
-            tray: None,
         };
         // Whether this process may make a virtual pad at all: every
         // identity needs uinput, for the pad itself or to read it back.
