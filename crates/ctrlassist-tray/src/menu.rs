@@ -99,6 +99,8 @@ pub mod icon {
     pub const HIDE: Icon = &["view-visible"];
     /// What a virtual pad presents itself as.
     pub const IDENTITY: Icon = &["edit-copy"];
+    /// Whether the daemon starts a profile itself.
+    pub const MANAGED: Icon = &["system-run", "media-playlist-repeat"];
     /// Forget a pad.
     pub const FORGET: Icon = &["edit-delete", "list-remove"];
     /// The daemon's status.
@@ -134,15 +136,7 @@ pub enum Entry {
         /// What activating it asks for.
         command: Option<Command>,
     },
-    /// A row that is on or off.
-    Check {
-        /// What it says.
-        label: String,
-        /// Whether it is on.
-        checked: bool,
-        /// What activating it asks for.
-        command: Command,
-    },
+
     /// A group of which one is picked.
     Radio {
         /// The options.
@@ -421,6 +415,31 @@ fn number_entry(name: &str, values: &Values, field: &Field, min: u32, max: u32) 
     )
 }
 
+/// A switch: on or off, with which it is. A submenu like the other
+/// fields, where a check mark of its own sat in another column than
+/// their icons, and its row says which it is so that it needn't be
+/// opened to tell.
+fn switch_entry(name: &str, values: &Values, field: &Field) -> Entry {
+    let on = values.get(&field.key).unwrap_or(&field.default) == "true";
+    let choice = |label: &str, value: &str| Choice {
+        label: label.to_string(),
+        enabled: true,
+        command: Command::set(name, &field.key, value),
+    };
+    let icon = match field.key.as_str() {
+        "managed" => icon::MANAGED,
+        _ => icon::NONE,
+    };
+    sub(
+        icon,
+        format!("{}: {}", field.label, if on { "On" } else { "Off" }),
+        vec![Entry::Radio {
+            choices: vec![choice("On", "true"), choice("Off", "false")],
+            selected: Some(usize::from(!on)),
+        }],
+    )
+}
+
 /// The fields of a profile in the preset form, as the window's detail
 /// has them: each a submenu by its kind.
 fn field_entries(view: &View, name: &str, values: &Values) -> Vec<Entry> {
@@ -445,14 +464,7 @@ fn field_entries(view: &View, name: &str, values: &Values) -> Vec<Entry> {
             Kind::Pad => Some(pad_entry(view, name, values, field)),
             Kind::Choice { choices } => Some(choice_entry(view, name, values, field, choices)),
             Kind::Number { min, max } => Some(number_entry(name, values, field, *min, *max)),
-            Kind::Switch => {
-                let checked = values.get(&field.key).unwrap_or(&field.default) == "true";
-                Some(Entry::Check {
-                    label: field.label.clone(),
-                    checked,
-                    command: Command::set(name, &field.key, &(!checked).to_string()),
-                })
-            }
+            Kind::Switch => Some(switch_entry(name, values, field)),
             // A kind of field from a later release: left to the window.
             _ => None,
         })
@@ -657,7 +669,7 @@ pub fn mismatch_text(theirs: &str) -> String {
     )
 }
 
-/// The menu as an indented outline, one entry a line: `[x]` and `( )`
+/// The menu as an indented outline, one entry a line: `(o)` and `( )`
 /// for marks, a trailing `>` on a submenu, `-` before a row that can't be
 /// activated. What the tests read.
 #[must_use]
@@ -671,12 +683,7 @@ pub fn outline(entries: &[Entry]) -> String {
                     let dead = if command.is_none() { "- " } else { "" };
                     out.push_str(&format!("{pad}{dead}{label}\n"));
                 }
-                Entry::Check { label, checked, .. } => {
-                    out.push_str(&format!(
-                        "{pad}[{}] {label}\n",
-                        if *checked { "x" } else { " " }
-                    ));
-                }
+
                 Entry::Radio { choices, selected } => {
                     for (index, choice) in choices.iter().enumerate() {
                         let mark = if *selected == Some(index) { "o" } else { " " };
@@ -772,7 +779,9 @@ default ✓ (Not set up) >
     (o) Hidden
     ( ) Grabbed
     ( ) Visible
-  [ ] Managed
+  Managed: Off >
+    ( ) On
+    (o) Off
 ";
         assert_eq!(of(&menu, "default ✓"), expected, "\n{menu}");
         assert!(menu.starts_with("default ✓ (Not set up) >\n"), "{menu}");

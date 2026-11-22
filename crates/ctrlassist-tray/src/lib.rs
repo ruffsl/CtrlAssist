@@ -563,7 +563,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         };
         assert!(menu.contains("Rumble goes to: Primary only >"), "{menu}");
-        assert!(menu.contains("[x] Managed"), "{menu}");
+        assert!(menu.contains("Managed: On >"), "{menu}");
     }
 
     /// A daemon that knows hundreds of pads is followed like any other:

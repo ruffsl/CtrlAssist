@@ -189,9 +189,6 @@ fn couch_mode_is_set_from_the_pane() {
     for id in ["settings-couch-mode", "settings-couch-scale"] {
         assert!(find_by_accessible_id(&app, id).is_some(), "{id}");
     }
-    let kept = find_by_accessible_id(&app, "settings-couch-path").unwrap();
-    assert_eq!(
-        kept.accessible_label().unwrap_or_default(),
-        "Kept in /somewhere/gui.toml"
-    );
+    // Where the file is kept is About's to say, not this pane's.
+    assert!(find_by_accessible_id(&app, "settings-couch-path").is_none());
 }

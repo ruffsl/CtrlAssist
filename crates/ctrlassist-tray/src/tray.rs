@@ -5,7 +5,7 @@
 use ctrlassist::Phase;
 use ctrlassist::form;
 use ctrlassist_icons::Variant;
-use ksni::menu::{CheckmarkItem, MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
+use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{ToolTip, Tray};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -343,17 +343,7 @@ fn item(entry: Entry) -> MenuItem<PadTray> {
             ..Default::default()
         }
         .into(),
-        Entry::Check {
-            label: text,
-            checked,
-            command,
-        } => CheckmarkItem {
-            label: label(&text),
-            checked,
-            activate: Box::new(move |tray: &mut PadTray| tray.activate(command.clone())),
-            ..Default::default()
-        }
-        .into(),
+
         Entry::Radio { choices, selected } => {
             let commands: Vec<Command> = choices
                 .iter()
@@ -774,7 +764,7 @@ mod toolkit_tests {
         for item in items {
             match item {
                 MenuItem::Standard(item) if item.enabled => (item.activate)(tray),
-                MenuItem::Checkmark(item) => (item.activate)(tray),
+
                 MenuItem::RadioGroup(group) => {
                     for index in 0..=group.options.len() {
                         (group.select)(tray, index);

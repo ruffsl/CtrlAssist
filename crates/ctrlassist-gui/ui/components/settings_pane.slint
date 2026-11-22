@@ -31,15 +31,6 @@ component NotificationRow inherits SettingRow {
     }
 }
 
-// Where a group's settings are kept, under it.
-component KeptIn inherits Text {
-    in property <string> path;
-    visible: root.path != "";
-    text: @tr("Kept in {}", root.path);
-    color: Theme.text-dim;
-    font-size: Design.font-meta;
-    wrap: word-wrap;
-}
 
 export component SettingsPane inherits Rectangle {
     background: Theme.surface-alt;
@@ -191,11 +182,6 @@ export component SettingsPane inherits Rectangle {
                     accessible-id: "settings-couch-scale";
                     committed(v) => { Couch.scale-changed(v); }
                 }
-            }
-
-            KeptIn {
-                accessible-id: "settings-couch-path";
-                path: Couch.config-path;
             }
         }
     }
