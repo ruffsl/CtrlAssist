@@ -12,6 +12,7 @@ use tracing::info;
 use crate::menu::{self, Command, Entry};
 use crate::quick::{self, Quick};
 use crate::state::View;
+use crate::tip;
 
 /// What a click asks of the daemon, or of the tray itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +74,9 @@ pub struct PadTray {
     /// Whether the choices have been read from a kept `quick` profile, or
     /// touched, so that they aren't overwritten by a later look.
     pub quick_settled: bool,
+    /// The profile last started, stopped or scrolled to: what a middle
+    /// click on the icon acts on, while it can be.
+    pub target: Option<String>,
     actions: mpsc::UnboundedSender<Action>,
 }
 
@@ -84,8 +88,36 @@ impl PadTray {
             view: View::default(),
             quick: Quick::default(),
             quick_settled: false,
+            target: None,
             actions,
         }
+    }
+
+    /// Takes a new view. A setup that came or went since the last is the
+    /// profile last used, whoever started or stopped it.
+    pub fn see(&mut self, view: View) {
+        if self.view.hydrated && view.hydrated {
+            let changed = view
+                .setups
+                .iter()
+                .find(|setup| self.view.setup(&setup.name).is_none())
+                .or_else(|| {
+                    self.view
+                        .setups
+                        .iter()
+                        .find(|setup| view.setup(&setup.name).is_none())
+                });
+            if let Some(setup) = changed {
+                self.target = Some(setup.name.clone());
+            }
+        }
+        self.view = view;
+    }
+
+    /// The profile a middle click acts on now.
+    #[must_use]
+    pub fn aimed(&self) -> Option<&str> {
+        tip::target(&self.view, self.target.as_deref())
     }
 
     /// Does what a menu entry asks: a quick-start choice changes here,
@@ -276,6 +308,42 @@ impl Tray for PadTray {
         let _ = self.actions.send(Action::Settings);
     }
 
+    /// A middle click starts or stops the marked profile.
+    fn secondary_activate(&mut self, _x: i32, _y: i32) {
+        let Some(name) = self.aimed().map(str::to_string) else {
+            return;
+        };
+        let command = if self.view.setup(&name).is_some() {
+            Command::Stop(name)
+        } else {
+            Command::Start(name)
+        };
+        self.activate(command);
+    }
+
+    /// The wheel moves the mark over the profiles a middle click could
+    /// act on, around from the last to the first.
+    fn scroll(&mut self, delta: i32, orientation: ksni::Orientation) {
+        if orientation != ksni::Orientation::Vertical || delta == 0 {
+            return;
+        }
+        let candidates = tip::candidates(&self.view);
+        if candidates.is_empty() {
+            return;
+        }
+        let count = candidates.len();
+        let at = self
+            .aimed()
+            .and_then(|aimed| candidates.iter().position(|name| *name == aimed));
+        let next = match (at, delta > 0) {
+            (Some(at), true) => (at + 1) % count,
+            (Some(at), false) => (at + count - 1) % count,
+            (None, true) => 0,
+            (None, false) => count - 1,
+        };
+        self.target = Some(candidates[next].to_string());
+    }
+
     fn category(&self) -> ksni::Category {
         ksni::Category::Hardware
     }
@@ -309,7 +377,7 @@ impl Tray for PadTray {
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
             title: "CtrlAssist".into(),
-            description: crate::tip::description(&self.view),
+            description: tip::description(&self.view, self.aimed()),
             icon_name: themed(menu::icon::PAD, Variant::Color),
             ..Default::default()
         }
@@ -333,6 +401,46 @@ mod tests {
         let mut tray = PadTray::new(actions);
         tray.view = view(phase, Hiding::Service);
         (tray, clicked)
+    }
+
+    /// The wheel moves the mark over what could be started or stopped,
+    /// a middle click does that to the marked one, and a profile started
+    /// or stopped from anywhere becomes the marked one.
+    #[test]
+    fn the_wheel_picks_the_profile_a_middle_click_starts_or_stops() {
+        const ONE: &str = "mode = \"unicast\"\npad = \"model:2dc8:6003\"\n";
+        let (mut tray, mut clicked) = tray(Some(Phase::Running));
+        tray.view.profiles[1].toml = ONE.to_string();
+        (tray.view.pads[1].vendor, tray.view.pads[1].product) = (0x2dc8, 0x6003);
+        // What runs is aimed at, and a middle click stops it.
+        assert_eq!(tray.aimed(), Some("couch"));
+        tray.secondary_activate(0, 0);
+        assert_eq!(clicked.try_recv().unwrap(), Action::Stop("couch".into()));
+        // The wheel goes on to the one that could start, and around.
+        tray.scroll(120, ksni::Orientation::Vertical);
+        assert_eq!(tray.aimed(), Some("desk"));
+        assert!(tray.tool_tip().description.ends_with("► desk: Ready"));
+        tray.secondary_activate(0, 0);
+        assert_eq!(clicked.try_recv().unwrap(), Action::Start("desk".into()));
+        tray.scroll(120, ksni::Orientation::Vertical);
+        assert_eq!(tray.aimed(), Some("couch"));
+        tray.scroll(-120, ksni::Orientation::Vertical);
+        assert_eq!(tray.aimed(), Some("desk"));
+        tray.scroll(120, ksni::Orientation::Horizontal);
+        assert_eq!(tray.aimed(), Some("desk"));
+
+        // `couch` stopped, from the menu or anywhere: it is the last
+        // used. With nothing to act on, a click does nothing.
+        let mut stopped = view(None, Hiding::Service);
+        stopped.profiles[1].toml = ONE.to_string();
+        (stopped.pads[1].vendor, stopped.pads[1].product) = (0x2dc8, 0x6003);
+        tray.see(stopped);
+        assert_eq!(tray.target.as_deref(), Some("couch"));
+        tray.view.profiles.clear();
+        assert_eq!(tray.aimed(), None);
+        tray.secondary_activate(0, 0);
+        tray.scroll(120, ksni::Orientation::Vertical);
+        assert!(clicked.try_recv().is_err());
     }
 
     #[test]
@@ -359,7 +467,7 @@ mod tests {
         assert_eq!(said(Some(Phase::Failed)).1, ("dialog-error", false));
         assert_eq!(
             said(Some(Phase::Failed)).2,
-            "couch: Failed\n  a virtual pad refused a write"
+            "► couch: Failed\n    a virtual pad refused a write"
         );
 
         let (mut down, _clicked) = tray(Some(Phase::Running));

@@ -107,7 +107,7 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
                         tray.quick = kept;
                     }
                 }
-                tray.view = view;
+                tray.see(view);
                 news
             })
             .await
