@@ -1,0 +1,48 @@
+// The Pads pane's model and callbacks. Rust pushes `rows` from the
+// daemon's mirror on every change and binds the callbacks; the pane's
+// components read and call them directly.
+
+// One known pad, as the pane shows it. Everything is text made in
+// Rust, so the pane only lays it out.
+export struct PadRow {
+    // What the daemon knows the pad by across reconnects, as a profile
+    // names it; the rpcs take it.
+    id: string,
+    // `id` made fit for an `accessible-id`.
+    key: string,
+    // The pad's own name.
+    name: string,
+    // A few characters of what tells this pad from another of its
+    // model; empty when nothing does.
+    tag: string,
+    // Vendor and product, `054c:0ce6`.
+    model: string,
+    // "USB", "Bluetooth", or empty while it isn't connected or the bus
+    // is some other.
+    connection: string,
+    connected: bool,
+    // "Yes", "No", or empty when the daemon couldn't tell.
+    rumble: string,
+    // The setup that has it, and its role there; empty for none.
+    setup: string,
+    role: string,
+    // While a setup has it: hidden from games by the hiding service,
+    // or only grabbed.
+    hidden: bool,
+    // Its address, when what it is known by is one; empty otherwise.
+    address: string,
+}
+
+export global Pads {
+    in property <[PadRow]> rows;
+    // How many of `rows` are connected: Slint can't count a model in a
+    // binding.
+    in property <int> connected-count;
+    in-out property <int> selected-index: -1;
+    // Buzz the pad, so a person can tell which it is.
+    callback identify(string);
+    // Stop remembering a pad that isn't connected.
+    callback forget(string);
+    // Show the setup in the Setups pane.
+    callback open-setup(string);
+}

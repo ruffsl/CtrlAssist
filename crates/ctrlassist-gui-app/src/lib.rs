@@ -12,6 +12,7 @@ mod icon_theme;
 mod icons;
 pub mod keys;
 pub mod nav;
+pub mod pads;
 pub mod state;
 mod toast;
 
@@ -112,6 +113,7 @@ pub fn run() -> Result<()> {
         .context("couldn't open a session for the daemon's socket")?;
     state::wire_reload(&app, &daemon);
     about::wire(&app, &daemon);
+    pads::wire(&app, &daemon);
     rt.spawn(state::follow(daemon, app.as_weak()));
 
     keys::bind_key_router(&app);

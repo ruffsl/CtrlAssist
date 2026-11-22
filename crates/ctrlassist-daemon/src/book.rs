@@ -35,6 +35,8 @@ struct Row {
     /// When it last connected, as a count of connections: lower is
     /// earlier.
     connected: u64,
+    /// The bus it last connected on, as the kernel numbers them.
+    bus: u16,
     /// The setup that uses it.
     setup: Option<String>,
     /// Whether the hiding service has it hidden.
@@ -51,6 +53,7 @@ impl Row {
             known,
             nodes: Vec::new(),
             connected: 0,
+            bus: 0,
             setup: None,
             hidden: false,
             restoring: false,
@@ -143,6 +146,7 @@ impl Book {
                 row.connected = self.connections;
             }
             row.nodes.push(found.node.clone());
+            row.bus = found.identifiers.bus;
         }
         if remembered || connected {
             changed.push(Changed { id, remembered });
@@ -307,6 +311,7 @@ impl Book {
             hidden: row.hidden,
             setup: row.setup.clone(),
             rumble: row.known.rumble,
+            bus: (!row.nodes.is_empty()).then_some(row.bus),
         })
     }
 }

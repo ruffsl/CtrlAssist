@@ -73,6 +73,10 @@ pub struct Pad {
     /// Whether it can rumble; absent when the daemon couldn't tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rumble: Option<bool>,
+    /// The bus it is connected on now, as the kernel numbers them: 3 is
+    /// USB, 5 Bluetooth. Absent while it isn't connected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bus: Option<u16>,
 }
 
 /// A profile the daemon keeps. Its key is

@@ -90,3 +90,21 @@ pub(crate) fn press_with_alt(app: &AppWindow, key: Key) {
     window.dispatch_event(WindowEvent::KeyReleased { text: alt });
     settle();
 }
+
+/// Every element reporting the `accessible-id`: a pane that makes one
+/// detail per row has a control of that id in each.
+pub(crate) fn find_all_by_accessible_id(app: &AppWindow, id: &str) -> Vec<ElementHandle> {
+    query_by_id(app, id).find_all()
+}
+
+/// Activates the one control of that id that is showing.
+pub(crate) fn activate_shown(app: &AppWindow, id: &str) {
+    find_all_by_accessible_id(app, id)
+        .into_iter()
+        .find(|control| {
+            control.computed_opacity() > 0.0 && control.accessible_enabled().unwrap_or(false)
+        })
+        .expect("a control of that id is showing and enabled")
+        .invoke_accessible_default_action();
+    settle();
+}

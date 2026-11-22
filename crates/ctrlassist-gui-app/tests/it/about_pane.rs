@@ -123,6 +123,7 @@ fn the_pane_shows_the_rows_the_window_holds() {
         config: "/somewhere".to_string(),
         realtime: true,
         tray: Some(VERSION.to_string()),
+        ..Snapshot::default()
     }
     .show(&app);
     let rows: Vec<AboutComponentRow> = app.get_about_components().iter().collect();

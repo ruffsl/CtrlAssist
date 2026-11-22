@@ -153,6 +153,7 @@ mod tests {
             hidden: false,
             setup: None,
             rumble: None,
+            bus: None,
         }
     }
 

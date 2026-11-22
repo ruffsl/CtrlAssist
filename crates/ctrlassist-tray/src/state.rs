@@ -205,6 +205,7 @@ pub(crate) mod tests {
             hidden: false,
             setup: setup.map(str::to_string),
             rumble: Some(name != "8BitDo Pro 2"),
+            bus: None,
         }
     }
 
