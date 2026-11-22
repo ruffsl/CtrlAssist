@@ -2013,7 +2013,7 @@ mod tests {
             .tempdir_in("/tmp")
             .unwrap();
         let socket = dir.path().join("zenoh.sock");
-        let session = zenoh::open(bootstrap::peer_config(&socket).unwrap())
+        let session = zenoh::open(bootstrap::router_config(&socket).unwrap())
             .await
             .unwrap();
         let requests = session

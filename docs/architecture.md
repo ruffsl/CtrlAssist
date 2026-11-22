@@ -316,7 +316,7 @@ The tray is a client like the CLI: `ctrlassist service tray` holds an SDK client
 
 ## Control plane
 
-zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the daemon listening as a peer, as TisVlay's does: its clients only ever talk to it, never to each other, so nothing needs routing between them. The patterns are TisVlay's: cached publishers for state, rpcs declared once in a table, a liveliness token for presence, typed wire errors, and a `major.minor` check between client and daemon. Its [zenoh laws](https://github.com/TisVlay/TisVlay/blob/main/docs/architecture.md) apply; the ones this design leans on:
+zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the daemon listening as a zenoh router, as the hub TisVlay's tray serves on does. Its clients connect as peers that only ever dial out, which lets them start before the daemon and wait for it, and what such a client declares is seen by the daemon and by no other client. A client that serves something to another client does it on a second link in client mode, which a router relays. The patterns are TisVlay's: cached publishers for state, rpcs declared once in a table, a liveliness token for presence, typed wire errors, and a `major.minor` check between client and daemon. Its [zenoh laws](https://github.com/TisVlay/TisVlay/blob/main/docs/architecture.md) apply; the ones this design leans on:
 
 - clients gate an rpc on the querier matching, not on liveliness, because a request matching no handler returns no reply at once;
 - clients keep trying to connect, so the tray may start before the daemon;

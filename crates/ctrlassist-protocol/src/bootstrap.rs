@@ -60,12 +60,14 @@ pub fn default_socket_path() -> PathBuf {
         .join("zenoh.sock")
 }
 
-/// Peer-mode config listening on `socket` — the daemon side.
+/// Router-mode config listening on `socket` — the daemon side. A
+/// router relays what a client on a client-mode link serves to the
+/// daemon's other clients, which is how the window reaches the tray.
 /// Timestamping is on: the advanced-publisher caches order and replay
 /// samples by timestamp.
-pub fn peer_config(socket: &Path) -> Result<Config> {
+pub fn router_config(socket: &Path) -> Result<Config> {
     let mut config = base_config()?;
-    insert(&mut config, "mode", "\"peer\"")?;
+    insert(&mut config, "mode", "\"router\"")?;
     insert(&mut config, "listen/endpoints", &endpoint_list(&[socket])?)?;
     insert(&mut config, "timestamping/enabled", "true")?;
     Ok(config)
@@ -153,7 +155,7 @@ mod tests {
     #[test]
     fn configs_build() {
         let socket = Path::new("/tmp/ctrlassist-test.sock");
-        peer_config(socket).unwrap();
+        router_config(socket).unwrap();
         client_config(socket).unwrap();
         client_config_resilient(socket).unwrap();
     }

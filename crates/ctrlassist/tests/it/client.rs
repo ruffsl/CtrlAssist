@@ -262,7 +262,7 @@ async fn a_watcher_built_late_still_hears_of_a_known_mismatch() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failed_release_check_is_retried() {
     let (_dir, socket) = socket();
-    let session = zenoh::open(ctrlassist_protocol::bootstrap::peer_config(&socket).unwrap())
+    let session = zenoh::open(ctrlassist_protocol::bootstrap::router_config(&socket).unwrap())
         .await
         .unwrap();
     let _token = session

@@ -27,7 +27,7 @@ async fn serve(
     socket: &std::path::Path,
     answer: fn() -> Result<ServiceInfo, WireError>,
 ) -> Session {
-    let server = zenoh::open(bootstrap::peer_config(socket).unwrap())
+    let server = zenoh::open(bootstrap::router_config(socket).unwrap())
         .await
         .unwrap();
     let queryable = server
@@ -165,7 +165,7 @@ where
     F: Fn(zenoh::query::Query) -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send,
 {
-    let server = zenoh::open(bootstrap::peer_config(socket).unwrap())
+    let server = zenoh::open(bootstrap::router_config(socket).unwrap())
         .await
         .unwrap();
     let queryable = server
@@ -272,7 +272,7 @@ fn the_daemon_s_socket_is_in_the_user_s_runtime_directory() {
     // A path zenoh can't name is a typed error that says so.
     use std::os::unix::ffi::OsStrExt;
     let odd = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xff.sock"));
-    let error = bootstrap::peer_config(odd).unwrap_err();
+    let error = bootstrap::router_config(odd).unwrap_err();
     assert!(error.to_string().contains("isn't valid UTF-8"), "{error}");
     assert!(std::error::Error::source(&error).is_none());
 }

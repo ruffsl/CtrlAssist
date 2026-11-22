@@ -177,7 +177,7 @@ impl Daemon {
                 .create(directory)
                 .with_context(|| format!("creating {}", directory.display()))?;
         }
-        let session = zenoh::open(bootstrap::peer_config(socket)?)
+        let session = zenoh::open(bootstrap::router_config(socket)?)
             .await
             .map_err(|error| {
                 anyhow!("opening the control plane on {}: {error}", socket.display())

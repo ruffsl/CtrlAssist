@@ -57,7 +57,7 @@ pub(crate) async fn answer_info(
 impl FakeDaemon {
     /// Serve on `socket`, reporting `release`.
     pub(crate) async fn start(socket: &Path, release: &str) -> Self {
-        let session = zenoh::open(ctrlassist_protocol::bootstrap::peer_config(socket).unwrap())
+        let session = zenoh::open(ctrlassist_protocol::bootstrap::router_config(socket).unwrap())
             .await
             .unwrap();
         let listed = Arc::new(Mutex::new(BTreeSet::new()));
