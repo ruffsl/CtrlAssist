@@ -162,6 +162,18 @@ The hub itself saw all three in every case.
 
 **The panes are to be rethought** (2026-11-22). Asked where help should go, the maintainer stepped back instead: before more polish, the sidebar's panes and the layout are to be looked at again in a mock-up session, to bring the window more in line with TisVlay's. A pad is to CtrlAssist roughly what a TV is to TisVlay, and a profile is a profile; a setup, a profile in effect, may not need a pane of its own and could show on both sides, as a TisVlay profile shows on its TVs and a TV on its profiles. How the form's help is shown waits for that too. Of the steps left, packaging comes first.
 
+**The panes, rethought** (2026-11-22, from a mock-up drawn from TisVlay's Slint files and screenshots). The first pass kept TisVlay's sidebar and colors and not its panes' layout; this one takes the layout component for component.
+
+- **Four panes:** Pads, Profiles, Settings, About. The Setups pane goes. A running profile shows on its profile and on each of its pads, and the sidebar's trouble mark moves to Profiles.
+- **Lists** are TisVlay's rows: 64 high, a tile, the name, a dot and one colored word; under 40-high section headers with the count or a caption and, on Profiles, the round add button. The Profiles list has a RUNNING section over the rest; the Pads list has the connected pads over a REMEMBERED section.
+- **Tiles:** a pad's is its maker's mark in the maker's color, as TisVlay's "LG"; a profile's is its preset's shape, two lines joining for a preset of two pads and one splitting for a preset of one.
+- **Detail headers** are TisVlay's: the tile, the name, a quiet second line, two chips stacked at the right. A profile's rename and delete sit beside its name, and its second line is its pads as links.
+- **A profile's detail** leads with a STATUS group: Start or Stop as the one large button with a line of state, Update when the kept profile has changed, its pads and whether each is there, and who has control. Then the preset's fields as TisVlay's profile field rows: a 140 px label column, the control, and a reset at the row's end that is lit, with a mark in the gutter, where the field isn't at its default. Help is one "i" on the group's caption, beside Duplicate and Reset all; a choice's own sentence shows in the dropdown's list.
+- **A pad's detail** has STATUS (Identify, and whether games see it), PROFILES, INFO with a copy button a row, and a DANGER ZONE for Forget. A PROFILES row only reads and opens: the profile's name, the part the pad plays in it, how the profile is, and an edit button that opens it. Starting, stopping and changing a part are the profile's.
+- **Each pane has its own color,** as in TisVlay: blue for Pads, green for Profiles.
+
+Still open: where a profile in the full form shows its text, the tile of a pad from an unknown maker, and whether an unfinished or wrong profile gets a word of its own in the list.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps
