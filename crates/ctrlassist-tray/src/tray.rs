@@ -77,8 +77,16 @@ pub struct PadTray {
     /// The profile last started, stopped or scrolled to: what a middle
     /// click on the icon acts on, while it can be.
     pub target: Option<String>,
+    /// How far the wheel has turned toward its next notch, in the
+    /// wheel's units, signed by direction.
+    wheel: i32,
     actions: mpsc::UnboundedSender<Action>,
 }
+
+/// One notch of a wheel, in the units a scroll is reported in. A wheel
+/// with finer steps, or a touchpad, reports many small scrolls that add
+/// up to this.
+const NOTCH: i32 = 120;
 
 impl PadTray {
     /// A tray whose clicks go to `actions`.
@@ -89,6 +97,7 @@ impl PadTray {
             quick: Quick::default(),
             quick_settled: false,
             target: None,
+            wheel: 0,
             actions,
         }
     }
@@ -174,15 +183,15 @@ impl PadTray {
         menu::menu(&self.view, &self.quick)
     }
 
-    /// The tray's own icon, and which form of it: the colored glyph
-    /// while something runs, as a status, and the flat one while nothing
-    /// does, as 0.4.0's tray had it.
+    /// The tray's own icon, and which form of it: the colored pad glyph
+    /// whether or not something runs, with a warning or an error in its
+    /// place for a setup held or failed. The menu's rows are the
+    /// symbolic ones.
     fn glyph(&self) -> (menu::Icon, Variant) {
         match self.worst() {
             Some(Phase::Failed) => (menu::icon::FAILED, Variant::Color),
             Some(Phase::Held) => (menu::icon::WRONG, Variant::Color),
-            Some(_) => (menu::icon::PAD, Variant::Color),
-            None => (menu::icon::PAD, Variant::Symbolic),
+            Some(_) | None => (menu::icon::PAD, Variant::Color),
         }
     }
 
@@ -322,26 +331,37 @@ impl Tray for PadTray {
     }
 
     /// The wheel moves the mark over the profiles a middle click could
-    /// act on, around from the last to the first.
+    /// act on, around from the last to the first: one profile a notch.
+    /// Scrolls smaller than a notch add up to one, so a finer wheel or
+    /// a touchpad moves the mark as far as a plain wheel does, and what
+    /// was turned one way is dropped when the wheel turns the other, so
+    /// a change of direction is felt from where the hand is.
     fn scroll(&mut self, delta: i32, orientation: ksni::Orientation) {
         if orientation != ksni::Orientation::Vertical || delta == 0 {
             return;
         }
+        if self.wheel.signum() != delta.signum() {
+            self.wheel = 0;
+        }
+        self.wheel = self.wheel.saturating_add(delta);
+        let steps = self.wheel / NOTCH;
+        self.wheel %= NOTCH;
         let candidates = tip::candidates(&self.view);
-        if candidates.is_empty() {
+        if steps == 0 || candidates.is_empty() {
             return;
         }
-        let count = candidates.len();
+        let count = i64::try_from(candidates.len()).unwrap_or(i64::MAX);
         let at = self
             .aimed()
-            .and_then(|aimed| candidates.iter().position(|name| *name == aimed));
-        let next = match (at, delta > 0) {
-            (Some(at), true) => (at + 1) % count,
-            (Some(at), false) => (at + count - 1) % count,
-            (None, true) => 0,
-            (None, false) => count - 1,
-        };
-        self.target = Some(candidates[next].to_string());
+            .and_then(|aimed| candidates.iter().position(|name| *name == aimed))
+            .and_then(|at| i64::try_from(at).ok());
+        // With no mark yet, the first notch puts it on the first
+        // profile going down the list, or the last going up.
+        let from = at.unwrap_or(if steps > 0 { -1 } else { count });
+        let next = (from + i64::from(steps)).rem_euclid(count);
+        if let Some(name) = usize::try_from(next).ok().and_then(|at| candidates.get(at)) {
+            self.target = Some((*name).to_string());
+        }
     }
 
     fn category(&self) -> ksni::Category {
@@ -428,6 +448,22 @@ mod tests {
         assert_eq!(tray.aimed(), Some("desk"));
         tray.scroll(120, ksni::Orientation::Horizontal);
         assert_eq!(tray.aimed(), Some("desk"));
+        // A finer wheel's small scrolls add up to a notch before the
+        // mark moves, and turning back drops what was turned.
+        for _ in 0..7 {
+            tray.scroll(15, ksni::Orientation::Vertical);
+        }
+        assert_eq!(tray.aimed(), Some("desk"));
+        tray.scroll(-15, ksni::Orientation::Vertical);
+        for _ in 0..7 {
+            tray.scroll(15, ksni::Orientation::Vertical);
+        }
+        assert_eq!(tray.aimed(), Some("desk"));
+        tray.scroll(15, ksni::Orientation::Vertical);
+        assert_eq!(tray.aimed(), Some("couch"));
+        // A flick of three notches moves three, around.
+        tray.scroll(360, ksni::Orientation::Vertical);
+        assert_eq!(tray.aimed(), Some("desk"));
 
         // `couch` stopped, from the menu or anywhere: it is the last
         // used. With nothing to act on, a click does nothing.
@@ -457,7 +493,7 @@ mod tests {
             said(None),
             (
                 "CtrlAssist".to_string(),
-                ("input-gaming", true),
+                ("input-gaming", false),
                 "Nothing is running\n3 of 3 pads connected".to_string()
             )
         );

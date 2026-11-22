@@ -231,6 +231,10 @@ Duplicate and Show its file moved from the PRESET card's caption to the header, 
 
 **A middle click starts or stops a profile, and the wheel picks which** (2026-11-22, the maintainer's). The profiles a middle click could act on are the ones that run and the ones that are ready; a managed profile that is ready runs already, so the ones to start are unmanaged. "►" in the tooltip marks the one aimed at, as TisVlay's tooltip marks what its wheel acts on: the profile last started or stopped, from anywhere, or scrolled to; without one, the only setup, or the only candidate; and none where that leaves a choice, until the wheel makes it. The wheel moves the mark over the candidates and around. A middle click stops the marked profile if it runs and starts it if not. The last used isn't kept across a restart of the tray.
 
+**The wheel moves one profile a notch** (2026-11-22, the maintainer's: it was too sensitive). A scroll is reported in units of which a plain wheel's notch is 120, and a finer wheel or a touchpad reports many smaller ones; every report moved the mark, as TisVlay's tray steps at least once per report, which suits a volume and not a list. The tray adds the reports up and moves the mark once for each 120 reached, keeping the remainder, and drops what was added when the direction turns, so turning back starts from nothing and no time limit is needed to forget a part-turned notch. To carry to TisVlay as a note: its middle click cycles the TV, so only its wheel's step is affected.
+
+**The tray's icon is always the colored pad glyph** (2026-11-22, the maintainer's), with a warning or an error in its place for a setup held or failed. It was symbolic while nothing ran, as 0.4.0's and TisVlay's are; the menu's rows stay symbolic.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps
