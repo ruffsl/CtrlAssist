@@ -1202,6 +1202,7 @@ dependencies = [
  "ctrlassist-gui",
  "ctrlassist-icons",
  "ctrlassist-protocol",
+ "fontique",
  "futures-util",
  "i-slint-backend-testing",
  "serde",

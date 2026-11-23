@@ -11,6 +11,7 @@ mod couch;
 mod dbus;
 pub mod diagnostic;
 mod file_manager;
+mod fonts;
 mod icon_theme;
 mod icons;
 pub mod keys;
@@ -188,6 +189,7 @@ pub fn run() -> Result<()> {
     // The desktop's accent color, from the settings portal: with no
     // portal the theme's own stays.
     rt.spawn(accent::watch_accent_color(app.as_weak()));
+    fonts::resolve_monospace(app.as_weak());
 
     keys::bind_key_router(&app);
     // Escape on the sidebar with nothing to go back to, in couch mode:
