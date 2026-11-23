@@ -49,7 +49,9 @@ Build and clippy use the test profile, so the tests reuse what they compiled.
 |---|---|---|
 | `dev`, `test` | Local work and the gates | Split debug info; `test` keeps line tables only |
 | `release` | People compiling locally | Stripped; no LTO, so it stays quick |
-| `dist` | The packages | Thin LTO, one codegen unit, abort on panic, optimized for size |
+| `dist` | The packages and the flake's package | Thin LTO, one codegen unit, optimized for size; unwinds on panic |
+
+Every profile unwinds on panic. The input thread catches a panic in one setup's step and tears down that setup alone, leaving the others' virtual pads; `panic = "abort"` would turn that into the daemon exiting with every virtual pad gone. TisVlay's `dist` profile aborts, and measured that as 14% smaller binaries; here the isolation is worth the size.
 
 ## Lint policy
 

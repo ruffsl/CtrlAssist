@@ -162,12 +162,15 @@ debug = "line-tables-only"
 [profile.release]
 strip = "symbols"
 
-# What the packages are built with.
+# What the packages are built with. Unlike TisVlay's, it unwinds on panic:
+# the input thread catches a panic in one setup's step and tears down that
+# setup alone, and under `panic = "abort"` the same panic would end the
+# daemon and every virtual pad with it. TisVlay measured abort as 14% smaller
+# binaries; that size is the price of the isolation.
 [profile.dist]
 inherits = "release"
 lto = "thin"
 codegen-units = 1
-panic = "abort"
 opt-level = "s"
 
 # Crates carried with a fix upstream doesn't have yet; see vendor/README.md.
