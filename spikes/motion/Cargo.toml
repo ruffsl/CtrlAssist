@@ -1,0 +1,35 @@
+[package]
+name = "spike-motion"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[[bin]]
+name = "motion"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ctrlassist-core = { path = "../../crates/ctrlassist-core" }
+ctrlassist-device = { path = "../../crates/ctrlassist-device" }
+ctrlassist-hider = { path = "../../crates/ctrlassist-hider" }
+libc = { version = "0.2", default-features = false }
+rustix = { version = "1.1", features = ["event", "fs", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "fmt"] }
+udev = "0.9"
+
+# A workspace of its own, apart from the repository's.
+[workspace]
+
+# The device crate is built against the vendored evdev, as in the
+# repository's workspace.
+[patch.crates-io]
+evdev = { path = "../../vendor/evdev" }
+
+[lints.clippy]
+print_stdout = "warn"
+print_stderr = "warn"
+unwrap_used = "warn"
