@@ -727,6 +727,94 @@ fn a_profile_s_pad_and_a_pad_s_profile_are_a_click_apart_and_back_returns() {
     assert_eq!(pad_shown(), "DualSense");
 }
 
+/// The cases the tray's picks and the window's both meet, kept with the
+/// tray's.
+const SWAP_CASES: &str = include_str!("../../../ctrlassist-tray/src/swap_cases.txt");
+
+/// Each case of the tray's `swap_cases.txt`, run through the window's
+/// own rule for what a pick moves.
+#[test]
+fn a_pick_moves_the_other_parts_as_the_shared_cases_say() {
+    let mut ran = 0;
+    for case in SWAP_CASES.split("\ncase: ").skip(1) {
+        let mut lines = case.lines();
+        let title = lines.next().unwrap_or_default();
+        let mut given = BTreeMap::new();
+        for line in lines {
+            if let Some((key, rest)) = line.split_once(": ") {
+                given.insert(key, rest);
+            }
+        }
+        let pads: Vec<Pad> = given["pads"]
+            .split(' ')
+            .map(|entry| {
+                let (id, rest) = entry.split_once('=').unwrap();
+                let (rest, setup) = rest
+                    .split_once('@')
+                    .map_or((rest, None), |(rest, setup)| (rest, Some(setup)));
+                let connected = !rest.ends_with('~');
+                let (vendor, product) = rest.trim_end_matches('~').split_once(':').unwrap();
+                Pad {
+                    vendor: u16::from_str_radix(vendor, 16).unwrap(),
+                    product: u16::from_str_radix(product, 16).unwrap(),
+                    setup: setup.map(str::to_string),
+                    ..pad(id, id, connected)
+                }
+            })
+            .collect();
+        let pairs = |line: &str| -> Vec<(String, String)> {
+            line.split(' ')
+                .filter(|pair| !pair.is_empty())
+                .map(|pair| {
+                    let (key, value) = pair.split_once('=').unwrap();
+                    (key.to_string(), value.to_string())
+                })
+                .collect()
+        };
+        let mut toml = "mode = \"toggle\"\n".to_string();
+        for (key, value) in pairs(given["before"]) {
+            toml.push_str(&format!("{key} = \"{value}\"\n"));
+        }
+        let setups = given
+            .get("running")
+            .map(|running| Setup {
+                name: "couch".to_string(),
+                start: 1,
+                phase: Phase::Running,
+                reason: None,
+                sources: pairs(running)
+                    .into_iter()
+                    .map(|(name, pad)| SetupSource {
+                        name,
+                        pad: Some(pad),
+                        present: true,
+                    })
+                    .collect(),
+                sinks: Vec::new(),
+                nodes: Vec::new(),
+                stale: false,
+            })
+            .into_iter()
+            .collect();
+        let known = Known {
+            profiles: vec![profile("couch", &toml)],
+            setups,
+            pads,
+            fields: form::fields(),
+        };
+        let mut values = form::from_toml(&known.fields, &toml).unwrap();
+        let (key, value) = pairs(given["pick"]).remove(0);
+        profiles::change_places(&known, "couch", &mut values, &key, &value);
+        values.insert(key, value);
+        for (key, value) in pairs(given["after"]) {
+            let held = values.get(&key).map_or("-", String::as_str);
+            assert_eq!(held, value, "{title}: {key}");
+        }
+        ran += 1;
+    }
+    assert_eq!(ran, 10, "every case was read");
+}
+
 /// Picking the pad another part has makes the two change places, so two
 /// pads can change parts without the profile ever naming one twice.
 #[test]
@@ -735,19 +823,26 @@ fn picking_the_other_part_s_pad_changes_the_two_places() {
     let two = "mode = \"toggle\"\nprimary = \"address:0a:1b:2c:3d:4e:14\"\nassist = \"address:1a:2b:3c:4d:5e:da\"\n";
     let mut values = form::from_toml(&known.fields, two).unwrap();
     let (primary, assist) = (values["primary"].clone(), values["assist"].clone());
-    profiles::change_places(&known, &mut values, "primary", &assist);
+    profiles::change_places(&known, "den", &mut values, "primary", &assist);
     assert_eq!(values["assist"], primary);
     // Nothing changes places for a pad no other part has, a pad that
     // isn't known, or a field that isn't a pad.
     let before = values.clone();
     profiles::change_places(
         &known,
+        "den",
         &mut values,
         "primary",
         "serial:045e:02dd:7EED821FFB17",
     );
-    profiles::change_places(&known, &mut values, "primary", "address:00:00:00:00:00:00");
-    profiles::change_places(&known, &mut values, "identity", "xbox");
+    profiles::change_places(
+        &known,
+        "den",
+        &mut values,
+        "primary",
+        "address:00:00:00:00:00:00",
+    );
+    profiles::change_places(&known, "den", &mut values, "identity", "xbox");
     assert_eq!(values, before);
     // A part with no pad yet takes the other's, which is left to choose.
     let mut one = form::from_toml(
@@ -755,7 +850,13 @@ fn picking_the_other_part_s_pad_changes_the_two_places() {
         "mode = \"priority\"\nassist = \"address:0a:1b:2c:3d:4e:14\"\n",
     )
     .unwrap();
-    profiles::change_places(&known, &mut one, "primary", "address:0a:1b:2c:3d:4e:14");
+    profiles::change_places(
+        &known,
+        "den",
+        &mut one,
+        "primary",
+        "address:0a:1b:2c:3d:4e:14",
+    );
     assert!(!one.contains_key("assist"));
 }
 

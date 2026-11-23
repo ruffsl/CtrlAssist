@@ -31,7 +31,7 @@ use crate::{
     Profiles, on_ui,
 };
 
-use ctrlassist_protocol::profile::DEFAULT;
+use ctrlassist_protocol::profile::{DEFAULT, PadRef};
 
 /// The key of the field that says what the virtual pads present
 /// themselves as.
@@ -98,7 +98,13 @@ fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
 }
 
 /// One field of the form, holding `value`.
-fn field_row(field: &Field, value: &str, pads: &[Pad], profile: &str) -> ProfileFieldRow {
+fn field_row(
+    field: &Field,
+    value: &str,
+    pads: &[Pad],
+    profile: &str,
+    meant: Option<&Pad>,
+) -> ProfileFieldRow {
     let mut row = ProfileFieldRow {
         group: SharedString::from(field.group.as_str()),
         key: SharedString::from(field.key.as_str()),
@@ -139,8 +145,8 @@ fn field_row(field: &Field, value: &str, pads: &[Pad], profile: &str) -> Profile
                 // as one forgotten: said as what it is, and still a
                 // dropdown, so that another can be picked in its place.
                 None if !value.is_empty() => {
-                    let label = match ctrlassist_protocol::profile::PadRef::parse(value) {
-                        Some(ctrlassist_protocol::profile::PadRef::Model(vendor, product)) => {
+                    let label = match PadRef::parse(value) {
+                        Some(PadRef::Model(vendor, product)) => {
                             format!("Any pad of model {vendor:04x}:{product:04x}")
                         }
                         _ => format!("{} (not known)", crate::pads::tag_of(value)),
@@ -150,14 +156,10 @@ fn field_row(field: &Field, value: &str, pads: &[Pad], profile: &str) -> Profile
                 None => {}
             }
             // Nothing picked has nothing to say of. Any pad of a model
-            // is spoken for by the pad of that model a start would take,
-            // as the profile's word judges it.
+            // is spoken for by the pad of that model its setup has or a
+            // start would take, `meant`, as the profile's word judges it.
             if !value.is_empty() {
-                let meant = chosen.or_else(|| {
-                    let wanted = ctrlassist_protocol::profile::PadRef::parse(value)?;
-                    crate::status::meant(&wanted, pads, profile)
-                });
-                let (word, tone) = connection(meant, profile);
+                let (word, tone) = connection(chosen.or(meant), profile);
                 row.status_word = SharedString::from(word);
                 row.status_tone = SharedString::from(tone);
             }
@@ -234,18 +236,19 @@ fn setup_note(setup: &Setup) -> String {
 }
 
 /// A pad a profile names, for the header's link: the pad its setup has
-/// for that part while it runs, or else the pad the name means.
+/// for that part while it runs, or else the pad the name means, `meant`.
 fn use_row(
     source: &ctrlassist_protocol::profile::PlannedSource,
     setup: Option<&Setup>,
     pads: &[Pad],
     profile: &str,
+    meant: Option<&Pad>,
 ) -> ProfileUseRow {
     let taken = setup
         .and_then(|setup| setup.sources.iter().find(|taken| taken.name == source.name))
         .and_then(|taken| taken.pad.as_deref())
         .and_then(|id| pads.iter().find(|pad| pad.id == id));
-    let pad = taken.or_else(|| crate::status::meant(&source.pad, pads, profile));
+    let pad = taken.or(meant);
     let (word, tone) = connection(pad, profile);
     ProfileUseRow {
         word: SharedString::from(word),
@@ -254,8 +257,8 @@ fn use_row(
         pad: SharedString::from(pad.map_or("", |pad| pad.id.as_str())),
         name: SharedString::from(match (pad, &source.pad) {
             (Some(pad), _) => pad.name.clone(),
-            (None, ctrlassist_protocol::profile::PadRef::Exact(id)) => id.clone(),
-            (None, ctrlassist_protocol::profile::PadRef::Model(vendor, product)) => {
+            (None, PadRef::Exact(id)) => id.clone(),
+            (None, PadRef::Model(vendor, product)) => {
                 format!("model:{vendor:04x}:{product:04x}")
             }
         }),
@@ -364,6 +367,12 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 .and_then(|values| values.get(form::PRESET))
                 .cloned()
                 .unwrap_or_default();
+            // The pad each pad field means, the parts bound together as a
+            // start would bind them.
+            let meant_fields = values
+                .as_ref()
+                .map(|values| pads_meant(known, name, values))
+                .unwrap_or_default();
             let fields: Vec<ProfileFieldRow> = values
                 .as_ref()
                 .map(|values| {
@@ -375,7 +384,8 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                         .filter(|field| field.applies_to(&preset) && field.key != MANAGED)
                         .map(|field| {
                             let value = values.get(&field.key).map_or("", String::as_str);
-                            field_row(field, value, &known.pads, name)
+                            let meant = meant_fields.get(&field.key).copied();
+                            field_row(field, value, &known.pads, name, meant)
                         })
                         .collect()
                 })
@@ -429,16 +439,29 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
             // it is while it runs; with no profile left, its setup's.
             let (uses, outputs): (Vec<ProfileUseRow>, Vec<ProfileOutputRow>) =
                 match (plan.as_ref(), setup) {
-                    (Some(plan), _) => (
-                        plan.sources
+                    (Some(plan), _) => {
+                        let parts: Vec<(&str, &PadRef)> = plan
+                            .sources
                             .iter()
-                            .map(|source| use_row(source, setup, &known.pads, name))
-                            .collect(),
-                        plan.sinks
-                            .iter()
-                            .map(|sink| output_row(name, &sink.name, sink.identity.as_str(), setup))
-                            .collect(),
-                    ),
+                            .map(|source| (source.name.as_str(), &source.pad))
+                            .collect();
+                        let meant = crate::status::meant(&known.pads, &parts, setup);
+                        (
+                            plan.sources
+                                .iter()
+                                .map(|source| {
+                                    let pad = meant.get(&source.name).copied();
+                                    use_row(source, setup, &known.pads, name, pad)
+                                })
+                                .collect(),
+                            plan.sinks
+                                .iter()
+                                .map(|sink| {
+                                    output_row(name, &sink.name, sink.identity.as_str(), setup)
+                                })
+                                .collect(),
+                        )
+                    }
                     (None, Some(running)) if gone => (
                         running
                             .sources
@@ -1143,7 +1166,7 @@ fn set_field(app: &AppWindow, writer: &Writer, name: &str, key: &str, value: &st
     if values.get(key).map(String::as_str) == Some(value) {
         return;
     }
-    KNOWN.with_borrow(|known| change_places(known, &mut values, key, value));
+    KNOWN.with_borrow(|known| change_places(known, name, &mut values, key, value));
     values.insert(key.to_string(), value.to_string());
     let change = KNOWN.with_borrow(|known| {
         if key == form::PRESET {
@@ -1247,11 +1270,64 @@ fn copy(app: &AppWindow, writer: &Writer, from: &str, to: &str, rename: bool) {
     );
 }
 
-/// Before `key` takes the pad `value`: if another part of the profile
-/// has that pad, it takes the pad `key` had, so the two change places
-/// in one pick. Without it two pads could only change parts by way of
-/// a profile that names one pad twice, which is none.
-pub fn change_places(known: &Known, values: &mut Values, key: &str, value: &str) {
+/// The parts of the profile in `values` that name a pad, each with the
+/// pad it names.
+fn pad_parts(known: &Known, values: &Values) -> Vec<(String, PadRef)> {
+    let preset = values
+        .get(form::PRESET)
+        .map(String::as_str)
+        .unwrap_or_default();
+    known
+        .fields
+        .iter()
+        .filter(|field| field.kind == Kind::Pad && field.applies_to(preset))
+        .filter_map(|field| {
+            let value = values.get(&field.key)?;
+            Some((
+                field.key.clone(),
+                crate::status::wanted(value, &known.pads)?,
+            ))
+        })
+        .collect()
+}
+
+/// The pad each pad part of the profile `name` takes, by its key: while
+/// its setup runs, the pad that setup has for one named by model; or,
+/// with `fresh`, as a start would take them whether or not it runs, its
+/// own pads counting as free. See [`crate::status::bind`].
+fn pads_taken<'a>(
+    known: &'a Known,
+    name: &str,
+    values: &Values,
+    fresh: bool,
+) -> BTreeMap<String, &'a Pad> {
+    let parts = pad_parts(known, values);
+    let parts: Vec<(&str, &PadRef)> = parts.iter().map(|(key, pad)| (key.as_str(), pad)).collect();
+    if fresh {
+        return crate::status::bind(&known.pads, &parts, Some(name));
+    }
+    let setup = known.setups.iter().find(|setup| setup.name == name);
+    crate::status::taken(&known.pads, &parts, setup)
+}
+
+/// The pad each pad field of the profile `name` means, for showing.
+fn pads_meant<'a>(known: &'a Known, name: &str, values: &Values) -> BTreeMap<String, &'a Pad> {
+    let parts = pad_parts(known, values);
+    let parts: Vec<(&str, &PadRef)> = parts.iter().map(|(key, pad)| (key.as_str(), pad)).collect();
+    let setup = known.setups.iter().find(|setup| setup.name == name);
+    crate::status::meant(&known.pads, &parts, setup)
+}
+
+/// Before `key` of the profile `name` takes the pad `value`: a part that
+/// names that pad by its id takes the pad `key` had, so the two change
+/// places in one pick, or is left to choose when `key` had none. Without
+/// it two pads could only change parts by way of a profile that names
+/// one pad twice, which is none. A part named by model whose pad is the
+/// one picked keeps its model when a start would give it another pad of
+/// the model, and otherwise takes the pad `key` had; with none, it keeps
+/// its model, never being left to choose by a pick. The tray's menu does
+/// the same, and the tray's `swap_cases.txt` holds the cases both meet.
+pub fn change_places(known: &Known, name: &str, values: &mut Values, key: &str, value: &str) {
     let is_pad = |key: &str| {
         known
             .fields
@@ -1264,13 +1340,31 @@ pub fn change_places(known: &Known, values: &mut Values, key: &str, value: &str)
     let Some(picked) = known.pads.iter().find(|pad| names_pad(value, pad)) else {
         return;
     };
-    let other = values
-        .iter()
-        .find(|(other, held)| other.as_str() != key && is_pad(other) && names_pad(held, picked))
-        .map(|(other, _)| other.clone());
-    if let Some(other) = other {
-        match values.get(key).cloned() {
-            Some(had) => values.insert(other, had),
+    let had = values.get(key).cloned();
+    let others: Vec<String> = pads_taken(known, name, values, false)
+        .into_iter()
+        .filter(|(other, pad)| other != key && pad.id == picked.id)
+        .map(|(other, _)| other)
+        .collect();
+    let mut then = values.clone();
+    then.insert(key.to_string(), value.to_string());
+    let taken_then = pads_taken(known, name, &then, true);
+    for other in others {
+        let by_model = values
+            .get(&other)
+            .and_then(|value| crate::status::wanted(value, &known.pads))
+            .is_some_and(|wanted| matches!(wanted, PadRef::Model(..)));
+        if by_model {
+            let elsewhere = taken_then
+                .get(&other)
+                .is_some_and(|pad| pad.id != picked.id);
+            if !elsewhere && let Some(had) = &had {
+                values.insert(other, had.clone());
+            }
+            continue;
+        }
+        match &had {
+            Some(had) => values.insert(other, had.clone()),
             None => values.remove(&other),
         };
     }

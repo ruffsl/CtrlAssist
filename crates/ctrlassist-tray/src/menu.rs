@@ -304,12 +304,19 @@ fn wanted(view: &View, value: &str) -> Option<PadRef> {
     PadRef::parse(value)
 }
 
-/// The known pad each pad field of the profile `name` means, by its key.
-/// One named by its id is that pad. One named by model is, while a setup
-/// runs the profile, the pad that setup has for it; otherwise the pad a
-/// start would take now, or with none free, one of the model that is
-/// connected, or any that is known.
-fn pads_meant<'a>(view: &'a View, name: &str, values: &Values) -> BTreeMap<&'a str, &'a Pad> {
+/// The known pad each pad field of the profile `name` takes, by its key:
+/// one named by its id that pad; one named by model, while a setup runs
+/// the profile, the pad that setup has for it, and otherwise the pad a
+/// start would take now, as [`crate::tip::bind`] has the daemon bind
+/// them. With `fresh`, as a start would take them whether or not a setup
+/// runs the profile, its own pads counting as free. A part with no pad
+/// to take isn't there.
+fn pads_taken<'a>(
+    view: &'a View,
+    name: &str,
+    values: &Values,
+    fresh: bool,
+) -> BTreeMap<&'a str, &'a Pad> {
     let preset = values.get(PRESET).map(String::as_str).unwrap_or_default();
     // In the order of their keys, as a start takes a profile's pads.
     let mut parts: Vec<(&str, PadRef)> = view
@@ -320,16 +327,8 @@ fn pads_meant<'a>(view: &'a View, name: &str, values: &Values) -> BTreeMap<&'a s
         .collect();
     parts.sort_by_key(|(key, _)| *key);
     let refs: Vec<&PadRef> = parts.iter().map(|(_, wanted)| wanted).collect();
-    let bound = crate::tip::bind(view, &refs);
-    let setup = view.setup(name);
-    let of_model = |wanted: &PadRef| {
-        let mut fitting = view
-            .pads
-            .iter()
-            .filter(|pad| crate::tip::names(wanted, pad));
-        let first = fitting.clone().next();
-        fitting.find(|pad| pad.connected).or(first)
-    };
+    let bound = crate::tip::bind(view, &refs, fresh.then_some(name));
+    let setup = view.setup(name).filter(|_| !fresh);
     parts
         .iter()
         .zip(bound)
@@ -342,18 +341,52 @@ fn pads_meant<'a>(view: &'a View, name: &str, values: &Values) -> BTreeMap<&'a s
                         view.pad(source.pad.as_deref()?)
                     })
                     .filter(|pad| crate::tip::names(wanted, pad))
-                    .or(bound)
-                    .or_else(|| of_model(wanted)),
+                    .or(bound),
             };
             Some((*key, pad?))
         })
         .collect()
 }
 
+/// The known pad each pad field of the profile `name` means, by its key:
+/// the pad it takes, and for one named by model that would take none, a
+/// pad of the model that is connected, or any that is known.
+fn pads_meant<'a>(view: &'a View, name: &str, values: &Values) -> BTreeMap<&'a str, &'a Pad> {
+    let mut meant = pads_taken(view, name, values, false);
+    let preset = values.get(PRESET).map(String::as_str).unwrap_or_default();
+    for field in &view.fields {
+        if field.kind != Kind::Pad
+            || !field.applies_to(preset)
+            || meant.contains_key(field.key.as_str())
+        {
+            continue;
+        }
+        let Some(wanted @ PadRef::Model(..)) =
+            values.get(&field.key).and_then(|value| wanted(view, value))
+        else {
+            continue;
+        };
+        let mut fitting = view
+            .pads
+            .iter()
+            .filter(|pad| crate::tip::names(&wanted, pad));
+        let first = fitting.clone().next();
+        if let Some(pad) = fitting.find(|pad| pad.connected).or(first) {
+            meant.insert(field.key.as_str(), pad);
+        }
+    }
+    meant
+}
+
 /// Works a pick at the profile `name` into its values. A pad picked for
-/// one part that another part has changes places with it: the other part
-/// takes the pad this one had. Without that, two pads could never change
-/// parts, each being the other's and so not to be picked.
+/// one part that another part names by its id changes places with it:
+/// the other part takes the pad this one had, or is left to choose.
+/// Without that, two pads could never change parts, each being the
+/// other's and so not to be picked. A part named by model whose pad is
+/// the one picked keeps its model when a start would give it another pad
+/// of the model, and otherwise takes the pad this one had; with none, it
+/// keeps its model, never being left to choose by a pick. The window's
+/// form does the same, and `swap_cases.txt` holds the cases both meet.
 pub(crate) fn pick(view: &View, name: &str, values: &mut Values, key: &str, value: &str) {
     let is_pad = |key: &str| {
         view.fields
@@ -368,13 +401,30 @@ pub(crate) fn pick(view: &View, name: &str, values: &mut Values, key: &str, valu
     if is_pad(key)
         && let Some(picked) = picked
     {
-        let other = pads_meant(view, name, values)
+        let others: Vec<String> = pads_taken(view, name, values, false)
             .into_iter()
-            .find(|(other, pad)| *other != key && pad.id == picked.id)
-            .map(|(other, _)| other.to_string());
-        if let Some(other) = other {
-            match had {
-                Some(had) => values.insert(other, had),
+            .filter(|(other, pad)| *other != key && pad.id == picked.id)
+            .map(|(other, _)| other.to_string())
+            .collect();
+        let mut then = values.clone();
+        then.insert(key.to_string(), value.to_string());
+        let taken_then = pads_taken(view, name, &then, true);
+        for other in others {
+            let by_model = values
+                .get(&other)
+                .and_then(|value| wanted(view, value))
+                .is_some_and(|wanted| matches!(wanted, PadRef::Model(..)));
+            if by_model {
+                let elsewhere = taken_then
+                    .get(other.as_str())
+                    .is_some_and(|pad| pad.id != picked.id);
+                if !elsewhere && let Some(had) = &had {
+                    values.insert(other, had.clone());
+                }
+                continue;
+            }
+            match &had {
+                Some(had) => values.insert(other, had.clone()),
                 None => values.remove(&other),
             };
         }
@@ -385,23 +435,24 @@ pub(crate) fn pick(view: &View, name: &str, values: &mut Values, key: &str, valu
 /// A pad field of the profile `name`: the known pads to pick from, with
 /// the one picked. A pad can't be picked that isn't connected or is in
 /// another profile's setup. One that another part of this profile has
-/// can: the two change places.
+/// can: the two change places, as [`pick`] has it.
 fn pad_entry(view: &View, name: &str, values: &Values, field: &Field) -> Entry {
     let picked = values.get(&field.key).map(String::as_str);
     let pads = pads_meant(view, name, values);
     let meant = pads.get(field.key.as_str()).copied();
-    // The pads this profile's other parts have, each with its part.
-    let taken: Vec<(&str, &str)> = view
-        .fields
-        .iter()
-        .filter(|other| other.kind == Kind::Pad && other.key != field.key)
-        .filter_map(|other| {
-            Some((
-                pads.get(other.key.as_str())?.id.as_str(),
-                other.label.as_str(),
-            ))
-        })
-        .collect();
+    // The part a pick of `pad` would move, by its label.
+    let moves = |pad: &Pad| {
+        let mut then = values.clone();
+        pick(view, name, &mut then, &field.key, &pad.id);
+        view.fields
+            .iter()
+            .find(|other| {
+                other.kind == Kind::Pad
+                    && other.key != field.key
+                    && values.get(&other.key) != then.get(&other.key)
+            })
+            .map(|other| other.label.clone())
+    };
     let choices: Vec<Choice> = view
         .pads
         .iter()
@@ -411,8 +462,8 @@ fn pad_entry(view: &View, name: &str, values: &Values, field: &Field) -> Entry {
                 (true, Some(setup)) if setup != name => {
                     (false, format!("{} (in {setup})", pad.name))
                 }
-                (true, _) => match taken.iter().find(|(id, _)| *id == pad.id) {
-                    Some((_, part)) => (true, format!("{} (swap with {part})", pad.name)),
+                (true, _) => match moves(pad) {
+                    Some(part) => (true, format!("{} (swap with {part})", pad.name)),
                     None => (true, pad.name.clone()),
                 },
             };
@@ -799,6 +850,85 @@ mod tests {
 
     use super::*;
     use crate::state::tests::{profile, view};
+
+    /// The cases the tray's and the window's picks both meet; read by
+    /// the window's tests too.
+    const SWAP_CASES: &str = include_str!("swap_cases.txt");
+
+    /// Each case of `swap_cases.txt`, run through the menu's pick.
+    #[test]
+    fn a_pick_moves_the_other_parts_as_the_shared_cases_say() {
+        let mut ran = 0;
+        for case in SWAP_CASES.split("\ncase: ").skip(1) {
+            let mut lines = case.lines();
+            let title = lines.next().unwrap_or_default();
+            let mut given = BTreeMap::new();
+            for line in lines {
+                if let Some((key, rest)) = line.split_once(": ") {
+                    given.insert(key, rest);
+                }
+            }
+            let mut view = view(None, Hiding::Service);
+            view.pads = given["pads"]
+                .split(' ')
+                .map(|pad| {
+                    let (id, rest) = pad.split_once('=').unwrap();
+                    let (rest, setup) = rest
+                        .split_once('@')
+                        .map_or((rest, None), |(rest, setup)| (rest, Some(setup)));
+                    let connected = !rest.ends_with('~');
+                    let (vendor, product) = rest.trim_end_matches('~').split_once(':').unwrap();
+                    Pad {
+                        vendor: u16::from_str_radix(vendor, 16).unwrap(),
+                        product: u16::from_str_radix(product, 16).unwrap(),
+                        ..crate::state::tests::pad(id, id, connected, setup)
+                    }
+                })
+                .collect();
+            let fields = |line: &str| -> Vec<(String, String)> {
+                line.split(' ')
+                    .filter(|pair| !pair.is_empty())
+                    .map(|pair| {
+                        let (key, value) = pair.split_once('=').unwrap();
+                        (key.to_string(), value.to_string())
+                    })
+                    .collect()
+            };
+            let mut toml = "mode = \"toggle\"\n".to_string();
+            for (key, value) in fields(given["before"]) {
+                toml.push_str(&format!("{key} = \"{value}\"\n"));
+            }
+            view.profiles = vec![Profile {
+                toml: toml.clone(),
+                ..profile("couch", None)
+            }];
+            view.setups = given
+                .get("running")
+                .map(|running| {
+                    let mut setup = crate::state::tests::couch(Phase::Running);
+                    setup.sources = fields(running)
+                        .into_iter()
+                        .map(|(name, pad)| ctrlassist::SetupSource {
+                            name,
+                            pad: Some(pad),
+                            present: true,
+                        })
+                        .collect();
+                    setup
+                })
+                .into_iter()
+                .collect();
+            let mut values = form::from_toml(&view.fields, &toml).unwrap();
+            let (key, value) = fields(given["pick"]).remove(0);
+            pick(&view, "couch", &mut values, &key, &value);
+            for (key, value) in fields(given["after"]) {
+                let held = values.get(&key).map_or("-", String::as_str);
+                assert_eq!(held, value, "{title}: {key}");
+            }
+            ran += 1;
+        }
+        assert_eq!(ran, 10, "every case was read");
+    }
 
     /// The fixture's daemon with the default profile as a daemon makes
     /// it: its pads still to choose.

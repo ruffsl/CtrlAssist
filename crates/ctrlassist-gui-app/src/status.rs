@@ -2,6 +2,8 @@
 //! name, and what a pad's detail says beside each profile that names
 //! the pad. One place, so the two can't disagree.
 
+use std::collections::BTreeMap;
+
 use ctrlassist::{Pad, Phase, Profile, Setup};
 use ctrlassist_protocol::profile::{PadRef, Plan};
 
@@ -77,19 +79,101 @@ pub fn names(wanted: &PadRef, pad: &Pad) -> bool {
     }
 }
 
-/// The pad `wanted` means for the profile `profile`, as a start would
-/// find it: of the known pads it names, one that profile's setup has,
-/// else one connected and in no setup, else one connected, else any.
-/// For a pad named by its model several may fit, and this is the one
-/// [`of`] judges the profile by.
+/// What a profile's value for a pad names: a known pad by its id as it
+/// stands, or what the value says in any of the ways a profile names one.
 #[must_use]
-pub fn meant<'a>(wanted: &PadRef, pads: &'a [Pad], profile: &str) -> Option<&'a Pad> {
-    let named = || pads.iter().filter(|pad| names(wanted, pad));
-    named()
-        .find(|pad| pad.connected && pad.setup.as_deref() == Some(profile))
-        .or_else(|| named().find(|pad| pad.connected && pad.setup.is_none()))
-        .or_else(|| named().find(|pad| pad.connected))
-        .or_else(|| named().next())
+pub fn wanted(value: &str, pads: &[Pad]) -> Option<PadRef> {
+    if pads.iter().any(|pad| pad.id == value) {
+        return Some(PadRef::Exact(value.to_string()));
+    }
+    PadRef::parse(value)
+}
+
+/// The pads a profile's `parts`, each a part's name and the pad it
+/// names, would have if it started now, by part, as the daemon binds
+/// them: in the order of the parts' names, one named by its id is that
+/// pad, if it is known; one named by model is the first pad of the model
+/// that is connected, in no setup, and not taken by a part before it. A
+/// part with no pad to have isn't there. The daemon takes the first of a
+/// model to have connected, which it doesn't publish: the order here is
+/// the one it publishes the pads in, by id. A pad of the setup `own`
+/// counts as free, as a restart of that setup frees it. The tray binds
+/// them the same way.
+#[must_use]
+pub fn bind<'a>(
+    pads: &'a [Pad],
+    parts: &[(&str, &PadRef)],
+    own: Option<&str>,
+) -> BTreeMap<String, &'a Pad> {
+    let mut parts = parts.to_vec();
+    parts.sort_by_key(|(name, _)| *name);
+    let mut bound: BTreeMap<String, &Pad> = BTreeMap::new();
+    for (name, wanted) in parts {
+        let pad = match wanted {
+            PadRef::Exact(id) => pads.iter().find(|pad| pad.id == *id),
+            PadRef::Model(..) => pads.iter().find(|pad| {
+                names(wanted, pad)
+                    && pad.connected
+                    && (pad.setup.is_none() || pad.setup.as_deref() == own)
+                    && !bound.values().any(|taken| taken.id == pad.id)
+            }),
+        };
+        if let Some(pad) = pad {
+            bound.insert(name.to_string(), pad);
+        }
+    }
+    bound
+}
+
+/// The pad each of the profile `profile`'s `parts` has, by part: one
+/// named by model, while `setup` runs the profile, the pad the setup has
+/// for it; otherwise the pad a start would take now, as [`bind`] has it.
+#[must_use]
+pub fn taken<'a>(
+    pads: &'a [Pad],
+    parts: &[(&str, &PadRef)],
+    setup: Option<&Setup>,
+) -> BTreeMap<String, &'a Pad> {
+    let mut taken = bind(pads, parts, None);
+    let Some(setup) = setup else {
+        return taken;
+    };
+    for (name, wanted) in parts {
+        let has = setup
+            .sources
+            .iter()
+            .find(|source| source.name == *name)
+            .and_then(|source| source.pad.as_deref())
+            .and_then(|id| pads.iter().find(|pad| pad.id == id))
+            .filter(|pad| names(wanted, pad));
+        if let (PadRef::Model(..), Some(pad)) = (wanted, has) {
+            taken.insert((*name).to_string(), pad);
+        }
+    }
+    taken
+}
+
+/// The pad each of a profile's `parts` means, by part, for showing: the
+/// pad it has, as [`taken`] says, and for one named by model that has
+/// none, a pad of the model that is connected, or any that is known.
+#[must_use]
+pub fn meant<'a>(
+    pads: &'a [Pad],
+    parts: &[(&str, &PadRef)],
+    setup: Option<&Setup>,
+) -> BTreeMap<String, &'a Pad> {
+    let mut meant = taken(pads, parts, setup);
+    for (name, wanted) in parts {
+        if meant.contains_key(*name) || !matches!(wanted, PadRef::Model(..)) {
+            continue;
+        }
+        let mut fitting = pads.iter().filter(|pad| names(wanted, pad));
+        let first = fitting.clone().next();
+        if let Some(pad) = fitting.find(|pad| pad.connected).or(first) {
+            meant.insert((*name).to_string(), pad);
+        }
+    }
+    meant
 }
 
 /// The profile worked out, and whether its pads are still to choose.
@@ -142,11 +226,20 @@ pub fn of(name: &str, plan: Option<&Plan>, unset: bool, setups: &[Setup], pads: 
     let Some(plan) = plan else {
         return Status::Wrong;
     };
-    let free = |wanted: &PadRef| {
-        pads.iter()
-            .any(|pad| names(wanted, pad) && pad.connected && pad.setup.is_none())
+    // Each part a pad of its own, as a start would bind them: two parts
+    // named by one model need two pads of it.
+    let parts: Vec<(&str, &PadRef)> = plan
+        .sources
+        .iter()
+        .map(|source| (source.name.as_str(), &source.pad))
+        .collect();
+    let bound = bind(pads, &parts, None);
+    let free = |name: &str| {
+        bound
+            .get(name)
+            .is_some_and(|pad| pad.connected && pad.setup.is_none())
     };
-    if plan.sources.iter().all(|source| free(&source.pad)) {
+    if parts.iter().all(|(name, _)| free(name)) {
         Status::Ready
     } else {
         Status::Waiting
@@ -170,5 +263,46 @@ pub fn identity(id: &str) -> &str {
         "xbox" => "Xbox",
         "dualsense" => "DualSense",
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pad(id: &str, setup: Option<&str>) -> Pad {
+        Pad {
+            id: id.to_string(),
+            name: id.to_string(),
+            vendor: 0x054c,
+            product: 0x0ce6,
+            connected: true,
+            hidden: false,
+            setup: setup.map(str::to_string),
+            rumble: Some(true),
+            bus: None,
+        }
+    }
+
+    /// Two parts named by one model are two pads of it: ready with two
+    /// free, waiting with one, as the tray says it too.
+    #[test]
+    fn two_parts_of_one_model_need_two_free_pads_to_be_ready() {
+        let toml =
+            "mode = \"toggle\"\nprimary = \"model:054c:0ce6\"\nassist = \"model:054c:0ce6\"\n";
+        let plan = ctrlassist_protocol::profile::Profile::check(toml).expect("a profile");
+        let one = [pad("address:aa", None), pad("address:bb", Some("desk"))];
+        assert_eq!(of("couch", Some(&plan), false, &[], &one), Status::Waiting);
+        let two = [pad("address:aa", None), pad("address:bb", None)];
+        assert_eq!(of("couch", Some(&plan), false, &[], &two), Status::Ready);
+        // Bound in the order of the parts' names, each its own pad.
+        let parts: Vec<(&str, &PadRef)> = plan
+            .sources
+            .iter()
+            .map(|source| (source.name.as_str(), &source.pad))
+            .collect();
+        let bound = bind(&two, &parts, None);
+        assert_eq!(bound["assist"].id, "address:aa");
+        assert_eq!(bound["primary"].id, "address:bb");
     }
 }

@@ -97,8 +97,15 @@ pub(crate) fn names(wanted: &PadRef, pad: &Pad) -> bool {
 /// names, would have if it started now, as the daemon binds them: one
 /// named by its id is that pad, if it is known; one named by model is
 /// the first connected pad of the model that no setup has and none
-/// before it took. None where no pad would be.
-pub(crate) fn bind<'a>(view: &'a View, wanted: &[&PadRef]) -> Vec<Option<&'a Pad>> {
+/// before it took. None where no pad would be. The daemon takes the
+/// first of a model to have connected, which it doesn't publish: the
+/// order here is the one it publishes the pads in, by id. A pad of the
+/// setup `own` counts as free, as a restart of that setup frees it.
+pub(crate) fn bind<'a>(
+    view: &'a View,
+    wanted: &[&PadRef],
+    own: Option<&str>,
+) -> Vec<Option<&'a Pad>> {
     let mut bound: Vec<Option<&Pad>> = Vec::with_capacity(wanted.len());
     for wanted in wanted {
         let pad = match wanted {
@@ -106,7 +113,7 @@ pub(crate) fn bind<'a>(view: &'a View, wanted: &[&PadRef]) -> Vec<Option<&'a Pad
             PadRef::Model(..) => view.pads.iter().find(|pad| {
                 names(wanted, pad)
                     && pad.connected
-                    && pad.setup.is_none()
+                    && (pad.setup.is_none() || pad.setup.as_deref() == own)
                     && !bound.iter().flatten().any(|taken| taken.id == pad.id)
             }),
         };
@@ -126,7 +133,7 @@ pub fn ready(view: &View) -> Vec<&str> {
         .filter(|profile| {
             Checked::check(&profile.toml).is_ok_and(|plan| {
                 let wanted: Vec<&PadRef> = plan.sources.iter().map(|source| &source.pad).collect();
-                let bound = bind(view, &wanted);
+                let bound = bind(view, &wanted, None);
                 bound.iter().enumerate().all(|(at, pad)| {
                     pad.is_some_and(|pad| {
                         pad.connected
