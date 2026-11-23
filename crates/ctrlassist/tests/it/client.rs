@@ -7,12 +7,17 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ctrlassist::{DaemonClient, Error, StateEvent, StateWatcher, StateWatcherConfig};
+use ctrlassist::{DaemonClient, Error, ErrorCode, StateEvent, StateWatcher, StateWatcherConfig};
 use ctrlassist_daemon::{Daemon, Paths};
 use ctrlassist_device::InputThread;
+use ctrlassist_protocol::endpoint::setup;
+use ctrlassist_protocol::error::WireError;
+use ctrlassist_protocol::serve::Responder;
 use ctrlassist_protocol::{VERSION, keys};
 use serde_json::json;
 use tempfile::TempDir;
+use zenoh::Session;
+use zenoh::liveliness::LivelinessToken;
 
 use crate::fake::{FakeDaemon, answer_info, answer_info_from};
 
@@ -442,6 +447,70 @@ async fn a_client_dropped_as_it_subscribes_closes_its_link() {
         .await;
     }
     daemon.stop().await;
+}
+
+/// A stand-in daemon on this release with its token up, which answers
+/// `info` and hands each setup rpc to the test: the session (whose
+/// dropping takes the token, the rpcs and the link) and the setup rpcs
+/// as they arrive.
+async fn stand_in(socket: &std::path::Path) -> (Session, LivelinessToken, Queryable) {
+    let session = zenoh::open(ctrlassist_protocol::bootstrap::router_config(socket).unwrap())
+        .await
+        .unwrap();
+    // Answers for as long as the session is open.
+    drop(answer_info(&session, VERSION, &Arc::default()).await);
+    let setups = session
+        .declare_queryable(setup::Incoming::wild())
+        .await
+        .unwrap();
+    let token = session
+        .liveliness()
+        .declare_token(keys::daemon_alive())
+        .await
+        .unwrap();
+    (session, token, setups)
+}
+
+type Queryable = zenoh::query::Queryable<zenoh::handlers::FifoChannelHandler<zenoh::query::Query>>;
+
+/// The next `start` the stand-in is asked, with the responder that owes
+/// its reply.
+async fn asked_to_start(setups: &Queryable) -> Responder<setup::Start> {
+    let query = setups.recv_async().await.unwrap();
+    let start = match setup::Incoming::receive(query).await {
+        Some(((), setup::Incoming::Start(_, responder))) => Some(responder),
+        _ => None,
+    };
+    start.unwrap()
+}
+
+/// A refusal with a code that a later release of the daemon added is
+/// still a refusal to the caller, with its message and the code as it
+/// came.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_with_a_code_from_a_later_release_keeps_its_message() {
+    let (_dir, socket) = socket();
+    let (_session, _token, setups) = stand_in(&socket).await;
+    let client = DaemonClient::connect(&socket).await.unwrap();
+    let refusing = tokio::spawn(async move {
+        let newer: WireError =
+            serde_json::from_str(r#"{"code":"pad-on-fire","message":"the pad is on fire"}"#)
+                .unwrap();
+        asked_to_start(&setups).await.err(&newer).await;
+    });
+    let refused = client.start_setup("couch").await.unwrap_err();
+    assert!(
+        matches!(
+            &refused,
+            Error::Rpc {
+                code: ErrorCode::Unknown(code),
+                message,
+            } if code.as_str() == "pad-on-fire" && message == "the pad is on fire"
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(refused.to_string(), "the pad is on fire (pad-on-fire)");
+    refusing.await.unwrap();
 }
 
 /// `try_next` hands over a queued event without waiting, and nothing when

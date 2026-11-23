@@ -16,7 +16,9 @@ pub enum Error {
     /// The service refused the request. Nothing was applied; branch on
     /// `code`.
     Rpc {
-        /// Why the service refused, for a caller to branch on.
+        /// Why the service refused, for a caller to branch on:
+        /// [`ErrorCode::Unknown`] for a code a later release added, whose
+        /// reason only `message` says.
         code: ErrorCode,
         /// The service's explanation, in English, for a person to read.
         message: String,
@@ -129,7 +131,7 @@ impl Error {
     #[must_use]
     pub fn rpc_code(&self) -> Option<ErrorCode> {
         match self {
-            Self::Rpc { code, .. } => Some(*code),
+            Self::Rpc { code, .. } => Some(code.clone()),
             _ => None,
         }
     }
@@ -190,6 +192,12 @@ mod tests {
         assert_eq!(refusal.rpc_code(), Some(ErrorCode::BadRequest));
         assert_eq!(refusal.to_string(), "no (bad-request)");
         assert!(std::error::Error::source(&refusal).is_none());
+        // A code a later release added is a refusal all the same.
+        let newer: WireError =
+            serde_json::from_str(r#"{"code":"pad-on-fire","message":"it's on fire"}"#).unwrap();
+        let newer = from_rpc(RpcError::Service(newer));
+        assert!(matches!(newer.rpc_code(), Some(ErrorCode::Unknown(_))));
+        assert_eq!(newer.to_string(), "it's on fire (pad-on-fire)");
 
         let dropped = from_rpc(RpcError::NoReply { key: key() });
         assert!(matches!(

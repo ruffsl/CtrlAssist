@@ -1,33 +1,80 @@
 //! The rpc error contract: every `reply_err` payload is this shape,
 //! clients branch on `code` and show `message`.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Declare the rpc-reply error codes: one line per code generates the
-/// enum (serialized as the kebab-case string), `as_str` and `ALL`.
+/// enum (serialized as the kebab-case string), `as_str`, `ALL` and the
+/// reading of a code off the wire.
 macro_rules! error_codes {
         ($( $(#[$meta:meta])* $name:ident = $code:literal, )*) => {
             /// Why the daemon refused an rpc: the `code` of every
             /// [`WireError`]. Serialized as its kebab-case string.
+            ///
+            /// A code this release doesn't know, which a later release
+            /// of the daemon may add, reads as [`ErrorCode::Unknown`]
+            /// with the code as it came, so the refusal and its message
+            /// still reach the caller.
             #[non_exhaustive]
-            #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+            #[derive(Debug, Clone, PartialEq, Eq, Hash)]
             pub enum ErrorCode {
-                $( $(#[$meta])* #[serde(rename = $code)] $name, )*
+                $( $(#[$meta])* $name, )*
+                /// A code this release doesn't know, from a daemon of a
+                /// later release: refused all the same, for a reason only
+                /// the message says.
+                Unknown(UnknownCode),
             }
 
             impl ErrorCode {
-                /// Every code, in declaration order.
+                /// Every code this release knows, in declaration order.
                 pub const ALL: &[Self] = &[$(Self::$name),*];
 
                 /// The code as it travels on the wire.
-                pub const fn as_str(self) -> &'static str {
+                #[must_use]
+                pub fn as_str(&self) -> &str {
                     match self {
                         $( Self::$name => $code, )*
+                        Self::Unknown(code) => code.as_str(),
+                    }
+                }
+
+                /// The code `wire` names: one this release knows, or
+                /// else [`ErrorCode::Unknown`] holding it.
+                fn from_wire(wire: String) -> Self {
+                    match wire.as_str() {
+                        $( $code => Self::$name, )*
+                        _ => Self::Unknown(UnknownCode(wire.into_boxed_str())),
                     }
                 }
             }
         };
     }
+
+/// A refusal code this release doesn't know, as it came on the wire.
+/// Only reading a reply makes one, so it never holds a code that
+/// [`ErrorCode`] names.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UnknownCode(Box<str>);
+
+impl UnknownCode {
+    /// The code as it came on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Serialize for ErrorCode {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ErrorCode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::from_wire)
+    }
+}
 
 error_codes! {
     /// The request body doesn't decode as the rpc's request type, or a
@@ -150,6 +197,22 @@ mod tests {
             assert_eq!(serde_json::from_str::<ErrorCode>(&wire).unwrap(), *code);
             assert_eq!(code.to_string(), code.as_str());
         }
+    }
+
+    /// A refusal with a code a later release added still reads, with its
+    /// message and the code as it came, which travels on unchanged.
+    #[test]
+    fn a_code_this_release_does_not_know_keeps_the_refusal() {
+        let wire = r#"{"code":"pad-on-fire","message":"the pad is on fire"}"#;
+        let refusal: WireError = serde_json::from_str(wire).unwrap();
+        assert!(matches!(refusal.code, ErrorCode::Unknown(_)));
+        assert_eq!(refusal.code.as_str(), "pad-on-fire");
+        assert_eq!(refusal.code.to_string(), "pad-on-fire");
+        assert_eq!(refusal.message, "the pad is on fire");
+        assert!(!ErrorCode::ALL.contains(&refusal.code));
+        assert_eq!(serde_json::to_string(&refusal).unwrap(), wire);
+        // A code is a string, and nothing else reads as one.
+        assert!(serde_json::from_str::<ErrorCode>("7").is_err());
     }
 
     #[test]
