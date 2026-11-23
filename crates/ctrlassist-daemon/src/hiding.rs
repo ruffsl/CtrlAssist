@@ -14,35 +14,56 @@
 //!   request it has under way at once, and anything it asks after is
 //!   refused without asking. A hide is given up with a `cancel`, which
 //!   has the service leave the pad as it was and say what that took (see
-//!   below); any other request, and a hide asked of a service from before
-//!   `cancel`, by hanging up its connection, after which the service
-//!   shows again whatever was hidden through it, as it does for any
-//!   connection that closes. A setup's errand ends when it is stopped,
-//!   fails or is given up.
-//! - **As the daemon stops, every request is hung up** and none is made
-//!   after, so nothing it waits on is a round trip to the service.
+//!   below); a request on a hidden pad's own connection, by leaving its
+//!   reply to be read past, so the pad stays hidden until it is shown
+//!   again as asked; any other request, and a hide asked of a service
+//!   from before `cancel`, by hanging up its connection, after which the
+//!   service shows again whatever was hidden through it, as it does for
+//!   any connection that closes. A setup's errand ends when it is
+//!   stopped, fails or is given up.
+//! - **What nothing waits on is read off to one side.** A pad is shown
+//!   again, and what a hide given up came to is read, each as a
+//!   [`Reading`]: made at once, with no round trip, and read by a task
+//!   of its own that waits only on its own connection. A stop is answered
+//!   without one. Until a pad's reading ends, a hide of that pad waits for
+//!   it, within the hide's own work, as the service would refuse it as
+//!   busy meanwhile. A reading is hung up on when another of the same pad
+//!   is made, and the oldest when more than [`MOST_READINGS`] are under
+//!   way, so a service that never answers holds that many tasks at most;
+//!   hanging up has the service show the pad all the same.
+//! - **As the daemon stops, every request and every reading is hung
+//!   up** and none is made after, so nothing it waits on is a round trip
+//!   to the service.
 //!
 //! **Each re-bind the service makes goes and comes back, and the daemon
-//! counts them.** The book is told to expect a going and coming back for
-//! each hide before it is asked, and one more for a hide that is given up
-//! as it is asked, for the showing again that follows: so neither is
-//! published, nor taken for a pad plugged in, whenever its events come.
-//! What the service then says each took sets the count right: a hide
-//! refused before acting re-bound nothing, and one given up says, once
-//! [settled](Hiding::settle), whether it had re-bound the pad, and whether
-//! the pad was then shown again by another re-bind. Settling waits on the
-//! service, and nothing else waits on settling.
+//! counts them.** The book is told what to expect of each request before
+//! it is asked, and what the service then says each took sets the count
+//! right: a hide refused before acting re-bound nothing, and one given
+//! up says, once read, whether it had re-bound the pad, and whether the
+//! pad was then shown again by another re-bind. A showing again says
+//! whether it re-bound the pad.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use ctrlassist_hider::{Client, Error, Hid, Refusal};
 use ctrlassist_protocol::payload;
 use rustix::event::{EventfdFlags, eventfd};
 use tracing::{debug, info, warn};
+
+use crate::book::Count;
+
+/// The most readings under way at once: past it, the oldest is hung up.
+/// Each holds a connection and, while it is read, a thread of the
+/// blocking pool, so a service that never answers holds this many of
+/// each at most for them. Sixteen is the pads the service's cap of
+/// connections for a user at a seat is sized for.
+pub(crate) const MOST_READINGS: usize = 16;
 
 /// The daemon's name for a pad the hiding service has hidden for it.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -54,9 +75,9 @@ pub(crate) struct Token(pub(crate) u64);
 #[derive(Debug)]
 pub(crate) struct Errand {
     ended: AtomicBool,
-    /// Readable once it has ended: what a hide under way waits on beside
-    /// its reply, to be given up with a `cancel`. None where it couldn't
-    /// be made, and then a hide is hung up on instead.
+    /// Readable once it has ended: what a request under way waits on
+    /// beside its reply, to be given up without hanging up. None where it
+    /// couldn't be made, and then a request is hung up on instead.
     wake: Option<OwnedFd>,
 }
 
@@ -64,7 +85,7 @@ impl Default for Errand {
     fn default() -> Self {
         let wake = eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)
             .inspect_err(|error| {
-                warn!(%error, "a setup's hides can't be given up with a cancel, and are hung up on instead");
+                warn!(%error, "a setup's requests to the hiding service can't be given up, and are hung up on instead");
             })
             .ok();
         Self {
@@ -86,8 +107,12 @@ impl Errand {
             && let Err(error) = rustix::io::write(wake, &1u64.to_ne_bytes())
         {
             // Full, after more ends than there can be: readable already.
-            debug!(%error, "couldn't wake a setup's hides");
+            debug!(%error, "couldn't wake a setup's requests");
         }
+    }
+
+    fn wake(&self) -> Option<BorrowedFd<'_>> {
+        self.wake.as_ref().map(AsFd::as_fd)
     }
 }
 
@@ -101,8 +126,11 @@ struct Connection {
     /// what was hidden through it.
     hung_up: AtomicBool,
     /// Whether the service it is to counts its re-binds and takes a
-    /// `cancel`, as it said when it was found.
+    /// `cancel`, as it said when the connection was made.
     counts: AtomicBool,
+    /// How many replies are still to come to requests whose callers gave
+    /// up waiting for them, which come before any other's.
+    unread: AtomicU32,
 }
 
 impl Connection {
@@ -112,6 +140,7 @@ impl Connection {
             turn: Mutex::new(()),
             hung_up: AtomicBool::new(false),
             counts: AtomicBool::new(false),
+            unread: AtomicU32::new(0),
         })
     }
 
@@ -133,6 +162,23 @@ impl Connection {
 
     fn is_hung_up(&self) -> bool {
         self.hung_up.load(Ordering::Relaxed)
+    }
+
+    /// Reads past the replies to requests given up, with its turn held.
+    /// Returns whether it has, and not been given up itself, as `wake`
+    /// becoming readable gives it up.
+    fn read_past(&self, wake: Option<BorrowedFd<'_>>, ended: &dyn Fn() -> bool) -> bool {
+        while self.unread.load(Ordering::Relaxed) > 0 {
+            if self.client.wait(wake).is_err() || ended() {
+                return false;
+            }
+            if let Err(error) = self.client.skip() {
+                debug!(%error, "a reply given up couldn't be read past");
+                return false;
+            }
+            self.unread.fetch_sub(1, Ordering::Relaxed);
+        }
+        true
     }
 }
 
@@ -160,15 +206,37 @@ enum Found {
     },
 }
 
+/// What a request under way is, and so how ending its errand gives it
+/// up.
+#[derive(Debug)]
+enum Kind {
+    /// A hide of this pad: given up with a `cancel`, where the service
+    /// takes one and the errand can wake it.
+    Hide(String),
+    /// A request on the connection a pad was hidden on: given up by
+    /// leaving its reply to be read past, where the errand can wake it,
+    /// so the pad stays hidden until it is shown again as asked.
+    OnHeld,
+    /// Any other: hung up on.
+    Other,
+}
+
 /// A request under way.
 #[derive(Debug)]
 struct Asking {
     errand: Arc<Errand>,
     connection: Arc<Connection>,
-    /// For a hide that can be given up with a `cancel`, the pad.
-    hide_of: Option<String>,
-    /// Whether its errand ended as it was asked, which gives it up.
+    kind: Kind,
+    /// Whether its errand ended as it was asked, which gives a hide up.
     cut: bool,
+}
+
+/// A reading under way, as [`State`] keeps it.
+#[derive(Debug)]
+struct Read {
+    number: u64,
+    pad: String,
+    connection: Arc<Connection>,
 }
 
 #[derive(Debug)]
@@ -184,51 +252,114 @@ struct State {
     rebound: BTreeSet<String>,
     /// Each request under way.
     asking: Vec<Asking>,
+    /// Each reading under way, oldest first.
+    readings: Vec<Read>,
+    /// The last reading's number.
+    read: u64,
     /// Whether the daemon is stopping: nothing more is asked.
     closed: bool,
+}
+
+/// What is shared with the readings and with the thread that makes
+/// connections, which end or report on their own.
+#[derive(Debug)]
+struct Shared {
+    state: Mutex<State>,
+    /// Told whenever the service has been looked for, an errand ends, a
+    /// reading ends, a connection is made, or the daemon stops: what a
+    /// request waiting on any of them waits on.
+    changed: Condvar,
+}
+
+impl Shared {
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .expect("nothing panics while what is known of the hiding service is held")
+    }
+
+    fn wait<'a>(&self, state: MutexGuard<'a, State>) -> MutexGuard<'a, State> {
+        self.changed
+            .wait(state)
+            .expect("nothing panics while what is known of the hiding service is held")
+    }
 }
 
 /// How a request went, when it didn't go as asked.
 #[derive(Debug)]
 enum Unasked {
-    /// Its errand ended, or its connection was hung up, before or while
-    /// it was asked: the service shows again what was hidden through
-    /// that connection.
+    /// Its errand ended, or its connection was hung up, before it was
+    /// asked: nothing was.
     Ended,
+    /// Its connection was hung up, or it was given up, as it was asked:
+    /// what it did isn't known, and the service shows again what was
+    /// hidden through a connection hung up.
+    Dropped,
     /// A hide whose errand ended as it was asked, given up with a
-    /// `cancel`.
-    Cut(Cut),
+    /// `cancel`; what it came to is to be read.
+    Cut(Reading),
     /// The service refused, as this says.
     Refused(Refusal),
     /// The service isn't there, or its connection broke.
     NotThere,
 }
 
-/// A hide given up as it was asked, which the service leaves the pad as
-/// it was from, and says what that took once [settled](Hiding::settle).
+/// What a [`Reading`] reads.
 #[derive(Debug)]
-pub(crate) struct Cut {
-    connection: Arc<Connection>,
+enum What {
+    /// What a hide given up with a `cancel` came to.
+    Cut,
+    /// What showing the pad the service knows by this token again came
+    /// to, once asked.
+    Show(ctrlassist_hider::Token),
 }
 
-/// Two are the same hide given up when they are on the same connection.
-impl PartialEq for Cut {
+/// A reply about a pad that nothing waits on but the book: what a hide
+/// given up came to, or what showing a pad again did, once
+/// [read](Hiding::read). Until it is read, or dropped, a hide of the same
+/// pad waits for it.
+#[must_use = "dropping a reading hangs its connection up, which has the service show its pad again unsaid"]
+#[derive(Debug)]
+pub(crate) struct Reading {
+    shared: Arc<Shared>,
+    number: u64,
+    connection: Arc<Connection>,
+    what: What,
+}
+
+/// Two are the same reading when they are numbered the same.
+impl PartialEq for Reading {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.connection, &other.connection)
+        self.number == other.number
     }
 }
 
-impl Eq for Cut {}
+impl Eq for Reading {}
 
-/// How many times asking the service to hide a pad made the pad go and
-/// come back, as the service said.
+impl Drop for Reading {
+    /// Ends it: its connection, which nothing is asked on after it, is
+    /// hung up, and a hide of its pad waits no longer.
+    fn drop(&mut self) {
+        self.connection.hang_up();
+        let mut state = self.shared.state();
+        state.readings.retain(|read| read.number != self.number);
+        drop(state);
+        self.shared.changed.notify_all();
+    }
+}
+
+/// What asking the service to hide a pad came to, in the pad's goings
+/// and comings back.
 #[derive(Debug)]
 pub(crate) enum Rebinds {
-    /// Known now: none where nothing was asked, or nothing re-bound.
-    Known(u8),
-    /// A hide given up as it was asked: known once settled, and two at
-    /// most, the hiding and the showing again.
-    Cut(Cut),
+    /// Known now.
+    Known(Count),
+    /// A hide given up as it was asked: known once read, and two at most,
+    /// the hiding and the showing again.
+    Cut(Reading),
+    /// Hidden, as counted, and then to be shown again by the reading, once
+    /// what that does is expected: the pad couldn't be read.
+    Then(Count, Reading),
 }
 
 /// A pad the service has just hidden.
@@ -238,21 +369,84 @@ pub(crate) struct Hidden {
     /// Its event node, opened by the service once it was hidden.
     pub(crate) event: OwnedFd,
     /// How many times the service re-bound it to hide it: once.
-    pub(crate) rebinds: u8,
+    pub(crate) rebinds: Count,
 }
 
 /// Why a pad wasn't hidden.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Unhidden {
-    /// The errand it was asked for ended first: nothing was re-bound, or
-    /// with a service from before `cancel`, what was isn't known.
-    Ended,
+    /// The errand it was asked for ended first: nothing was asked, or,
+    /// with `asked`, a service from before `cancel` was hung up on as it
+    /// was asked, and what it did isn't known.
+    Ended { asked: bool },
     /// The service isn't there, or refused: the pad is to be grabbed. It
     /// re-bound the pad this many times all the same, as it does when a
     /// hide fails after the re-bind and it shows the pad again.
-    Not(u8),
+    Not(Count),
     /// The errand it was asked for ended as it was asked.
-    Cut(Cut),
+    Cut(Reading),
+}
+
+/// A connection being made by [`Connector`], for a request that waits.
+#[derive(Debug, Default)]
+struct Dialing {
+    made: Mutex<Option<Result<Client, Error>>>,
+    /// Whether the request gave up waiting: what is made is dropped.
+    given_up: AtomicBool,
+}
+
+/// Makes the connections that wait for room in the service's queue of
+/// connections to accept, one at a time, on a thread of its own, which
+/// it starts when first needed. A request that needs one waits for it
+/// as it waits for anything else, and gives up as its errand ends,
+/// leaving the connection to be dropped once made. One thread, however
+/// many give up, so a service that never accepts holds that thread alone.
+#[derive(Debug, Default)]
+struct Connector {
+    queue: Mutex<Option<mpsc::Sender<Arc<Dialing>>>>,
+}
+
+impl Connector {
+    /// Has a connection made to `socket` for `dialing`, telling `shared`
+    /// once it is. Returns whether it is under way.
+    fn dial(&self, socket: &Path, shared: &Arc<Shared>, dialing: Arc<Dialing>) -> bool {
+        let mut queue = self
+            .queue
+            .lock()
+            .expect("nothing panics while the connector's queue is held");
+        if queue.is_none() {
+            let (sender, receiver) = mpsc::channel::<Arc<Dialing>>();
+            let (socket, shared) = (socket.to_path_buf(), Arc::clone(shared));
+            let started = std::thread::Builder::new()
+                .name("hider-connect".into())
+                .spawn(move || {
+                    for dialing in receiver {
+                        if dialing.given_up.load(Ordering::Relaxed) {
+                            continue;
+                        }
+                        let made = Client::connect_waiting(&socket);
+                        let state = shared.state();
+                        *dialing
+                            .made
+                            .lock()
+                            .expect("nothing panics while a connection being made is held") =
+                            Some(made);
+                        drop(state);
+                        shared.changed.notify_all();
+                    }
+                });
+            match started {
+                Ok(_) => *queue = Some(sender),
+                Err(error) => {
+                    warn!(%error, "couldn't start the thread that waits for room at the hiding service");
+                    return false;
+                }
+            }
+        }
+        queue
+            .as_ref()
+            .is_some_and(|queue| queue.send(dialing).is_ok())
+    }
 }
 
 /// How a setup's pads are kept from games: through the hiding service
@@ -261,29 +455,32 @@ pub(crate) enum Unhidden {
 pub(crate) struct Hiding {
     /// Where the service listens; none where there is none to look for.
     socket: Option<PathBuf>,
-    state: Mutex<State>,
-    /// Told whenever the service has been looked for, an errand ends or
-    /// the daemon stops: what a start waiting on the first look waits on.
-    changed: Condvar,
+    shared: Arc<Shared>,
     /// The daemon's own requests: looking for the service, copying a
-    /// pad, showing pads again. Ended only as the daemon stops.
+    /// pad. Ended only as the daemon stops.
     own: Arc<Errand>,
+    connector: Connector,
 }
 
 impl Hiding {
     fn with(socket: Option<PathBuf>, found: Found) -> Self {
         Self {
             socket,
-            state: Mutex::new(State {
-                found,
-                held: BTreeMap::new(),
-                tokens: 0,
-                rebound: BTreeSet::new(),
-                asking: Vec::new(),
-                closed: false,
+            shared: Arc::new(Shared {
+                state: Mutex::new(State {
+                    found,
+                    held: BTreeMap::new(),
+                    tokens: 0,
+                    rebound: BTreeSet::new(),
+                    asking: Vec::new(),
+                    readings: Vec::new(),
+                    read: 0,
+                    closed: false,
+                }),
+                changed: Condvar::new(),
             }),
-            changed: Condvar::new(),
             own: Arc::default(),
+            connector: Connector::default(),
         }
     }
 
@@ -300,9 +497,11 @@ impl Hiding {
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .expect("nothing panics while what is known of the hiding service is held")
+        self.shared.state()
+    }
+
+    fn notify(&self) {
+        self.shared.changed.notify_all();
     }
 
     /// Notes what was found of the service, and tells whoever waits.
@@ -321,7 +520,7 @@ impl Hiding {
             state.found = found;
         }
         drop(state);
-        self.changed.notify_all();
+        self.notify();
     }
 
     /// Looks for the service, as the daemon starts, and asks its release.
@@ -338,41 +537,44 @@ impl Hiding {
             state.found = Found::Absent;
         }
         drop(state);
-        self.changed.notify_all();
+        self.notify();
     }
 
     /// Ends `errand`: each request it has under way ends at once, and
     /// nothing it asks from now on is asked. A hide under way is given up
     /// with a `cancel`, where the service takes one, and the pads of
-    /// those are returned: the service shows each again if it re-bound
-    /// it, so each is to go and come back once more than was expected of
-    /// its hide, until [settled](Self::settle). Any other request is hung
-    /// up.
+    /// those are returned, each once however many times it is ended; a
+    /// request on a hidden pad's own connection leaves its reply to be
+    /// read past; any other is hung up.
     pub(crate) fn end(&self, errand: &Arc<Errand>) -> Vec<String> {
         let mut state = self.state();
         errand.end();
+        let wakes = errand.wake.is_some();
         let mut cut = Vec::new();
         for asking in &mut state.asking {
-            if !Arc::ptr_eq(&asking.errand, errand) {
+            // Given up already, by an end before this one.
+            if !Arc::ptr_eq(&asking.errand, errand) || asking.cut {
                 continue;
             }
-            match &asking.hide_of {
-                Some(pad) if asking.connection.counts() && errand.wake.is_some() => {
+            match &asking.kind {
+                Kind::Hide(pad) if wakes && asking.connection.counts() => {
                     asking.cut = true;
                     cut.push(pad.clone());
                 }
+                // Woken by the errand, and its reply read past later.
+                Kind::OnHeld if wakes => {}
                 _ => asking.connection.hang_up(),
             }
         }
         drop(state);
-        self.changed.notify_all();
+        self.notify();
         cut
     }
 
-    /// Hangs up every request under way, as the daemon stops, and asks
-    /// nothing from now on: nothing is left waiting on the service. The
-    /// pads still hidden are shown again by the service as the
-    /// connections they were hidden on close, with the daemon.
+    /// Hangs up every request and every reading under way, as the daemon
+    /// stops, and asks nothing from now on: nothing is left waiting on
+    /// the service. The pads still hidden are shown again by the service
+    /// as the connections they were hidden on close, with the daemon.
     pub(crate) fn close(&self) {
         let mut state = self.state();
         state.closed = true;
@@ -380,8 +582,11 @@ impl Hiding {
         for asking in &state.asking {
             asking.connection.hang_up();
         }
+        for read in &state.readings {
+            read.connection.hang_up();
+        }
         drop(state);
-        self.changed.notify_all();
+        self.notify();
     }
 
     /// The mechanism, for the daemon's state: the service if it was
@@ -417,14 +622,14 @@ impl Hiding {
     }
 
     /// Asks one thing on `connection` for `errand`, unless the errand has
-    /// ended. Ending it meanwhile ends the request.
+    /// ended. Ending it meanwhile hangs the request up.
     fn ask<T>(
         &self,
         errand: &Arc<Errand>,
         connection: &Arc<Connection>,
         ask: impl FnOnce(&Client) -> Result<T, Error>,
     ) -> Result<T, Unasked> {
-        self.asking(errand, connection, None)?;
+        self.asking(errand, connection, Kind::Other)?;
         let outcome = {
             let _turn = connection.turn();
             (!connection.is_hung_up()).then(|| ask(&connection.client))
@@ -433,14 +638,55 @@ impl Hiding {
         self.answered(connection, outcome)
     }
 
+    /// Asks one thing on the connection a pad was hidden on, for
+    /// `errand`, unless the errand has ended: `send` sends it and `read`
+    /// reads its reply. Ending the errand meanwhile gives it up, leaving
+    /// its reply to be read past by the next request, so the connection,
+    /// and the pad hidden through it, stay.
+    fn ask_held<T>(
+        &self,
+        errand: &Arc<Errand>,
+        connection: &Arc<Connection>,
+        send: impl FnOnce(&Client) -> Result<(), Error>,
+        read: impl FnOnce(&Client) -> Result<T, Error>,
+    ) -> Result<T, Unasked> {
+        self.asking(errand, connection, Kind::OnHeld)?;
+        let outcome = {
+            let _turn = connection.turn();
+            let ended = || errand.has_ended();
+            if connection.is_hung_up() || ended() {
+                None
+            } else if !connection.read_past(errand.wake(), &ended) {
+                Some(Err(Unasked::Ended))
+            } else {
+                let sent =
+                    send(&connection.client).and_then(|()| connection.client.wait(errand.wake()));
+                match sent {
+                    // Woken by the errand's end, or the reply: if both, the
+                    // reply is read past all the same.
+                    Ok(()) if ended() && errand.wake.is_some() => {
+                        connection.unread.fetch_add(1, Ordering::Relaxed);
+                        Some(Err(Unasked::Dropped))
+                    }
+                    sent => Some(Ok(sent.and_then(|()| read(&connection.client)))),
+                }
+            }
+        };
+        self.unask(errand, connection);
+        match outcome {
+            Some(Err(unasked)) => Err(unasked),
+            Some(Ok(outcome)) => self.answered(connection, Some(outcome)),
+            None => self.answered::<T>(connection, None),
+        }
+    }
+
     /// Notes a request under way for `errand` on `connection`, unless the
-    /// errand has ended; `hide_of` names the pad of a hide that can be
-    /// given up with a `cancel`.
+    /// errand has ended.
     fn asking(
         &self,
         errand: &Arc<Errand>,
         connection: &Arc<Connection>,
-        hide_of: Option<&str>,
+        kind: Kind,
     ) -> Result<(), Unasked> {
         let mut state = self.state();
         if state.closed || errand.has_ended() {
@@ -449,7 +695,7 @@ impl Hiding {
         state.asking.push(Asking {
             errand: Arc::clone(errand),
             connection: Arc::clone(connection),
-            hide_of: hide_of.map(str::to_string),
+            kind,
             cut: false,
         });
         Ok(())
@@ -475,10 +721,10 @@ impl Hiding {
     ) -> Result<T, Unasked> {
         match outcome {
             Some(Ok(answer)) => Ok(answer),
-            // Hung up as it was asked, or before.
-            Some(Err(_)) | None if connection.is_hung_up() => {
+            // Hung up as it was asked.
+            Some(Err(_)) if connection.is_hung_up() => {
                 debug!("a request to the hiding service was ended");
-                Err(Unasked::Ended)
+                Err(Unasked::Dropped)
             }
             // A pad that has just left can't be opened again yet: the
             // usual case of a pad leaving a setup, and nothing wrong.
@@ -515,41 +761,109 @@ impl Hiding {
         pad: &str,
         fd: BorrowedFd<'_>,
     ) -> Result<Hid, Unasked> {
-        self.asking(errand, connection, Some(pad))?;
+        self.asking(errand, connection, Kind::Hide(pad.to_string()))?;
         let turn = connection.turn();
-        let sent = (!connection.is_hung_up()).then(|| {
-            connection.client.send_hide(fd)?;
+        // Not sent once its errand has ended, as seen with the turn held:
+        // an end from here on finds a hide sent to give up.
+        if errand.has_ended() || connection.is_hung_up() {
+            drop(turn);
+            self.unask(errand, connection);
+            return Err(Unasked::Ended);
+        }
+        let sent = connection
+            .client
+            .send_hide(fd)
             // The reply, or the errand's end, whichever is first.
-            let wake = errand.wake.as_ref().map(AsFd::as_fd);
-            connection.client.wait(wake)
-        });
+            .and_then(|()| connection.client.wait(errand.wake()));
         if self.unask(errand, connection) {
             debug!(pad, "a hide was given up as it was asked");
             // Nothing more is asked after it on its connection but what
-            // settling it reads.
+            // reading it reads.
             if let Err(error) = connection.client.cancel() {
                 debug!(%error, "the hiding service couldn't be told to give a hide up");
             }
             drop(turn);
-            return Err(Unasked::Cut(Cut {
-                connection: Arc::clone(connection),
-            }));
+            return Err(Unasked::Cut(self.reading(pad, connection, What::Cut)));
         }
-        let outcome = sent.map(|sent| sent.and_then(|()| connection.client.hid()));
+        let outcome = sent.and_then(|()| connection.client.hid());
         drop(turn);
-        self.answered(connection, outcome)
+        self.answered(connection, Some(outcome))
     }
 
-    /// Waits for what a hide given up came to, as the service says once
-    /// it has left the pad as it was: how many times it re-bound the pad
-    /// for the hide and the cancel together, which is how many times the
-    /// pad goes and comes back for them. None counted where the service
-    /// went, or the daemon stops, before saying. A request of the
-    /// daemon's own, so only the daemon stopping ends it.
-    pub(crate) fn settle(&self, cut: Cut) -> u8 {
-        let own = Arc::clone(&self.own);
-        self.ask(&own, &cut.connection, Client::cancelled)
-            .unwrap_or_default()
+    /// Notes a reading of `pad`'s on `connection`: another of the pad's
+    /// under way is hung up, and past [`MOST_READINGS`] the oldest.
+    fn reading(&self, pad: &str, connection: &Arc<Connection>, what: What) -> Reading {
+        let mut state = self.state();
+        state.read += 1;
+        let number = state.read;
+        for read in state.readings.iter().filter(|read| read.pad == pad) {
+            debug!(pad, "a reading is given up for a newer one of the same pad");
+            read.connection.hang_up();
+        }
+        state.readings.push(Read {
+            number,
+            pad: pad.to_string(),
+            connection: Arc::clone(connection),
+        });
+        let mut live = state
+            .readings
+            .iter()
+            .filter(|read| !read.connection.is_hung_up());
+        if live.clone().count() > MOST_READINGS
+            && let Some(oldest) = live.next()
+        {
+            warn!(
+                pad = oldest.pad,
+                most = MOST_READINGS,
+                "the hiding service hasn't answered for a pad of the most readings left under way; it is hung up on, and the service shows the pad again unsaid"
+            );
+            oldest.connection.hang_up();
+        }
+        if state.closed {
+            connection.hang_up();
+        }
+        Reading {
+            shared: Arc::clone(&self.shared),
+            number,
+            connection: Arc::clone(connection),
+            what,
+        }
+    }
+
+    /// Reads what `reading` waits for: how many times the service
+    /// re-bound the pad, as it said, for a hide given up (for the hide and
+    /// the cancel together) or for showing the pad again. None where it
+    /// said nothing: the reading was hung up or its connection broke, or
+    /// the service doesn't count. Waits on the service, on its own
+    /// connection alone, and nothing else waits on it.
+    pub(crate) fn read(&self, reading: Reading) -> Option<u8> {
+        let connection = &reading.connection;
+        let _turn = connection.turn();
+        if connection.is_hung_up() {
+            return None;
+        }
+        let said = match &reading.what {
+            What::Cut => connection.client.cancelled().map(Some),
+            What::Show(token) => {
+                if !connection.read_past(None, &|| false) {
+                    return None;
+                }
+                match connection.client.restore(*token) {
+                    // Not the service's to show: nothing was re-bound.
+                    Err(Error::Refused(refusal)) => {
+                        warn!(%refusal, "the hiding service didn't show a pad again");
+                        Ok(Some(0))
+                    }
+                    said => said,
+                }
+            }
+        };
+        said.unwrap_or_else(|error| {
+            if !connection.is_hung_up() {
+                debug!(%error, "the hiding service didn't say what it did for a pad");
+            }
+            None
+        })
     }
 
     /// A new connection to the service, for `errand`, which says its
@@ -562,14 +876,23 @@ impl Hiding {
         if self.state().closed || errand.has_ended() {
             return Err(Unasked::Ended);
         }
-        let connection = match Client::connect(socket) {
-            Ok(client) => Connection::new(client),
+        let client = match Client::connect(socket) {
+            Ok(client) => client,
+            // There, with its queue of connections to accept full: waited
+            // for, as the request waits for anything.
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                debug!(
+                    "the hiding service has no room for another connection yet; waiting for room"
+                );
+                self.dial(socket, errand)?
+            }
             Err(error) => {
                 debug!(%error, "the hiding service can't be reached");
                 self.found(Found::Absent);
                 return Err(Unasked::NotThere);
             }
         };
+        let connection = Connection::new(client);
         let counts = match self.ask(errand, &connection, Client::release) {
             Ok((release, counts)) => {
                 self.found(Found::There {
@@ -589,42 +912,86 @@ impl Hiding {
             // Any other refusal, as of a caller not in front of a seat,
             // says nothing of what the service is: what is known of it
             // stays as it was, and the next connection asks again.
+            Err(Unasked::Dropped) => return Err(Unasked::Ended),
             Err(unasked) => return Err(unasked),
         };
         connection.counts.store(counts, Ordering::Relaxed);
         Ok(connection)
     }
 
-    /// Waits until the service has been looked for as the daemon starts,
-    /// or `errand` ends.
-    fn looked(&self, errand: &Errand) -> Result<(), Unhidden> {
+    /// Waits for a connection to `socket` that waits for room, unless
+    /// `errand` ends or the daemon stops first.
+    fn dial(&self, socket: &Path, errand: &Errand) -> Result<Client, Unasked> {
+        let dialing = Arc::new(Dialing::default());
+        if !self
+            .connector
+            .dial(socket, &self.shared, Arc::clone(&dialing))
+        {
+            return Err(Unasked::NotThere);
+        }
         let mut state = self.state();
-        while state.found == Found::Looking {
-            if state.closed || errand.has_ended() {
-                return Err(Unhidden::Ended);
+        loop {
+            let made = dialing
+                .made
+                .lock()
+                .expect("nothing panics while a connection being made is held")
+                .take();
+            if let Some(made) = made {
+                drop(state);
+                return made.map_err(|error| {
+                    debug!(%error, "the hiding service can't be reached");
+                    self.found(Found::Absent);
+                    Unasked::NotThere
+                });
             }
-            state = self
-                .changed
-                .wait(state)
-                .expect("nothing panics while what is known of the hiding service is held");
+            if state.closed || errand.has_ended() {
+                dialing.given_up.store(true, Ordering::Relaxed);
+                return Err(Unasked::Ended);
+            }
+            state = self.shared.wait(state);
+        }
+    }
+
+    /// Waits until the service has been looked for as the daemon starts,
+    /// and until `pad` has no reading under way, or `errand` ends.
+    fn wait_for(&self, errand: &Errand, pad: &str) -> Result<(), Unhidden> {
+        let mut state = self.state();
+        while state.found == Found::Looking || state.readings.iter().any(|read| read.pad == pad) {
+            if state.closed || errand.has_ended() {
+                return Err(Unhidden::Ended { asked: false });
+            }
+            state = self.shared.wait(state);
         }
         Ok(())
     }
 
     /// Has the service hide the pad known as `pad`, whose event node
     /// `fd` is open on, for `errand`. Until the service has been looked
-    /// for as the daemon starts, this waits for that.
+    /// for as the daemon starts, this waits for that; and while the pad
+    /// is being shown again, or a hide of it given up is being read, for
+    /// that: the service holds the pad until its re-bind is done, and
+    /// would refuse it as busy meanwhile.
     pub(crate) fn hide(
         &self,
         errand: &Arc<Errand>,
         pad: &str,
         fd: BorrowedFd<'_>,
     ) -> Result<Hidden, Unhidden> {
-        self.looked(errand)?;
-        let hid = self.connect(errand).and_then(|connection| {
-            let hid = self.ask_hide(errand, &connection, pad, fd)?;
-            Ok((connection, hid))
-        });
+        self.wait_for(errand, pad)?;
+        let connection = match self.connect(errand) {
+            Ok(connection) => connection,
+            Err(Unasked::Ended | Unasked::Dropped | Unasked::Cut(_)) => {
+                return Err(Unhidden::Ended { asked: false });
+            }
+            // Nothing was asked of a service that isn't there or refused
+            // to say its release.
+            Err(Unasked::Refused(_) | Unasked::NotThere) => {
+                return Err(Unhidden::Not(Count::said(0)));
+            }
+        };
+        let hid = self
+            .ask_hide(errand, &connection, pad, fd)
+            .map(|hid| (connection, hid));
         let (connection, hidden, rebinds) = match hid {
             Ok((connection, Hid { outcome, rebinds })) => match outcome {
                 Ok(hidden) => (connection, hidden, rebinds),
@@ -637,14 +1004,17 @@ impl Hiding {
                     } else {
                         warn!(pad, %refusal, "the hiding service didn't do as asked");
                     }
-                    // A service that doesn't count re-binds nothing it
-                    // refuses, or so it would say.
-                    return Err(Unhidden::Not(rebinds.unwrap_or(0)));
+                    // A refusal says how many re-binds it made, none said
+                    // being none made.
+                    return Err(Unhidden::Not(Count::said(rebinds.unwrap_or(0))));
                 }
             },
-            Err(Unasked::Ended) => return Err(Unhidden::Ended),
-            Err(Unasked::Cut(cut)) => return Err(Unhidden::Cut(cut)),
-            Err(Unasked::Refused(_) | Unasked::NotThere) => return Err(Unhidden::Not(0)),
+            Err(Unasked::Ended) => return Err(Unhidden::Ended { asked: false }),
+            Err(Unasked::Dropped) => return Err(Unhidden::Ended { asked: true }),
+            Err(Unasked::Cut(reading)) => return Err(Unhidden::Cut(reading)),
+            Err(Unasked::Refused(_)) => return Err(Unhidden::Not(Count::said(0))),
+            // Broken as it was asked, it may have re-bound the pad.
+            Err(Unasked::NotThere) => return Err(Unhidden::Not(Count::guessed(0))),
         };
         let mut state = self.state();
         // Hidden by re-binding its driver, it is shown again the same way.
@@ -667,7 +1037,7 @@ impl Hiding {
             event: hidden.event,
             // A service that doesn't count re-bound it if it says it
             // dislodged it.
-            rebinds: rebinds.unwrap_or(u8::from(hidden.dislodged)),
+            rebinds: rebinds.map_or(Count::guessed(u8::from(hidden.dislodged)), Count::said),
         })
     }
 
@@ -681,7 +1051,12 @@ impl Hiding {
     /// Opens a hidden pad again after it has reconnected, for `errand`.
     pub(crate) fn reopen(&self, errand: &Arc<Errand>, token: Token) -> Option<OwnedFd> {
         let (connection, token) = self.held(token)?;
-        let hidden = self.ask(errand, &connection, |client| client.reopen(token));
+        let hidden = self.ask_held(
+            errand,
+            &connection,
+            |client| client.send_reopen(token),
+            Client::reopened,
+        );
         hidden.ok().map(|hidden| hidden.event)
     }
 
@@ -689,8 +1064,13 @@ impl Hiding {
     /// `errand`.
     pub(crate) fn raw_of(&self, errand: &Arc<Errand>, token: Token) -> Option<OwnedFd> {
         let (connection, token) = self.held(token)?;
-        self.ask(errand, &connection, |client| client.raw_of(token))
-            .ok()
+        self.ask_held(
+            errand,
+            &connection,
+            |client| client.send_raw_of(token),
+            Client::raw_opened,
+        )
+        .ok()
     }
 
     /// Opens the raw HID node of the pad whose event node `fd` is open
@@ -701,87 +1081,101 @@ impl Hiding {
         self.ask(&own, &connection, |client| client.raw(fd)).ok()
     }
 
-    /// Shows a hidden pad again, and gives up its connection. Returns
-    /// whether the service shows it again: it did as asked, or the
-    /// connection was hung up or broke, which has it shown again all the
-    /// same; not if it refused, or the pad isn't one it hid. With that,
-    /// how many times it re-bound the pad to, where it said.
-    fn show(&self, token: Token) -> (bool, Option<u8>) {
-        let Some(held) = self.state().held.remove(&token) else {
-            return (false, None);
-        };
-        let own = Arc::clone(&self.own);
-        match self.ask(&own, &held.connection, |client| client.restore(held.token)) {
-            Ok(rebinds) => (true, rebinds),
-            Err(Unasked::Refused(_)) => (false, None),
-            Err(_) => (true, None),
-        }
-    }
-
-    /// Restores each pad named, once what read them has been dropped.
-    /// Returns those the service won't show again, by what they are
-    /// known by.
-    pub(crate) fn restore(&self, pads: &[(String, Token)]) -> Vec<String> {
-        pads.iter()
-            .filter(|(_, token)| !self.show(*token).0)
-            .map(|(pad, _)| pad.clone())
-            .collect()
-    }
-
-    /// Restores a pad nothing else is told of. Returns how many times the
-    /// service re-bound it to: as it said, or once where it said nothing
-    /// and showed it, as a service that doesn't count does.
-    pub(crate) fn restore_token(&self, token: Token) -> u8 {
-        match self.show(token) {
-            (true, rebinds) => rebinds.unwrap_or(1),
-            (false, _) => 0,
-        }
+    /// Sets about showing the hidden pad `pad`, known as `token`, again,
+    /// with no round trip: what that does is [read](Self::read) from the
+    /// reading returned, which asks it. None for a pad the service
+    /// doesn't have hidden for this daemon.
+    pub(crate) fn show(&self, pad: &str, token: Token) -> Option<Reading> {
+        let held = self.state().held.remove(&token)?;
+        Some(self.reading(pad, &held.connection, What::Show(held.token)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     //! The hiding service as the daemon's client to it sees one that
-    //! never answers: a socket that is listened on and never accepted
-    //! from, so a connection is made and a request is never read.
+    //! never answers (a socket that is listened on and never accepted
+    //! from, so a connection is made and a request is never read), and
+    //! one scripted to answer as each test needs.
 
     use std::fs::File;
     use std::os::fd::AsFd;
     use std::time::Duration;
 
-    use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, bind, listen, socket};
+    use ctrlassist_test::{Asked, Cancelled, FakeHider, Script};
+    use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, accept, bind, listen, socket};
     use tempfile::TempDir;
 
     use super::*;
 
-    /// A service that takes connections and never answers.
-    fn silent() -> (TempDir, OwnedFd, PathBuf) {
-        let dir = tempfile::Builder::new()
+    /// A directory for a socket, short enough for its path.
+    fn a_dir() -> TempDir {
+        tempfile::Builder::new()
             .prefix("ca")
             .tempdir_in("/tmp")
-            .unwrap();
+            .unwrap()
+    }
+
+    /// A service that takes `backlog` connections and never answers.
+    fn silent_with(backlog: i32) -> (TempDir, OwnedFd, PathBuf) {
+        let dir = a_dir();
         let path = dir.path().join("hider.sock");
         let listener = socket(AddressFamily::UNIX, SocketType::SEQPACKET, None).unwrap();
         bind(&listener, &SocketAddrUnix::new(&path).unwrap()).unwrap();
-        listen(&listener, 16).unwrap();
+        listen(&listener, backlog).unwrap();
         (dir, listener, path)
     }
 
+    /// A service that takes connections and never answers.
+    fn silent() -> (TempDir, OwnedFd, PathBuf) {
+        silent_with(16)
+    }
+
+    /// A scripted stand-in, and the hiding that has looked for it.
+    fn scripted(script: Script) -> (TempDir, FakeHider, Arc<Hiding>) {
+        let dir = a_dir();
+        let path = dir.path().join("hider.sock");
+        let hider = FakeHider::scripted(&path, script).unwrap();
+        let hiding = Arc::new(Hiding::new(&path));
+        hiding.look();
+        (dir, hider, hiding)
+    }
+
     /// Runs `work` on a thread of its own, and hands back what it says.
-    fn aside<T: Send + 'static>(
-        work: impl FnOnce() -> T + Send + 'static,
-    ) -> std::sync::mpsc::Receiver<T> {
-        let (said, says) = std::sync::mpsc::channel();
+    fn aside<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> mpsc::Receiver<T> {
+        let (said, says) = mpsc::channel();
         std::thread::spawn(move || {
             let _ = said.send(work());
         });
         says
     }
 
-    /// Something to pass as a pad's descriptor, which a service that
-    /// never reads its requests never looks at.
+    /// Something to pass as a pad's descriptor, which neither a service
+    /// that never reads its requests nor the stand-in looks at.
     fn a_descriptor() -> OwnedFd {
         File::open("/dev/null").unwrap().into()
+    }
+
+    /// Hides `pad` for `errand` aside, and hands back what came of it.
+    fn hiding_aside(
+        hiding: &Arc<Hiding>,
+        errand: &Arc<Errand>,
+        pad: &'static str,
+    ) -> mpsc::Receiver<Result<Hidden, Unhidden>> {
+        let (hiding, errand) = (Arc::clone(hiding), Arc::clone(errand));
+        aside(move || {
+            let fd = a_descriptor();
+            hiding.hide(&errand, pad, fd.as_fd())
+        })
+    }
+
+    /// How many hides the stand-in was asked.
+    fn hides(hider: &FakeHider) -> usize {
+        hider
+            .asked()
+            .iter()
+            .filter(|asked| matches!(asked, Asked::Hide(_)))
+            .count()
     }
 
     /// Long enough for a thread that isn't waiting to have said so; how
@@ -802,18 +1196,15 @@ mod tests {
             move || hiding.look()
         });
         let errand = Arc::new(Errand::default());
-        let starting = aside({
-            let (hiding, errand) = (Arc::clone(&hiding), Arc::clone(&errand));
-            move || {
-                let fd = a_descriptor();
-                hiding.hide(&errand, "pad", fd.as_fd()).map(|_| ())
-            }
-        });
+        let starting = hiding_aside(&hiding, &errand, "pad");
         assert!(starting.recv_timeout(SETTLE).is_err(), "it waits");
         // Saying how pads are hidden waits on none of it.
         assert_eq!(hiding.mechanism(), payload::Hiding::Looking);
         hiding.end(&errand);
-        assert_eq!(starting.recv().unwrap(), Err(Unhidden::Ended));
+        assert_eq!(
+            starting.recv().unwrap().map(|_| ()),
+            Err(Unhidden::Ended { asked: false })
+        );
         assert!(looking.recv_timeout(SETTLE).is_err(), "still looking");
         hiding.close();
         looking.recv().unwrap();
@@ -828,36 +1219,32 @@ mod tests {
     fn a_hide_that_is_never_answered_holds_only_its_own_setup() {
         let (_dir, _listener, path) = silent();
         let hiding = Arc::new(Hiding::new(&path));
-        // Found already, so no release is asked first.
+        // Found already, so no start waits for the look.
         hiding.found(Found::There {
             release: None,
             counts: false,
         });
-        let hide = |errand: &Arc<Errand>| {
-            let (hiding, errand) = (Arc::clone(&hiding), Arc::clone(errand));
-            aside(move || {
-                let fd = a_descriptor();
-                hiding.hide(&errand, "pad", fd.as_fd()).map(|_| ())
-            })
-        };
         let (first, second) = (Arc::new(Errand::default()), Arc::new(Errand::default()));
-        let (one, other) = (hide(&first), hide(&second));
+        let (one, other) = (
+            hiding_aside(&hiding, &first, "pad"),
+            hiding_aside(&hiding, &second, "other"),
+        );
         assert!(one.recv_timeout(SETTLE).is_err() && other.recv_timeout(SETTLE).is_err());
         hiding.end(&first);
-        assert_eq!(one.recv().unwrap(), Err(Unhidden::Ended));
+        assert!(matches!(one.recv().unwrap(), Err(Unhidden::Ended { .. })));
         assert!(other.recv_timeout(SETTLE).is_err(), "the other still waits");
         // An errand ended asks nothing more.
         let fd = a_descriptor();
         assert_eq!(
             hiding.hide(&first, "pad", fd.as_fd()).map(|_| ()),
-            Err(Unhidden::Ended)
+            Err(Unhidden::Ended { asked: false })
         );
         hiding.close();
-        assert_eq!(other.recv().unwrap(), Err(Unhidden::Ended));
+        assert!(matches!(other.recv().unwrap(), Err(Unhidden::Ended { .. })));
         let third = Arc::new(Errand::default());
         assert_eq!(
             hiding.hide(&third, "pad", fd.as_fd()).map(|_| ()),
-            Err(Unhidden::Ended)
+            Err(Unhidden::Ended { asked: false })
         );
         assert!(hiding.raw(fd.as_fd()).is_none());
     }
@@ -866,10 +1253,7 @@ mod tests {
     /// grabbed; a pad the daemon didn't have hidden isn't shown again.
     #[test]
     fn without_the_service_nothing_waits() {
-        let dir = tempfile::Builder::new()
-            .prefix("ca")
-            .tempdir_in("/tmp")
-            .unwrap();
+        let dir = a_dir();
         let hiding = Hiding::new(&dir.path().join("nothing.sock"));
         hiding.look();
         assert_eq!(hiding.mechanism(), payload::Hiding::Grab);
@@ -878,39 +1262,26 @@ mod tests {
         let errand = Arc::new(Errand::default());
         assert_eq!(
             hiding.hide(&errand, "pad", fd.as_fd()).map(|_| ()),
-            Err(Unhidden::Not(0))
+            Err(Unhidden::Not(Count::said(0)))
         );
-        assert_eq!(
-            hiding.restore(&[("pad".to_string(), Token(1))]),
-            ["pad".to_string()]
-        );
+        assert!(hiding.show("pad", Token(1)).is_none());
         assert!(hiding.reopen(&errand, Token(1)).is_none());
     }
 
     /// A hide on a service that counts, which then never answers: ending
     /// its errand gives it up at once, says which pad's hide was given
-    /// up, and leaves only the settling waiting on the service, which the
-    /// daemon stopping ends, with nothing counted.
+    /// up, however many times it is ended, and leaves only the reading
+    /// waiting on the service, which the daemon stopping ends, with
+    /// nothing said.
     #[test]
-    fn a_hide_given_up_on_a_service_that_never_answers_holds_only_its_settling() {
-        let dir = tempfile::Builder::new()
-            .prefix("ca")
-            .tempdir_in("/tmp")
-            .unwrap();
-        let path = dir.path().join("hider.sock");
+    fn a_hide_given_up_on_a_service_that_never_answers_holds_only_its_reading() {
         // Never let go: what the hide came to is never said.
-        let hider =
-            ctrlassist_test::FakeHider::holding(&path, ctrlassist_test::Cancelled::Undone).unwrap();
-        let hiding = Arc::new(Hiding::new(&path));
-        hiding.look();
-        let errand = Arc::new(Errand::default());
-        let hiding_it = aside({
-            let (hiding, errand) = (Arc::clone(&hiding), Arc::clone(&errand));
-            move || {
-                let fd = a_descriptor();
-                hiding.hide(&errand, "pad", fd.as_fd())
-            }
+        let (_dir, hider, hiding) = scripted(Script {
+            hold_hides: Some(Cancelled::Undone),
+            ..Script::default()
         });
+        let errand = Arc::new(Errand::default());
+        let hiding_it = hiding_aside(&hiding, &errand, "pad");
         hider.wait_held();
         assert_eq!(hiding.end(&errand), ["pad".to_string()]);
         let Err(Unhidden::Cut(cut)) = hiding_it.recv().unwrap() else {
@@ -918,13 +1289,13 @@ mod tests {
         };
         // Nothing else of the errand is under way to give up.
         assert!(hiding.end(&errand).is_empty());
-        let settling = aside({
+        let reading = aside({
             let hiding = Arc::clone(&hiding);
-            move || hiding.settle(cut)
+            move || hiding.read(cut)
         });
-        assert!(settling.recv_timeout(SETTLE).is_err(), "it waits");
+        assert!(reading.recv_timeout(SETTLE).is_err(), "it waits");
         hiding.close();
-        assert_eq!(settling.recv().unwrap(), 0);
+        assert_eq!(reading.recv().unwrap(), None);
     }
 
     /// A first look the service refuses, as it refuses a user who isn't
@@ -934,36 +1305,152 @@ mod tests {
     /// `cancel`, as to any service that counts.
     #[test]
     fn a_first_look_refused_is_asked_again() {
-        let dir = tempfile::Builder::new()
-            .prefix("ca")
-            .tempdir_in("/tmp")
-            .unwrap();
-        let path = dir.path().join("hider.sock");
-        let script = ctrlassist_test::Script {
+        let (_dir, hider, hiding) = scripted(Script {
             refuse: 1,
-            hold_hides: Some(ctrlassist_test::Cancelled::Untouched),
-            ..ctrlassist_test::Script::default()
-        };
-        let hider = ctrlassist_test::FakeHider::scripted(&path, script).unwrap();
-        let hiding = Arc::new(Hiding::new(&path));
-        hiding.look();
+            hold_hides: Some(Cancelled::Untouched),
+            ..Script::default()
+        });
         assert_eq!(hiding.mechanism(), payload::Hiding::Grab);
         assert_eq!(hiding.service_release(), None);
 
         let errand = Arc::new(Errand::default());
-        let hiding_it = aside({
-            let (hiding, errand) = (Arc::clone(&hiding), Arc::clone(&errand));
-            move || {
-                let fd = a_descriptor();
-                hiding.hide(&errand, "pad", fd.as_fd()).map(|_| ())
-            }
-        });
+        let hiding_it = hiding_aside(&hiding, &errand, "pad");
         hider.wait_held();
         assert_eq!(hiding.mechanism(), payload::Hiding::Service);
         assert!(hiding.service_release().is_some(), "published once known");
         assert_eq!(hiding.end(&errand), ["pad".to_string()], "given up");
         assert!(matches!(hiding_it.recv().unwrap(), Err(Unhidden::Cut(_))));
-        assert!(hider.asked().contains(&ctrlassist_test::Asked::Cancel));
+        assert!(hider.asked().contains(&Asked::Cancel));
         hider.let_go();
+    }
+
+    /// Each pad is shown again on its own: a showing the service never
+    /// answers holds its own reading alone, and another pad's is
+    /// answered beside it. A hide of the pad still being shown waits for
+    /// that, within its own errand, and is asked once it is done.
+    #[test]
+    fn a_showing_that_never_ends_holds_only_its_own_pad() {
+        let (_dir, hider, hiding) = scripted(Script {
+            hide_rebinds: 1,
+            restore_rebinds: 1,
+            hold_restores: 1,
+            ..Script::default()
+        });
+        let errand = Arc::new(Errand::default());
+        let hidden = |pad| hiding_aside(&hiding, &errand, pad).recv().unwrap().unwrap();
+        let (one, other) = (hidden("one"), hidden("other"));
+        assert_eq!(one.rebinds, Count::said(1));
+        let showing_one = hiding.show("one", one.token).unwrap();
+        let showing_other = hiding.show("other", other.token).unwrap();
+        let one_shown = aside({
+            let hiding = Arc::clone(&hiding);
+            move || hiding.read(showing_one)
+        });
+        hider.wait_held();
+        assert_eq!(hiding.read(showing_other), Some(1), "answered beside it");
+
+        // Hidden again while its showing is out: the hide waits, and its
+        // errand's end ends the wait, having asked nothing.
+        let again = Arc::new(Errand::default());
+        let waiting = hiding_aside(&hiding, &again, "one");
+        assert!(waiting.recv_timeout(SETTLE).is_err(), "it waits");
+        hiding.end(&again);
+        assert_eq!(
+            waiting.recv().unwrap().map(|_| ()),
+            Err(Unhidden::Ended { asked: false })
+        );
+        let waiting = hiding_aside(&hiding, &errand, "one");
+        assert!(waiting.recv_timeout(SETTLE).is_err(), "it waits");
+        assert_eq!(hides(&hider), 2, "nothing asked while it is shown");
+        hider.let_go();
+        assert_eq!(one_shown.recv().unwrap(), Some(1));
+        assert!(waiting.recv().unwrap().is_ok(), "asked once it is shown");
+        assert_eq!(hides(&hider), 3);
+        hiding.close();
+    }
+
+    /// Past the most readings under way, the oldest is hung up, which
+    /// ends it with nothing said and frees what it held.
+    #[test]
+    fn past_the_most_readings_the_oldest_is_hung_up() {
+        let (_dir, hider, hiding) = scripted(Script {
+            hold_restores: MOST_READINGS + 1,
+            ..Script::default()
+        });
+        let errand = Arc::new(Errand::default());
+        let pads: Vec<String> = (0..=MOST_READINGS).map(|pad| format!("pad{pad}")).collect();
+        let mut readings = Vec::new();
+        for pad in &pads {
+            let fd = a_descriptor();
+            let hidden = hiding.hide(&errand, pad, fd.as_fd()).unwrap();
+            readings.push(hiding.show(pad, hidden.token).unwrap());
+        }
+        let mut readings = readings.into_iter();
+        let oldest = readings.next().unwrap();
+        assert_eq!(hiding.read(oldest), None, "hung up, so not read");
+        let rest: Vec<_> = readings
+            .map(|reading| {
+                let hiding = Arc::clone(&hiding);
+                aside(move || hiding.read(reading))
+            })
+            .collect();
+        assert!(rest[0].recv_timeout(SETTLE).is_err(), "the rest wait");
+        hider.let_go();
+        for read in rest {
+            assert_eq!(read.recv().unwrap(), Some(0));
+        }
+    }
+
+    /// A request on a hidden pad's own connection that its errand ends is
+    /// given up without hanging up, so the service doesn't show the pad
+    /// unasked: the pad stays hidden, and its showing again later reads
+    /// past the reply given up.
+    #[test]
+    fn an_open_given_up_leaves_the_pad_hidden_until_shown() {
+        let (_dir, hider, hiding) = scripted(Script {
+            restore_rebinds: 1,
+            hold_opens: 1,
+            ..Script::default()
+        });
+        let errand = Arc::new(Errand::default());
+        let fd = a_descriptor();
+        let hidden = hiding.hide(&errand, "pad", fd.as_fd()).unwrap();
+        let opening = aside({
+            let (hiding, errand) = (Arc::clone(&hiding), Arc::clone(&errand));
+            move || hiding.raw_of(&errand, hidden.token).is_some()
+        });
+        hider.wait_held();
+        hiding.end(&errand);
+        assert!(!opening.recv().unwrap(), "given up");
+        assert!(
+            !hider.asked().contains(&Asked::Closed),
+            "the pad's connection stays"
+        );
+        let showing = hiding.show("pad", hidden.token).unwrap();
+        hider.let_go();
+        assert_eq!(hiding.read(showing), Some(1), "past the reply given up");
+    }
+
+    /// A service whose queue of connections to accept is full is there:
+    /// a request waits for room, as it waits for anything, rather than
+    /// taking the service for absent, and is made once there is room.
+    #[test]
+    fn a_full_queue_of_connections_is_waited_for() {
+        let (_dir, listener, path) = silent_with(0);
+        // Fills the queue.
+        let filler = socket(AddressFamily::UNIX, SocketType::SEQPACKET, None).unwrap();
+        rustix::net::connect(&filler, &SocketAddrUnix::new(&path).unwrap()).unwrap();
+        let hiding = Arc::new(Hiding::new(&path));
+        let looking = aside({
+            let hiding = Arc::clone(&hiding);
+            move || hiding.look()
+        });
+        assert!(looking.recv_timeout(SETTLE).is_err(), "it waits");
+        assert_eq!(hiding.mechanism(), payload::Hiding::Looking);
+        // Room: the daemon's connection is made and accepted.
+        drop(accept(&listener).unwrap());
+        drop(accept(&listener).unwrap());
+        hiding.close();
+        looking.recv().unwrap();
     }
 }

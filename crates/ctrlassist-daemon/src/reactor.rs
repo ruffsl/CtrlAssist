@@ -34,7 +34,7 @@ use crate::book::Book;
 use crate::copied::Copied;
 use crate::device_identity;
 use crate::hiding::Hiding;
-use crate::hotplug::Seen;
+use crate::hotplug::{Flusher, Seen};
 use crate::profiles::Profiles;
 use crate::setups::{Done, Owed, Owing, Setups};
 use crate::store::Store;
@@ -110,6 +110,10 @@ pub(crate) struct Reactor {
     pub(crate) owed: BTreeMap<Owing, Owed>,
     /// The last [`Owing`] noted.
     pub(crate) owings: u64,
+    /// Asks the hotplug watch to pass on what udev has sent so far, for
+    /// the book's check of what it expects of a pad; none where there is
+    /// no watch, and then nothing is checked.
+    pub(crate) flusher: Option<Flusher>,
 }
 
 impl std::fmt::Debug for Reactor {
@@ -184,6 +188,7 @@ impl Reactor {
             candidates: Vec::new(),
             owed: BTreeMap::new(),
             owings: 0,
+            flusher: None,
         }
     }
 
@@ -425,8 +430,26 @@ impl Reactor {
         }
     }
 
+    /// Has the hotplug watch pass on what udev has sent so far, and then
+    /// say so, for the book's check of what it expects of `pad`.
+    pub(crate) fn flush(&self, pad: &str, generation: u64) {
+        if let Some(flusher) = &self.flusher {
+            flusher.flush(pad, generation);
+        }
+    }
+
     /// Takes in what the hotplug watch saw.
     pub(crate) async fn saw(&mut self, seen: Seen) {
+        if let Seen::Flushed { pad, generation } = &seen {
+            if let Some(comebacks) = self.book.flushed(pad, *generation) {
+                warn!(
+                    pad,
+                    comebacks,
+                    "the pad was still expected to go and come back for the hiding service, with nothing asked of it and every count said: a miscount, cleared so that its next unplugging is told"
+                );
+            }
+            return;
+        }
         if let Seen::Arrived(found, _) = &seen
             && found.identifiers.is_test_pad()
             && !self.test_pads
@@ -458,6 +481,8 @@ impl Reactor {
                 }
                 (left, false)
             }
+            // Taken in above.
+            Seen::Flushed { .. } => (Vec::new(), false),
         };
         if remembered {
             self.save().await;
