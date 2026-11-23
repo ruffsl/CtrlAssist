@@ -16,6 +16,7 @@ Deferred work and designs set aside, one file each. An entry says what the idea 
 - [`pad-nicknames.md`](pad-nicknames.md) — a name the user gives a pad.
 - [`profile-new.md`](profile-new.md) — a preset profile from command-line flags.
 - [`choice-descriptions.md`](choice-descriptions.md) — a choice's own sentence, where it is chosen.
+- [`restart-warning.md`](restart-warning.md) — saying that a game may need restarting after its virtual pad is replaced.
 - [`relative-controls.md`](relative-controls.md) — gyro, touchpad, mouse and keyboard.
 - [`larger-pad-state.md`](larger-pad-state.md) — more than 64 buttons or 16 axes.
 - [`split-preset.md`](split-preset.md) — a preset for splitting one pad into several.

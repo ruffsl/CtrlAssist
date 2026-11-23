@@ -28,10 +28,11 @@ Found while debugging Hades streamed through Moonshine to a DualSense and a Dual
 
 ## State
 
-Step 1 is built: the report, the pad taken on either bus, and unit tests of the report's layout, sequence and checksum. The tests check the layout against the kernel driver's structure as read, not against bytes captured from a raw node, which step 1 asked for: a capture needs a pad on Bluetooth. Steps 2 to 4 are open; the architecture's feedback section is updated, the guide not.
+Steps 1 and 2 are built. Step 1: the report, the pad taken on either bus, and unit tests of the report's layout, sequence and checksum. Step 2: a stand-in for a DualSense on Bluetooth in the test crate (`FakeBluetoothDualSense`, a uhid device on that bus that the kernel's PlayStation driver binds as one, its feature reports checksummed as a pad's are there), and a test that what the daemon's pad code writes to its raw node arrives whole. The kernel's driver writes the stand-in output reports of its own as it binds it, and the test holds both to one shape, with a checksum written apart from the daemon's: so the report is checked against what the kernel produces, which is what step 1 wanted of captured bytes. Steps 3 and 4 are open in part: the architecture's feedback section is updated, the guide has nothing to change, saying nothing of Bluetooth.
 
 Tried by the maintainer on 2026-11-22: Hades streamed through Moonshine 0.16.1 to Moonlight on a tablet, a DualSense and a DualShock 4 paired to the tablet, a virtual DualSense in front of Moonshine's two pads. The lightbar colors the game sets show on both real pads. The daemon's log for the session has every rumble told to both pads, no write refused, and no warning; Moonshine's has nothing about its pads beyond their connecting. Not yet tried: a real DualSense paired to this machine over Bluetooth, and trigger effects on anything.
 
 ## Deviations
 
-- Step 1's tests are of the layout, not of captured bytes (see State).
+- Step 1's own tests are of the layout, not of captured bytes; step 2's test checks the report against the kernel driver's, on the stand-in.
+- The stand-in is the test crate's own, apart from the virtual DualSense the daemon makes: that one is a pad on USB all through, and making it either would have put a second bus into the input path for a test's sake.

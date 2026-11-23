@@ -498,3 +498,104 @@ fn a_dualsense_with_its_raw_node_is_sent_whole_output_reports() {
         && sent[39] == 0
         && sent[45] == 0));
 }
+
+/// A DualSense on Bluetooth is sent whole output reports too, as the
+/// report it takes there: another number, a sequence number, a tag, the
+/// same settings, and a checksum. The kernel's driver writes the pad
+/// such reports of its own as it binds, which say what one looks like.
+#[test]
+fn a_dualsense_on_bluetooth_is_sent_whole_output_reports() {
+    const TEST: &str = "a_dualsense_on_bluetooth_is_sent_whole_output_reports";
+    if !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    let real = ctrlassist_test::FakeBluetoothDualSense::new(0x41).unwrap();
+    let node = real
+        .event_node()
+        .expect("the kernel's driver takes the pad as a DualSense on Bluetooth");
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    let raw = ctrlassist_test::raw_node_of(&node).unwrap();
+    if !ctrlassist_test::can_open(&raw, true) {
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED {TEST}: a DualSense's raw node isn't this user's to open here"
+        );
+        return;
+    }
+    let whole = |sent: &[u8]| {
+        sent.len() == 78
+            && sent[0] == 0x31
+            && sent[2] == 0x10
+            && sent[74..] == ctrlassist_test::playstation_crc32(0xa2, &sent[..74]).to_le_bytes()
+    };
+    // The driver's own, from binding the pad: the shape to match.
+    let theirs = real.outputs();
+    assert!(
+        !theirs.is_empty(),
+        "the driver set the pad's lights as it bound it"
+    );
+    assert!(theirs.iter().all(|sent| whole(sent)), "{theirs:?}");
+
+    let event: OwnedFd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&node)
+        .unwrap()
+        .into();
+    let mut pad = Pad::from_fd(event).unwrap();
+    assert!(pad.could_take_output() && !pad.takes_output());
+    let raw: OwnedFd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(raw)
+        .unwrap()
+        .into();
+    pad.set_raw(raw).unwrap();
+    assert!(pad.takes_output());
+
+    let ours = || real.outputs().split_off(theirs.len());
+    let arrived = |wanted: &dyn Fn(&[u8]) -> bool| {
+        for _ in 0..400 {
+            if ours().iter().any(|sent| wanted(sent)) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    };
+    // The settings sit two bytes further on than over USB.
+    pad.rumble(Level {
+        strong: 0x8000,
+        weak: 0x4000,
+    })
+    .unwrap();
+    // The stand-in's firmware takes the newer rumble.
+    assert!(
+        arrived(&|sent| whole(sent)
+            && sent[3] == 0x02
+            && sent[41] == 0x04
+            && sent[5..7] == [0x40, 0x80]),
+        "{:?}",
+        ours()
+    );
+    let mut lights = [0u8; 48];
+    lights[0] = 0x02;
+    (lights[2], lights[45], lights[46], lights[47]) = (0x04, 0xee, 0xdd, 0xcc);
+    pad.pass(&lights).unwrap();
+    assert!(
+        arrived(&|sent| whole(sent)
+            && sent[47..50] == [0xee, 0xdd, 0xcc]
+            && sent[41] == 0x04
+            && sent[5..7] == [0x40, 0x80]),
+        "the lights arrive with the rumble kept: {:?}",
+        ours()
+    );
+    pad.rumble(Level::default()).unwrap();
+    assert!(arrived(&|sent| whole(sent)
+        && sent[3] == 0
+        && sent[41] == 0));
+    // Each report is numbered one on from the last, round from 15.
+    let numbers: Vec<u8> = ours().iter().map(|sent| sent[1] >> 4).collect();
+    assert_eq!(numbers, [0, 1, 2], "{:?}", ours());
+}
