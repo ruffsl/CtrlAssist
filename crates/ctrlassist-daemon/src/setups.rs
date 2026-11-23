@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 
 use ctrlassist_core::{Graph, Input, Level, NodeId, NodeSpec, SourceId};
 use ctrlassist_device::{
-    Command, Database, DualSenseData, Found, NewGraph, Pad, Place, Report, SendError, Setup,
-    SetupId, VirtualPad, own_address,
+    Command, Database, DualSenseData, Found, NewGraph, Pad, Place, Report, Rested, SendError,
+    Setup, SetupId, VirtualPad, Writes, own_address,
 };
 use ctrlassist_protocol::endpoint::setup;
 use ctrlassist_protocol::error::{ErrorCode, WireError};
@@ -487,6 +487,9 @@ pub(crate) struct Unmade {
     reason: String,
     /// The hiding service's name for each pad it hid, by source number.
     tokens: Vec<Option<Token>>,
+    /// What says when each pad it opened, dropped since, has been left at
+    /// rest, by what the pad is known by.
+    rested: Vec<(String, Rested)>,
 }
 
 impl Unmade {
@@ -494,6 +497,7 @@ impl Unmade {
         Self {
             reason: reason.into(),
             tokens: Vec::new(),
+            rested: Vec::new(),
         }
     }
 }
@@ -641,13 +645,105 @@ pub(crate) enum Done {
 
 /// A pad the reactor has set about showing again: the book expects what
 /// that does, and the reading asks it of the hiding service, once
-/// whatever still reads the pad has been dropped.
+/// whatever still reads the pad has been dropped and its writer, if it
+/// is to be waited for, has left it at rest.
 #[derive(Debug)]
 pub(crate) struct Show {
     pad: String,
     /// How many times the book expects it to go and come back for this.
     expected: u8,
     reading: Reading,
+    /// What the reading waits for before it asks.
+    rest: Option<Rest>,
+}
+
+/// What showing a pad again waits for first: the thread that writes to
+/// the pad's raw node having written the report that leaves the pad at
+/// rest, and closed the node. Showing the pad re-binds its driver, which
+/// cuts off a write not yet made and puts back what the driver keeps,
+/// its lights and its motors stopped, but not a DualSense's trigger
+/// effects, which only that report turns off. Waited for on the
+/// reading's own task, never the reactor, and only once the pad has been
+/// dropped, which is what starts the writer on it: until then the wait
+/// would never end. A wait is bounded by the writer alone, each write by
+/// the kernel's five seconds on a pad that stalls.
+pub(crate) struct Rest(Box<dyn FnOnce() + Send>);
+
+impl std::fmt::Debug for Rest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Rest")
+    }
+}
+
+impl Rest {
+    /// What to wait for before showing again a pad whose writer is
+    /// `rested`, if anything.
+    fn of(rested: Rested) -> Option<Self> {
+        match rested.writes() {
+            Writes::Reports => Some(Self(Box::new(move || rested.wait()))),
+            // A pad sent its level through a kernel effect has nothing a
+            // re-bind leaves on: trigger effects are a raw node's. Its
+            // effect's erase can wait 30 seconds on whatever program
+            // makes the pad, which its showing again needn't. A pad sent
+            // nothing is at rest already.
+            _ => None,
+        }
+    }
+
+    fn wait(self) {
+        (self.0)();
+    }
+}
+
+/// Each of `pads` by what it is known by, with what says when its writer
+/// has left it at rest: taken before the pads are dropped.
+fn rested_of<'a>(pads: impl IntoIterator<Item = &'a Pad>) -> Vec<(String, Rested)> {
+    pads.into_iter()
+        .map(|pad| (pad.identifiers().id().to_string(), pad.rested()))
+        .collect()
+}
+
+/// [`rested_of`] the pads a command to the input thread carries.
+fn rested_in(command: &Command) -> Vec<(String, Rested)> {
+    match command {
+        Command::Start(_, setup) => rested_of(setup.pads().iter().flatten().map(|pad| &**pad)),
+        Command::NewGraph { graph, .. } => {
+            rested_of(graph.pads().iter().flatten().map(|pad| &**pad))
+        }
+        Command::PadBack { pad, .. } => rested_of([&**pad]),
+        _ => Vec::new(),
+    }
+}
+
+/// Has each of `shows` whose pad is in `rested` wait for that pad's
+/// writer, and no other's, before the hiding service is asked.
+fn after_rest(shows: &mut [Show], rested: Vec<(String, Rested)>) {
+    for (pad, rested) in rested {
+        if let Some(show) = shows.iter_mut().find(|show| show.pad == pad) {
+            show.rest = Rest::of(rested);
+        }
+    }
+}
+
+/// Drops `dropped`, which holds the pads of `shows`, as work off the
+/// reactor, and hands `shows` back to be asked. Should dropping panic, no
+/// show waits for its pad's writer: a pad not dropped wouldn't have it
+/// start, and the wait would never end.
+fn drop_before(dropped: impl Send, mut shows: Vec<Show>) -> Vec<Show> {
+    let whole = caught(
+        "dropping",
+        || {
+            drop(dropped);
+            true
+        },
+        || false,
+    );
+    if !whole {
+        for show in &mut shows {
+            show.rest = None;
+        }
+    }
+    shows
 }
 
 /// Opens a pad for writing too: rumble is written to the node it is
@@ -905,16 +1001,23 @@ fn make(
     let graph = Graph::build(plan.graph).map_err(|error| Unmade::new(error.to_string()))?;
     let mut pads = Vec::new();
     let mut taken = Vec::new();
-    let stopped = |taken: &[(bool, Option<Token>)]| Unmade {
-        reason: STOPPED.to_string(),
-        tokens: taken.iter().map(|(_, token)| *token).collect(),
+    // What a start that ends here leaves: its pads are let go here, and
+    // shown again once the reactor expects them to come back, each once
+    // its writer has left it at rest.
+    let undone = |reason: String, taken: &[(bool, Option<Token>)], pads: Vec<Option<Pad>>| {
+        let rested = rested_of(pads.iter().flatten());
+        drop(pads);
+        Unmade {
+            reason,
+            tokens: taken.iter().map(|(_, token)| *token).collect(),
+            rested,
+        }
     };
     for node in nodes {
         // A setup stopped as it starts goes no further: what it has
-        // taken is let go here, and shown again once the reactor expects
-        // it to come back.
+        // taken is let go here.
         if asking.1.has_ended() {
-            return Err(stopped(&taken));
+            return Err(undone(STOPPED.to_string(), &taken, pads));
         }
         // A pad that went between being chosen and being taken is one
         // the setup starts without.
@@ -945,7 +1048,7 @@ fn make(
         // Nor does one stopped as it makes its virtual pads, each of which
         // can wait on the kernel: what it made is dropped here.
         if asking.1.has_ended() {
-            return Err(stopped(&taken));
+            return Err(undone(STOPPED.to_string(), &taken, pads));
         }
         let made = caught(
             "making a virtual pad",
@@ -955,23 +1058,18 @@ fn make(
         match made {
             Ok(made) => sinks.push(made),
             Err(error) => {
-                // Nothing of a start that fails is left: its pads are
-                // let go here, and shown again once the reactor expects
-                // them to come back.
-                drop(pads);
-                return Err(Unmade {
-                    reason: format!(
-                        "making the virtual pad `{}` ({}): {error}",
-                        sink.name,
-                        sink.identity.as_str()
-                    ),
-                    tokens: taken.iter().map(|(_, token)| *token).collect(),
-                });
+                // Nothing of a start that fails is left.
+                let reason = format!(
+                    "making the virtual pad `{}` ({}): {error}",
+                    sink.name,
+                    sink.identity.as_str()
+                );
+                return Err(undone(reason, &taken, pads));
             }
         }
     }
     if asking.1.has_ended() {
-        return Err(stopped(&taken));
+        return Err(undone(STOPPED.to_string(), &taken, pads));
     }
     // A pad that is only grabbed is still Steam's to read some other
     // way, so Steam is told to leave its model alone, unless a virtual
@@ -1068,6 +1166,7 @@ impl Reactor {
             pad,
             expected,
             reading,
+            rest: None,
         }
     }
 
@@ -1087,19 +1186,30 @@ impl Reactor {
     /// Asks each of `shows` of the hiding service, each on a task of its
     /// own, which nothing waits on: one that never ends holds its own pad
     /// alone, until the pad is next hidden, the daemon stops, or more are
-    /// under way than the most there may be.
+    /// under way than the most there may be. Each first waits for its
+    /// pad's writer, if it is to: called only once the pad is dropped.
+    /// A reading hung up meanwhile asks nothing once that is through.
     fn ask_shows(&mut self, shows: Vec<Show>) {
         for Show {
             pad,
             expected,
             reading,
+            rest,
         } in shows
         {
             let hiding = Arc::clone(&self.hiding);
-            self.work.spawn_blocking(move || Done::Shown {
-                rebinds: caught("showing a pad again", || hiding.read(reading), || None),
-                pad,
-                expected,
+            self.work.spawn_blocking(move || {
+                let read = || {
+                    if let Some(rest) = rest {
+                        rest.wait();
+                    }
+                    hiding.read(reading)
+                };
+                Done::Shown {
+                    rebinds: caught("showing a pad again", read, || None),
+                    pad,
+                    expected,
+                }
             });
         }
     }
@@ -1108,28 +1218,31 @@ impl Reactor {
     /// in that order, so that nothing of ours still reads a pad as it
     /// comes back.
     fn show_again<T: Send + 'static>(&mut self, dropped: T, shows: Vec<Show>) {
-        self.work.spawn_blocking(move || {
-            caught("dropping", || drop(dropped), || ());
-            Done::Dropped(shows)
-        });
+        self.work
+            .spawn_blocking(move || Done::Dropped(drop_before(dropped, shows)));
     }
 
     /// Drops a setup the input thread handed back, then has the hiding
     /// service show the pads it hid: in that order, so that nothing of
-    /// ours still reads a pad as it comes back. Whoever waits for the
-    /// setup to have stopped is answered once it is dropped, not once its
-    /// pads are shown again, which waits on the service.
+    /// ours still reads a pad as it comes back, and each pad is shown once
+    /// its writer has left it at rest. Whoever waits for the setup to have
+    /// stopped is answered once it is dropped, not once its pads are shown
+    /// again, which waits on the writers and the service.
     fn retire(
         &mut self,
         (name, id): (String, SetupId),
         setup: Box<Setup>,
-        shows: Vec<Show>,
+        mut shows: Vec<Show>,
         waiting: Option<Waiting>,
     ) {
+        after_rest(
+            &mut shows,
+            rested_of(setup.pads().iter().flatten().map(|pad| &**pad)),
+        );
         let blacklist = Arc::clone(&self.blacklist);
         let waiting = waiting.map(|waiting| self.owe(Owed::Wait(waiting)));
         self.work.spawn_blocking(move || {
-            caught("dropping", || drop(setup), || ());
+            let shows = drop_before(setup, shows);
             if let Ok(mut blacklist) = blacklist.lock() {
                 blacklist.set(&name, std::collections::BTreeSet::new());
             }
@@ -1460,21 +1573,25 @@ impl Reactor {
                 let unmade = Unmade {
                     reason: STOPPED.to_string(),
                     tokens,
+                    rested: rested_of(setup.pads().iter().flatten().map(|pad| &**pad)),
                 };
                 return Err((unmade, Some(Box::new(setup) as Box<dyn Send>)));
             }
             match self.input.send(Command::Start(entry.id, setup)) {
                 Ok(()) => Ok((nodes, pads)),
                 Err(error) => {
-                    let unmade = Unmade {
-                        reason: format!("the input thread didn't take it: {error}"),
-                        tokens,
-                    };
-                    let command = match error {
+                    let reason = format!("the input thread didn't take it: {error}");
+                    let (command, rested) = match error {
                         SendError::Full(command) | SendError::Stopped(command) => {
-                            Some(Box::new(command) as Box<dyn Send>)
+                            let rested = rested_in(&command);
+                            (Some(Box::new(command) as Box<dyn Send>), rested)
                         }
-                        _ => None,
+                        _ => (None, Vec::new()),
+                    };
+                    let unmade = Unmade {
+                        reason,
+                        tokens,
+                        rested,
                     };
                     Err((unmade, command))
                 }
@@ -1515,7 +1632,14 @@ impl Reactor {
                     self.bring_back(&name, source);
                 }
             }
-            Err((Unmade { reason, tokens }, leftover)) => {
+            Err((
+                Unmade {
+                    reason,
+                    tokens,
+                    rested,
+                },
+                leftover,
+            )) => {
                 // A start that fails leaves nothing behind.
                 let entry = self.setups.entries.remove(&name);
                 let mut shown = Vec::new();
@@ -1531,8 +1655,11 @@ impl Reactor {
                 }
                 // Shown again, each goes and comes back once more, which
                 // is expected before it is let go below: no pad plugged
-                // in, to start this again by.
-                let shows = self.shows(shown);
+                // in, to start this again by. Each once its writer has left
+                // it at rest: dropped by the start's work already, or with
+                // what is left over here.
+                let mut shows = self.shows(shown);
+                after_rest(&mut shows, rested);
                 self.release(&name).await;
                 self.publish_setup(&name).await;
                 // A stop asked as it started is answered once what it
@@ -1543,7 +1670,7 @@ impl Reactor {
                 let blacklist = Arc::clone(&self.blacklist);
                 let stopped = name.clone();
                 self.work.spawn_blocking(move || {
-                    caught("dropping", || drop(leftover), || ());
+                    let shows = drop_before(leftover, shows);
                     if let Ok(mut blacklist) = blacklist.lock() {
                         blacklist.set(&stopped, std::collections::BTreeSet::new());
                     }
@@ -1875,7 +2002,8 @@ impl Reactor {
                 ErrorCode::SetupBusy,
                 format!("the setup {name} is stopping; the change wasn't made"),
             );
-            return self.abandon(&name, pads, hidden, &refusal).await;
+            let rested = rested_of(pads.iter().flatten().map(|(pad, _)| pad));
+            return self.abandon(&name, (pads, rested), hidden, &refusal).await;
         };
         let mut places = Vec::with_capacity(pads.len());
         for ((slot, keep), pad) in taking.slots.iter_mut().zip(&taking.keep).zip(pads) {
@@ -1900,18 +2028,21 @@ impl Reactor {
                     SendError::Full(command) | SendError::Stopped(command) => Some(command),
                     _ => None,
                 };
-                self.abandon(&name, command, Vec::new(), &refusal).await;
+                let rested = command.as_ref().map(rested_in).unwrap_or_default();
+                self.abandon(&name, (command, rested), Vec::new(), &refusal)
+                    .await;
             }
         }
     }
 
     /// Gives up a change a setup was taking. `brought` holds the pads it
     /// brought, which are let go and then shown again, with any named in
-    /// `hidden`; whoever asked for the change is told why it wasn't made.
+    /// `hidden`, each once its writer has left it at rest as `rested`
+    /// says; whoever asked for the change is told why it wasn't made.
     async fn abandon<T: Send + 'static>(
         &mut self,
         name: &str,
-        brought: T,
+        (brought, rested): (T, Vec<(String, Rested)>),
         mut hidden: Vec<(String, Token)>,
         refusal: &WireError,
     ) {
@@ -1931,7 +2062,8 @@ impl Reactor {
         }
         // Hidden as it was brought, or for no setup since the setup let
         // its pads go as it stopped: shown again, as it is let go.
-        let shows = self.shows(hidden);
+        let mut shows = self.shows(hidden);
+        after_rest(&mut shows, rested);
         for pad in freed {
             self.let_go(&pad).await;
         }
@@ -2018,20 +2150,22 @@ impl Reactor {
             "a setup took its profile as it runs"
         );
         // Shown again as they are let go, so that none is published as
-        // hidden no longer before it is.
-        let shows = self.shows(hidden);
+        // hidden no longer before it is, and each once its writer has
+        // left it at rest.
+        let mut shows = self.shows(hidden);
+        after_rest(
+            &mut shows,
+            rested_of(old.pads().iter().flatten().map(|pad| &**pad)),
+        );
         for pad in changed {
             self.publish_pad_logged(&pad).await;
         }
         self.publish_setup(&name).await;
         let responder = self.owe(Owed::Update(responder));
-        self.work.spawn_blocking(move || {
-            caught("dropping", || drop(old), || ());
-            Done::Taken {
-                responder,
-                start,
-                shows,
-            }
+        self.work.spawn_blocking(move || Done::Taken {
+            shows: drop_before(old, shows),
+            responder,
+            start,
         });
         // A pad that isn't there may have come while the pads were
         // numbered by the old graph.
@@ -2339,6 +2473,8 @@ impl Reactor {
         // Whatever became of the setup, a pad hidden afresh was hidden,
         // and the name it was hidden under before is given up.
         self.came_to(hides).await;
+        // Waiting for no writer: the pad it named was let go as it went,
+        // its device and raw node gone with it.
         if let Some(reading) = old {
             let show = self.showing(id.clone(), reading);
             self.ask_shows(vec![show]);
@@ -2365,7 +2501,8 @@ impl Reactor {
             // was hidden afresh for this.
             let hidden: Vec<(String, Token)> =
                 token.map(|token| (id.clone(), token)).into_iter().collect();
-            let shows = self.shows(hidden);
+            let mut shows = self.shows(hidden);
+            after_rest(&mut shows, rested_of(pad.as_deref()));
             return self.show_again(pad, shows);
         };
         slot.returning = false;
@@ -2776,7 +2913,9 @@ impl Reactor {
                 let name = self.setups.name_of(setup).unwrap_or_default();
                 warn!(setup = name, "the input thread refused a new graph");
                 let refusal = WireError::internal("the input thread refused the new graph");
-                self.abandon(&name, graph, Vec::new(), &refusal).await;
+                let rested = rested_of(graph.pads().iter().flatten().map(|pad| &**pad));
+                self.abandon(&name, (graph, rested), Vec::new(), &refusal)
+                    .await;
             }
             Report::PadRefused { setup, source, pad } => {
                 self.drop_off(pad);
@@ -4067,6 +4206,7 @@ mod tests {
                 outcome: Err(Unmade {
                     reason: "making the virtual pad `virtual` (dualsense): no uhid".to_string(),
                     tokens: vec![None, Some(token)],
+                    rested: Vec::new(),
                 }),
                 asker,
                 hides: vec![(PRIMARY.to_string(), Rebinds::Known(count))],
@@ -4268,6 +4408,112 @@ mod tests {
         let requests = &rig.requests;
         rig.reactor.wind_down(&[requests]).await;
         finish(&mut rig.reactor).await;
+    }
+
+    /// What a pad's writer leaving it at rest stands in for: shut until
+    /// the test opens it.
+    #[derive(Clone, Default)]
+    struct Gate(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+    impl Gate {
+        fn rest(&self) -> Rest {
+            let gate = self.clone();
+            Rest(Box::new(move || {
+                let (open, opened) = &*gate.0;
+                let mut open = open.lock().unwrap();
+                while !*open {
+                    open = opened.wait(open).unwrap();
+                }
+            }))
+        }
+
+        fn open(&self) {
+            let (open, opened) = &*self.0;
+            *open.lock().unwrap() = true;
+            opened.notify_all();
+        }
+    }
+
+    /// How many restores the stand-in was asked.
+    fn restores(hider: &FakeHider) -> usize {
+        let asked = hider.asked();
+        let restore = ctrlassist_test::Asked::Restore(String::new());
+        asked.iter().filter(|asked| **asked == restore).count()
+    }
+
+    /// `couch`, running with both pads hidden by a stand-in, stopped by a
+    /// client: the stop is answered once the setup is dropped, while the
+    /// primary pad's writer, a gate, has yet to leave it at rest. The
+    /// assist is shown again meanwhile, and the primary isn't. Returns
+    /// the gate and the stand-in.
+    async fn stopped_before_the_rest(rig: &mut Rig) -> (Gate, FakeHider) {
+        let script = ctrlassist_test::Script {
+            restore_rebinds: 1,
+            ..ctrlassist_test::Script::default()
+        };
+        let (hider, _) = running_hidden(rig, script).await;
+        let stopping = ask(rig, true).await;
+        rig.reactor
+            .reported(Report::Stopped(SetupId(7), handed_back()))
+            .await;
+        let mut retired = rig.reactor.work.join_next().await.unwrap().unwrap();
+        let Done::Retired { shows, .. } = &mut retired else {
+            unreachable!("the setup is dropped: {retired:?}")
+        };
+        let gate = Gate::default();
+        let primary = shows.iter_mut().find(|show| show.pad == PRIMARY).unwrap();
+        primary.rest = Some(gate.rest());
+        rig.reactor.done(retired).await;
+        stopping.await.unwrap().unwrap();
+
+        let shown = rig.reactor.work.join_next().await.unwrap().unwrap();
+        let Done::Shown { pad, .. } = &shown else {
+            unreachable!("a pad is shown again: {shown:?}")
+        };
+        assert_eq!(pad, ASSIST, "not held by the primary's writer");
+        rig.reactor.done(shown).await;
+        assert!(!rig.reactor.book.pad(ASSIST).unwrap().hidden);
+        assert_eq!(restores(&hider), 1, "the primary's isn't asked yet");
+        assert!(rig.reactor.book.pad(PRIMARY).unwrap().hidden);
+        (gate, hider)
+    }
+
+    /// A pad is shown again only once its writer has left it at rest, on
+    /// the showing's own task: the stop is answered before, and another
+    /// pad isn't held by it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_is_shown_again_once_its_writer_has_left_it_at_rest() {
+        let mut rig = rig().await;
+        let (gate, hider) = stopped_before_the_rest(&mut rig).await;
+        gate.open();
+        let shown = rig.reactor.work.join_next().await.unwrap().unwrap();
+        let Done::Shown { pad, rebinds, .. } = &shown else {
+            unreachable!("a pad is shown again: {shown:?}")
+        };
+        assert_eq!((pad.as_str(), *rebinds), (PRIMARY, Some(1)));
+        rig.reactor.done(shown).await;
+        assert_eq!(restores(&hider), 2);
+        assert!(!rig.reactor.book.pad(PRIMARY).unwrap().hidden);
+        assert!(rig.reactor.work.is_empty());
+    }
+
+    /// A showing again hung up as it waits for the pad's writer, as the
+    /// daemon stops, asks nothing once the writer is through, and its
+    /// task ends: the service shows the pad as the connection closes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_showing_again_hung_up_as_it_waits_for_the_writer_asks_nothing() {
+        let mut rig = rig().await;
+        let (gate, hider) = stopped_before_the_rest(&mut rig).await;
+        rig.reactor.hiding.close();
+        gate.open();
+        let shown = rig.reactor.work.join_next().await.unwrap().unwrap();
+        let Done::Shown { pad, rebinds, .. } = &shown else {
+            unreachable!("a pad is shown again: {shown:?}")
+        };
+        assert_eq!((pad.as_str(), *rebinds), (PRIMARY, None));
+        rig.reactor.done(shown).await;
+        assert_eq!(restores(&hider), 1, "nothing more was asked");
+        assert!(rig.reactor.work.is_empty(), "nothing is left waiting");
     }
 
     /// A setup stopped as it runs, with a pad's hide under way to take it
