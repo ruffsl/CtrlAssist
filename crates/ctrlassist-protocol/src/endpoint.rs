@@ -35,10 +35,12 @@ pub trait Unary: Rpc {
     /// A write whose reply waits on work no fixed limit fits: the hiding
     /// service, the kernel making or dropping a virtual pad, the input
     /// thread handing a setup back, or the disk. Its call waits for the
-    /// reply with no time limit, the service answering every rpc once,
-    /// so its caller ends the wait when the service goes away, which the
-    /// service's liveliness token says. Every other rpc's call gives up
-    /// after [`RPC_TIMEOUT`](crate::caller::RPC_TIMEOUT).
+    /// reply for as long as the service is there, which the service's
+    /// liveliness token says: the service answers each rpc once, or drops
+    /// it as it ends, which ends the call too, and it withdraws its token
+    /// before that. The query itself is declared with a limit of six
+    /// hours, only so that zenoh's task for it ends. Every other rpc's
+    /// call gives up after [`RPC_TIMEOUT`](crate::caller::RPC_TIMEOUT).
     const UNTIMED: bool;
 }
 
