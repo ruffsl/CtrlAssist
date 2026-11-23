@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 
 use ctrlassist_core::{
     Control, DemuxConfig, DemuxFeedback, DemuxMode, Graph, GraphSpec, Input, Kind, Layout,
-    MAX_NODES, MAX_SINKS, MAX_SOURCES, Mode, MuxConfig, MuxFeedback, NodeId, NodeSpec, Rule,
-    SourceId, SourceSpec, Switch, gamepad,
+    MAX_INPUTS, MAX_NODES, MAX_OUTPUTS, MAX_SINKS, MAX_SOURCES, Mode, MuxConfig, MuxFeedback,
+    NodeId, NodeSpec, Rule, SourceId, SourceSpec, Switch, gamepad,
 };
 use serde::{Deserialize, Serialize};
 
@@ -725,12 +725,16 @@ impl Profile {
                     ),
                 );
             }
+            let deadzone = source.deadzone.unwrap_or(DEADZONE);
+            if !(deadzone.is_finite() && deadzone >= 0.0) {
+                return error(format!("{at}.deadzone"), "a deadzone is a number from 0");
+            }
             sources.push(PlannedSource {
                 name: name.clone(),
                 pad,
             });
             specs.push(SourceSpec {
-                deadzone: source.deadzone.unwrap_or(DEADZONE),
+                deadzone,
                 layout: layout.clone(),
             });
         }
@@ -822,7 +826,7 @@ impl Profile {
             nodes,
             sinks: follows,
         };
-        // The core has the last word: thresholds, counts and cycles.
+        // The core has the last word: cycles, and anything missed above.
         if let Err(refused) = Graph::build(graph.clone()) {
             return error("", format!("the graph can't be built: {refused}"));
         }
@@ -970,6 +974,12 @@ fn mux(
     if node.inputs.is_empty() {
         return error(format!("{at}.inputs"), "a mux needs inputs");
     }
+    if node.inputs.len() > MAX_INPUTS {
+        return error(
+            format!("{at}.inputs"),
+            format!("a mux has at most {MAX_INPUTS} inputs"),
+        );
+    }
     let mut inputs = Vec::new();
     for (index, reference) in node.inputs.iter().enumerate() {
         inputs.push(resolve(&format!("{at}.inputs[{index}]"), reference)?);
@@ -1019,6 +1029,7 @@ fn mux(
     if let Some(release) = node.release {
         config.release = release;
     }
+    thresholds(at, node, &config)?;
     config.feedback = match &node.feedback {
         None | Some(Feedback::Named(FeedbackName::Active)) => MuxFeedback::Active,
         Some(Feedback::Named(FeedbackName::None)) => MuxFeedback::None,
@@ -1033,6 +1044,12 @@ fn mux(
         }
     };
     config.switch = match &node.switch {
+        // A toggle's own switch is on its second input, and a toggle of
+        // one input has none: its only input's, then.
+        None if inputs.len() == 1 => config.switch.map(|switch| Switch {
+            input: Some(0),
+            ..switch
+        }),
         None => config.switch,
         Some(SwitchSpec::Off(false)) => None,
         Some(SwitchSpec::Off(true)) => {
@@ -1054,6 +1071,41 @@ fn mux(
         }),
     };
     Ok(NodeSpec::Mux { inputs, config })
+}
+
+/// Checks a mux's thresholds, as given or as defaulted, as the core
+/// would, so that a refusal says which key is wrong.
+fn thresholds(at: &str, node: &Node, config: &MuxConfig) -> Result<(), ProfileError> {
+    let (engage, release) = (config.engage, config.release);
+    // Written so that a value that isn't a number fails.
+    let between = |value: f32| value > 0.0 && value <= 1.0;
+    if !between(engage) {
+        return error(
+            format!("{at}.engage"),
+            "`engage` is more than 0 and at most 1: how far a control moves, from rest to all the way, before an input takes hold of it",
+        );
+    }
+    if !between(release) {
+        return error(
+            format!("{at}.release"),
+            "`release` is more than 0 and at most 1: at 0, an input that took hold of a control would never let go",
+        );
+    }
+    if release > engage {
+        // The one written, where only one is: the other is the default.
+        let key = if node.release.is_some() {
+            "release"
+        } else {
+            "engage"
+        };
+        return error(
+            format!("{at}.{key}"),
+            format!(
+                "`release` ({release}) is at most `engage` ({engage}): an input lets go below where it took hold"
+            ),
+        );
+    }
+    Ok(())
 }
 
 fn demux(
@@ -1081,6 +1133,12 @@ fn demux(
             "a demux needs to know how many outputs it has",
         );
     };
+    if !(1..=MAX_OUTPUTS).contains(&outputs) {
+        return error(
+            format!("{at}.outputs"),
+            format!("a demux has between 1 and {MAX_OUTPUTS} outputs"),
+        );
+    }
     let mode = match mode {
         Fanout::Unicast => DemuxMode::Unicast,
         Fanout::Multicast => DemuxMode::Multicast,

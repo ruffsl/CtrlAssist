@@ -359,18 +359,91 @@ fn what_is_wrong_with_a_profile_is_said_with_where() {
     // What the core refuses is passed on.
     said(
         with(
-            "[node.m]\nmux = \"priority\"\ninputs = [\"a\", \"b\"]\nengage = 0.1\nrelease = 0.5\n[sink.o]\ninput = \"m\"\n",
-        ),
-        "",
-        "the graph can't be built",
-    );
-    said(
-        with(
             "[node.x]\nmux = \"priority\"\ninputs = [\"a\", \"y\"]\n[node.y]\nmux = \"priority\"\ninputs = [\"b\", \"x\"]\n[sink.o]\ninput = \"x\"\n",
         ),
         "",
         "the graph can't be built",
     );
+}
+
+/// What the core would refuse of a node or a source is said with where
+/// it is, even where it is a default the profile didn't write.
+#[test]
+fn a_refusal_the_core_would_make_is_said_with_where() {
+    let base = "[source.a]\npad = \"model:0001:0001\"\n[source.b]\npad = \"model:0002:0002\"\n";
+    let mux = |rest: &str| {
+        format!(
+            "{base}[node.m]\nmux = \"priority\"\ninputs = [\"a\", \"b\"]\n{rest}[sink.o]\ninput = \"m\"\n"
+        )
+    };
+    let demux = |outputs: usize| {
+        format!(
+            "{base}[node.d]\ndemux = \"unicast\"\ninput = \"a\"\noutputs = {outputs}\n[sink.o]\ninput = \"d\"\n"
+        )
+    };
+    for (text, want_at, want) in [
+        // Never reached, so a group never changes hands.
+        (
+            mux("engage = 1.5\nrelease = 0.5\n"),
+            "node.m.engage",
+            "more than 0 and at most 1",
+        ),
+        (mux("engage = nan\n"), "node.m.engage", "at most 1"),
+        // Never gone below, so a group never changes hands back.
+        (mux("release = 0.0\n"), "node.m.release", "never let go"),
+        (
+            mux("engage = 0.1\nrelease = 0.5\n"),
+            "node.m.release",
+            "`release` (0.5) is at most `engage` (0.1)",
+        ),
+        // Only one written: it is that one that is wrong.
+        (
+            mux("release = 0.2\n"),
+            "node.m.release",
+            "`release` (0.2) is at most `engage` (0.1)",
+        ),
+        (
+            mux("engage = 0.03\n"),
+            "node.m.engage",
+            "`release` (0.05) is at most `engage` (0.03)",
+        ),
+        (
+            format!(
+                "{base}[node.m]\nmux = \"priority\"\ninputs = [\"a\", \"b\", \"a\", \"b\", \"a\", \"b\", \"a\", \"b\", \"a\"]\n[sink.o]\ninput = \"m\"\n"
+            ),
+            "node.m.inputs",
+            "at most 8 inputs",
+        ),
+        (demux(0), "node.d.outputs", "between 1 and 16"),
+        (demux(17), "node.d.outputs", "between 1 and 16"),
+        (
+            "[source.a]\npad = \"model:0001:0001\"\ndeadzone = -0.1\n[sink.o]\ninput = \"a\"\n"
+                .to_string(),
+            "source.a.deadzone",
+            "a number from 0",
+        ),
+    ] {
+        let (at, problem) = refusal(&text);
+        assert_eq!(at, want_at, "{problem}\n{text}");
+        assert!(problem.contains(want), "{at}: {problem}");
+    }
+    plan(&mux("engage = 1.0\nrelease = 1.0\n")).unwrap();
+    plan(&demux(16)).unwrap();
+
+    // A toggle of one input switches on that input's button, not on a
+    // second input it doesn't have.
+    let one =
+        format!("{base}[node.m]\nmux = \"toggle\"\ninputs = [\"a\"]\n[sink.o]\ninput = \"m\"\n");
+    match plan(&one).unwrap().graph.nodes.remove(0) {
+        NodeSpec::Mux { config, .. } => assert_eq!(
+            config.switch,
+            Some(Switch {
+                input: Some(0),
+                button: gamepad::MODE
+            })
+        ),
+        NodeSpec::Demux { .. } => unreachable!("the node is a mux"),
+    }
 }
 
 /// A profile of thousands of virtual pads fits in a file the daemon

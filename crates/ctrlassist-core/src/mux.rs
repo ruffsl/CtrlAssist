@@ -138,10 +138,12 @@ fn copy_group(out: &mut PadState, from: &PadState, group: &Group) {
 impl Mux {
     /// Checks everything a profile can say about a mux.
     pub(crate) fn validate(config: &MuxConfig, inputs: usize) -> Result<(), GraphError> {
-        let thresholds_ok = config.engage.is_finite()
-            && config.release.is_finite()
-            && config.release >= 0.0
-            && config.release <= config.engage;
+        // 0 < release <= engage <= 1, which a value that isn't a number
+        // fails. Activity runs from 0 to 1, so an engage above 1 is never
+        // reached, and a release of 0 is never gone below: an input that
+        // touched a group once would hold it for good.
+        let thresholds_ok =
+            config.release > 0.0 && config.release <= config.engage && config.engage <= 1.0;
         if !thresholds_ok {
             return Err(GraphError::BadThreshold);
         }

@@ -55,7 +55,7 @@ pub(crate) struct Demux {
 }
 
 /// The most outputs one demux may have.
-const MAX_OUTPUTS: usize = 16;
+pub const MAX_OUTPUTS: usize = 16;
 
 impl Demux {
     /// Checks everything a profile can say about a demux.

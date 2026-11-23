@@ -1143,6 +1143,11 @@ fn thresholds_must_be_numbers_in_order() {
         (0.1, 0.2),
         (0.1, -0.1),
         (f32::INFINITY, 0.0),
+        // Never reached: activity is at most 1.
+        (1.5, 0.5),
+        // Never gone below: an input would hold a group for good.
+        (0.1, 0.0),
+        (0.0, 0.0),
     ] {
         let mut config = MuxConfig::new(Mode::Priority, &layout);
         config.engage = engage;
@@ -1152,6 +1157,12 @@ fn thresholds_must_be_numbers_in_order() {
             Some(GraphError::BadThreshold),
             "{engage} {release}"
         );
+    }
+    for (engage, release) in [(1.0, 1.0), (1.0, 0.01), (0.1, 0.1)] {
+        let mut config = MuxConfig::new(Mode::Priority, &layout);
+        config.engage = engage;
+        config.release = release;
+        assert!(build_mux(config).is_ok(), "{engage} {release}");
     }
     for deadzone in [f32::NAN, -0.1, f32::INFINITY] {
         let result = Graph::build(GraphSpec {

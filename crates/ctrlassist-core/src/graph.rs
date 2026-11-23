@@ -75,8 +75,8 @@ pub enum GraphError {
     /// A control beyond a pad state's capacity, or a switch that isn't a
     /// button on one of the node's inputs.
     BadControl,
-    /// A deadzone or threshold that isn't a number, is negative, or a
-    /// release threshold above its engage threshold.
+    /// A deadzone that isn't a number or is negative, or thresholds that
+    /// aren't `0 < release <= engage <= 1`.
     BadThreshold,
 }
 
@@ -92,7 +92,7 @@ impl std::fmt::Display for GraphError {
                 "a control is out of range, or a switch is not a button on one of its node's inputs"
             }
             Self::BadThreshold => {
-                "a deadzone or threshold is not a number, is negative, or release exceeds engage"
+                "a deadzone is not a number or is negative, or thresholds are not 0 < release <= engage <= 1"
             }
         })
     }
