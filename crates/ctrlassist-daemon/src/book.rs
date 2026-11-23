@@ -166,8 +166,13 @@ impl Book {
             return Vec::new();
         }
         let id = found.identifiers.id().to_string();
+        // A node already taken in is a connected pad that changed; any
+        // other is a node come.
+        let come = !self
+            .rows
+            .values()
+            .any(|row| row.nodes.iter().any(|held| held.node == found.node));
         let mut changed = Vec::new();
-        let mut back = false;
         for (held, row) in &mut self.rows {
             let was = row.connected();
             // A node is one pad's at a time: one that now reports another
@@ -175,14 +180,12 @@ impl Book {
             if *held != id {
                 row.nodes.retain(|held| held.node != found.node);
             }
-            // Its anchor, if a node of it is away: back, under whatever
-            // name it now reports. One at the same place, enumerated
-            // afresh, is another device, whose going wasn't heard.
+            // One at the place of a node away, enumerated afresh, is
+            // another device, whose going wasn't heard: what was away
+            // from the one before has gone.
             if let Some(anchor) = &found.anchor {
-                row.away.retain(|away| {
-                    back |= away == anchor;
-                    away.path != anchor.path
-                });
+                row.away
+                    .retain(|away| away.path != anchor.path || away == anchor);
             }
             if *held != id && was != row.connected() {
                 changed.push(Changed {
@@ -191,6 +194,11 @@ impl Book {
                 });
             }
         }
+        let back = come
+            && found
+                .anchor
+                .as_ref()
+                .is_some_and(|anchor| self.back(&id, anchor, &mut changed));
         let was = self.rows.get(&id).map(|row| &row.known);
         let known = Known {
             id: id.clone(),
@@ -225,6 +233,37 @@ impl Book {
             changed.push(Changed { id, remembered });
         }
         changed
+    }
+
+    /// A node come on `anchor`, for the pad `id`: back, if a node of that
+    /// anchor is away. Each node is away and back on its own, so one away
+    /// entry is taken, the pad's own first, and failing that another
+    /// row's: a pad back under another name than it went with. That row,
+    /// left with nothing, is noted in `changed`.
+    fn back(&mut self, id: &str, anchor: &Anchor, changed: &mut Vec<Changed>) -> bool {
+        let take = |row: &mut Row| {
+            let at = row.away.iter().position(|away| away == anchor)?;
+            row.away.remove(at);
+            Some(())
+        };
+        if self.rows.get_mut(id).and_then(take).is_some() {
+            return true;
+        }
+        let Some((other, row)) = self
+            .rows
+            .iter_mut()
+            .find(|(_, row)| row.away.contains(anchor))
+        else {
+            return false;
+        };
+        take(row);
+        if !row.connected() {
+            changed.push(Changed {
+                id: other.clone(),
+                remembered: false,
+            });
+        }
+        true
     }
 
     /// The hiding service has asked a re-bind of the device at `anchor`,
@@ -972,6 +1011,99 @@ mod tests {
         book.left(Path::new("/dev/input/event7"));
         assert_eq!(book.unplugged(&one.path), std::slice::from_ref(&id));
         assert!(!book.pad(&id).unwrap().connected);
+    }
+
+    /// Two joystick nodes on one anchor, as a twin-joystick adapter has,
+    /// each away and back on its own through a re-bind: reporting
+    /// nothing apart, they share a row, and the second back is back as
+    /// the first is, not a pad plugged in.
+    #[test]
+    fn two_nodes_of_one_anchor_and_one_row_are_each_back() {
+        let mut book = Book::default();
+        let hid = anchor(HID, 1);
+        let pad = |node: &str| Found {
+            anchor: Some(hid.clone()),
+            ..found(node, "Twin", None, None)
+        };
+        let id = book.arrived(&pad("/dev/input/event5"), None).remove(0).id;
+        assert_eq!(book.arrived(&pad("/dev/input/event6"), None).len(), 1);
+        book.was_restored(&id);
+        let new = [syspath("/dev/input/event7"), syspath("/dev/input/event8")];
+        book.rebinding(&hid.path, &new);
+        assert_eq!(book.left(Path::new("/dev/input/event5")), None);
+        assert_eq!(book.left(Path::new("/dev/input/event6")), None);
+        for node in ["/dev/input/event7", "/dev/input/event8"] {
+            book.arrived(&pad(node), None);
+            assert!(book.was_restored(&id), "{node} back");
+            assert!(book.pad(&id).unwrap().connected);
+        }
+        assert!(book.rows[&id].away.is_empty(), "none left away");
+    }
+
+    /// Two joystick nodes on one anchor that report different names,
+    /// each its own row: through a re-bind each is back in its own row,
+    /// and neither is published as gone meanwhile.
+    #[test]
+    fn two_nodes_of_one_anchor_and_two_rows_are_each_back() {
+        let mut book = Book::default();
+        let hid = anchor(HID, 1);
+        let pad = |node: &str, address: &str| Found {
+            anchor: Some(hid.clone()),
+            ..found(node, "Twin", Some(address), None)
+        };
+        let (a, b) = ("aa:00:00:00:00:01", "aa:00:00:00:00:02");
+        let one = book
+            .arrived(&pad("/dev/input/event5", a), None)
+            .remove(0)
+            .id;
+        let two = book
+            .arrived(&pad("/dev/input/event6", b), None)
+            .remove(0)
+            .id;
+        book.rebinding(&hid.path, &[]);
+        assert_eq!(book.left(Path::new("/dev/input/event5")), None);
+        assert_eq!(book.left(Path::new("/dev/input/event6")), None);
+        let changed = book.arrived(&pad("/dev/input/event7", a), None);
+        assert_eq!(
+            changed,
+            [Changed {
+                id: one.clone(),
+                remembered: false
+            }]
+        );
+        assert!(book.was_restored(&one));
+        assert!(book.pad(&two).unwrap().connected, "still away, not gone");
+        let changed = book.arrived(&pad("/dev/input/event8", b), None);
+        assert_eq!(
+            changed,
+            [Changed {
+                id: two.clone(),
+                remembered: false
+            }]
+        );
+        assert!(book.was_restored(&two), "back, not plugged in");
+        assert!(book.rows[&one].away.is_empty() && book.rows[&two].away.is_empty());
+    }
+
+    /// A pad already connected that reports a change is no node come: it
+    /// takes no other node's place away, so that node's return is still
+    /// its return.
+    #[test]
+    fn a_change_of_a_node_there_is_no_return() {
+        let mut book = Book::default();
+        let hid = anchor(HID, 1);
+        let pad = |node: &str| Found {
+            anchor: Some(hid.clone()),
+            ..found(node, "Twin", None, None)
+        };
+        let id = book.arrived(&pad("/dev/input/event5"), None).remove(0).id;
+        book.arrived(&pad("/dev/input/event6"), None);
+        book.rebinding(&hid.path, &[syspath("/dev/input/event5")]);
+        assert_eq!(book.left(Path::new("/dev/input/event6")), None);
+        assert_eq!(book.arrived(&pad("/dev/input/event5"), None), []);
+        assert!(!book.was_restored(&id));
+        book.arrived(&pad("/dev/input/event7"), None);
+        assert!(book.was_restored(&id), "back");
     }
 
     /// A pad away that comes back reporting another name, as one whose

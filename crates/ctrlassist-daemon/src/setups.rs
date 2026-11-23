@@ -4021,6 +4021,45 @@ mod tests {
         unplugged(&mut rig, node).await;
     }
 
+    /// A pad with two joystick nodes on one anchor, re-bound at the
+    /// hiding service's request: each node is away and back on its own,
+    /// so the second back is no pad plugged in either, and a profile that
+    /// starts by itself, stopped by hand, stays stopped. The pad is
+    /// connected throughout.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_of_two_nodes_re_bound_starts_nothing() {
+        let mut rig = rig().await;
+        let managed = format!("{PROFILE}managed = true\n");
+        rig.reactor.profiles.put("couch", &managed).unwrap();
+        let (_hider, [_, node]) = running_hidden(&mut rig, Script::default()).await;
+        let second = "/nowhere/event3";
+        rig.reactor.book.arrived(&connecting(PRIMARY, second), None);
+        let stopping = ask(&mut rig, true).await;
+        rig.reactor
+            .reported(Report::Stopped(SetupId(7), handed_back()))
+            .await;
+        finish(&mut rig.reactor).await;
+        stopping.await.unwrap().unwrap();
+        assert!(rig.reactor.setups.setup("couch").is_none());
+        let anchor = anchor_of(PRIMARY).path;
+        let present = Vec::new();
+        rig.reactor.saw(Seen::Rebinding { anchor, present }).await;
+        for gone in [node, second] {
+            rig.reactor.saw(Seen::Left(PathBuf::from(gone))).await;
+            assert!(rig.reactor.book.pad(PRIMARY).unwrap().connected, "{gone}");
+        }
+        for back in [node, second] {
+            rig.reactor
+                .saw(Seen::Arrived(connecting(PRIMARY, back), None))
+                .await;
+            assert!(rig.reactor.book.pad(PRIMARY).unwrap().connected);
+            assert!(
+                rig.reactor.setups.setup("couch").is_none(),
+                "not started again by {back} coming back"
+            );
+        }
+    }
+
     /// A pad unplugged and plugged in again, on an anchor the book hasn't
     /// seen, is a pad plugged in: a profile that starts by itself does.
     /// The start makes its virtual pad, so this needs uinput.
