@@ -324,6 +324,29 @@ fn with_rumble(mut report: [u8; OUTPUT_SIZE], level: Level, newer: bool) -> [u8;
     report
 }
 
+/// The output report a DualSense takes over Bluetooth, and its size.
+const BLUETOOTH_OUTPUT_REPORT: u8 = 0x31;
+const BLUETOOTH_OUTPUT_SIZE: usize = 78;
+/// What marks a Bluetooth output report as one, after its sequence
+/// number: the tag the kernel's driver writes.
+const BLUETOOTH_OUTPUT_TAG: u8 = 0x10;
+
+/// A USB output report as a DualSense takes it over Bluetooth: another
+/// report number, a sequence number that counts reports round from 0
+/// to 15, a tag, the same block of settings the USB report carries
+/// after its own number, and a checksum of it all, as the kernel's
+/// driver writes one.
+fn over_bluetooth(usb: [u8; OUTPUT_SIZE], sequence: u8) -> [u8; BLUETOOTH_OUTPUT_SIZE] {
+    let mut report = [0u8; BLUETOOTH_OUTPUT_SIZE];
+    report[0] = BLUETOOTH_OUTPUT_REPORT;
+    report[1] = (sequence & 0x0f) << 4;
+    report[2] = BLUETOOTH_OUTPUT_TAG;
+    report[3..3 + OUTPUT_SIZE - 1].copy_from_slice(&usb[1..]);
+    let checksum = crc32(0xa2, &report[..BLUETOOTH_OUTPUT_SIZE - 4]);
+    report[BLUETOOTH_OUTPUT_SIZE - 4..].copy_from_slice(&checksum.to_le_bytes());
+    report
+}
+
 /// The DualShock 4's product numbers: the first model and the second.
 const DUALSHOCK4: [u16; 2] = [0x05c4, 0x09cc];
 /// The bus type for Bluetooth, from linux/input.h.
@@ -384,9 +407,10 @@ fn dualshock4_report(
 
 /// Which pad a raw node is, for what it is written.
 enum Kind {
-    /// A DualSense over USB, and whether its firmware takes the newer
-    /// rumble.
-    DualSense { newer: bool },
+    /// A DualSense, whether its firmware takes the newer rumble, and
+    /// over Bluetooth, where its report is another one, the number of
+    /// the next report sent it.
+    DualSense { newer: bool, bluetooth: Option<u8> },
     /// A DualShock 4, the bus it is on, and the lightbar color a game
     /// last asked for, if one has.
     DualShock4 {
@@ -395,7 +419,7 @@ enum Kind {
     },
 }
 
-/// A real PlayStation pad's raw HID node, as somewhere to write: the pad
+/// A PlayStation pad's raw HID node, as somewhere to write: the pad
 /// is sent whole output reports, so that what a game sends a virtual
 /// DualSense beyond rumble reaches the pad behind it. A DualSense gets
 /// the game's report as it is, lights and trigger effects; a DualShock 4
@@ -412,11 +436,11 @@ pub(crate) struct RawOutput {
 
 impl RawOutput {
     /// Takes a pad's raw node, if it is one this knows how to write to:
-    /// a DualSense's over USB (over Bluetooth its report is another one),
-    /// or a DualShock 4's over either.
+    /// a DualSense's or a DualShock 4's, over USB or Bluetooth.
     pub(crate) fn open(raw: std::os::fd::OwnedFd) -> io::Result<Self> {
         let (bus, vendor, product) = hidraw::info(raw.as_fd())?;
-        let kind = if (bus, vendor, product) == (BUS_USB, VENDOR, PRODUCT) {
+        let wired_or_not = bus == BUS_USB || bus == BUS_BLUETOOTH;
+        let kind = if (vendor, product) == (VENDOR, PRODUCT) && wired_or_not {
             let firmware = hidraw::feature(raw.as_fd(), FIRMWARE, FIRMWARE_SIZE)?;
             let update = u16::from_le_bytes([
                 firmware.get(44).copied().unwrap_or(0),
@@ -424,11 +448,9 @@ impl RawOutput {
             ]);
             Kind::DualSense {
                 newer: update >= NEWER_RUMBLE,
+                bluetooth: (bus == BUS_BLUETOOTH).then_some(0),
             }
-        } else if vendor == VENDOR
-            && DUALSHOCK4.contains(&product)
-            && (bus == BUS_USB || bus == BUS_BLUETOOTH)
-        {
+        } else if vendor == VENDOR && DUALSHOCK4.contains(&product) && wired_or_not {
             Kind::DualShock4 {
                 bluetooth: bus == BUS_BLUETOOTH,
                 color: None,
@@ -436,7 +458,7 @@ impl RawOutput {
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "not a DualSense over USB or a DualShock 4",
+                "not a DualSense or a DualShock 4",
             ));
         };
         Ok(Self {
@@ -450,17 +472,28 @@ impl RawOutput {
     /// takes.
     pub(crate) fn takes(bus: u16, vendor: u16, product: u16) -> bool {
         vendor == VENDOR
-            && ((bus == BUS_USB && product == PRODUCT)
-                || (DUALSHOCK4.contains(&product) && (bus == BUS_USB || bus == BUS_BLUETOOTH)))
+            && (product == PRODUCT || DUALSHOCK4.contains(&product))
+            && (bus == BUS_USB || bus == BUS_BLUETOOTH)
     }
 
     /// Writes the pad a report of what it should be at; for a DualSense,
     /// `game` is the game's report to carry it.
     fn write(&mut self, game: [u8; OUTPUT_SIZE]) -> io::Result<()> {
-        match self.kind {
-            Kind::DualSense { newer } => self.raw.write_all(&with_rumble(game, self.level, newer)),
+        match &mut self.kind {
+            Kind::DualSense {
+                newer,
+                bluetooth: None,
+            } => self.raw.write_all(&with_rumble(game, self.level, *newer)),
+            Kind::DualSense {
+                newer,
+                bluetooth: Some(sequence),
+            } => {
+                let report = over_bluetooth(with_rumble(game, self.level, *newer), *sequence);
+                *sequence = (*sequence + 1) & 0x0f;
+                self.raw.write_all(&report)
+            }
             Kind::DualShock4 { bluetooth, color } => {
-                let (report, length) = dualshock4_report(self.level, color, bluetooth);
+                let (report, length) = dualshock4_report(self.level, *color, *bluetooth);
                 self.raw.write_all(&report[..length])
             }
         }
@@ -1066,10 +1099,40 @@ mod tests {
         let checksum = u32::from_le_bytes(bluetooth[74..].try_into().unwrap());
         assert_eq!(checksum, crc32(0xa2, &bluetooth[..74]));
         assert!(RawOutput::takes(BUS_USB, VENDOR, PRODUCT));
-        assert!(!RawOutput::takes(BUS_BLUETOOTH, VENDOR, PRODUCT));
+        assert!(RawOutput::takes(BUS_BLUETOOTH, VENDOR, PRODUCT));
+        assert!(!RawOutput::takes(6, VENDOR, PRODUCT), "another bus");
         assert!(RawOutput::takes(BUS_BLUETOOTH, VENDOR, 0x05c4));
         assert!(RawOutput::takes(BUS_USB, VENDOR, 0x09cc));
         assert!(!RawOutput::takes(BUS_USB, 0x045e, 0x05c4));
+    }
+
+    /// Over Bluetooth a DualSense's report is the USB one's settings
+    /// under another number, after a sequence number and a tag, and
+    /// before a checksum of it all.
+    #[test]
+    fn a_dualsense_s_report_over_bluetooth_wraps_the_usb_one() {
+        // A game's report: rumble marked, a lightbar color at its end.
+        let mut game = [0u8; OUTPUT_SIZE];
+        game[0] = OUTPUT_REPORT;
+        game[2] = 0x04;
+        (game[45], game[46], game[47]) = (0x11, 0x22, 0x33);
+        let usb = with_rumble(game, level_of(0x80, 0x40), true);
+        let report = over_bluetooth(usb, 5);
+        assert_eq!(report.len(), 78);
+        assert_eq!(report[..3], [0x31, 0x50, 0x10]);
+        // The settings, as the USB report has them after its number.
+        assert_eq!(report[3..50], usb[1..]);
+        assert_eq!(rumble_of(&usb), Some(level_of(0x80, 0x40)));
+        assert_eq!(report[47..50], [0x11, 0x22, 0x33]);
+        assert!(report[50..74].iter().all(|byte| *byte == 0));
+        let checksum = u32::from_le_bytes(report[74..].try_into().unwrap());
+        assert_eq!(checksum, crc32(0xa2, &report[..74]));
+        // The sequence number counts round in the upper half of its byte.
+        assert_eq!(over_bluetooth(usb, 15)[1], 0xf0);
+        assert_eq!(over_bluetooth(usb, 16)[1], 0x00);
+        // The checksum is the CRC-32 everyone's is, over the seed byte
+        // and then the rest: its check value, for "123456789".
+        assert_eq!(crc32(b'1', b"23456789"), 0xcbf4_3926);
     }
 
     fn level_of(strong: u8, weak: u8) -> Level {

@@ -26,6 +26,12 @@ Found while debugging Hades streamed through Moonshine to a DualSense and a Dual
 3. On hardware: a real DualSense on Bluetooth behind a virtual DualSense, with a game that sets the lightbar and a trigger effect; and Moonshine's pads, for rumble still arriving once it travels in the report.
 4. The architecture's feedback section and the guide's note on Bluetooth, which say such a pad gets rumble only.
 
+## State
+
+Step 1 is built: the report, the pad taken on either bus, and unit tests of the report's layout, sequence and checksum. The tests check the layout against the kernel driver's structure as read, not against bytes captured from a raw node, which step 1 asked for: a capture needs a pad on Bluetooth. Steps 2 to 4 are open; the architecture's feedback section is updated, the guide not.
+
+Not yet tried on any hardware. Two things to watch for on the first try: that Moonshine's pads still rumble, now that their rumble travels in a report the daemon writes and not through the kernel's effects; and that a real DualSense on Bluetooth takes the report at all.
+
 ## Deviations
 
-None yet.
+- Step 1's tests are of the layout, not of captured bytes (see State).
