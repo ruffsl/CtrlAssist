@@ -277,6 +277,7 @@ Found while building it, for review:
 - **"The CtrlAssist daemon is back"** says managed profiles start again, where it said profiles that start by themselves.
 - **A pad that has just left its setup** was logged as the hiding service not doing as asked, a warning, each time: it can't be opened again until it is back. That is logged at debug.
 - **Not exercised in the recording, and unchanged:** failed, pads only grabbed, no rumble, and the refusals.
+- **Checked on the real thing:** the daemon VM check, where the real hiding service re-binds a driver of the kernel's, asserts that nothing says a pad disconnected after a stop and that the pad reads as connected; it passes.
 
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
