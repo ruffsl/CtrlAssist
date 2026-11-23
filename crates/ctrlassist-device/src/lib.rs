@@ -24,6 +24,7 @@ mod hotplug;
 mod layout;
 mod output;
 mod pad;
+mod queue;
 mod realtime;
 mod sink;
 mod thread;

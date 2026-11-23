@@ -325,9 +325,20 @@ impl Device {
     fn fetch_events_inner(&mut self) -> io::Result<Option<SyncState>> {
         let block_dropped = std::mem::take(&mut self.block_dropped);
         let sync = if block_dropped {
+            // What was read after the dropped block is older than the state
+            // about to be fetched, and the kernel takes queued key, switch
+            // and LED events out of its own buffer as it hands their state
+            // over (`evdev_handle_get_val`): played after the fetch, these
+            // would undo it, with nothing later to put it right. So they go
+            // first, as libevdev's `sync_state` drains its queue.
+            self.raw.event_buf.clear();
             self.prev_state.clone_from(&self.state);
             let now = SystemTime::now();
-            self.sync_state(now)?;
+            if let Err(error) = self.sync_state(now) {
+                // Still owed: the next fetch tries again.
+                self.block_dropped = true;
+                return Err(error);
+            }
             Some(SyncState::KeyTypes {
                 time: crate::systime_to_timeval(&now),
                 start: KeyCode::new(0),
@@ -655,11 +666,18 @@ fn sync_events(
                         *range = event_buf.len()..event_buf.len();
                         break 'outer Err(true);
                     } else {
+                        // Taken into the state only once the block is
+                        // whole and nothing in it was dropped: the state
+                        // is what the consumer was handed, which the
+                        // resync after a drop is worked out against.
+                        for ev in &event_buf[block_start..i] {
+                            handle_event(InputEvent::from(*ev));
+                        }
                         *range = block_start..i + 1;
                         continue 'outer;
                     }
                 }
-                _ => handle_event(ev),
+                _ => {}
             }
         }
         break Err(false);

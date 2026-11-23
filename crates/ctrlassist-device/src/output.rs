@@ -6,21 +6,24 @@
 //! can't wait, so each pad sent whole output reports has a thread of its
 //! own that writes them. The input thread only leaves what the pad should
 //! be sent in a one-slot mailbox and wakes the writer: neither waits for
-//! the other, and nothing is allocated. A newer report takes the place of
-//! one not yet written, and every report written carries the latest
-//! rumble level, so a level and a game's report that change together
-//! are written once, together.
+//! the other, and nothing is allocated. What the input thread passes is
+//! everything the games have set, not a change, so a newer one takes the
+//! place of one not yet written and loses nothing; what a report asks
+//! once is gathered beside it until it is written. Every report written
+//! carries the latest rumble level, so a level and the games' settings
+//! that change together are written once, together.
 
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsFd, OwnedFd};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering, fence};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering, fence};
 use std::thread::{JoinHandle, Thread};
 
 use ctrlassist_core::Level;
 
-use crate::dualsense::{Composer, GAME_SIZE, Kind};
+use crate::dualsense::{Composer, GAME_SIZE, Kind, Once};
 
 /// The mailbox's size in words: a game's report, then one for the level
 /// and the count of game reports.
@@ -29,7 +32,7 @@ const WORDS: usize = GAME_SIZE / 8 + 1;
 /// What a pad should be sent.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Wanted {
-    /// The game's report last passed to it.
+    /// The games' settings last passed to it, with nothing asked once.
     game: [u8; GAME_SIZE],
     /// How many game reports have been passed, counting round: the last
     /// is yet to be written if its count isn't the one last written.
@@ -127,6 +130,11 @@ struct Shared {
     stop: AtomicBool,
     /// The error number of a write the pad refused, until it is said.
     refused: AtomicI32,
+    /// What was asked once and not yet written, as [`Once`]'s bits: put
+    /// after the settings it came with, and taken by the writer before
+    /// it looks in the mailbox, so it goes with those settings or later
+    /// ones, never earlier.
+    once: AtomicU32,
 }
 
 /// A PlayStation pad's raw HID node, as somewhere to write: the pad
@@ -138,13 +146,17 @@ struct Shared {
 /// level the pad should be at.
 ///
 /// The writes are made by a thread of the pad's own, at ordinary
-/// priority. Dropping this has it write what is left, the last level
-/// included, close the node and end.
+/// priority. Dropping this has it write what is left, and then leave the
+/// pad as no game had it: its motors stopped, a DualSense's trigger
+/// effects off, and the lights its kernel driver keeps (see
+/// [`Kind::driver_lights`]). Then it closes the node and ends.
 pub(crate) struct RawOutput {
     shared: Arc<Shared>,
     writer: Thread,
     kind: Kind,
     wanted: Wanted,
+    /// What was asked once and not yet put.
+    once: Once,
     /// Whether what is wanted is kept back until it is let go.
     held: bool,
     /// Whether what is wanted changed while kept back.
@@ -156,22 +168,44 @@ impl RawOutput {
     /// a DualSense's or a DualShock 4's, over USB or Bluetooth.
     pub(crate) fn open(raw: OwnedFd) -> io::Result<Self> {
         let kind = Kind::of(raw.as_fd())?;
-        let (output, _) = Self::start(File::from(raw), kind)?;
+        // The HID device the node is of, whose LED devices say what its
+        // driver shows: read as the writer ends, off the input thread.
+        let device = rustix::fs::fstat(&raw).ok().map(|stat| {
+            let (major, minor) = (
+                rustix::fs::major(stat.st_rdev),
+                rustix::fs::minor(stat.st_rdev),
+            );
+            PathBuf::from(format!("/sys/dev/char/{major}:{minor}/device"))
+        });
+        let (output, _) = Self::start(File::from(raw), kind, device)?;
         Ok(output)
     }
 
-    /// Starts the writer on `out`.
-    fn start<W: Write + Send + 'static>(out: W, kind: Kind) -> io::Result<(Self, JoinHandle<()>)> {
+    /// Starts the writer on `out`, a pad's raw node whose HID device is
+    /// `device` in sysfs.
+    fn start<W: Write + Send + 'static>(
+        mut out: W,
+        kind: Kind,
+        device: Option<PathBuf>,
+    ) -> io::Result<(Self, JoinHandle<()>)> {
         let shared = Arc::new(Shared {
             mailbox: Mailbox::new(),
             stop: AtomicBool::new(false),
             refused: AtomicI32::new(0),
+            once: AtomicU32::new(0),
         });
         let writer = {
             let shared = Arc::clone(&shared);
             std::thread::Builder::new()
                 .name("pad-output".to_string())
-                .spawn(move || write_out(&shared, out, Composer::new(kind)))?
+                .spawn(move || {
+                    let mut composer = Composer::new(kind);
+                    write_out(&shared, &mut out, &mut composer);
+                    // What the pad is left with, after whatever was left.
+                    let lights = kind.driver_lights(device.as_deref());
+                    let (rest, length) = composer.rest(lights);
+                    let _ = out.write_all(rest.get(..length).unwrap_or(&rest));
+                })?
         };
         let output = Self {
             shared,
@@ -182,6 +216,7 @@ impl RawOutput {
                 games: 0,
                 level: Level::default(),
             },
+            once: Once::default(),
             held: false,
             changed: false,
         };
@@ -200,10 +235,11 @@ impl RawOutput {
         self.refusal()
     }
 
-    /// Sends the pad what a game sent a virtual DualSense, with the
-    /// rumble the pad should be at in place of the report's: the whole
-    /// report for a DualSense, and for a DualShock 4 the lightbar's
-    /// color, if the report sets it.
+    /// Sends the pad what the games have set on a virtual DualSense, as
+    /// one report, with the rumble the pad should be at in place of the
+    /// report's: the whole of it for a DualSense, with what it asks once,
+    /// and for a DualShock 4 the lightbar's color, if it is set. The same
+    /// settings again are nothing new.
     ///
     /// Fails if the pad refused a write since a refusal was last said.
     pub(crate) fn pass(&mut self, report: &[u8]) -> io::Result<()> {
@@ -214,8 +250,19 @@ impl RawOutput {
         if !self.kind.wants(&game) {
             return Ok(());
         }
-        self.wanted.game = game;
-        self.wanted.games = self.wanted.games.wrapping_add(1);
+        let once = match self.kind {
+            Kind::DualSense { .. } => Once::of(&game),
+            Kind::DualShock4 { .. } => Once::default(),
+        };
+        let game = Once::strip(game);
+        if game == self.wanted.game && once.is_empty() {
+            return self.refusal();
+        }
+        if game != self.wanted.game {
+            self.wanted.game = game;
+            self.wanted.games = self.wanted.games.wrapping_add(1);
+        }
+        self.once = self.once.then(once);
         self.change();
         self.refusal()
     }
@@ -242,8 +289,26 @@ impl RawOutput {
         }
     }
 
-    fn publish(&self) {
+    fn publish(&mut self) {
         self.shared.mailbox.put(self.wanted.to_words());
+        let once = std::mem::take(&mut self.once);
+        if !once.is_empty() {
+            // The writer only ever empties it, so this goes round again
+            // only when it just has.
+            let mut was = self.shared.once.load(Ordering::Acquire);
+            loop {
+                let now = Once::from_bits(was).then(once).bits();
+                match self.shared.once.compare_exchange_weak(
+                    was,
+                    now,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(seen) => was = seen,
+                }
+            }
+        }
         self.writer.unpark();
     }
 
@@ -258,7 +323,7 @@ impl RawOutput {
 impl Drop for RawOutput {
     fn drop(&mut self) {
         if std::mem::take(&mut self.changed) {
-            self.shared.mailbox.put(self.wanted.to_words());
+            self.publish();
         }
         self.shared.stop.store(true, Ordering::Release);
         self.writer.unpark();
@@ -268,19 +333,22 @@ impl Drop for RawOutput {
 /// The writer: writes what is wanted each time it changes, and sleeps
 /// between. Ends once the input thread's side is gone and what it left
 /// is written.
-fn write_out<W: Write>(shared: &Shared, mut out: W, mut composer: Composer) {
+fn write_out<W: Write>(shared: &Shared, out: &mut W, composer: &mut Composer) {
     let (mut written, mut games) = (0u64, 0u32);
     loop {
         // Before the mailbox is looked in, so that what was put before
         // the stop is written.
         let stopping = shared.stop.load(Ordering::Acquire);
+        // And what was asked once, which is put after the settings it
+        // came with: those are in the mailbox by now.
+        let once = Once::from_bits(shared.once.swap(0, Ordering::AcqRel));
         let (sequence, words) = shared.mailbox.get();
-        if sequence != written {
+        if sequence != written || !once.is_empty() {
             written = sequence;
             let wanted = Wanted::from_words(words);
             let game = (wanted.games != games).then_some(&wanted.game);
             games = wanted.games;
-            let (report, length) = composer.compose(game, wanted.level);
+            let (report, length) = composer.compose(game, wanted.level, once);
             let report = report.get(..length).unwrap_or(&report);
             if let Err(error) = out.write_all(report) {
                 let errno = error
@@ -361,7 +429,7 @@ mod tests {
             gate: gated.then_some(gate),
             refuse,
         };
-        let (output, writer) = RawOutput::start(recorder, USB).unwrap();
+        let (output, writer) = RawOutput::start(recorder, USB, None).unwrap();
         (output, writer, reports, open)
     }
 
@@ -380,9 +448,15 @@ mod tests {
         assert_eq!((sequence, Wanted::from_words(words)), (2, wanted));
     }
 
-    /// Read while being put, what comes out is always one put whole.
+    /// Read while being put, what comes out is always one put whole, on
+    /// the machine the test runs on. On x86, which neither reorders one
+    /// thread's stores nor its loads, this can't catch a fence left out:
+    /// that the fences are right for a weaker machine rests on the
+    /// sequence lock's argument in `put` and `get`, not on this. A model
+    /// checker such as loom would show it, but is a new dependency for
+    /// one test.
     #[test]
-    fn the_mailbox_is_never_read_half_put() {
+    fn the_mailbox_is_never_read_half_put_on_this_machine() {
         let mailbox = Arc::new(Mailbox::new());
         let putting = {
             let mailbox = Arc::clone(&mailbox);
@@ -402,9 +476,20 @@ mod tests {
         putting.join().unwrap();
     }
 
+    /// The trigger effects off, the motors stopped and the driver's own
+    /// lights: what a DualSense is left with, here with nothing in sysfs
+    /// to say its player LEDs, which are then left as they are.
+    fn is_rest(report: &[u8]) -> bool {
+        report.len() == 48
+            && (report[1], report[2], report[39]) == (0x0c, 0x04, 0)
+            && (report[11], report[22]) == (0x05, 0x05)
+            && report[3..5] == [0, 0]
+            && report[45..48] == [0, 0, 128]
+    }
+
     /// A level and a report told together are one write carrying both;
     /// once the input thread's side is dropped, the writer writes what
-    /// is left and ends.
+    /// is left, then the pad's rest, and ends.
     #[test]
     fn a_level_and_a_report_told_together_are_written_once() {
         let (mut output, writer, reports, _) = recorded(false, None);
@@ -423,10 +508,47 @@ mod tests {
         drop(output);
         writer.join().unwrap();
         let rest: Vec<Vec<u8>> = reports.try_iter().collect();
-        assert_eq!(rest.len(), 1, "{rest:?}");
+        assert_eq!(rest.len(), 2, "{rest:?}");
         let stop = &rest[0];
         assert_eq!((stop[1], stop[39], stop[3], stop[4]), (0, 0, 0, 0));
         assert_eq!(stop[45], 0, "a level alone changes nothing else");
+        assert!(is_rest(&rest[1]), "{rest:?}");
+    }
+
+    /// Dropped with its motors running and a trigger effect set, the
+    /// pad's last write stops the one and turns off the other.
+    #[test]
+    fn a_pad_let_go_is_left_at_rest() {
+        let (mut output, writer, reports, _) = recorded(false, None);
+        let mut trigger = lights(0x11);
+        (trigger[1], trigger[11], trigger[12]) = (0x04, 0x01, 0x80);
+        output.pass(&trigger).unwrap();
+        output.rumble(level(0x8000, 0x4000)).unwrap();
+        drop(output);
+        writer.join().unwrap();
+        let written: Vec<Vec<u8>> = reports.try_iter().collect();
+        let last = written.last().unwrap();
+        assert!(is_rest(last), "{written:?}");
+        assert_eq!(last[12], 0, "nothing of the effect is left");
+        // A DualShock 4 is left with its rumble stopped and the color its
+        // driver keeps, or with its color as it was where that's unknown.
+        let mut ds4 = Composer::new(Kind::DualShock4 { bluetooth: false });
+        let lights = crate::dualsense::Lights {
+            color: Some([0, 0, 0x40]),
+            players: None,
+        };
+        let (report, length) = ds4.rest(lights);
+        assert_eq!(report[..length][..9], [0x05, 0x03, 0, 0, 0, 0, 0, 0, 0x40]);
+        let (report, _) = ds4.rest(crate::dualsense::Lights::default());
+        assert_eq!(report[1], 0x01, "the motors alone");
+        // A DualSense's player LEDs, where known, are the driver's.
+        let mut usb = Composer::new(USB);
+        let lights = crate::dualsense::Lights {
+            color: Some([0, 0, 128]),
+            players: Some(0x04),
+        };
+        let (report, _) = usb.rest(lights);
+        assert_eq!((report[2], report[44]), (0x14, 0x04));
     }
 
     /// While a write is under way, what the input thread says replaces
@@ -447,8 +569,49 @@ mod tests {
         assert_eq!((second[4], second[45]), (0x20, 0xbb), "{second:?}");
         drop(output);
         open.send(()).unwrap();
+        open.send(()).unwrap();
         writer.join().unwrap();
-        assert_eq!(reports.try_iter().count(), 0, "nothing was left");
+        let rest: Vec<Vec<u8>> = reports.try_iter().collect();
+        assert!(
+            rest.len() == 1 && is_rest(&rest[0]),
+            "only the rest: {rest:?}"
+        );
+    }
+
+    /// Settings that replace others not yet written lose nothing, being
+    /// everything the games set; what each asked once is gathered until
+    /// a write carries it; and the same settings again write nothing.
+    #[test]
+    fn what_is_asked_once_is_gathered_until_it_is_written() {
+        let (mut output, writer, reports, open) = recorded(true, None);
+        output.pass(&lights(0x11)).unwrap();
+        let first = reports.recv().unwrap();
+        assert_eq!(first[45], 0x11);
+        // The writer is held in its first write. The LEDs are given back,
+        // and the newer settings, which no longer set them, come after.
+        let mut release = [0u8; GAME_SIZE];
+        (release[0], release[2]) = (0x02, 0x08);
+        output.pass(&release).unwrap();
+        let mut trigger = release;
+        (trigger[1], trigger[2], trigger[11]) = (0x04, 0, 0x01);
+        output.pass(&trigger).unwrap();
+        open.send(()).unwrap();
+        let second = reports.recv().unwrap();
+        assert_eq!((second[1], second[2], second[11]), (0x04, 0x08, 0x01));
+        open.send(()).unwrap();
+        // The same settings again are nothing new.
+        output.pass(&trigger).unwrap();
+        output.rumble(level(0x1000, 0)).unwrap();
+        let third = reports.recv().unwrap();
+        assert_eq!(
+            (third[2], third[4]),
+            (0, 0x10),
+            "the level alone: {third:?}"
+        );
+        open.send(()).unwrap();
+        drop(output);
+        open.send(()).unwrap();
+        writer.join().unwrap();
     }
 
     /// A write the pad refuses is said at the next thing it is told.

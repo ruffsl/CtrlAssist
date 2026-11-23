@@ -553,6 +553,19 @@ impl VirtualPad {
             Kind::DualSense(pad) => pad.last_output(),
         }
     }
+
+    /// What the games have set on a virtual DualSense through all their
+    /// output reports, as one report for the pads behind it: each setting
+    /// from the newest report that set it, since a DualSense takes only
+    /// what a report marks. `fresh` for the pads a new report goes to,
+    /// which then get what it asks once as well. None for any other
+    /// kind of virtual pad, or before a game has sent one.
+    pub(crate) fn settings(&mut self, fresh: bool) -> Option<[u8; dualsense::GAME_SIZE]> {
+        match &mut self.kind {
+            Kind::Uinput(_) => None,
+            Kind::DualSense(pad) => pad.settings(fresh),
+        }
+    }
 }
 
 impl AsFd for VirtualPad {

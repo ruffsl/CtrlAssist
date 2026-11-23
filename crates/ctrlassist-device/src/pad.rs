@@ -172,6 +172,18 @@ const GAMEPAD_DRIVERS: [&str; 9] = [
     "steam-deck",
 ];
 
+/// Why a pad holds no effect of its own.
+#[derive(Debug)]
+enum NoEffect {
+    /// It has no motors the kernel drives, or is sent whole output
+    /// reports, which carry its rumble.
+    NotWanted,
+    /// The pad refused the upload, with this error number. A descriptor
+    /// open only for reading can upload but never play, and is taken as
+    /// refused with `EBADF`.
+    Refused(i32),
+}
+
 /// The kernel driver behind a device: the nearest one up its parents.
 fn driver(device_number: u64) -> Option<String> {
     let device = udev::Device::from_devnum(udev::DeviceType::Character, device_number).ok()?;
@@ -199,9 +211,9 @@ pub struct Pad {
     /// The state with the events of a frame still arriving applied.
     pending: PadState,
     can_rumble: bool,
-    /// The one effect kept on the pad once it has rumbled, and the level
-    /// it is at, zero while it is stopped.
-    rumble: Option<(FFEffect, Level)>,
+    /// The one effect kept on the pad, uploaded as it is opened, and the
+    /// level it is at, zero while it is stopped; or why there is none.
+    rumble: Result<(FFEffect, Level), NoEffect>,
     /// The pad's raw node, for a pad that is sent whole output reports.
     raw: Option<RawOutput>,
 }
@@ -239,7 +251,10 @@ impl Pad {
     fn open(fd: OwnedFd, database: Option<&Database>) -> Result<Self, PadError> {
         let device_number = fstat(&fd).map_err(io::Error::from)?.st_rdev;
         let serial = serial(device_number);
-        let device = Device::from_fd(fd)?;
+        // Open for more than reading: the access mode isn't read-only.
+        let writable = rustix::fs::fcntl_getfl(&fd)
+            .is_ok_and(|flags| flags & rustix::fs::OFlags::RWMODE != rustix::fs::OFlags::RDONLY);
+        let mut device = Device::from_fd(fd)?;
         // A read with nothing waiting must return, not block the thread
         // that every other pad is read on.
         device.set_nonblocking(true)?;
@@ -301,6 +316,25 @@ impl Pad {
         let can_rumble = device
             .supported_ff()
             .is_some_and(|ff| ff.contains(FFEffectCode::FF_RUMBLE));
+        // The one effect the pad will hold, uploaded here and not on the
+        // input thread: an upload duplicates the descriptor, and a pad
+        // another program makes waits for that program to answer it.
+        let rumble = if !can_rumble {
+            Err(NoEffect::NotWanted)
+        } else if !writable {
+            Err(NoEffect::Refused(rustix::io::Errno::BADF.raw_os_error()))
+        } else {
+            device
+                .upload_ff_effect(endless(Level::default()))
+                .map(|effect| (effect, Level::default()))
+                .map_err(|error| {
+                    NoEffect::Refused(
+                        error
+                            .raw_os_error()
+                            .unwrap_or(rustix::io::Errno::IO.raw_os_error()),
+                    )
+                })
+        };
         Ok(Self {
             device,
             mapping,
@@ -308,7 +342,7 @@ impl Pad {
             state,
             pending: state,
             can_rumble,
-            rumble: None,
+            rumble,
             raw: None,
         })
     }
@@ -394,7 +428,7 @@ impl Pad {
     /// rumble is written there, and so is what [`pass`](Self::pass) is
     /// given, by a thread of the pad's own: a write to a pad on USB
     /// waits for the pad. Dropping the pad has that thread write what is
-    /// left and end.
+    /// left, leave the pad at rest with its driver's lights, and end.
     ///
     /// # Errors
     ///
@@ -403,7 +437,7 @@ impl Pad {
     pub fn set_raw(&mut self, raw: OwnedFd) -> io::Result<()> {
         let raw = RawOutput::open(raw)?;
         // The kernel's own effect, if one runs, ends here.
-        self.rumble = None;
+        self.rumble = Err(NoEffect::NotWanted);
         self.raw = Some(raw);
         Ok(())
     }
@@ -458,31 +492,29 @@ impl Pad {
     /// level of zero stops them. A pad that can't rumble ignores this.
     ///
     /// The pad holds one effect however many games are rumbling it,
-    /// uploaded the first time it rumbles and kept until it is dropped:
-    /// a new level updates it in place, with no gap and no second slot,
-    /// and a level of zero stops it.
+    /// uploaded as the pad is opened and kept until it is dropped: a new
+    /// level updates it in place, with no gap and no second slot, and a
+    /// level of zero stops it. Nothing here duplicates a descriptor.
     ///
     /// # Errors
     ///
     /// Fails if the pad has gone, the descriptor isn't open for writing,
-    /// or the pad refuses the effect; the motors then stay as they were.
-    /// A pad sent whole output reports is written without waiting, and
-    /// fails if its raw node refused a write since that was last said.
+    /// or the pad refused the effect as it was opened; the motors then
+    /// stay as they were. A pad sent whole output reports is written
+    /// without waiting, and fails if its raw node refused a write since
+    /// that was last said.
     pub fn rumble(&mut self, level: Level) -> Result<(), PadError> {
         if let Some(raw) = &mut self.raw {
             return Ok(raw.rumble(level)?);
         }
-        if !self.can_rumble {
-            return Ok(());
-        }
         let stop = level == Level::default();
         match &mut self.rumble {
-            Some((_, held)) if *held == level => {}
-            Some((effect, held)) if stop => {
+            Ok((_, held)) if *held == level => {}
+            Ok((effect, held)) if stop => {
                 effect.stop()?;
                 *held = level;
             }
-            Some((effect, held)) => {
+            Ok((effect, held)) => {
                 // Played again as well as updated: a memless driver, as a
                 // rumble-only pad's is, goes on at the new strength either
                 // way, and another program's uinput pad may act only on a
@@ -491,12 +523,10 @@ impl Pad {
                 effect.play(1)?;
                 *held = level;
             }
-            None if stop => {}
-            None => {
-                let mut effect = self.device.upload_ff_effect(endless(level))?;
-                effect.play(1)?;
-                self.rumble = Some((effect, level));
+            Err(NoEffect::Refused(errno)) if !stop => {
+                return Err(io::Error::from_raw_os_error(*errno).into());
             }
+            Err(_) => {}
         }
         Ok(())
     }

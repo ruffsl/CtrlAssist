@@ -36,7 +36,9 @@ pub enum Asked {
 /// A hiding service that speaks the real one's protocol on a socket of
 /// its own and hides nothing: it hands back the pad's node opened for
 /// reading and writing, as the real service does, and notes what it was
-/// asked. The real service needs root; the virtual machine check runs it.
+/// asked. The real service runs as its own user with the rule shipped
+/// with it installed, which a test can't arrange; the virtual machine
+/// check runs it.
 pub struct FakeHider {
     path: PathBuf,
     asked: Arc<Mutex<Vec<Asked>>>,

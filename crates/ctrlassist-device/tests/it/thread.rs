@@ -563,7 +563,26 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
     // rumbled through its event node as a real one is.
     let mut motors = VirtualPad::create(Identity::Generic).unwrap();
     let _ = std::process::Command::new("udevadm").arg("settle").status();
-    let pad = writable(motors.event_node());
+    // Opening the pad uploads the one effect it keeps, which the stand-in
+    // answers as a pad's driver would.
+    let node = motors.event_node().to_path_buf();
+    let opening = std::thread::spawn(move || writable(&node));
+    let mut requests = Vec::new();
+    while !opening.is_finished() {
+        let mut fds = [PollFd::new(&motors, PollFlags::IN)];
+        let wait = Timespec {
+            tv_sec: 0,
+            tv_nsec: 10_000_000,
+        };
+        let _ = poll(&mut fds, Some(&wait));
+        motors
+            .serve(|request| {
+                requests.push(request);
+                Ok(())
+            })
+            .unwrap();
+    }
+    let pad = opening.join().unwrap();
 
     let (sink, _reader) = sink();
     let game_node = sink.event_node().to_path_buf();
@@ -593,7 +612,6 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
         drop(effect);
     });
 
-    let mut requests = Vec::new();
     let mut ended = None;
     for _ in 0..400 {
         let mut fds = [PollFd::new(&motors, PollFlags::IN)];
@@ -660,6 +678,14 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
     assert_eq!(
         requests,
         [
+            Request::Upload {
+                id: 0,
+                effect: Effect {
+                    strong: 0,
+                    weak: 0,
+                    ..level
+                }
+            },
             Request::Upload {
                 id: 0,
                 effect: level
@@ -940,4 +966,149 @@ fn a_virtual_dualsense_in_a_setup_reports_all_the_time() {
         "{reports} reports in a second"
     );
     assert!(sequences.len() >= 70, "{} counts", sequences.len());
+}
+
+/// A game's output reports each change only what they mark, and the pad
+/// behind a virtual DualSense is sent everything the games have set: a
+/// report that sets the lightbar and then one that sets the player LEDs
+/// reach it as one that sets both, whether the input thread reads them
+/// together or apart.
+#[test]
+fn a_pad_behind_a_virtual_dualsense_is_sent_everything_the_games_set() {
+    const TEST: &str = "a_pad_behind_a_virtual_dualsense_is_sent_everything_the_games_set";
+    if !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    let skip = |why: &str| {
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), "SKIPPED {TEST}: {why}");
+    };
+    let real = ctrlassist_test::FakeDualSense::new(0x32).unwrap();
+    let data = ctrlassist_test::synthetic_dualsense(true);
+    let sink = VirtualPad::dualsense(&data, ctrlassist_device::own_address(0x7e_5b02)).unwrap();
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    let real_raw = ctrlassist_test::raw_node_of(real.event_node()).unwrap();
+    let sink_raw = ctrlassist_test::raw_node_of(sink.event_node()).unwrap();
+    if !ctrlassist_test::can_open(&real_raw, true) || !ctrlassist_test::can_open(&sink_raw, true) {
+        return skip("a DualSense's raw node isn't this user's to open here");
+    }
+    let mut pad = writable(real.event_node());
+    let raw: OwnedFd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&real_raw)
+        .unwrap()
+        .into();
+    pad.set_raw(raw).unwrap();
+    let graph = Graph::build(GraphSpec {
+        sources: vec![source()],
+        nodes: vec![],
+        sinks: vec![Input::Source(PRIMARY)],
+    })
+    .unwrap();
+    let setup = Setup::new(graph, vec![Some(pad)], vec![sink]);
+    let (thread, _reports) = InputThread::spawn().unwrap();
+    thread.send(Command::Start(ID, Box::new(setup))).unwrap();
+
+    use std::io::Write as _;
+    let mut game = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&sink_raw)
+        .unwrap();
+    let mut lights = [0u8; 48];
+    lights[0] = 0x02;
+    (lights[2], lights[45], lights[46], lights[47]) = (0x04, 1, 2, 3);
+    let mut players = [0u8; 48];
+    players[0] = 0x02;
+    (players[2], players[44]) = (0x10, 0x05);
+    game.write_all(&lights).unwrap();
+    game.write_all(&players).unwrap();
+    let both =
+        |sent: &Vec<u8>| sent[2] & 0x14 == 0x14 && sent[44] == 0x05 && sent[45..48] == [1, 2, 3];
+    for _ in 0..400 {
+        if real.outputs().iter().any(both) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    unreachable!("no report set both: {:?}", real.outputs());
+}
+
+/// A game asking for rumble many times over while the control side reads
+/// nothing fills the input thread's queue with taps, and the reports that
+/// hand something back still find room: each pad's as it goes, and the
+/// setup's as it stops, since the room kept counts the setup's pads.
+#[test]
+fn a_flood_of_taps_leaves_room_for_the_pads_and_the_setup_handed_back() {
+    if !can_make_pads("a_flood_of_taps_leaves_room_for_the_pads_and_the_setup_handed_back") {
+        return;
+    }
+    use std::sync::{Arc, Condvar, Mutex};
+    let mut primary = FakePad::new("Thread Flood Primary", 0x1209, 0x5eed).unwrap();
+    let mut assist = FakePad::new("Thread Flood Assist", 0x1209, 0x5eed).unwrap();
+    let (sink, mut reader) = sink();
+    let node = sink.event_node().to_path_buf();
+    let setup = Setup::new(
+        mux(Mode::Priority),
+        vec![Some(read(&primary)), Some(read(&assist))],
+        vec![sink],
+    );
+    // The control side reads nothing until the gate opens.
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let (passed, reports) = std::sync::mpsc::channel();
+    let thread = {
+        let gate = Arc::clone(&gate);
+        InputThread::spawn_with(move |report| {
+            let (open, opened) = &*gate;
+            let mut open = open.lock().unwrap();
+            while !*open {
+                open = opened.wait(open).unwrap();
+            }
+            let _ = passed.send(report);
+        })
+        .unwrap()
+    };
+    thread.tap(true);
+    thread.send(Command::Start(ID, Box::new(setup))).unwrap();
+    // Both pads hold the same button, which the game sees let go only
+    // once both have gone and the thread has handled each going.
+    primary.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    assist.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    let held = PadState::NEUTRAL.with(gamepad::SOUTH, 1.0);
+    read_until(&mut reader, |frames| frames.last() == Some(&held));
+
+    let mut game = game_opens(&node);
+    for strong in 0..1000u16 {
+        let mut effect = game.upload_ff_effect(rumble(strong, 0, 1000, 0)).unwrap();
+        effect.play(1).unwrap();
+    }
+    drop(primary);
+    drop(assist);
+    let frames = read_until(&mut reader, |frames| {
+        frames.last() == Some(&PadState::NEUTRAL)
+    });
+    assert_eq!(last(&frames), PadState::NEUTRAL);
+    thread.send(Command::Stop(ID)).unwrap();
+
+    {
+        let (open, opened) = &*gate;
+        *open.lock().unwrap() = true;
+        opened.notify_all();
+    }
+    let (mut taps, mut gone) = (0, Vec::new());
+    loop {
+        match reports
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("every report that hands something back arrives")
+        {
+            Report::Tapped { .. } => taps += 1,
+            Report::PadGone { source, .. } => gone.push(source),
+            Report::Stopped(ID, _) => break,
+            other => unreachable!("{other:?}"),
+        }
+    }
+    gone.sort_by_key(|source| source.0);
+    assert_eq!(gone, [PRIMARY, ASSIST]);
+    // The queue holds 64 commands' worth beyond what may be handed back.
+    assert!(taps > 64, "the taps filled what they may: {taps}");
 }

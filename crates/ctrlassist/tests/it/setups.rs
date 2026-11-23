@@ -1077,8 +1077,16 @@ async fn a_pad_in_a_setup_is_buzzed_through_the_setup() {
         .identify_pad("model:1209:8501", Duration::from_millis(200))
         .await
         .unwrap();
-    eventually("the buzz never ended", async || fake.motors().len() >= 2).await;
-    assert_eq!(fake.motors(), [(0xa000, 0xa000), (0, 0)]);
+    // The pad's effect is uploaded as the pad is opened, so the daemon's
+    // look at it before taking it ends in a stop: from the buzz on.
+    let felt = || -> Vec<_> {
+        fake.motors()
+            .into_iter()
+            .skip_while(|motors| *motors == (0, 0))
+            .collect()
+    };
+    eventually("the buzz never ended", async || felt().len() >= 2).await;
+    assert_eq!(felt(), [(0xa000, 0xa000), (0, 0)]);
     assert!(asked.elapsed() >= Duration::from_millis(200));
 
     // A virtual pad of the setup is buzzed as a game would rumble it,
@@ -1089,10 +1097,10 @@ async fn a_pad_in_a_setup_is_buzzed_through_the_setup() {
         .await
         .unwrap();
     eventually("the virtual pad's buzz never reached the pad", async || {
-        fake.motors().len() >= 4
+        felt().len() >= 4
     })
     .await;
-    let felt = fake.motors();
+    let felt = felt();
     assert_ne!(felt[2], (0, 0), "{felt:?}");
     assert_eq!(felt.last(), Some(&(0, 0)), "{felt:?}");
     // One that no setup has is refused.
