@@ -234,6 +234,7 @@ impl Updating {
             Self::Reload => {
                 info!(
                     disruptive = updated.disruptive,
+                    start = updated.start,
                     "a setup took up its reloaded profile"
                 );
             }
@@ -259,10 +260,22 @@ pub(crate) enum Waiting {
     Update(Updating),
 }
 
-/// What an update by stopping and starting costs.
-const RESTARTED: rpc::Updated = rpc::Updated { disruptive: true };
-/// What an update by a new graph costs.
-const TAKEN: rpc::Updated = rpc::Updated { disruptive: false };
+/// What an update by stopping and starting costs, and the start it comes
+/// to.
+const fn restarted(start: SetupId) -> rpc::Updated {
+    rpc::Updated {
+        disruptive: true,
+        start: start.0,
+    }
+}
+
+/// What an update by a new graph costs, and the start that takes it.
+const fn taken(start: SetupId) -> rpc::Updated {
+    rpc::Updated {
+        disruptive: false,
+        start: start.0,
+    }
+}
 
 /// For each node of a new graph, the node of the old one it carries on
 /// from, which is the one of its name, and where each of the old node's
@@ -598,10 +611,11 @@ pub(crate) enum Asker {
 }
 
 impl Asker {
-    async fn ok(self) {
+    /// The setup started, as the start `start`.
+    async fn ok(self, start: SetupId) {
         match self {
             Self::Client(responder) => responder.ok(&rpc::Ack {}).await,
-            Self::Update(responder) => responder.ok(&RESTARTED).await,
+            Self::Update(responder) => responder.ok(&restarted(start)).await,
             Self::Daemon => {}
         }
     }
@@ -640,6 +654,8 @@ pub(crate) enum Done {
     /// the pads the hiding service didn't show again.
     Taken {
         responder: Updating,
+        /// The setup's start, which took the change.
+        start: SetupId,
         unshown: Vec<String>,
     },
     /// A pad that returned is open again, or couldn't be opened.
@@ -1237,6 +1253,7 @@ impl Reactor {
                 }
                 entry.settle();
                 let sources = entry.slots.len();
+                let start = entry.id;
                 info!(
                     setup = name,
                     phase = entry.phase.as_str(),
@@ -1248,7 +1265,7 @@ impl Reactor {
                 }
                 self.fill(&name).await;
                 self.publish_setup(&name).await;
-                asker.ok().await;
+                asker.ok(start).await;
                 // A pad may have connected while it started, and one it
                 // has may have been in the middle of connecting: each is
                 // taken now.
@@ -1412,7 +1429,12 @@ impl Reactor {
             Err(refusal) => return responder.err(&refusal).await,
         };
         if !request.apply {
-            let cost = if live { TAKEN } else { RESTARTED };
+            // Nothing changes: the start is the one it has.
+            let cost = if live {
+                taken(entry.id)
+            } else {
+                restarted(entry.id)
+            };
             return responder.ok(&cost).await;
         }
         let free = entry.stopping.is_none() && entry.taking.is_none();
@@ -1702,6 +1724,7 @@ impl Reactor {
             }
         }
         let sources = slots.len();
+        let start = entry.id;
         entry.slots = slots;
         entry.toml = toml;
         entry.stale = false;
@@ -1723,7 +1746,11 @@ impl Reactor {
         let hiding = Arc::clone(&self.hiding);
         self.work.spawn_blocking(move || {
             let unshown = shown_again(&hiding, old, &hidden);
-            Done::Taken { responder, unshown }
+            Done::Taken {
+                responder,
+                start,
+                unshown,
+            }
         });
         // A pad that isn't there may have come while the pads were
         // numbered by the old graph.
@@ -2156,9 +2183,13 @@ impl Reactor {
                 ids,
                 pads,
             } => self.send_graph(name, graph, ids, pads).await,
-            Done::Taken { responder, unshown } => {
+            Done::Taken {
+                responder,
+                start,
+                unshown,
+            } => {
                 self.unshown(unshown).await;
-                responder.ok(&TAKEN).await;
+                responder.ok(&taken(start)).await;
             }
             Done::Retired {
                 name,
@@ -2841,14 +2872,10 @@ mod tests {
         let mut rig = rig().await;
         follow(&mut rig.reactor, 7, Phase::Starting);
         // What an update costs can be asked at any time; doing it can't.
-        assert!(
-            ask_update(&mut rig, false)
-                .await
-                .await
-                .unwrap()
-                .unwrap()
-                .disruptive
-        );
+        // Asked, it says the start the setup is.
+        let cost = ask_update(&mut rig, false).await.await.unwrap().unwrap();
+        assert!(cost.disruptive);
+        assert_eq!(cost.start, 7);
         let busy = ask_update(&mut rig, true).await.await.unwrap();
         assert!(matches!(
             busy,
@@ -2925,10 +2952,12 @@ mod tests {
         // Its pads aren't connected, so it starts held, on a setup of its
         // own making this time.
         finish(&mut rig.reactor).await;
-        assert!(updating.await.unwrap().unwrap().disruptive);
+        let updated = updating.await.unwrap().unwrap();
+        assert!(updated.disruptive);
         let started = rig.reactor.setups.setup("couch").unwrap();
         assert_eq!(started.phase, Phase::Held);
         assert_ne!(started.start, 7, "started afresh, it is another start");
+        assert_eq!(updated.start, started.start, "the answer names it");
         assert!(
             started.sinks[0]
                 .node
@@ -3027,7 +3056,9 @@ mod tests {
             })
             .await;
         finish(&mut rig.reactor).await;
-        assert!(!updating.await.unwrap().unwrap().disruptive);
+        let updated = updating.await.unwrap().unwrap();
+        assert!(!updated.disruptive);
+        assert_eq!(updated.start, 7, "the start that took it");
         rig.reactor
             .reported(Report::Selected {
                 setup: SetupId(7),

@@ -111,6 +111,14 @@ pub struct Updated {
     /// Whether the setup's virtual pads are made anew, which a game
     /// sees as its pad disconnecting and another connecting.
     pub disruptive: bool,
+    /// The setup's [`start`](crate::payload::Setup::start) once the
+    /// update is done: a new number after a restart, the one it had
+    /// after a change taken as it runs, and the one it has now when only
+    /// the cost was asked. A client that asked for a restart can tell by
+    /// it which start is the restart's own, whatever its state shows of
+    /// it. 0 from a daemon too old to say.
+    #[serde(default)]
+    pub start: u32,
 }
 
 /// Asks a node of a setup to select another input or output.
@@ -237,4 +245,28 @@ pub struct ServiceInfo {
     /// state.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub config: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_update_s_reply_from_a_daemon_that_does_not_number_its_starts_reads_as_start_0() {
+        let older: Updated = serde_json::from_str(r#"{"disruptive":true}"#).unwrap();
+        assert_eq!(
+            older,
+            Updated {
+                disruptive: true,
+                start: 0
+            }
+        );
+        let numbered = Updated {
+            disruptive: true,
+            start: 9,
+        };
+        let text = serde_json::to_string(&numbered).unwrap();
+        assert_eq!(text, r#"{"disruptive":true,"start":9}"#);
+        assert_eq!(serde_json::from_str::<Updated>(&text).unwrap(), numbered);
+    }
 }

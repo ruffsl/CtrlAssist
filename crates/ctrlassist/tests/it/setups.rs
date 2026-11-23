@@ -575,8 +575,14 @@ async fn a_profile_that_asks_for_less_than_hiding_is_left_with_what_it_asks() {
     // both through the virtual pad and on the pad itself.
     let visible = format!("{}hide = \"none\"\n", priority(0x7f11, 0x7f12));
     client.put_profile("couch", &visible).await.unwrap();
-    assert!(client.update_setup("couch", false).await.unwrap());
-    assert!(client.update_setup("couch", true).await.unwrap());
+    assert!(
+        client
+            .update_setup("couch", false)
+            .await
+            .unwrap()
+            .disruptive
+    );
+    assert!(client.update_setup("couch", true).await.unwrap().disruptive);
     let setup = in_phase(&client, "couch", Phase::Running).await;
     let mut seen = game(&setup).await;
     primary.south(true).unwrap();
@@ -810,13 +816,19 @@ async fn an_update_is_taken_as_the_setup_runs_or_restarts_it_and_says_which() {
     assert!(client.setup("couch").unwrap().unwrap().nodes.is_empty());
     // Asked what an update would cost, the daemon says, and does nothing:
     // the same pads into the same virtual pad is no restart.
-    assert!(!client.update_setup("couch", false).await.unwrap());
+    assert!(
+        !client
+            .update_setup("couch", false)
+            .await
+            .unwrap()
+            .disruptive
+    );
     assert!(client.setup("couch").unwrap().unwrap().nodes.is_empty());
 
     // Asked to, the setup takes the profile as it runs: the game's pad
     // is the one it had, still holding what the primary holds, and the
     // setup now has a node that selects.
-    assert!(!client.update_setup("couch", true).await.unwrap());
+    assert!(!client.update_setup("couch", true).await.unwrap().disruptive);
     eventually(
         "the setup never said what its new node selects",
         async || {
@@ -841,7 +853,7 @@ async fn an_update_is_taken_as_the_setup_runs_or_restarts_it_and_says_which() {
         .put_profile("couch", &format!("{toggle}managed = true\n"))
         .await
         .unwrap();
-    assert!(!client.update_setup("couch", true).await.unwrap());
+    assert!(!client.update_setup("couch", true).await.unwrap().disruptive);
     eventually("the toggle didn't stay with the assist", async || {
         client
             .setup("couch")
@@ -858,9 +870,15 @@ async fn an_update_is_taken_as_the_setup_runs_or_restarts_it_and_says_which() {
         .put_profile("couch", &format!("{toggle}identity = \"xbox\"\n"))
         .await
         .unwrap();
-    assert!(client.update_setup("couch", false).await.unwrap());
+    assert!(
+        client
+            .update_setup("couch", false)
+            .await
+            .unwrap()
+            .disruptive
+    );
     assert!(phys_connected(&phys));
-    assert!(client.update_setup("couch", true).await.unwrap());
+    assert!(client.update_setup("couch", true).await.unwrap().disruptive);
     assert!(
         !phys_connected(&phys),
         "the old virtual pad outlived the update"
@@ -933,8 +951,14 @@ async fn another_pad_is_taken_as_the_setup_runs_and_the_one_given_up_is_shown_ag
         .put_profile("couch", &priority(0x8901, 0x8903))
         .await
         .unwrap();
-    assert!(!client.update_setup("couch", false).await.unwrap());
-    assert!(!client.update_setup("couch", true).await.unwrap());
+    assert!(
+        !client
+            .update_setup("couch", false)
+            .await
+            .unwrap()
+            .disruptive
+    );
+    assert!(!client.update_setup("couch", true).await.unwrap().disruptive);
     assert_eq!(
         asked(&hider)[2..],
         [
@@ -975,7 +999,7 @@ async fn another_pad_is_taken_as_the_setup_runs_and_the_one_given_up_is_shown_ag
         .put_profile("couch", &priority(0x8903, 0x8901))
         .await
         .unwrap();
-    assert!(!client.update_setup("couch", true).await.unwrap());
+    assert!(!client.update_setup("couch", true).await.unwrap().disruptive);
     assert_eq!(asked(&hider).len(), before);
     let swapped = client.setup("couch").unwrap().unwrap();
     let primary_now = swapped

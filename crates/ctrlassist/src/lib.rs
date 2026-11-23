@@ -25,7 +25,7 @@ pub use ctrlassist_protocol::payload::{
 };
 use ctrlassist_protocol::rpc;
 pub use ctrlassist_protocol::rpc::{
-    NotificationSettings, NotificationSettingsPatch, ReloadReport, Reloaded, ServiceInfo,
+    NotificationSettings, NotificationSettingsPatch, ReloadReport, Reloaded, ServiceInfo, Updated,
 };
 pub use error::{BoxError, Error, Result, Service};
 use tokio::sync::broadcast;
@@ -390,12 +390,15 @@ impl DaemonClient {
 
     /// Have the setup `name` take up its profile as it is kept now, after
     /// a [`Self::put_profile`]; with `apply` false, only ask what that
-    /// would cost. Returns whether it is disruptive: whether the setup's
-    /// virtual pads are made anew, which a game sees as its pad
-    /// disconnecting. A profile that keeps the setup's virtual pads and
-    /// its way of hiding pads is taken up live, without; any other
+    /// would cost. Returns whether it is [`Updated::disruptive`]: whether
+    /// the setup's virtual pads are made anew, which a game sees as its
+    /// pad disconnecting. A profile that keeps the setup's virtual pads
+    /// and its way of hiding pads is taken up live, without; any other
     /// change, or a setup that failed, is a restart. With `apply`,
-    /// returns once the setup runs again.
+    /// returns once the setup runs again, with the [`Updated::start`] it
+    /// runs as: after a restart, the number its new start is published
+    /// under, which tells that start from any other of the name whatever
+    /// this client's mirror has seen of it.
     ///
     /// # Errors
     ///
@@ -404,12 +407,12 @@ impl DaemonClient {
     /// what is kept now can't be run, the setup then carrying on as it
     /// was; with [`ErrorCode::SetupBusy`] while it is starting or
     /// stopping; or as [`Self::start_setup`] is; and fails as any rpc can.
-    pub async fn update_setup(&self, name: &str, apply: bool) -> Result<bool> {
+    pub async fn update_setup(&self, name: &str, apply: bool) -> Result<Updated> {
         let request = rpc::UpdateRequest {
             name: name.to_string(),
             apply,
         };
-        Ok(self.call::<setup::Update>(&request).await?.disruptive)
+        self.call::<setup::Update>(&request).await
     }
 
     /// Have a node of the setup `setup` select another input, for a mux
