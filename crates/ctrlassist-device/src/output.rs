@@ -640,10 +640,14 @@ impl Output {
         self.writer.unpark();
     }
 
+    /// Says a write the pad refused, or a writer that has broken off.
+    /// Called on the input thread, so neither error allocates: an error
+    /// number and a bare kind are held in place, where a message would be
+    /// boxed, at every call once the writer has broken off.
     fn refusal(&self) -> io::Result<()> {
         match self.shared.refused.swap(0, Ordering::Relaxed) {
             0 if self.shared.broken.load(Ordering::Acquire) => {
-                Err(io::Error::other("the thread writing to the pad failed"))
+                Err(io::Error::from(io::ErrorKind::Other))
             }
             0 => Ok(()),
             errno => Err(io::Error::from_raw_os_error(errno)),
@@ -1164,6 +1168,9 @@ mod tests {
         for _ in 0..2 {
             let refused = output.rumble(level(0x2000, 0)).unwrap_err();
             assert!(refused.raw_os_error().is_none(), "{refused}");
+            assert_eq!(refused.kind(), io::ErrorKind::Other);
+            // Made on the input thread: nothing boxed, as a message is.
+            assert!(refused.get_ref().is_none(), "{refused:?}");
             output.rumble(level(0x1000, 0)).unwrap_err();
         }
         output.leave_after(Box::new(LeftOn(told_by)));
