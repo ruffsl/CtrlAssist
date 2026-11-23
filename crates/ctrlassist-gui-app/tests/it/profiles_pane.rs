@@ -921,11 +921,15 @@ fn leaving_an_unfinished_draft_asks_and_discarding_it_does_not() {
 }
 
 /// Managed follows the profile as the daemon keeps it, after a toggle
-/// as before: the switch asks, and shows what is kept.
+/// as before. Through the window's own path: a toggle is held and shown
+/// at once, says it is on its way and asks for the change; what the
+/// daemon then keeps is what it shows, and a change from elsewhere
+/// reaches it.
 #[test]
 fn the_managed_switch_follows_the_profile_after_a_toggle() {
     let app = app();
-    let asked = record_set_field(&app);
+    let (writer, mut asked) = profiles::Writer::detached();
+    profiles::bind_edits(&app, &writer);
     app.global::<Profiles>().invoke_select("couch".into());
     settle();
     let checked = |app: &AppWindow| {
@@ -951,10 +955,20 @@ fn the_managed_switch_follows_the_profile_after_a_toggle() {
         settle();
     };
     assert!(!checked(&app));
+    let word = |app: &AppWindow| {
+        let rows: Vec<ProfileRow> = app.global::<Profiles>().get_rows().iter().collect();
+        row(&rows, "couch").word.to_string()
+    };
     activate_shown(&app, "profiles-managed");
-    assert_eq!(*asked.borrow(), ["couch managed true"]);
-    // Asked, not kept: as it was.
-    assert!(!checked(&app));
+    let put = match asked.try_recv() {
+        Ok(profiles::Op::Put(change)) => change,
+        other => unreachable!("a toggle asks for the change, not {other:?}"),
+    };
+    assert_eq!(put.name, "couch");
+    assert!(put.toml.contains("managed = true"), "{}", put.toml);
+    // Held and shown at once, and said to be on its way.
+    assert!(checked(&app));
+    assert_eq!(word(&app), "Saving…");
     kept(&app, true);
     assert!(checked(&app));
     assert_eq!(chip(&app), "Managed");
