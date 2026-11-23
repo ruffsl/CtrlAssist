@@ -16,6 +16,7 @@ compile_error!(
     "ctrlassist-device must be built to unwind on panic: the input thread keeps one setup's panic from taking the others down"
 );
 
+mod anchor;
 mod database;
 mod descriptor;
 mod dualsense;
@@ -29,6 +30,7 @@ mod realtime;
 mod sink;
 mod thread;
 
+pub use anchor::Anchor;
 pub use database::Database;
 pub use dualsense::DualSenseData;
 pub use hotplug::{Change, Found, Monitor, connected};
