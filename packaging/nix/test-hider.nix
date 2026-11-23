@@ -181,10 +181,20 @@ let
   #       subordinate IDs would, opens <each> connections and asks each
   #       the release; says how many were answered and how many closed at
   #       once; with hold, holds them
-  #   hider-probe uhid <name> <phys> [<uniq> combo]
+  #   hider-probe lingering <socket> <count>
+  #       opens <count> connections and sends nothing, then one more that
+  #       passes a TCP socket whose close lingers, its data never read;
+  #       says how many it holds and whether the last was closed; holds
+  #   hider-probe churn <socket> <count>
+  #       <count> times without pause: connects, asks the release,
+  #       closes, and waits for the service to exit; says how many were
+  #       answered and how many refused
+  #   hider-probe uhid <name> <phys> [<uniq> combo|merged]
   #       makes a HID game pad through uhid with that phys and no address;
   #       holds. With combo, a game pad and a keyboard in one descriptor,
-  #       each its own report, product 0bad, with that address
+  #       each its own report, product 0bad, with that address; with
+  #       merged, the keyboard's keys in the game pad's own report, which
+  #       makes one input, product 0bac
   #   hider-probe hang-up <socket> <node> <fifo>
   #       hides <node> and gives the hide up by closing the connection
   #       once something is written to <fifo>
@@ -205,8 +215,10 @@ let
     import glob
     import os
     import resource
+    import select
     import socket
     import struct
+    import subprocess
     import sys
     import time
 
@@ -312,6 +324,53 @@ let
             print(f"answered={answered} closed={closed}", flush=True)
             if hold:
                 time.sleep(3600)
+        case ["lingering", path, count]:
+            peers = [connect(path) for _ in range(int(count))]
+            # A TCP connection whose other end never reads: once its window
+            # is full, a close that lingers waits for data that can't go.
+            server = socket.create_server(("127.0.0.1", 0))
+            stuck = socket.create_connection(server.getsockname())
+            reader, _ = server.accept()
+            stuck.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 3600))
+            stuck.setblocking(False)
+            try:
+                while True:
+                    stuck.send(bytes(65536))
+            except BlockingIOError:
+                pass
+            # Sent before the service accepts, so the service's end is the
+            # last to hold it.
+            last = connect(path)
+            socket.send_fds(last, [struct.pack("<BI", 6, 0)], [stuck.fileno()])
+            stuck.close()
+            try:
+                closed = last.recv(6) == b""
+            except ConnectionResetError:
+                closed = True
+            print(f"held={len(peers)} closed={closed}", flush=True)
+            time.sleep(3600)
+        case ["churn", path, count]:
+            answered = refused = 0
+            for _ in range(int(count)):
+                try:
+                    peer = connect(path)
+                    peer.send(struct.pack("<BI", 6, 0))
+                    answered += len(peer.recv(6)) == 6
+                except OSError:
+                    refused += 1
+                    continue
+                # Closed once the service that answered is known, and the
+                # next connection made once it has exited: each is one
+                # start of the service by the socket.
+                pid = subprocess.run(
+                    ["systemctl", "show", "-p", "MainPID", "--value", "ctrlassist-hider.service"],
+                    capture_output=True, text=True, check=True,
+                ).stdout.strip()
+                service = os.pidfd_open(int(pid))
+                peer.close()
+                select.select([service], [], [])
+                os.close(service)
+            print(f"answered={answered} refused={refused}", flush=True)
         case ["uhid", name, phys, *combo]:
             # The test crate's uhid pad's descriptor: a game pad.
             descriptor = bytes([
@@ -321,18 +380,30 @@ let
                 0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x02, 0x81, 0x02,
                 0xC0, 0xC0,
             ])
-            uniq, product = b"", 0x0bae
-            if combo:
-                # The same game pad as report 1, then a keyboard as report
-                # 2: modifiers, a reserved byte and six keys.
-                uniq, product = combo[0].encode(), 0x0bad
-                descriptor = descriptor[:6] + bytes([0x85, 0x01]) + descriptor[6:] + bytes([
-                    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x02, 0x05, 0x07,
-                    0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01,
-                    0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01,
-                    0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65, 0x05, 0x07,
-                    0x19, 0x00, 0x29, 0x65, 0x81, 0x00, 0xC0,
+            def keys(last):
+                """A keyboard's keys: modifiers, a reserved byte and six keys, of usages up to <last>."""
+                return bytes([
+                    0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+                    0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08,
+                    0x81, 0x01, 0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, last,
+                    0x05, 0x07, 0x19, 0x00, 0x29, last, 0x81, 0x00,
                 ])
+            uniq, product = b"", 0x0bae
+            if combo and combo[1] == "combo":
+                # The same game pad as report 1, then a keyboard as report
+                # 2.
+                uniq, product = combo[0].encode(), 0x0bad
+                descriptor = (
+                    descriptor[:6] + bytes([0x85, 0x01]) + descriptor[6:]
+                    + bytes([0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x02]) + keys(0x65) + bytes([0xC0])
+                )
+            elif combo:
+                # The keys inside the game pad's own collection: one input,
+                # a joystick and a keyboard at once. Only those up to the
+                # slash: udev takes a joystick with several of the keys past
+                # it, Caps Lock among them, for a keyboard alone.
+                uniq, product = combo[0].encode(), 0x0bac
+                descriptor = descriptor[:-1] + keys(0x38) + bytes([0xC0])
             uhid = os.open("/dev/uhid", os.O_RDWR)
             # UHID_CREATE2: name, phys, uniq, the descriptor's size, the
             # bus (USB), vendor, product, version, country, the descriptor.
@@ -423,7 +494,7 @@ let
                 elif action in ("unbind", "bind"):
                     print(f"{source} {action}", flush=True)
         case _:
-            sys.exit("usage: hider-probe opath|hide|long|silent|idle|uids|uhid|hang-up|stop-then-hide|uevent|rebinds ...")
+            sys.exit("usage: hider-probe opath|hide|long|silent|idle|uids|lingering|churn|uhid|hang-up|stop-then-hide|uevent|rebinds ...")
   '';
 in
 pkgs.testers.runNixOSTest {
@@ -1186,6 +1257,50 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl stop keeper-again")
         wait_restored()
 
+    with subtest("a connection over the cap that carries a socket whose close lingers is closed off the main thread, and the user at the seat is served at once"):
+        # A user with no seat holds the eight connections they may, then
+        # sends a ninth a TCP socket before it is accepted: closing the
+        # ninth, the service is left holding the socket's last reference.
+        machine.succeed(f"systemd-run --unit lingering --uid bob hider-probe lingering {SOCKET} 8")
+        machine.wait_until_succeeds("journalctl -u lingering -o cat | grep -q held=")
+        told = machine.succeed("journalctl -u lingering -o cat | grep held=").strip()
+        assert told == "held=8 closed=True", told
+        pid = machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip()
+        # The close lingers, on the service's closer.
+        closer = f"for task in /proc/{pid}/task/*; do if grep -qx closer $task/comm; then cat $task/stack; fi; done"
+        machine.wait_until_succeeds(f"{closer} | grep -q tcp_close")
+        print("the closer, closing the ninth: " + " < ".join(line.split()[-1] for line in machine.succeed(closer).splitlines()[:8]))
+        # Served all the same: her release told, a pad hidden and shown
+        # again.
+        told = machine.succeed(f"su -l alice -c 'ctrlassist-fixture version --socket {SOCKET}'").strip()
+        assert told == "version: ${hider.version}", told
+        control, told = hide("past-lingering", pads()[A]["event"][0])
+        assert told.startswith("ok"), told
+        assert order(control, "restore").startswith("ok")
+        assert machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip() == pid, "the service didn't restart"
+        # The probe gone, its unread data is reset and the close ends.
+        machine.succeed("systemctl stop past-lingering lingering")
+        machine.wait_until_fails(f"{closer} | grep -q tcp_close")
+        wait_restored()
+
+    with subtest("a user with no seat who connects and closes without pause while nothing is hidden doesn't put the socket out of service"):
+        # Each connection starts the service afresh: two hundred is ten
+        # times systemd's default limit on a socket's starts.
+        machine.wait_until_fails("systemctl is-active ctrlassist-hider.service")
+        started = "journalctl -u ctrlassist-hider.service -o cat | grep -c '^Started CtrlAssist hiding service'"
+        before = int(machine.succeed(started))
+        told = machine.succeed(f"runuser -u bob -- hider-probe churn {SOCKET} 200").strip()
+        after = int(machine.succeed(started))
+        print(f"two hundred connections, each closed at once: {told}; the service started {after - before} times; the socket: " + machine.succeed("systemctl show -p ActiveState -p Result ctrlassist-hider.socket").replace("\n", " "))
+        assert told == "answered=200 refused=0", told
+        assert after - before == 200, after - before
+        machine.succeed("systemctl is-active ctrlassist-hider.socket")
+        control, told = hide("after-churn", pads()[A]["event"][0])
+        assert told.startswith("ok"), told
+        assert order(control, "restore").startswith("ok")
+        machine.succeed("systemctl stop after-churn")
+        wait_restored()
+
     def refused_at_once(unit, name, uniq):
         """Makes a pad, has alice hide it, and says what she was told."""
         fake(f"pad-{unit}", "fake-hid", "--name", name, "--uniq", uniq, "--pulse", "20")
@@ -1385,6 +1500,21 @@ pkgs.testers.runNixOSTest {
         print(f"a pad and a keyboard on one device, with a hidden pad's address: {was}")
         groups = dict(line.split()[1:] for line in was)
         assert len(was) == 2 and groups["0"] == "ctrlassist-hider" and groups["1"] != "ctrlassist-hider", was
+        # One input that is a joystick and a keyboard at once, with the
+        # hidden pad's address: no marker hides its nodes, as the service
+        # would refuse to hide it and nothing would show it again.
+        machine.succeed(f"systemd-run --unit merged hider-probe uhid 'Merged Pad' merged {uniq} merged")
+        machine.wait_until_succeeds("ls /sys/bus/hid/devices/0003:1209:0BAC.*/input/input*/event*")
+        machine.succeed("udevadm settle")
+        merged = machine.succeed(
+            "for path in $(ls -d /sys/bus/hid/devices/0003:1209:0BAC.*/input/input*/event* /sys/bus/hid/devices/0003:1209:0BAC.*/input/input*/js* 2>/dev/null); do "
+            "node=/dev/input/$(basename $path); "
+            "echo $(basename $path) $(udevadm info -q property -n $node | grep -cE '^ID_INPUT_(JOYSTICK|KEYBOARD)=1') $(stat -c %G $node); "
+            "done"
+        ).strip().split("\n")
+        print(f"a joystick that udev also takes for a keyboard, with a hidden pad's address: {merged}")
+        assert any(line.startswith("event") for line in merged), merged
+        assert all(line.split()[1:] == ["2", "input"] for line in merged), merged
         # The pad shown again: nothing names the device's joystick node any
         # more, and the sweep leaves it hidden rather than re-bind the
         # keyboard away.
@@ -1393,7 +1523,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("udevadm settle")
         assert combo() == was, combo()
         machine.succeed("journalctl -u ctrlassist-hider.service -o cat | grep -q 'left hidden a pad no marker names'")
-        machine.succeed("systemctl stop shared combo pad-shared")
+        machine.succeed("systemctl stop shared combo merged pad-shared")
         wait_restored()
   '';
 }
