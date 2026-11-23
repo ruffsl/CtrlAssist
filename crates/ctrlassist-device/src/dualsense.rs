@@ -27,7 +27,7 @@ use rustix::event::{PollFd, PollFlags, poll};
 use rustix::fs::OFlags;
 
 use crate::sink::{OWN_MARKER, Request, hat};
-use crate::{hidraw, hotplug};
+use crate::{descriptor, hidraw, hotplug};
 
 /// Sony's vendor number.
 pub(crate) const VENDOR: u16 = 0x054c;
@@ -141,12 +141,16 @@ impl DualSenseData {
         }
     }
 
-    /// Whether a virtual pad can be made from this: a descriptor of a
-    /// size the kernel takes, and a whole firmware report.
+    /// Whether a virtual pad can be made from this: a descriptor the
+    /// kernel's parser takes, which declares the reports a DualSense
+    /// exchanges with the kernel's driver, and a whole firmware report.
+    ///
+    /// A descriptor the parser refuses makes the driver give up on the
+    /// pad without a word to uhid, which nothing would then end the wait
+    /// for; so it is refused here, by the parser's own rules or stricter.
     #[must_use]
     pub fn is_whole(&self) -> bool {
-        !self.descriptor.is_empty()
-            && self.descriptor.len() <= UHID_DATA
+        descriptor::is_dualsense(&self.descriptor)
             && self.firmware.len() == FIRMWARE_SIZE
             && self.firmware.first() == Some(&FIRMWARE)
     }
@@ -1259,12 +1263,12 @@ mod tests {
     #[test]
     fn the_pad_is_made_as_the_kernel_expects_and_only_from_whole_data() {
         let data = DualSenseData {
-            descriptor: vec![1, 2, 3],
             firmware: {
                 let mut firmware = vec![0; FIRMWARE_SIZE];
                 firmware[0] = FIRMWARE;
                 firmware
             },
+            ..DualSenseData::shipped()
         };
         assert!(data.is_whole());
         let event = create2(
@@ -1278,11 +1282,11 @@ mod tests {
         assert!(event[4 + 128..].starts_with(b"ctrlassist/virtual/1/hid/0\0"));
         assert!(event[4 + 192..].starts_with(b"02:00:00:00:00:01\0"));
         let numbers = 4 + 256;
-        assert_eq!(u16_at(&event, numbers), 3, "the descriptor's size");
+        assert_eq!(u16_at(&event, numbers), 273, "the descriptor's size");
         assert_eq!(u16_at(&event, numbers + 2), BUS_USB);
         assert_eq!(u32_at(&event, numbers + 4), u32::from(VENDOR));
         assert_eq!(u32_at(&event, numbers + 8), u32::from(PRODUCT));
-        assert_eq!(event[numbers + 20..numbers + 23], [1, 2, 3]);
+        assert_eq!(event[numbers + 20..numbers + 293], data.descriptor[..]);
 
         let short = DualSenseData {
             firmware: vec![FIRMWARE; 3],
@@ -1294,9 +1298,15 @@ mod tests {
         };
         let other = DualSenseData {
             firmware: vec![0; FIRMWARE_SIZE],
+            ..data.clone()
+        };
+        // A descriptor cut short, which the kernel's parser refuses: the
+        // driver would give the pad up without a word.
+        let corrupt = DualSenseData {
+            descriptor: data.descriptor[..100].to_vec(),
             ..data
         };
-        for broken in [short, empty, other] {
+        for broken in [short, empty, other, corrupt] {
             assert!(!broken.is_whole());
             assert!(Emulator::create(&broken, [2, 0, 0, 0, 0, 1]).is_err());
         }

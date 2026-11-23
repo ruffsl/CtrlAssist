@@ -132,7 +132,7 @@ mod tests {
         firmware[0] = 0x20;
         firmware[44] = 0x15;
         DualSenseData {
-            descriptor: vec![0x06, 0x00, 0xff, 0xc0],
+            descriptor: DualSenseData::shipped().descriptor,
             firmware,
         }
     }

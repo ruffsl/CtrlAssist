@@ -7,6 +7,7 @@
 //! and written the same level-based way pads are read.
 
 mod database;
+mod descriptor;
 mod dualsense;
 mod hidraw;
 mod hotplug;
