@@ -14,3 +14,4 @@ Things the design depends on that have not been observed, or risks accepted for 
 - [`slint-unstable-winit-030.md`](slint-unstable-winit-030.md) — the window reaches winit through a Slint feature outside its stability promise, so Slint is pinned exactly. After TisVlay's.
 - [`slint-combobox-popup-clipped.md`](slint-combobox-popup-clipped.md) — Slint's stock dropdown clips at the window's edge; the window uses TisVlay's flip-up `ThemedSelect` until native popups land.
 - [`final-report-after-drop.md`](final-report-after-drop.md) — a pad's writer thread isn't waited for on drop, so its last report, the one that stops its rumble, can lose a race with a re-bind.
+- [`uinput-uhid-grant.md`](uinput-uhid-grant.md) — the seat user is given uinput and uhid to make virtual pads, which reach beyond pads; a risk where several people share a machine.
