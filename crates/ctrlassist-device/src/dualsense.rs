@@ -710,7 +710,10 @@ impl Kind {
                     // The LED class's own sum: each color's intensity
                     // scaled by the brightness, out of the lightbar's 255.
                     let [red, green, blue] = <[u32; 3]>::try_from(intensity).ok()?;
-                    let scaled = |value: u32| (value * brightness / 255).min(255) as u8;
+                    // Saturating, both being whatever sysfs says: a sum
+                    // that overflowed would panic, or wrap to a dim color.
+                    let scaled =
+                        |value: u32| (value.saturating_mul(brightness) / 255).min(255) as u8;
                     (red | green | blue != 0).then(|| [scaled(red), scaled(green), scaled(blue)])
                 });
                 let mut players = Some(0u8);
@@ -1781,5 +1784,24 @@ mod tests {
             assert!(!broken.is_whole());
             assert!(Emulator::create(&broken, [2, 0, 0, 0, 0, 1]).is_err());
         }
+    }
+
+    /// A lightbar's LED device whose numbers overflow their product is
+    /// read as the brightest it can be, not as a panic on the writer.
+    #[test]
+    fn a_lightbar_s_numbers_too_large_to_multiply_read_as_the_brightest() {
+        let device =
+            std::env::temp_dir().join(format!("ctrlassist-device-lights-{}", std::process::id()));
+        let led = device.join("leds").join("input9:rgb:indicator");
+        std::fs::create_dir_all(&led).unwrap();
+        std::fs::write(led.join("multi_intensity"), "4000000000 0 1\n").unwrap();
+        std::fs::write(led.join("brightness"), "255\n").unwrap();
+        let usb = Kind::DualSense {
+            newer: true,
+            bluetooth: false,
+        };
+        let lights = usb.driver_lights(Some(&device));
+        std::fs::remove_dir_all(&device).unwrap();
+        assert_eq!(lights.color, Some([255, 0, 1]));
     }
 }

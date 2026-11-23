@@ -22,6 +22,7 @@
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsFd, OwnedFd};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering, fence};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -35,6 +36,9 @@ use crate::dualsense::{Composer, GAME_SIZE, Kind, Once};
 /// The mailbox's size in words: a game's report, then one for the level
 /// and the count of game reports.
 const WORDS: usize = GAME_SIZE / 8 + 1;
+/// How many times the mailbox's reader spins on a put under way before
+/// it yields between looks.
+const SPINS: u32 = 8;
 
 /// What a pad should be sent.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -115,7 +119,12 @@ impl Mailbox {
     }
 
     /// The words last put, whole, and the sequence they were put under.
+    ///
+    /// A put takes a few dozen instructions, so a look that finds one
+    /// under way spins a few times, then gives the processor up between
+    /// looks: the one putting may have been put aside on this processor.
     fn get(&self) -> (u64, [u64; WORDS]) {
+        let mut spins = 0u32;
         loop {
             let before = self.sequence.load(Ordering::Acquire);
             if before.is_multiple_of(2) {
@@ -129,7 +138,12 @@ impl Mailbox {
                     return (before, words);
                 }
             }
-            std::hint::spin_loop();
+            if spins < SPINS {
+                spins += 1;
+                std::hint::spin_loop();
+            } else {
+                std::thread::yield_now();
+            }
         }
     }
 }
@@ -142,6 +156,9 @@ struct Shared {
     stop: AtomicBool,
     /// The error number of a write the pad refused, until it is said.
     refused: AtomicI32,
+    /// Set once the writer has panicked: it writes nothing more, and
+    /// every later thing the pad is told fails.
+    broken: AtomicBool,
     /// What was asked once and not yet taken, as [`Once`]'s bits: added
     /// after the settings it came with are put, and taken by the writer
     /// between two looks at the mailbox (see [`write_out`]).
@@ -267,7 +284,8 @@ impl Target for KernelEffect {
 /// The writes are made by a thread of the pad's own, at ordinary
 /// priority. Dropping this has it write what is left, then leave the pad
 /// as no game had it (see [`Target::rest`]), and then end; whoever drops
-/// this doesn't wait for any of it.
+/// this doesn't wait for any of it. A writer that panics leaves the pad
+/// at rest at once, and everything the pad is told after fails.
 pub(crate) struct Output {
     shared: Arc<Shared>,
     writer: Thread,
@@ -334,6 +352,7 @@ impl Output {
             mailbox: Mailbox::new(),
             stop: AtomicBool::new(false),
             refused: AtomicI32::new(0),
+            broken: AtomicBool::new(false),
             once: AtomicU32::new(0),
             after: Mutex::new(None),
         });
@@ -342,9 +361,25 @@ impl Output {
             std::thread::Builder::new()
                 .name(name.to_string())
                 .spawn(move || {
-                    write_out(&shared, &mut target, &between);
-                    // What the pad is left with, after whatever was left.
-                    target.rest();
+                    // A writer that panics writes nothing more, and says
+                    // so at everything the pad is told after.
+                    let wrote = catch_unwind(AssertUnwindSafe(|| {
+                        write_out(&shared, &mut target, &between);
+                    }));
+                    if wrote.is_err() {
+                        shared.broken.store(true, Ordering::Release);
+                    }
+                    // What the pad is left with, after whatever was left:
+                    // at once, if the writer broke off.
+                    if catch_unwind(AssertUnwindSafe(move || target.rest())).is_err() {
+                        shared.broken.store(true, Ordering::Release);
+                    }
+                    // What was handed over goes here, once it has been:
+                    // as the pad is let go, which a writer that broke off
+                    // waits for.
+                    while !shared.stop.load(Ordering::Acquire) {
+                        std::thread::park();
+                    }
                     let after = shared
                         .after
                         .lock()
@@ -479,6 +514,9 @@ impl Output {
 
     fn refusal(&self) -> io::Result<()> {
         match self.shared.refused.swap(0, Ordering::Relaxed) {
+            0 if self.shared.broken.load(Ordering::Acquire) => {
+                Err(io::Error::other("the thread writing to the pad failed"))
+            }
             0 => Ok(()),
             errno => Err(io::Error::from_raw_os_error(errno)),
         }
@@ -898,6 +936,55 @@ mod tests {
         fn drop(&mut self) {
             self.0.send(Told::After).unwrap();
         }
+    }
+
+    /// Stands in for a pad whose writer panics as it writes a level.
+    struct Panicking {
+        told: mpsc::Sender<(Told, Option<String>)>,
+    }
+
+    impl Target for Panicking {
+        fn send(&mut self, _: Option<&[u8; GAME_SIZE]>, _: Level, _: Once) -> io::Result<()> {
+            panic!("a writer that panics");
+        }
+
+        fn rest(self) {
+            let thread = std::thread::current().name().map(str::to_string);
+            self.told.send((Told::Rest, thread)).unwrap();
+        }
+    }
+
+    struct LeftOn(mpsc::Sender<(Told, Option<String>)>);
+
+    impl Drop for LeftOn {
+        fn drop(&mut self) {
+            let thread = std::thread::current().name().map(str::to_string);
+            self.0.send((Told::After, thread)).unwrap();
+        }
+    }
+
+    /// A writer that panics leaves the pad at rest at once, on its own
+    /// thread; everything the pad is told after fails; and what is handed
+    /// over as the pad is let go is still dropped there.
+    #[test]
+    fn a_writer_that_panics_says_so_and_still_leaves_the_pad_at_rest() {
+        let (told_by, told) = mpsc::channel();
+        let target = Panicking {
+            told: told_by.clone(),
+        };
+        let (mut output, writer) = Output::start(target, None, "pad-rumble").unwrap();
+        output.rumble(level(0x1000, 0)).unwrap();
+        let writer_name = Some("pad-rumble".to_string());
+        assert_eq!(told.recv().unwrap(), (Told::Rest, writer_name.clone()));
+        for _ in 0..2 {
+            let refused = output.rumble(level(0x2000, 0)).unwrap_err();
+            assert!(refused.raw_os_error().is_none(), "{refused}");
+            output.rumble(level(0x1000, 0)).unwrap_err();
+        }
+        output.leave_after(Box::new(LeftOn(told_by)));
+        drop(output);
+        assert_eq!(told.recv().unwrap(), (Told::After, writer_name));
+        writer.join().unwrap();
     }
 
     /// While a pad's write waits, whoever tells it a level, or drops it,
