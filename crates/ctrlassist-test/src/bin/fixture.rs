@@ -128,6 +128,48 @@ enum Command {
         #[arg(long, default_value_t = 1000)]
         millis: u64,
     },
+    /// Watch pads come and go as the daemon hears them, through the
+    /// device crate's monitor, and print each change it reports, one per
+    /// line in the order it reports them, until killed. Prints
+    /// `watching` once it listens.
+    Watch,
+}
+
+/// One line for each change the monitor reports.
+fn said(change: Change) -> String {
+    let joined = |paths: &[PathBuf]| {
+        let paths: Vec<String> = paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        if paths.is_empty() {
+            "-".to_string()
+        } else {
+            paths.join(",")
+        }
+    };
+    match change {
+        Change::Arrived(found) => format!(
+            "arrived {} {} anchor={}",
+            found.node.display(),
+            found.syspath.display(),
+            found.anchor.map_or_else(
+                || "-".to_string(),
+                |anchor| anchor.path.display().to_string()
+            )
+        ),
+        Change::Left(node) => format!("left {}", node.display()),
+        Change::Unplugged(device) => format!("unplugged {}", device.display()),
+        Change::Rebinding { anchor, present } => {
+            format!(
+                "rebinding {} present={}",
+                anchor.display(),
+                joined(&present)
+            )
+        }
+        Change::Overran => "overran".to_string(),
+        other => format!("other {other:?}"),
+    }
 }
 
 /// Holds forever, calling `edge` on each pulse if there is one.
@@ -455,6 +497,14 @@ fn main() -> Result<()> {
             .with_context(|| format!("listening on {}", node.display()))?;
             println!("reads={} cut_off={}", reads.count, reads.cut_off);
             Ok(())
+        }
+        Command::Watch => {
+            let mut monitor = Monitor::new().context("listening to udev")?;
+            println!("watching");
+            loop {
+                poll(&mut [PollFd::new(&monitor, PollFlags::IN)], None)?;
+                monitor.read(|change| println!("{}", said(change)));
+            }
         }
     }
 }

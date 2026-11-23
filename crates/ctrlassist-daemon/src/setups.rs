@@ -3617,6 +3617,7 @@ mod tests {
         let address = id.strip_prefix("address:").unwrap();
         Found {
             node: PathBuf::from(node),
+            syspath: anchor_of(id).path.join(node.trim_start_matches('/')),
             identifiers: ctrlassist_device::Identifiers {
                 name: "Wireless Controller".to_string(),
                 bus: 3,
@@ -3668,7 +3669,7 @@ mod tests {
         // The pad the primary names connected first.
         rig.reactor
             .book
-            .arrived(&connecting(PRIMARY, "/nowhere/event1"), None);
+            .arrived(&connecting(PRIMARY, "/nowhere/event1"));
         let exact = toggle(primary, model);
         // With only that pad, the assist is one short: waited for, and
         // the profile isn't one that would run if started now.
@@ -3679,7 +3680,7 @@ mod tests {
 
         rig.reactor
             .book
-            .arrived(&connecting(OTHER, "/nowhere/event2"), None);
+            .arrived(&connecting(OTHER, "/nowhere/event2"));
         assert!(rig.reactor.ready(&exact));
         let slots = rig.reactor.bind("couch", &exact).unwrap();
         assert_eq!(pads_of(&slots), [Some(OTHER), Some(PRIMARY)]);
@@ -3721,7 +3722,7 @@ mod tests {
         ];
         let mut book = Book::new(Vec::new());
         for (pad, node) in [(PRIMARY, "/nowhere/event1"), (OTHER, "/nowhere/event2")] {
-            book.arrived(&connecting(pad, node), None);
+            book.arrived(&connecting(pad, node));
             book.claim(pad, "couch");
         }
         let (slots, keep) = rebind(&book, "couch", &has, &toggle(primary, model)).unwrap();
@@ -3737,7 +3738,7 @@ mod tests {
         let mut rig = rig().await;
         follow(&mut rig.reactor, 7, Phase::Starting);
         for (id, node) in [(PRIMARY, "/nowhere/event1"), (ASSIST, "/nowhere/event2")] {
-            rig.reactor.book.arrived(&connecting(id, node), None);
+            rig.reactor.book.arrived(&connecting(id, node));
             rig.reactor.pad_arrived(id).await;
         }
         // The sources go by name: the assist, then the primary.
@@ -3781,7 +3782,7 @@ mod tests {
         let mut rig = rig().await;
         follow(&mut rig.reactor, 7, Phase::Held);
         let primary = connecting(PRIMARY, "/nowhere/event1");
-        rig.reactor.book.arrived(&primary, None);
+        rig.reactor.book.arrived(&primary);
         rig.reactor.bring_back("couch", 1);
         rig.reactor.pad_arrived(PRIMARY).await;
         assert!(rig.reactor.setups.entries["couch"].slots[1].again);
@@ -3805,7 +3806,7 @@ mod tests {
             .reported(Report::Failed(SetupId(7), handed_back()))
             .await;
         for (id, node) in [(ASSIST, "/nowhere/event2"), (PRIMARY, "/nowhere/event1")] {
-            rig.reactor.book.arrived(&connecting(id, node), None);
+            rig.reactor.book.arrived(&connecting(id, node));
             rig.reactor.pad_arrived(id).await;
             assert_eq!(rig.reactor.book.user(id), None, "{id}");
         }
@@ -3905,24 +3906,27 @@ mod tests {
         rig.reactor.profiles.put("couch", &managed).unwrap();
         let nodes = ["/nowhere/event2", "/nowhere/event1"];
         for (pad, node) in [ASSIST, PRIMARY].into_iter().zip(nodes) {
-            rig.reactor.book.arrived(&connecting(pad, node), None);
+            rig.reactor.book.arrived(&connecting(pad, node));
         }
         nodes
     }
 
     /// The primary pad, at `node`, goes and comes back `times` times on
-    /// its anchor, as re-binds of its driver make it, whoever asked for
-    /// them: none of that is published as it leaving, and none of it
+    /// its anchor, as re-binds of its driver the hiding service asked
+    /// make it: none of that is published as it leaving, and none of it
     /// starts the profile that was stopped.
     async fn goes_and_comes_back(rig: &mut Rig, node: &str, times: usize) {
         for time in 0..times {
+            let anchor = anchor_of(PRIMARY).path;
+            let present = Vec::new();
+            rig.reactor.saw(Seen::Rebinding { anchor, present }).await;
             rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
             assert!(
                 rig.reactor.book.pad(PRIMARY).unwrap().connected,
                 "going {time}"
             );
             rig.reactor
-                .saw(Seen::Arrived(connecting(PRIMARY, node), None))
+                .saw(Seen::Arrived(connecting(PRIMARY, node)))
                 .await;
             assert!(
                 rig.reactor.setups.setup("couch").is_none(),
@@ -3931,11 +3935,12 @@ mod tests {
         }
     }
 
-    /// The primary pad, at `node`, is unplugged: its node goes, and then
-    /// its anchor, which is when it is published as gone.
+    /// The primary pad, at `node`, is unplugged: its node goes, with no
+    /// re-bind asked, which is when it is published as gone, and then its
+    /// anchor.
     async fn unplugged(rig: &mut Rig, node: &str) {
         rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
-        assert!(rig.reactor.book.pad(PRIMARY).unwrap().connected, "away");
+        assert!(!rig.reactor.book.pad(PRIMARY).unwrap().connected, "gone");
         rig.reactor
             .saw(Seen::Unplugged(anchor_of(PRIMARY).path))
             .await;
@@ -3978,7 +3983,7 @@ mod tests {
         let hider = with_hider(rig, script).await;
         let nodes = ["/nowhere/event2", "/nowhere/event1"];
         for (pad, node) in [ASSIST, PRIMARY].into_iter().zip(nodes) {
-            rig.reactor.book.arrived(&connecting(pad, node), None);
+            rig.reactor.book.arrived(&connecting(pad, node));
         }
         follow(&mut rig.reactor, 7, Phase::Running);
         for (place, pad) in [ASSIST, PRIMARY].into_iter().enumerate() {
@@ -3994,9 +3999,9 @@ mod tests {
     }
 
     /// A profile that starts by itself, stopped by hand, stays stopped
-    /// through its pad's re-binds, whoever made them and in whatever
-    /// number: the showing again its stop asked, a hide given up and
-    /// the service's showing the pad again for it, another's. None is
+    /// through its pad's re-binds the hiding service asked, in whatever
+    /// number: the showing again its stop asked, a hide given up and the
+    /// service's showing the pad again for it, its sweep's. None is
     /// published as the pad leaving. Unplugged, the pad is told gone.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_profile_stopped_by_hand_is_not_started_again_by_re_binds() {
@@ -4014,6 +4019,67 @@ mod tests {
         assert!(!rig.reactor.book.pad(PRIMARY).unwrap().hidden, "shown");
         goes_and_comes_back(&mut rig, node, 4).await;
         unplugged(&mut rig, node).await;
+    }
+
+    /// A pad away for a re-bind is published as connected, so it can't
+    /// be forgotten, and `identify` says it is away rather than that it
+    /// isn't connected.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_away_is_neither_forgotten_nor_said_to_be_disconnected() {
+        let mut rig = rig().await;
+        let [_, node] = managed_with_both_pads(&mut rig);
+        let anchor = anchor_of(PRIMARY).path;
+        let present = Vec::new();
+        rig.reactor.saw(Seen::Rebinding { anchor, present }).await;
+        rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
+        let refused = rig.reactor.book.forget(PRIMARY).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::PadConnected);
+        let request = rpc::IdentifyRequest {
+            pad: PRIMARY.to_string(),
+            millis: 100,
+        };
+        let refused = rig.reactor.buzzable(&request).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::PadRefused);
+        assert!(refused.message.contains("away"), "{}", refused.message);
+    }
+
+    /// A pad with two joystick nodes on one anchor, re-bound at the
+    /// hiding service's request: each node is away and back on its own,
+    /// so the second back is no pad plugged in either, and a profile that
+    /// starts by itself, stopped by hand, stays stopped. The pad is
+    /// connected throughout.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_of_two_nodes_re_bound_starts_nothing() {
+        let mut rig = rig().await;
+        let managed = format!("{PROFILE}managed = true\n");
+        rig.reactor.profiles.put("couch", &managed).unwrap();
+        let (_hider, [_, node]) = running_hidden(&mut rig, Script::default()).await;
+        let second = "/nowhere/event3";
+        rig.reactor.book.arrived(&connecting(PRIMARY, second));
+        let stopping = ask(&mut rig, true).await;
+        rig.reactor
+            .reported(Report::Stopped(SetupId(7), handed_back()))
+            .await;
+        finish(&mut rig.reactor).await;
+        stopping.await.unwrap().unwrap();
+        assert!(rig.reactor.setups.setup("couch").is_none());
+        let anchor = anchor_of(PRIMARY).path;
+        let present = Vec::new();
+        rig.reactor.saw(Seen::Rebinding { anchor, present }).await;
+        for gone in [node, second] {
+            rig.reactor.saw(Seen::Left(PathBuf::from(gone))).await;
+            assert!(rig.reactor.book.pad(PRIMARY).unwrap().connected, "{gone}");
+        }
+        for back in [node, second] {
+            rig.reactor
+                .saw(Seen::Arrived(connecting(PRIMARY, back)))
+                .await;
+            assert!(rig.reactor.book.pad(PRIMARY).unwrap().connected);
+            assert!(
+                rig.reactor.setups.setup("couch").is_none(),
+                "not started again by {back} coming back"
+            );
+        }
     }
 
     /// A pad unplugged and plugged in again, on an anchor the book hasn't
@@ -4035,7 +4101,29 @@ mod tests {
             }),
             ..connecting(PRIMARY, node)
         };
-        rig.reactor.saw(Seen::Arrived(again, None)).await;
+        rig.reactor.saw(Seen::Arrived(again)).await;
+        assert!(rig.reactor.setups.setup("couch").is_some(), "started");
+        finish(&mut rig.reactor).await;
+    }
+
+    /// A pad whose node goes while its anchor stays, with no re-bind the
+    /// hiding service asked, as a pad on a wireless receiver switched off
+    /// does, has left, and is published so; switched on again it is a
+    /// pad plugged in, and a profile that starts by itself and waits for
+    /// it does. The start makes its virtual pad, so this needs uinput.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_back_on_its_receiver_starts_a_profile_that_starts_by_itself() {
+        const TEST: &str = "a_pad_back_on_its_receiver_starts_a_profile_that_starts_by_itself";
+        let mut rig = rig().await;
+        let [_, node] = managed_with_both_pads(&mut rig);
+        rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
+        assert!(!rig.reactor.book.pad(PRIMARY).unwrap().connected, "left");
+        if !ctrlassist_test::can_make_pads(TEST) {
+            return;
+        }
+        rig.reactor
+            .saw(Seen::Arrived(connecting(PRIMARY, node)))
+            .await;
         assert!(rig.reactor.setups.setup("couch").is_some(), "started");
         finish(&mut rig.reactor).await;
     }

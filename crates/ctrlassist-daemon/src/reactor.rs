@@ -30,7 +30,7 @@ use zenoh::handlers::FifoChannelHandler;
 use zenoh::query::{Query, Queryable};
 use zenoh_ext::{AdvancedPublisher, AdvancedPublisherBuilderExt, CacheConfig, MissDetectionConfig};
 
-use crate::book::Book;
+use crate::book::{Book, Changed};
 use crate::copied::Copied;
 use crate::device_identity;
 use crate::hiding::Hiding;
@@ -427,48 +427,65 @@ impl Reactor {
 
     /// Takes in what the hotplug watch saw.
     pub(crate) async fn saw(&mut self, seen: Seen) {
-        if let Seen::Arrived(found, _) = &seen
-            && found.identifiers.is_test_pad()
-            && !self.test_pads
-        {
+        match seen {
+            Seen::Arrived(found) => self.took_in(found).await,
+            // A pad whose node went for a re-bind the hiding service
+            // asked is away, and nothing is said of it unless its anchor
+            // goes.
+            Seen::Left(node) => {
+                let gone = self.book.left(&node).into_iter().collect();
+                self.gone(gone).await;
+            }
+            Seen::Unplugged(device) => {
+                let gone = self.book.unplugged(&device);
+                self.gone(gone).await;
+            }
+            Seen::Rebinding { anchor, present } => self.book.rebinding(&anchor, &present),
+            Seen::Rumble {
+                node,
+                syspath,
+                rumble,
+            } => {
+                if let Some(id) = self.book.learned(&node, &syspath, rumble) {
+                    self.save().await;
+                    self.publish_pad_logged(&id).await;
+                }
+            }
+            Seen::Overran { connected, anchors } => {
+                warn!(
+                    "udev's events overran the hotplug watch; what is connected was looked at again"
+                );
+                let gone = self.book.reconcile(&connected, &anchors);
+                self.gone(gone).await;
+                for found in connected {
+                    self.took_in(found).await;
+                }
+            }
+        }
+    }
+
+    /// Takes in a pad connected, or one already connected changed.
+    async fn took_in(&mut self, found: Found) {
+        if found.identifiers.is_test_pad() && !self.test_pads {
             return;
         }
-        let arrived = matches!(seen, Seen::Arrived(..));
-        let (changed, remembered): (Vec<String>, bool) = match seen {
-            Seen::Arrived(found, rumble) => {
-                self.copy_from(&found);
-                let changed = self.book.arrived(&found, rumble);
-                let remembered = changed.iter().any(|changed| changed.remembered);
-                if let Some(pad) = changed.last() {
-                    info!(
-                        pad = pad.id,
-                        name = found.identifiers.name,
-                        "a pad connected"
-                    );
-                }
-                (
-                    changed.into_iter().map(|changed| changed.id).collect(),
-                    remembered,
-                )
-            }
-            // A pad whose anchor is still there is away, and nothing is
-            // said of it until its anchor goes.
-            Seen::Left(node) => (self.book.left(&node).into_iter().collect(), false),
-            Seen::Unplugged(device) => (self.book.unplugged(&device), false),
-        };
-        if !arrived {
-            for pad in &changed {
-                info!(pad, "a pad disconnected");
-            }
+        self.copy_from(&found);
+        let changed = self.book.arrived(&found);
+        if let Some(pad) = changed.last() {
+            info!(
+                pad = pad.id,
+                name = found.identifiers.name,
+                "a pad connected"
+            );
         }
-        if remembered {
+        if changed.iter().any(|changed| changed.remembered) {
             self.save().await;
         }
-        for id in &changed {
-            self.publish_pad_logged(id).await;
+        for changed in &changed {
+            self.publish_pad_logged(&changed.id).await;
         }
         // The last is the pad that connected, if one did.
-        if arrived && let Some(id) = changed.last() {
+        if let Some(Changed { id, .. }) = changed.last() {
             // A pad back on the anchor it was away from, as from the
             // hiding service showing it again, came back by itself:
             // nobody plugged it in, so it prompts nothing. A setup stopped
@@ -479,6 +496,14 @@ impl Reactor {
                 // A profile that was waiting for this pad may start now.
                 self.start_what_can(Some(id)).await;
             }
+        }
+    }
+
+    /// Says that each of `gone` has disconnected.
+    async fn gone(&mut self, gone: Vec<String>) {
+        for pad in &gone {
+            info!(pad, "a pad disconnected");
+            self.publish_pad_logged(pad).await;
         }
     }
 
@@ -545,7 +570,10 @@ impl Reactor {
 
     /// The node to buzz for an `identify`, or why not; no node for a pad
     /// a setup holds, which has been buzzed through the input thread.
-    fn buzzable(&self, request: &rpc::IdentifyRequest) -> Result<Option<PathBuf>, WireError> {
+    pub(crate) fn buzzable(
+        &self,
+        request: &rpc::IdentifyRequest,
+    ) -> Result<Option<PathBuf>, WireError> {
         if !(1..=rpc::IDENTIFY_MAX_MS).contains(&request.millis) {
             return Err(WireError::bad_request(format!(
                 "a buzz lasts from 1 to {} ms, not {}",
@@ -571,9 +599,16 @@ impl Reactor {
         }
         let id = self.book.resolve(&request.pad)?;
         // A pad that isn't there is said to be that, before anything it
-        // lacks. One a setup holds is reached through the setup.
+        // lacks: one away is there in a moment, as its driver is
+        // re-bound. One a setup holds is reached through the setup.
         let node = match self.book.user(id) {
             Some(_) => None,
+            None if self.book.is_away(id) => {
+                return Err(WireError::refusal(
+                    ErrorCode::PadRefused,
+                    format!("{id} is away for a moment, its driver being re-bound; try again"),
+                ));
+            }
             None => Some(self.book.node(id).ok_or_else(|| {
                 WireError::refusal(ErrorCode::PadDisconnected, format!("{id} isn't connected"))
             })?),
