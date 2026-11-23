@@ -2,10 +2,12 @@
 Description=CtrlAssist hiding service
 Documentation=https://github.com/CtrlAssist/CtrlAssist
 Requires=ctrlassist-hider.socket
-# It exits when its last client has gone and is started again by the
-# next, so how often it starts is its clients' doing: a few short-lived
-# ones in a row must not leave it refused, and hiding with it.
-StartLimitIntervalSec=0
+# Started by its socket's first client, it stays until stopped, so how
+# often it starts isn't its clients' doing, and systemd's limit on starts
+# is left as it is: a start that keeps failing (no such user, no binary)
+# fails the socket after five in ten seconds, by default, and the client
+# waiting is let go, rather than started again for as long as anything
+# is queued on the socket.
 
 [Service]
 ExecStart=/usr/bin/ctrlassist-hider
