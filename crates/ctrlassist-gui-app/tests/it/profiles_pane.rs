@@ -706,3 +706,35 @@ fn a_profile_s_pad_and_a_pad_s_profile_are_a_click_apart_and_back_returns() {
     assert_eq!(app.get_active_pane(), Pane::Pads);
     assert_eq!(pad_shown(), "DualSense");
 }
+
+/// Picking the pad another part has makes the two change places, so two
+/// pads can change parts without the profile ever naming one twice.
+#[test]
+fn picking_the_other_part_s_pad_changes_the_two_places() {
+    let known = known();
+    let two = "mode = \"toggle\"\nprimary = \"address:0c:27:56:4f:bd:14\"\nassist = \"address:1c:96:5a:a1:35:da\"\n";
+    let mut values = form::from_toml(&known.fields, two).unwrap();
+    let (primary, assist) = (values["primary"].clone(), values["assist"].clone());
+    profiles::change_places(&known, &mut values, "primary", &assist);
+    assert_eq!(values["assist"], primary);
+    // Nothing changes places for a pad no other part has, a pad that
+    // isn't known, or a field that isn't a pad.
+    let before = values.clone();
+    profiles::change_places(
+        &known,
+        &mut values,
+        "primary",
+        "serial:045e:02dd:7EED821FFB17",
+    );
+    profiles::change_places(&known, &mut values, "primary", "address:00:00:00:00:00:00");
+    profiles::change_places(&known, &mut values, "identity", "xbox");
+    assert_eq!(values, before);
+    // A part with no pad yet takes the other's, which is left to choose.
+    let mut one = form::from_toml(
+        &known.fields,
+        "mode = \"priority\"\nassist = \"address:0c:27:56:4f:bd:14\"\n",
+    )
+    .unwrap();
+    profiles::change_places(&known, &mut one, "primary", "address:0c:27:56:4f:bd:14");
+    assert!(!one.contains_key("assist"));
+}

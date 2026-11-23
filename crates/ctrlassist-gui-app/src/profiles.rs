@@ -614,6 +614,7 @@ fn set_field(app: &AppWindow, daemon: &DaemonClient, name: &str, key: &str, valu
     if values.get(key).map(String::as_str) == Some(value) {
         return;
     }
+    KNOWN.with_borrow(|known| change_places(known, &mut values, key, value));
     values.insert(key.to_string(), value.to_string());
     let (toml, complete) = KNOWN.with_borrow(|known| {
         if key == form::PRESET {
@@ -669,6 +670,35 @@ fn set_field(app: &AppWindow, daemon: &DaemonClient, name: &str, key: &str, valu
             app.global::<Errors>().set_profiles(banner);
         });
     });
+}
+
+/// Before `key` takes the pad `value`: if another part of the profile
+/// has that pad, it takes the pad `key` had, so the two change places
+/// in one pick. Without it two pads could only change parts by way of
+/// a profile that names one pad twice, which is none.
+pub fn change_places(known: &Known, values: &mut Values, key: &str, value: &str) {
+    let is_pad = |key: &str| {
+        known
+            .fields
+            .iter()
+            .any(|field| field.key == key && field.kind == Kind::Pad)
+    };
+    if !is_pad(key) {
+        return;
+    }
+    let Some(picked) = known.pads.iter().find(|pad| names_pad(value, pad)) else {
+        return;
+    };
+    let other = values
+        .iter()
+        .find(|(other, held)| other.as_str() != key && is_pad(other) && names_pad(held, picked))
+        .map(|(other, _)| other.clone());
+    if let Some(other) = other {
+        match values.get(key).cloned() {
+            Some(had) => values.insert(other, had),
+            None => values.remove(&other),
+        };
+    }
 }
 
 /// Runs `ask` and shows its refusal, if it is refused.

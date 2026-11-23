@@ -411,17 +411,25 @@ mod tests {
         rig.click(pick("mode", "toggle")).await;
         rig.shows("Has control >").await;
         assert_eq!(made(&rig).await, before);
-        // A pad one part has can't be picked for the other.
+        // The pad the other part has can be picked: the two change
+        // places in one pick, as the setup runs, and back.
         let menu = rig.shows("Mode: Toggle >").await;
         assert!(
-            menu.contains("    (o) Tray Primary\n    ( ) - Tray Assist\n"),
+            menu.contains("    (o) Tray Primary\n    ( ) Tray Assist (swap with Assist)\n"),
             "{menu}"
         );
+        rig.click(pick("primary", &id("Tray Assist", 0x8702))).await;
+        let menu = rig.shows("Primary: Tray Assist >").await;
+        assert!(menu.contains("Assist: Tray Primary >"), "{menu}");
+        rig.click(pick("assist", &id("Tray Assist", 0x8702))).await;
+        let menu = rig.shows("Primary: Tray Primary >").await;
+        assert!(menu.contains("Assist: Tray Assist >"), "{menu}");
+        assert_eq!(made(&rig).await, before);
         // What the daemon refuses is said, and the menu goes back to
         // what is kept.
-        rig.click(pick("primary", &id("Tray Assist", 0x8702))).await;
+        rig.click(pick("identity", "nobody")).await;
         rig.told("Couldn't change default").await;
-        rig.shows("Primary: Tray Primary >").await;
+        rig.shows("Identity: Generic >").await;
         assert_eq!(made(&rig).await, before);
         // Another identity is another virtual pad: picking it restarts
         // the setup at once, with nothing more to click.

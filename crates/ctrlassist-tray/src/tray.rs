@@ -247,7 +247,7 @@ impl PadTray {
                 }) else {
                     return;
                 };
-                values.insert(key, value);
+                menu::pick(fields, &self.view.pads, &mut values, &key, &value);
                 let toml = form::to_toml(fields, &values);
                 // Shown as picked until the daemon publishes it, so that
                 // a second pick made at once builds on the first.
@@ -701,6 +701,17 @@ mod tests {
         tray.see(elsewhere.clone());
         assert_eq!(tray.view.profiles[0].toml, elsewhere.profiles[0].toml);
         tray.see(arrived);
+        // The pad the other part has: the two change places.
+        tray.activate(Command::set("couch", "primary", "address:8bitdo"));
+        let (_, swapped) = put(clicked.try_recv());
+        assert!(
+            swapped.contains("primary = \"address:8bitdo\""),
+            "{swapped}"
+        );
+        assert!(
+            swapped.contains("assist = \"address:dualsense\""),
+            "{swapped}"
+        );
         // Another mode keeps what it has a use for, and drops the rest.
         tray.activate(Command::set("couch", "mode", "unicast"));
         let (_, other) = put(clicked.try_recv());

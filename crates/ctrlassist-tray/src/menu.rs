@@ -293,28 +293,71 @@ pub(crate) fn phase_label(phase: Phase) -> (&'static str, Icon) {
 }
 
 /// The known pad a profile's value for a pad field means, if one does.
-fn pad_meant<'a>(view: &'a View, value: &str) -> Option<&'a ctrlassist::Pad> {
+fn pad_meant<'a>(pads: &'a [ctrlassist::Pad], value: &str) -> Option<&'a ctrlassist::Pad> {
     // By its id as it stands, or as any of the ways a profile names one.
-    view.pad(value).or_else(|| {
+    pads.iter().find(|pad| pad.id == value).or_else(|| {
         let wanted = PadRef::parse(value)?;
-        view.pads.iter().find(|pad| crate::tip::names(&wanted, pad))
+        pads.iter().find(|pad| crate::tip::names(&wanted, pad))
     })
 }
 
+/// Works a pick into a profile's values. A pad picked for one part that
+/// another part has changes places with it: the other part takes the
+/// pad this one had. Without that, two pads could never change parts,
+/// each being the other's and so not to be picked.
+pub(crate) fn pick(
+    fields: &[Field],
+    pads: &[ctrlassist::Pad],
+    values: &mut Values,
+    key: &str,
+    value: &str,
+) {
+    let is_pad = |key: &str| {
+        fields
+            .iter()
+            .any(|field| field.key == key && field.kind == Kind::Pad)
+    };
+    let had = values.get(key).cloned();
+    if is_pad(key)
+        && let Some(picked) = pad_meant(pads, value)
+    {
+        let other = values
+            .iter()
+            .find(|(other, held)| {
+                other.as_str() != key
+                    && is_pad(other)
+                    && pad_meant(pads, held).is_some_and(|pad| pad.id == picked.id)
+            })
+            .map(|(other, _)| other.clone());
+        if let Some(other) = other {
+            match had {
+                Some(had) => values.insert(other, had),
+                None => values.remove(&other),
+            };
+        }
+    }
+    values.insert(key.to_string(), value.to_string());
+}
+
 /// A pad field of the profile `name`: the known pads to pick from, with
-/// the one picked. A pad can't be picked that isn't connected, is
-/// picked for another part, or is in another profile's setup.
+/// the one picked. A pad can't be picked that isn't connected or is in
+/// another profile's setup. One that another part of this profile has
+/// can: the two change places.
 fn pad_entry(view: &View, name: &str, values: &Values, field: &Field) -> Entry {
     let picked = values.get(&field.key).map(String::as_str);
-    let meant = picked.and_then(|value| pad_meant(view, value));
-    // The pads this profile's other parts have.
-    let taken: Vec<&str> = view
+    let meant = picked.and_then(|value| pad_meant(&view.pads, value));
+    // The pads this profile's other parts have, each with its part.
+    let taken: Vec<(&str, &str)> = view
         .fields
         .iter()
         .filter(|other| other.kind == Kind::Pad && other.key != field.key)
-        .filter_map(|other| values.get(&other.key))
-        .filter_map(|value| pad_meant(view, value))
-        .map(|pad| pad.id.as_str())
+        .filter_map(|other| Some((other, values.get(&other.key)?)))
+        .filter_map(|(other, value)| {
+            Some((
+                pad_meant(&view.pads, value)?.id.as_str(),
+                other.label.as_str(),
+            ))
+        })
         .collect();
     let choices: Vec<Choice> = view
         .pads
@@ -325,7 +368,10 @@ fn pad_entry(view: &View, name: &str, values: &Values, field: &Field) -> Entry {
                 (true, Some(setup)) if setup != name => {
                     (false, format!("{} (in {setup})", pad.name))
                 }
-                (true, _) => (!taken.contains(&pad.id.as_str()), pad.name.clone()),
+                (true, _) => match taken.iter().find(|(id, _)| *id == pad.id) {
+                    Some((_, part)) => (true, format!("{} (swap with {part})", pad.name)),
+                    None => (true, pad.name.clone()),
+                },
             };
             Choice {
                 label,
@@ -796,7 +842,7 @@ default ✓ (Not set up) >
         let couch = of(&menu, "couch (Held) >");
         assert!(
             couch.starts_with(
-                "couch (Held) >\n  Stop\n  ---\n  Has control >\n    (o) primary\n    ( ) - assist\n  ---\n  Primary: DualSense >\n    (o) DualSense\n    ( ) 8BitDo Pro 2\n    ( ) - Xbox pad (disconnected)\n  Assist: Xbox pad (disconnected) >\n    ( ) - DualSense\n    ( ) 8BitDo Pro 2\n    (o) - Xbox pad (disconnected)\n"
+                "couch (Held) >\n  Stop\n  ---\n  Has control >\n    (o) primary\n    ( ) - assist\n  ---\n  Primary: DualSense >\n    (o) DualSense\n    ( ) 8BitDo Pro 2\n    ( ) - Xbox pad (disconnected)\n  Assist: Xbox pad (disconnected) >\n    ( ) DualSense (swap with Primary)\n    ( ) 8BitDo Pro 2\n    (o) - Xbox pad (disconnected)\n"
             ),
             "{couch}"
         );
