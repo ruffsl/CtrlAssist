@@ -79,17 +79,18 @@ fn rule_text(identity: &Identity) -> String {
     if identity.hid {
         // A hidraw node's parent is the HID device, named for its bus,
         // vendor and product; its address is a property of that parent.
-        let mut hidraw = format!(
+        let hidraw = format!(
             r#"SUBSYSTEM=="hidraw", KERNELS=="{:04X}:{:04X}:{:04X}.*""#,
             identity.bus, identity.vendor, identity.product
         );
         if let Some(uniq) = &identity.uniq {
-            let _ = write!(
-                hidraw,
-                r#", IMPORT{{parent}}="HID_UNIQ", ENV{{HID_UNIQ}}=="{uniq}""#
-            );
+            // udev compares a line's ENV keys before it runs the line's
+            // IMPORT, so the address is imported on a line of its own.
+            let _ = writeln!(rule, r#"{hidraw}, IMPORT{{parent}}="HID_UNIQ""#);
+            let _ = writeln!(rule, r#"{hidraw}, ENV{{HID_UNIQ}}=="{uniq}", {DENY}"#);
+        } else {
+            let _ = writeln!(rule, "{hidraw}, {DENY}");
         }
-        let _ = writeln!(rule, "{hidraw}, {DENY}");
     }
     rule
 }
@@ -387,10 +388,32 @@ mod tests {
             lines[1],
             r#"SUBSYSTEM=="input", ATTRS{id/vendor}=="054c", ATTRS{id/product}=="0ce6", ATTRS{uniq}=="0c:27:56:4f:bd:14", MODE="0000", GROUP="root", TAG-="uaccess""#
         );
+        // The import has a line of its own, before the line that compares
+        // what it imported: udev compares a line's ENV keys first.
         assert_eq!(
             lines[2],
-            r#"SUBSYSTEM=="hidraw", KERNELS=="0003:054C:0CE6.*", IMPORT{parent}="HID_UNIQ", ENV{HID_UNIQ}=="0c:27:56:4f:bd:14", MODE="0000", GROUP="root", TAG-="uaccess""#
+            r#"SUBSYSTEM=="hidraw", KERNELS=="0003:054C:0CE6.*", IMPORT{parent}="HID_UNIQ""#
         );
+        assert_eq!(
+            lines[3],
+            r#"SUBSYSTEM=="hidraw", KERNELS=="0003:054C:0CE6.*", ENV{HID_UNIQ}=="0c:27:56:4f:bd:14", MODE="0000", GROUP="root", TAG-="uaccess""#
+        );
+        assert_eq!(lines.len(), 4, "{rule}");
+    }
+
+    #[test]
+    fn a_hid_pad_without_an_address_has_its_hidraw_nodes_denied_by_model() {
+        let model = Identity {
+            uniq: None,
+            ..identity()
+        };
+        let rule = rule_text(&model);
+        let lines: Vec<&str> = rule.lines().collect();
+        assert_eq!(
+            lines[2],
+            r#"SUBSYSTEM=="hidraw", KERNELS=="0003:054C:0CE6.*", MODE="0000", GROUP="root", TAG-="uaccess""#
+        );
+        assert_eq!(lines.len(), 3, "{rule}");
     }
 
     #[test]

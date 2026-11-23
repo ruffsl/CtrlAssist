@@ -38,6 +38,15 @@ pkgs.testers.runNixOSTest {
     # For udevadm.
     systemd.services.ctrlassist-hider.path = [ pkgs.systemd ];
 
+    # What Steam's 60-steam-input.rules does for a DualSense: opens its
+    # hidraw node to the seat user, by its HID device's name, which covers
+    # USB and Bluetooth alike. Hiding must close it all the same.
+    services.udev.packages = [
+      (pkgs.writeTextDir "lib/udev/rules.d/60-steam-input.rules" ''
+        KERNEL=="hidraw*", KERNELS=="*054C:0CE6*", MODE="0660", TAG+="uaccess"
+      '')
+    ];
+
     environment.systemPackages = [
       fixture
       hider
@@ -133,17 +142,24 @@ pkgs.testers.runNixOSTest {
         fake("pad-ds", "fake-dualsense", "--real")
         machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 02:ca:7e:00:00:01")
         machine.succeed("udevadm settle")
-        dualsense = pads()["02:ca:7e:00:00:01"]
-        assert pads(as_user="alice")["02:ca:7e:00:00:01"]["hidraw"][1] != "open", "a seat user can't open it"
+        DS = "02:ca:7e:00:00:01"
+        dualsense = pads()[DS]
+        assert alice_can_open(DS, "hidraw"), "the Steam-like rule opens its raw node to the seat user"
         raw = f"ctrlassist-fixture raw {dualsense['event'][0]} --socket {SOCKET}"
         assert "raw: ok" in machine.succeed(f"su -l alice -c '{raw}'")
         assert "isn't the user in front" in machine.succeed(raw)
-        # Hidden, its raw node is still to be had, by whoever hid it; a
-        # hidden pad of another driver's isn't.
+        # Hidden, its raw node is closed to the seat user, though another
+        # rule opens it, and still to be had by whoever hid it; a hidden
+        # pad of another driver's isn't.
         control, told = hide("hide-ds", dualsense["event"][0])
         assert told.startswith("ok"), told
+        machine.succeed("udevadm settle")
+        assert not alice_can_open(DS, "event"), "a hidden DualSense's event node"
+        assert not alice_can_open(DS, "hidraw"), "a hidden DualSense's raw node, which a 60- rule opens"
         assert order(control, "raw") == "ok", "the raw node of a hidden pad of the PlayStation driver"
         assert order(control, "restore") == "ok"
+        machine.succeed("udevadm settle")
+        assert alice_can_open(DS, "event") and alice_can_open(DS, "hidraw"), "a restored DualSense"
         machine.succeed("systemctl stop hide-ds")
         control, told = hide("hide-plain", pads()[A]["event"][0])
         assert told.startswith("ok"), told
