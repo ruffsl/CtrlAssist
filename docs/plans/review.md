@@ -617,6 +617,8 @@ Each area is fixed on a branch of its own and merged here as it comes back; a fi
 - A fourth review, of the third's fixes, is next.
 - **The fourth review is done:** nothing critical or high; eleven findings, ids beginning with 4, one near medium; the device crate's are all low and latent. Two reviewers recommend making the re-bind's wait and the count simpler, not patching them a fourth time: under Findings. The daemon's, service's and device's VM checks pass on the tree it read. Not yet acted on.
 
+- **The maintainer's choice on the fourth review, 2026-11-23:** make it simpler, that night, by `docs/plans/rebind-by-identity.md`; `cancel` and the counts leave the wire; and the findings that doesn't remove are fixed with it.
+
 
 ## Deviations
 
