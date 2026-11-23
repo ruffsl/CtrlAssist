@@ -284,7 +284,30 @@ pkgs.testers.runNixOSTest {
     with subtest("udev sends a re-bind the service asks on before the removals it causes, as the daemon hears them"):
         # The device crate's monitor, as the daemon's watch reads it, says
         # each change in the order udev sent it, through a hide and a
-        # showing again of the pad with a HID driver.
+        # showing again of the pad with a HID driver. Two numbers are
+        # left free below the pad's, so that the hide's new node has
+        # another name than the node it replaces, the virtual pad made
+        # meanwhile taking one at most: udev sends the old node's going
+        # before the new one's coming all the same, each being a child of
+        # the HID device whose unbind the kernel sends between them.
+        machine.succeed("systemctl stop pad-hid")
+        machine.wait_until_succeeds(f"test $(ctrlassist-fixture pads | grep -cF '{HID}') = 0")
+        for hole in ("1", "2"):
+            machine.succeed(f"systemd-run --unit hole{hole} ctrlassist-fixture fake-pad --name 'Fixture Hole {hole}'")
+            machine.wait_until_succeeds(f"test $(ctrlassist-fixture pads | grep -cF 'Fixture Hole {hole}') = 1")
+        machine.succeed("systemd-run --unit pad-hid-again ctrlassist-fixture fake-hid --pulse 20")
+        machine.wait_until_succeeds(f"test $(ctrlassist-fixture pads | grep -cF '{HID}') = 1")
+        machine.succeed("systemctl stop hole1 hole2")
+        machine.wait_until_succeeds("test $(ctrlassist-fixture pads | grep -cF 'Fixture Hole') = 0")
+        machine.succeed("udevadm settle")
+        retry(lambda _last: known()[HID]["connected"] and not known()["Fixture Hole 2"]["connected"])
+        BACK = "a pad is back from a re-bind of its driver"
+
+        def said():
+            journal = daemon_journal()
+            return {what: journal.count(what) for what in ("a pad connected", "a pad disconnected", BACK)}
+
+        before = said()
         machine.succeed("systemd-run --unit watch -p StandardOutput=file:/tmp/watch ctrlassist-fixture watch")
         machine.wait_until_succeeds("grep -qx watching /tmp/watch")
         node = nodes()[HID]["event"][0]
@@ -299,7 +322,7 @@ pkgs.testers.runNixOSTest {
         heard = machine.succeed("cat /tmp/watch").splitlines()[1:]
         # The pad's own: the requests on its HID device, the arrivals
         # under it, and the removals of the nodes it had.
-        ours, order, present = {node}, [], []
+        ours, order, present, went, came = {node}, [], [], [], []
         for line in heard:
             word = line.split()
             if word[0] == "rebinding" and word[1] == anchor:
@@ -311,11 +334,18 @@ pkgs.testers.runNixOSTest {
                     # request on: the node it made was there to be seen.
                     assert word[2] in present, (line, present, heard)
                     order.append("arrived")
+                    came.append(word[1])
                 ours.add(word[1])
             elif word[0] == "left" and word[1] in ours and order[-1:] != ["left"]:
                 order.append("left")
+                went.append(word[1])
         print("\n".join(heard))
         assert order == ["rebinding", "left", "arrived"] * 2, (order, heard)
+        assert went[0] == node and came[0] != node, (went, came, heard)
+        # Back each time, under another name or not, and never said to
+        # have gone or come.
+        retry(lambda _last: said()[BACK] == before[BACK] + 2)
+        assert said() == {**before, BACK: before[BACK] + 2}, (before, said())
 
     with subtest("udev's events lost to a watch not read in time are said once what was kept is read"):
         # The kernel keeps what was queued, drops what comes after until
