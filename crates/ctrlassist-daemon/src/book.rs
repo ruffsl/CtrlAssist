@@ -794,6 +794,37 @@ mod tests {
         assert!(!book.not_shown(&id) && !book.not_shown("address:nothing"));
     }
 
+    /// A pad hidden by re-binding its driver goes and comes back as it
+    /// is hidden, which the setup that hid it lives through: nothing is
+    /// published, the arrival isn't a pad plugged in, and showing it
+    /// again later is expected on its own account, whichever order the
+    /// goings come in.
+    #[test]
+    fn a_pad_hidden_by_re_binding_its_driver_never_left() {
+        let node = Path::new("/dev/input/event5");
+        let (mut book, id) = hidden_by_couch("/dev/input/event5");
+        let arrival = book.arrival(&id).unwrap();
+        assert!(!book.expect_back_since(&id, arrival), "nothing to publish");
+        assert_eq!(book.left(node), None);
+        assert!(book.pad(&id).unwrap().connected);
+        book.arrived(&dualsense("/dev/input/event5"), None);
+        assert!(book.was_restored(&id));
+        assert_eq!(book.left(node), Some(id.clone()), "then unplugged");
+
+        // Stopped before the hiding's own going and coming back is seen:
+        // that is one, and showing it again is another.
+        let (mut book, id) = hidden_by_couch("/dev/input/event5");
+        let arrival = book.arrival(&id).unwrap();
+        book.expect_back_since(&id, arrival);
+        book.release("couch", |_| true);
+        for went in ["as it was hidden", "as it is shown again"] {
+            assert_eq!(book.left(node), None, "{went}");
+            book.arrived(&dualsense("/dev/input/event5"), None);
+            assert!(book.was_restored(&id), "{went}");
+        }
+        assert_eq!(book.left(node), Some(id), "then unplugged");
+    }
+
     /// A pad hidden by re-binding its driver went and came back as it
     /// was hidden, which may not have been seen yet when it is shown
     /// again: then both goings and comings back are still to come, or

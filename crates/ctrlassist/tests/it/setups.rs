@@ -46,6 +46,19 @@ async fn hydrated(socket: &Path) -> DaemonClient {
     client
 }
 
+/// Waits until the daemon says pads are hidden as `wanted`: it looks for
+/// the hiding service once it is up, and says it is looking until then.
+async fn hiding_is(client: &DaemonClient, wanted: ctrlassist::Hiding) {
+    eventually(
+        &format!(
+            "the daemon never said pads are hidden by {}",
+            wanted.as_str()
+        ),
+        async || client.daemon_state().unwrap().unwrap().hiding == wanted,
+    )
+    .await;
+}
+
 /// The setup, once its state is `phase`.
 async fn in_phase(client: &DaemonClient, name: &str, phase: Phase) -> Setup {
     eventually(
@@ -332,10 +345,7 @@ async fn without_the_hiding_service_a_setup_s_pads_are_grabbed() {
         listing("28de/1142")
     );
     let client = hydrated(&socket).await;
-    assert_eq!(
-        client.daemon_state().unwrap().unwrap().hiding,
-        ctrlassist::Hiding::Grab
-    );
+    hiding_is(&client, ctrlassist::Hiding::Grab).await;
     client
         .put_profile("couch", &priority(0x7f01, 0x7f02))
         .await
@@ -396,7 +406,7 @@ async fn a_hiding_service_that_starts_after_the_daemon_is_found_when_it_is_neede
     let daemon = start_daemon(&socket).await;
     let client = hydrated(&socket).await;
     let hiding = |client: &DaemonClient| client.daemon_state().unwrap().unwrap().hiding;
-    assert_eq!(hiding(&client), ctrlassist::Hiding::Grab);
+    hiding_is(&client, ctrlassist::Hiding::Grab).await;
 
     // The service comes up only now. The next setup's pads are hidden
     // through it, and the daemon says that is how pads are hidden.
@@ -419,10 +429,9 @@ async fn a_hiding_service_that_starts_after_the_daemon_is_found_when_it_is_neede
     );
     client.stop_setup("couch").await.unwrap();
 
-    // The service is restarted: the connection the daemon had is gone.
-    // The first thing asked of it finds that out, and the daemon goes
-    // back to grabbing until the service is found again, which the next
-    // setup to start does.
+    // The service is restarted, which leaves nothing the daemon had of
+    // it: each pad is hidden on a connection made for it, so the next
+    // setup to start hides its pads through the service as it is now.
     drop(hider);
     let hider = ctrlassist_test::FakeHider::listen(&socket.with_file_name("hider.sock")).unwrap();
     client.start_setup("couch").await.unwrap();
@@ -453,10 +462,7 @@ async fn with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored
     let hider = ctrlassist_test::FakeHider::listen(&socket.with_file_name("hider.sock")).unwrap();
     let daemon = start_daemon(&socket).await;
     let client = hydrated(&socket).await;
-    assert_eq!(
-        client.daemon_state().unwrap().unwrap().hiding,
-        ctrlassist::Hiding::Service
-    );
+    hiding_is(&client, ctrlassist::Hiding::Service).await;
     client
         .put_profile("couch", &priority(0x8001, 0x8002))
         .await

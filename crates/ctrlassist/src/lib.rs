@@ -191,12 +191,13 @@ impl DaemonClient {
     /// Whether the daemon's liveliness token is present, as last delivered
     /// to this client: a mirror read, which unlike [`Self::is_available`]
     /// doesn't wait for the client to have subscribed to the daemon's
-    /// state. A daemon that is stopping withdraws its token first and
-    /// then answers what is in flight; over a session in client mode,
-    /// as `ctrlassist_protocol::bootstrap::client_config` opens, the
-    /// daemon's token reaches the client in order with its replies, so
-    /// once a call has been answered this tells such a daemon from one
-    /// that is up.
+    /// state. A daemon declares its token before anything it serves can
+    /// answer, and as it stops answers what it holds that it is stopping
+    /// ([`Error::Stopping`]) before it withdraws it. Over a session in
+    /// client mode, as `ctrlassist_protocol::bootstrap::client_config`
+    /// opens, the daemon's token reaches the client in order with its
+    /// replies, so once a call has been answered this is false only for
+    /// a daemon that is going away, never for one that is starting.
     #[must_use]
     pub fn token_present(&self) -> bool {
         self.mirror.token_present()
@@ -304,8 +305,8 @@ impl DaemonClient {
 
     /// Keep `toml` as the profile `name`: a new one, or in place of the
     /// one that has the name. The daemon writes it to disk before it
-    /// answers, which is waited for as long as the daemon is there, with
-    /// no time limit.
+    /// answers, which is waited for as long as the daemon is there, for
+    /// up to six hours.
     ///
     /// # Errors
     ///
@@ -324,7 +325,7 @@ impl DaemonClient {
 
     /// Stop keeping the profile `name`. Its file is removed before the
     /// daemon answers, which is waited for as long as the daemon is
-    /// there, with no time limit.
+    /// there, for up to six hours.
     ///
     /// # Errors
     ///
@@ -368,7 +369,7 @@ impl DaemonClient {
     /// it needs isn't connected, which its state says. Hiding its pads
     /// and making its virtual pads can take a while (the hiding service
     /// waits on udev, a DualSense on its driver), so the answer is waited
-    /// for as long as the daemon is there, with no time limit.
+    /// for as long as the daemon is there, for up to six hours.
     ///
     /// # Errors
     ///
@@ -386,12 +387,14 @@ impl DaemonClient {
 
     /// Stop the setup `name`. Returns once its virtual pads are gone and
     /// its pads shown again, which is waited for as long as the daemon is
-    /// there, with no time limit.
+    /// there, for up to six hours. A setup that is still starting is
+    /// stopped too: what its start waits on is given up, and the start
+    /// is refused with [`ErrorCode::SetupFailed`].
     ///
     /// # Errors
     ///
     /// Refused with [`ErrorCode::UnknownSetup`], or with
-    /// [`ErrorCode::SetupBusy`] while it is starting or stopping; fails
+    /// [`ErrorCode::SetupBusy`] while it is stopping or restarting; fails
     /// with [`Error::Gone`] if the daemon goes before it answers; and
     /// fails as any rpc can.
     pub async fn stop_setup(&self, name: &str) -> Result<()> {
@@ -412,7 +415,7 @@ impl DaemonClient {
     /// runs as: after a restart, the number its new start is published
     /// under, which tells that start from any other of the name whatever
     /// this client's mirror has seen of it. Like a start, the answer is
-    /// waited for as long as the daemon is there, with no time limit.
+    /// waited for as long as the daemon is there, for up to six hours.
     ///
     /// # Errors
     ///
@@ -483,7 +486,7 @@ impl DaemonClient {
     /// Stop remembering a pad that isn't connected. `pad` names it as for
     /// [`Self::identify_pad`], a virtual pad aside. The daemon writes the
     /// pads it remembers to disk before it answers, which is waited for
-    /// as long as the daemon is there, with no time limit.
+    /// as long as the daemon is there, for up to six hours.
     ///
     /// # Errors
     ///
@@ -513,7 +516,7 @@ impl DaemonClient {
     /// it found changed and which setups it set about updating; those
     /// are still changing when this returns, and their state says how
     /// they fare. The files are read before the daemon answers, which is
-    /// waited for as long as the daemon is there, with no time limit.
+    /// waited for as long as the daemon is there, for up to six hours.
     ///
     /// # Errors
     ///
@@ -714,11 +717,15 @@ impl TrayClient {
 /// Calls `R` on `mirror`'s service. An [`untimed`](Unary::UNTIMED) rpc
 /// waits for its answer for as long as the service's liveliness token is
 /// there, and fails with [`Error::Gone`] once it isn't, at once and
-/// without asking if it isn't now: the service answers every rpc once,
-/// or drops it as it ends, which ends the call too; a stopping service
-/// withdraws its token before anything else, and a service whose link
-/// drops is seen without its token, so nothing else ends the wait. Every
-/// other rpc waits as long as the protocol's caller does.
+/// without asking if it isn't now. An rpc the service holds is answered
+/// once: the daemon, as it stops, answers what it holds that it is
+/// stopping ([`Error::Stopping`]) before its token goes; a server that
+/// ends otherwise, as by a panic, drops what it holds, which ends the
+/// call too; and a service whose link drops is seen without its token.
+/// So an answer, or the token's going, ends the wait; the protocol's
+/// caller gives up only after six hours, a limit there so that zenoh's
+/// task for the query ends.
+/// Every other rpc waits as long as the protocol's caller does.
 async fn call_while_there<R: Unary<Target = ()>>(
     caller: &Caller,
     mirror: &LifetimeMirror<impl lifetime::Mirror>,

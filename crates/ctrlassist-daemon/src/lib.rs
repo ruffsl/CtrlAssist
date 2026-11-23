@@ -8,6 +8,7 @@ mod blacklist;
 mod book;
 mod copied;
 pub mod durable;
+mod hiding;
 mod hotplug;
 pub mod logging;
 mod profiles;
@@ -20,6 +21,7 @@ use std::fs::OpenOptions;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, anyhow};
 use ctrlassist_device::{Database, InputThread, Report};
@@ -33,10 +35,10 @@ use zenoh::liveliness::LivelinessToken;
 
 use blacklist::Blacklist;
 use book::Book;
+use hiding::Hiding;
 use hotplug::Watch;
 use profiles::Profiles;
 use reactor::{Reactor, Rpcs};
-use setups::Hiding;
 use store::Store;
 
 /// Where a daemon keeps what it needs.
@@ -102,8 +104,10 @@ pub struct Daemon {
     /// What the daemon has in Steam's controller blacklist, taken out
     /// as it stops.
     blacklist: Arc<std::sync::Mutex<Blacklist>>,
-    // Declared in the order they are torn down: the token first, so a
-    // client sees the daemon gone before what it served goes.
+    // Declared in the order a daemon dropped without being stopped tears
+    // them down: the token first, so a client sees the daemon gone
+    // before what it served goes. One that is stopped answers what it
+    // holds first; see `stop`.
     alive: LivelinessToken,
     stop: oneshot::Sender<()>,
     /// The reactor, until it is seen to have ended.
@@ -151,9 +155,57 @@ pub(crate) fn device_identity(identity: Identity) -> ctrlassist_device::Identity
     }
 }
 
+/// The most taps a daemon may have left unread. The queue the input
+/// thread's reports arrive in has no bound, so that a report that hands
+/// something back is never dropped; a tap hands nothing back, and one a
+/// game can cause many times a second, so past this a tap is dropped
+/// before it is queued, and the reactor falling behind costs it taps,
+/// never memory.
+const UNREAD_TAPS: usize = 1024;
+
 /// Where the input thread's reports arrive for a daemon to read: the
 /// queue the input thread's own forwarding thread fills.
-pub type Reports = mpsc::UnboundedReceiver<Report>;
+#[derive(Debug)]
+pub struct Reports {
+    queue: mpsc::UnboundedReceiver<Report>,
+    /// How many taps are queued and not yet read.
+    taps: Arc<AtomicUsize>,
+}
+
+impl Reports {
+    /// The next report, waiting for one: none once nothing can send any
+    /// more.
+    pub(crate) async fn recv(&mut self) -> Option<Report> {
+        let report = self.queue.recv().await?;
+        if matches!(report, Report::Tapped { .. }) {
+            self.taps.fetch_sub(1, Ordering::Relaxed);
+        }
+        Some(report)
+    }
+}
+
+/// A queue for the input thread's reports: what puts a report in it, on
+/// the input thread's forwarding thread, and where reports come out.
+fn report_queue() -> (impl FnMut(Report) + Send + 'static, Reports) {
+    let (reported, queue) = mpsc::unbounded_channel();
+    let taps = Arc::new(AtomicUsize::new(0));
+    let unread = Arc::clone(&taps);
+    let deliver = move |report: Report| {
+        if matches!(report, Report::Tapped { .. }) {
+            // Counted before it is queued, so the reader never counts
+            // down what wasn't counted up; one past the bound is counted
+            // down again here, this being the only thread that counts up.
+            if unread.fetch_add(1, Ordering::Relaxed) >= UNREAD_TAPS {
+                unread.fetch_sub(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        // Not read any more, the daemon having stopped: dropped here,
+        // off the input thread.
+        let _ = reported.send(report);
+    };
+    (deliver, Reports { queue, taps })
+}
 
 impl Daemon {
     /// Starts the input thread a daemon runs around, with where its
@@ -165,12 +217,8 @@ impl Daemon {
     ///
     /// Fails if the input thread can't start.
     pub fn input_thread() -> std::io::Result<(InputThread, Reports)> {
-        let (reported, reports) = mpsc::unbounded_channel();
-        let input = InputThread::spawn_with(move |report| {
-            // Not read any more, the daemon having stopped: dropped
-            // here, off the input thread.
-            let _ = reported.send(report);
-        })?;
+        let (deliver, reports) = report_queue();
+        let input = InputThread::spawn_with(deliver)?;
         Ok((input, reports))
     }
 
@@ -224,10 +272,10 @@ impl Daemon {
             .await
             .context("starting the hotplug watch")?
             .context("watching udev for pads")?;
-        let hider = paths.hider.clone();
-        let hiding = tokio::task::spawn_blocking(move || Hiding::find(&hider))
-            .await
-            .context("looking for the hiding service")?;
+        // Looked for off the way to being up, once the reactor runs: a
+        // service that doesn't answer holds up nothing but the setups
+        // that need it.
+        let hiding = Hiding::new(&paths.hider);
         let mechanism = hiding.mechanism();
         let hider_version = hiding.service_release();
         let mut reactor = Reactor::new(
@@ -271,11 +319,13 @@ impl Daemon {
         published
             .await
             .map_err(|error| anyhow!("publishing the daemon's state: {error}"))?;
+        reactor.look_for_the_hiding_service();
         for pad in now {
             reactor.saw(pad).await;
         }
         // Profiles that start by themselves, now that every pad already
-        // connected is known.
+        // connected is known. One that hides its pads waits, as it
+        // starts, for the hiding service to have been looked for.
         reactor.start_what_can(None).await;
         if !realtime {
             warn!("real-time scheduling was refused; input latency under load is not dependable");
@@ -284,17 +334,20 @@ impl Daemon {
             warn!("/dev/uinput can't be opened; no virtual pad can be made until it can");
         }
 
-        let (stop, stopped) = oneshot::channel();
-        let reactor = tokio::spawn(reactor.run(rpcs, seen, reports, stopped));
-
-        // The token is what clients take as "the daemon is there", so it
-        // comes last: everything it serves is declared by the time a
-        // client can see it alive.
+        // The token is what clients take as "the daemon is there": every
+        // rpc is declared and every key published by now, and a query
+        // that arrives waits in its queryable's queue for the reactor. It
+        // goes before the reactor is spawned, since nothing else answers
+        // a query: no reply can reach a client ahead of the token, and a
+        // command that takes an answer without a token for a daemon that
+        // is stopping is never told that of one that is starting.
         let alive = session
             .liveliness()
             .declare_token(keys::daemon_alive())
             .await
             .map_err(|error| anyhow!("declaring the daemon's liveliness: {error}"))?;
+        let (stop, stopped) = oneshot::channel();
+        let reactor = tokio::spawn(reactor.run(rpcs, seen, reports, stopped));
         info!(socket = %socket.display(), state = %state_dir.display(), version = VERSION, realtime, "the daemon is up");
         Ok(Self {
             blacklist,
@@ -329,7 +382,8 @@ impl Daemon {
         }
     }
 
-    /// Stops the daemon: clients see it gone, then the control plane
+    /// Stops the daemon: what it holds and has queued is answered that it
+    /// is stopping, then clients see it gone, then the control plane
     /// closes, then the input thread stops and its virtual pads go.
     pub async fn stop(self) {
         let Self {
@@ -341,15 +395,22 @@ impl Daemon {
             session,
             input,
         } = self;
-        if let Err(error) = alive.undeclare().await {
-            warn!(%error, "withdrawing the daemon's liveliness failed");
-        }
-        // The reactor ends when told, or when its sender is gone.
+        // The reactor first, which ends when told, or when its sender is
+        // gone, answering every rpc it holds or has queued that the
+        // daemon is stopping, and waiting on nothing. The token goes
+        // after: a client waiting on a write ends its wait at whichever
+        // reaches it first, the answer or the token's going, and would
+        // otherwise take a daemon stopping for one that went away. A
+        // query that comes in between finds nothing to answer it, which
+        // ends its call unanswered.
         drop(stop);
         if let Some(reactor) = reactor
             && let Err(error) = reactor.await
         {
             error!(%error, "the daemon's reactor panicked as it stopped");
+        }
+        if let Err(error) = alive.undeclare().await {
+            warn!(%error, "withdrawing the daemon's liveliness failed");
         }
         if let Err(error) = session.close().await {
             warn!(%error, "closing the control plane failed");
@@ -366,5 +427,59 @@ impl Daemon {
         })
         .await;
         info!("the daemon has stopped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ctrlassist_core::{Graph, Level, SourceId};
+    use ctrlassist_device::{Setup, SetupId, Tap};
+    use ctrlassist_protocol::profile::Profile;
+
+    use super::*;
+
+    fn tapped() -> Report {
+        Report::Tapped {
+            setup: SetupId(1),
+            tap: Tap::Told {
+                source: SourceId(0),
+                level: Level::default(),
+            },
+        }
+    }
+
+    /// A setup as the input thread hands one back.
+    fn stopped() -> Report {
+        let plan = Profile::check("mode = \"unicast\"\npad = \"0a:1b:2c:3d:4e:14\"\n").unwrap();
+        let graph = Graph::build(plan.graph).unwrap();
+        Report::Stopped(
+            SetupId(1),
+            Box::new(Setup::new(graph, vec![None], Vec::new())),
+        )
+    }
+
+    /// Taps the reactor hasn't read are kept up to a bound, and past it
+    /// dropped; a report that hands something back is queued whatever
+    /// the taps, and a tap read makes room for another.
+    #[tokio::test]
+    async fn unread_taps_have_a_bound_and_nothing_handed_back_is_dropped() {
+        let (mut deliver, mut reports) = report_queue();
+        for _ in 0..UNREAD_TAPS + 100 {
+            deliver(tapped());
+        }
+        deliver(stopped());
+        deliver(tapped());
+        for _ in 0..UNREAD_TAPS {
+            assert!(matches!(reports.recv().await, Some(Report::Tapped { .. })));
+        }
+        assert!(
+            matches!(reports.recv().await, Some(Report::Stopped(..))),
+            "handed back after the taps that fit, and with no tap after it"
+        );
+        // Every tap read, there is room again.
+        deliver(tapped());
+        assert!(matches!(reports.recv().await, Some(Report::Tapped { .. })));
+        drop(deliver);
+        assert!(reports.recv().await.is_none(), "nothing else was queued");
     }
 }

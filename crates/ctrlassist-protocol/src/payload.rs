@@ -36,6 +36,11 @@ pub enum Hiding {
     /// read its event or joystick node hear nothing, but one that reads
     /// it some other way, as Steam reads a PlayStation pad, still sees it.
     Grab,
+    /// The daemon has just started and is still finding out whether the
+    /// hiding service is there, which it does without holding up its
+    /// start. A setup that starts meanwhile waits, as it starts, for the
+    /// answer, and is then hidden or grabbed as for either of the others.
+    Looking,
 }
 
 impl Hiding {
@@ -45,6 +50,7 @@ impl Hiding {
         match self {
             Self::Service => "service",
             Self::Grab => "grab",
+            Self::Looking => "looking",
         }
     }
 }
@@ -254,7 +260,7 @@ mod tests {
 
     #[test]
     fn a_hiding_mechanism_travels_as_the_word_it_is_shown_as() {
-        for hiding in [Hiding::Service, Hiding::Grab] {
+        for hiding in [Hiding::Service, Hiding::Grab, Hiding::Looking] {
             assert_eq!(serde_json::to_value(hiding).unwrap(), hiding.as_str());
         }
     }

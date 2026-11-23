@@ -118,7 +118,8 @@ error_codes! {
     /// A settings file couldn't be written, so the change asked for
     /// wasn't made; the message says which file and why.
     SettingsUnwritable = "settings-unwritable",
-    /// The daemon stopped before it could answer.
+    /// The daemon is stopping, and answers so what it held or had queued
+    /// in place of what was asked.
     DaemonShuttingDown = "daemon-shutting-down",
     /// The daemon failed on its side; the request itself may be fine.
     Internal = "internal",
@@ -167,7 +168,7 @@ impl WireError {
         }
     }
 
-    /// The daemon has stopped, so a filed rpc will never be answered.
+    /// The daemon is stopping, so what was asked of it is given up.
     pub fn daemon_shutting_down() -> Self {
         Self {
             code: ErrorCode::DaemonShuttingDown,

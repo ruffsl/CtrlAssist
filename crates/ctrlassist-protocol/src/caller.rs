@@ -25,10 +25,18 @@ use crate::error::WireError;
 pub const RPC_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What an untimed rpc's query is declared with, zenoh having no query
-/// without a time limit: the longest a query's limit can be on the wire,
-/// which carries it as a count of milliseconds, and which zenoh and tokio
-/// take as never. Its caller ends the wait by the service going instead.
-const UNLIMITED: Duration = Duration::from_millis(u64::MAX);
+/// without a time limit: six hours. Its caller ends the wait by the
+/// service going, not by this. It is finite because zenoh's session
+/// spawns a task for each query that sleeps for the query's limit
+/// whatever becomes of the query, and holds it until then or until the
+/// session closes; a limit of never would keep one for every start,
+/// stop, update and change a long-lived client such as the tray or the
+/// window ever made. Six hours is far beyond anything such a write waits
+/// for (a driver's re-bind, the kernel making a virtual pad, the disk),
+/// so the limit is reached only by a service that is still there and
+/// will never answer, and a client holds at most the writes of the last
+/// six hours.
+const UNTIMED_LIMIT: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// How long a call waits for a matching queryable to become routable
 /// before failing [`RpcError::Unavailable`]. Route propagation on a
@@ -47,7 +55,8 @@ pub enum RpcError {
         /// The rpc key no queryable matched.
         key: String,
     },
-    /// A service held the query but didn't reply within [`RPC_TIMEOUT`].
+    /// A service held the query but didn't reply within [`RPC_TIMEOUT`],
+    /// or within an untimed rpc's six hours.
     Timeout {
         /// The rpc key the query was sent on.
         key: String,
@@ -128,11 +137,12 @@ impl Caller {
     /// a write that minted state before a lost reply must surface as
     /// an error rather than mint twice.
     ///
-    /// An [`untimed`](Unary::UNTIMED) rpc's call waits for its reply with
-    /// no time limit: until the service answers, drops the query, or the
-    /// link to it goes. A caller that must not outwait a service that is
-    /// still there but going drops the call when the service's
-    /// liveliness token goes, as the SDK's clients do.
+    /// An [`untimed`](Unary::UNTIMED) rpc's call waits for its reply
+    /// until the service answers, drops the query, or the link to it
+    /// goes, and gives up only after six hours, a limit there so that
+    /// zenoh's task for the query ends. A caller that must not outwait a
+    /// service that is still there but going drops the call when the
+    /// service's liveliness token goes, as the SDK's clients do.
     pub async fn call<R: Unary>(
         &self,
         target: &R::Target,
@@ -140,7 +150,11 @@ impl Caller {
     ) -> Result<R::Response, RpcError> {
         let key = R::key(target);
         let body = encode(request);
-        let timeout = if R::UNTIMED { UNLIMITED } else { RPC_TIMEOUT };
+        let timeout = if R::UNTIMED {
+            UNTIMED_LIMIT
+        } else {
+            RPC_TIMEOUT
+        };
         let querier = self.querier(&key, timeout).await?;
         self.await_matching(&querier).await?;
         let bytes = match issue(&querier, &body).await {

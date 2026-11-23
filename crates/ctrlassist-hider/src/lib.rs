@@ -24,7 +24,10 @@ use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
-use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, connect, socket};
+use rustix::net::{
+    AddressFamily, Shutdown, SocketAddrUnix, SocketFlags, SocketType, connect, shutdown,
+    socket_with,
+};
 
 pub use wire::{Refusal, Token};
 #[doc(hidden)]
@@ -103,16 +106,33 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connects to the service at `path`.
+    /// Connects to the service at `path`, without waiting: a service
+    /// whose queue of connections to accept is full is refused at once,
+    /// as one that isn't there is. Each request then waits for its
+    /// reply, until the reply comes or the connection is
+    /// [hung up](Self::hang_up).
     ///
     /// # Errors
     ///
-    /// Fails if the socket can't be reached. A caller the service won't
-    /// serve is told so on its first request, not here.
+    /// Fails if the socket can't be reached, or has no room for another
+    /// connection. A caller the service won't serve is told so on its
+    /// first request, not here.
     pub fn connect(path: &Path) -> Result<Self, Error> {
-        let socket = socket(AddressFamily::UNIX, SocketType::SEQPACKET, None)?;
+        let flags = SocketFlags::CLOEXEC | SocketFlags::NONBLOCK;
+        let socket = socket_with(AddressFamily::UNIX, SocketType::SEQPACKET, flags, None)?;
         connect(&socket, &SocketAddrUnix::new(path)?)?;
+        rustix::io::ioctl_fionbio(&socket, false)?;
         Ok(Self { socket })
+    }
+
+    /// Hangs up, from any thread, whatever else is using the client: a
+    /// request under way ends at once with an error, and so does any
+    /// asked after, and the service restores every pad hidden through
+    /// the connection, as when the client is dropped.
+    pub fn hang_up(&self) {
+        // Fails only for a socket that is no longer connected, which has
+        // nothing left to hang up.
+        let _ = shutdown(&self.socket, Shutdown::Both);
     }
 
     fn ask(
