@@ -1,6 +1,6 @@
 # Plans
 
-Working space for in-progress plan docs. Which changes need one, and the steps from plan to merge, are in the project instructions ([`.claude/CLAUDE.md`](../../.claude/CLAUDE.md)) until a contributing guide exists.
+Working space for in-progress plan docs. Which changes need one, and the steps from plan to merge, are in the [contributing guide](../../.github/CONTRIBUTING.md#how-changes-land).
 
 ## What a plan holds
 

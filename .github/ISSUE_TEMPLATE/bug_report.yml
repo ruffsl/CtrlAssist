@@ -23,7 +23,7 @@ body:
     id: version
     attributes:
       label: CtrlAssist version
-      description: Shown by `ctrlassist --version`.
+      description: Shown by `ctrlassist --version`, or on the settings window's About page.
     validations:
       required: true
   - type: dropdown
@@ -61,6 +61,14 @@ body:
       label: What CtrlAssist says
       description: The output of `ctrlassist status` and `ctrlassist setups`, and the profile involved (`ctrlassist profile show <name>`).
       render: text
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >-
+        If the settings window opens, the Diagnostics button on its About page copies a report of the releases, the system, the controllers, the setups and the profiles.
+        Controller addresses in it are shortened already.
+      render: json
   - type: textarea
     id: logs
     attributes:

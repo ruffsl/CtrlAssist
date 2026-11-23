@@ -4,7 +4,7 @@ How CtrlAssist is put on a machine. After TisVlay's packaging, which has the lon
 
 | Channel | Where | What it is |
 |---|---|---|
-| NixOS | [`nix/package.nix`](nix/package.nix), [`nix/module.nix`](nix/module.nix) | The flake's `packages.default`, `overlays.default` and `nixosModules.default`. `services.ctrlassist.enable = true` is the whole installation. |
+| NixOS | [`nix/package.nix`](nix/package.nix), [`nix/module.nix`](nix/module.nix) | The flake's `packages.default`, `overlays.default` and `nixosModules.default`. `services.ctrlassist.enable = true` is the whole installation. [`nix/README.md`](nix/README.md) has how it builds. |
 | deb, rpm, Arch | `[package.metadata.nfpm]` in [`crates/ctrlassist-cli/Cargo.toml`](../crates/ctrlassist-cli/Cargo.toml) | One package per format from the same list of contents, by `just package-deb`, `package-rpm`, `package-archlinux` or `package-all`. |
 
 ## What a package installs
