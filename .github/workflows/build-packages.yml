@@ -24,8 +24,8 @@ permissions: {}
 jobs:
   # One leg per architecture, each natively on its own runner (`just
   # package-*` targets the host's architecture). Zig still pins the glibc
-  # baseline; building natively avoids cross sysroots for libudev and
-  # libsystemd.
+  # baseline; building natively avoids cross sysroots for libudev,
+  # libsystemd and fontconfig.
   build:
     strategy:
       matrix:
@@ -39,14 +39,14 @@ jobs:
         with:
           persist-credentials: false
 
-      # libudev and libsystemd are what the binaries link. uuid-runtime is
-      # Debian's home for uuidgen, which `just sbom` uses for each SBOM's
-      # serial number.
+      # libudev, libsystemd and (for the settings window) fontconfig are what
+      # the binaries link. uuid-runtime is Debian's home for uuidgen, which
+      # `just sbom` uses for each SBOM's serial number.
       - name: Libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libudev-dev libsystemd-dev pkg-config uuid-runtime
+            libudev-dev libsystemd-dev libfontconfig1-dev pkg-config uuid-runtime
 
       - name: Toolchain
         run: rustup show

@@ -44,7 +44,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libudev-dev libsystemd-dev pkg-config
+            libudev-dev libsystemd-dev libfontconfig1-dev pkg-config
 
       - name: Toolchain
         run: rustup show

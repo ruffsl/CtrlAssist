@@ -34,7 +34,8 @@ Build and clippy use the test profile, so the tests reuse what they compiled.
 | `msrv` | The workspace builds on its oldest supported compiler | `just msrv` |
 | `CI result` | Passes only if the others passed; the one check a branch ruleset requires | |
 
-- **Drafts and docs-only changes run only `checks`;** marking a pull request ready starts the rest.
+- **Drafts and docs-only changes run only `checks`;** marking a pull request ready starts the rest. Docs-only means `docs/`, `.claude/`, the README, the license, and the contributing guide, security policy, pull request template and issue forms under `.github/`.
+- **Tools whose output can change between releases are pinned to the dev shell's versions** in the workflows (typos, zizmor, shellcheck, actionlint, cargo-about, cargo-deny, cargo-shear, tombi, lychee, mdbook and the packaging tools), so local and CI agree. Bump them together after a `nix flake update`.
 - **One instrumented build.** `just test-ci` routes clippy, nextest and the doc tests through cargo-llvm-cov's environment, so they share a target directory instead of compiling twice.
 - **Coverage has a floor,** `cov_baseline_lines` in the justfile. `just test-ci` fails below it. Raise it when coverage rises (`just cov` prints the figure); never lower it. Two things are kept out of the figure because only the virtual machine checks can run them: `ctrlassist-test`, and the hiding service's root-only files.
 - **Actions are pinned to a commit,** with the release in a comment, and Dependabot proposes updates to both after a one-week cooldown.

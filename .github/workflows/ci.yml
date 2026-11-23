@@ -52,7 +52,7 @@ jobs:
             exit 0
           fi
           # Docs-only paths. Crate READMEs are not: they're doctests.
-          docs='^(docs/|\.claude/|README\.md$|LICENSE$)'
+          docs='^(docs/|\.claude/|README\.md$|LICENSE$|\.github/(CONTRIBUTING|SECURITY|pull_request_template)\.md$|\.github/ISSUE_TEMPLATE/)'
           code=false; grep -qvE "$docs" <<< "$files" && code=true
           printf 'code=%s\n' "$code" >> "$GITHUB_OUTPUT"
 
@@ -72,11 +72,27 @@ jobs:
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: |
-            actionlint@1.7.12
             just
             shellcheck@0.11.0
-            typos@1.51.1
+            typos@1.52.0
             zizmor@1.32.0
+
+      # actionlint isn't in install-action's manifest, and it's a Go program,
+      # not a crate, so the cargo-binstall fallback can't install it. Fetch
+      # the release pinned to the flake's version, and check it against the
+      # digest from that release's checksums file.
+      - name: actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v$VERSION/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "$SHA256  $archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: File checks
         uses: j178/prek-action@44924fe9ef4a6f88253c4b6b1bf11c689d3ce53d # v3.1.0
@@ -103,24 +119,32 @@ jobs:
           persist-credentials: false
 
       # libudev for the udev crate, libsystemd for the hiding service's
-      # session check.
+      # session check, fontconfig for the settings window, which links it.
       - name: System libraries
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libudev-dev libsystemd-dev pkg-config
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libudev-dev libsystemd-dev libfontconfig1-dev pkg-config
 
       - name: Toolchain
         run: rustup component add llvm-tools-preview && rustup show
 
+      # Tools whose output can differ between releases (formatters, linters,
+      # dictionaries, the license bundle) are pinned to the flake's versions
+      # so local and CI agree; bump them together after a `nix flake update`.
+      # cargo-about is for the licenses-html hook the Lint step runs.
       - name: Setup
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: |
+            cargo-about@0.9.1
             cargo-deny@0.20.2
             cargo-llvm-cov
             cargo-nextest
             cargo-shear@1.14.0
             just
             tombi@1.7.1
-            typos@1.51.1
+            typos@1.52.0
 
       - name: Cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -189,10 +213,12 @@ jobs:
         with:
           persist-credentials: false
 
-      # libudev for the udev crate, libsystemd for the hiding service's
-      # session check.
+      # As in the ci job: `--all-targets` builds the settings window too.
       - name: System libraries
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libudev-dev libsystemd-dev pkg-config
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libudev-dev libsystemd-dev libfontconfig1-dev pkg-config
 
       # The floor is read from Cargo.toml, padded to x.y.z for rustup.
       - name: Toolchain
@@ -235,7 +261,7 @@ jobs:
         with:
           tool: |
             lychee@0.24.2
-            mdbook
+            mdbook@0.5.4
             just
 
       - name: Cache
