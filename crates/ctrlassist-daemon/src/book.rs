@@ -215,37 +215,23 @@ impl Book {
         }
     }
 
-    /// When the pad last connected, as a count of connections, if it is
-    /// known: going and coming back counts as connecting.
-    pub(crate) fn arrival(&self, id: &str) -> Option<u64> {
-        Some(self.rows.get(id)?.connected)
-    }
-
-    /// Notes that the hiding service hid the pad by re-binding its
-    /// driver after `arrival`, the pad's [`arrival`](Self::arrival) then:
-    /// that it goes and comes back is expected too, if it hasn't been
-    /// seen to. Returns whether the pad is now published otherwise: one
-    /// already seen to go is there after all.
-    pub(crate) fn expect_back_since(&mut self, id: &str, arrival: u64) -> bool {
-        let Some(row) = self.rows.get_mut(id) else {
-            return false;
-        };
-        // Back already, or unplugged and plugged in since.
-        if row.connected != arrival || row.away {
-            return false;
+    /// Notes that the hiding service is about to be asked to hide the
+    /// pad, which may re-bind its driver: it is expected to go and come
+    /// back once more, whatever it is doing now, until what the service
+    /// did [takes that back](Self::take_back). Expected before it is asked,
+    /// its going and coming back is never published, whenever its events
+    /// come.
+    pub(crate) fn expect(&mut self, id: &str) {
+        if let Some(row) = self.rows.get_mut(id) {
+            row.comebacks += 1;
         }
-        row.comebacks += 1;
-        // Gone, and on its way back.
-        let gone = row.nodes.is_empty();
-        row.away = gone;
-        gone
     }
 
-    /// Notes that the hiding service didn't show the pad again as was
-    /// expected: it doesn't go and come back after all. Returns whether
-    /// the pad is now published otherwise: one that went meanwhile has
-    /// gone.
-    pub(crate) fn not_shown(&mut self, id: &str) -> bool {
+    /// Takes back one going and coming back expected of the pad: the
+    /// hiding service didn't re-bind it after all, as it said, or didn't
+    /// show it again. Returns whether the pad is now published otherwise:
+    /// one that went meanwhile has gone.
+    pub(crate) fn take_back(&mut self, id: &str) -> bool {
         let Some(row) = self.rows.get_mut(id) else {
             return false;
         };
@@ -777,7 +763,7 @@ mod tests {
         let node = Path::new("/dev/input/event5");
         let (mut book, id) = hidden_by_couch("/dev/input/event5");
         book.release("couch", |_| true);
-        assert!(!book.not_shown(&id), "nothing to publish");
+        assert!(!book.take_back(&id), "nothing to publish");
         assert_eq!(book.left(node), Some(id.clone()), "unplugged");
         assert!(!book.pad(&id).unwrap().connected);
         book.arrived(&dualsense("/dev/input/event5"), None);
@@ -789,22 +775,21 @@ mod tests {
         book.set_hidden(&id, true);
         book.release("couch", |_| true);
         assert_eq!(book.left(node), None);
-        assert!(book.not_shown(&id), "it has gone after all");
+        assert!(book.take_back(&id), "it has gone after all");
         assert!(!book.pad(&id).unwrap().connected);
-        assert!(!book.not_shown(&id) && !book.not_shown("address:nothing"));
+        assert!(!book.take_back(&id) && !book.take_back("address:nothing"));
     }
 
-    /// A pad hidden by re-binding its driver goes and comes back as it
-    /// is hidden, which the setup that hid it lives through: nothing is
-    /// published, the arrival isn't a pad plugged in, and showing it
-    /// again later is expected on its own account, whichever order the
-    /// goings come in.
+    /// A pad expected back before the hiding service is asked to hide it
+    /// goes and comes back as it is hidden, which the setup that hid it
+    /// lives through: nothing is published, the arrival isn't a pad
+    /// plugged in, and showing it again later is expected on its own
+    /// account, whichever order the goings come in.
     #[test]
-    fn a_pad_hidden_by_re_binding_its_driver_never_left() {
+    fn a_pad_expected_back_before_it_is_hidden_never_left() {
         let node = Path::new("/dev/input/event5");
         let (mut book, id) = hidden_by_couch("/dev/input/event5");
-        let arrival = book.arrival(&id).unwrap();
-        assert!(!book.expect_back_since(&id, arrival), "nothing to publish");
+        book.expect(&id);
         assert_eq!(book.left(node), None);
         assert!(book.pad(&id).unwrap().connected);
         book.arrived(&dualsense("/dev/input/event5"), None);
@@ -814,8 +799,7 @@ mod tests {
         // Stopped before the hiding's own going and coming back is seen:
         // that is one, and showing it again is another.
         let (mut book, id) = hidden_by_couch("/dev/input/event5");
-        let arrival = book.arrival(&id).unwrap();
-        book.expect_back_since(&id, arrival);
+        book.expect(&id);
         book.release("couch", |_| true);
         for went in ["as it was hidden", "as it is shown again"] {
             assert_eq!(book.left(node), None, "{went}");
@@ -823,20 +807,48 @@ mod tests {
             assert!(book.was_restored(&id), "{went}");
         }
         assert_eq!(book.left(node), Some(id), "then unplugged");
+
+        // Gone as it was hidden, and let go before it is back.
+        let (mut book, id) = hidden_by_couch("/dev/input/event5");
+        book.expect(&id);
+        assert_eq!(book.left(node), None);
+        book.release("couch", |_| true);
+        for went in ["back from being hidden", "back from being shown again"] {
+            book.arrived(&dualsense("/dev/input/event5"), None);
+            assert!(book.was_restored(&id), "{went}");
+            book.left(node);
+        }
+        assert!(!book.pad(&id).unwrap().connected, "then unplugged");
+        book.expect("address:nothing");
     }
 
-    /// A pad hidden by re-binding its driver went and came back as it
-    /// was hidden, which may not have been seen yet when it is shown
-    /// again: then both goings and comings back are still to come, or
-    /// the second of them, and neither is a pad plugged in.
+    /// What the service did sets right what was expected before it was
+    /// asked: a hide it refused before acting, or that it gave up before
+    /// re-binding, takes the going and coming back away; one given up as
+    /// it re-bound, and the pad shown again, keeps both.
     #[test]
-    fn a_pad_hidden_and_shown_again_at_once_goes_and_comes_back_twice() {
+    fn what_the_service_did_sets_right_what_was_expected() {
         let node = Path::new("/dev/input/event5");
-        // Neither seen yet.
+        // Refused before acting: nothing goes, and an unplugging is told.
         let (mut book, id) = hidden_by_couch("/dev/input/event5");
-        let arrival = book.arrival(&id).unwrap();
-        assert!(!book.expect_back_since(&id, arrival));
-        book.release("couch", |_| true);
+        book.expect(&id);
+        assert!(!book.take_back(&id), "nothing to publish");
+        assert_eq!(book.left(node), Some(id.clone()));
+
+        // Unplugged as it was being hidden: taken for going only to come
+        // back, until the service says it didn't come back.
+        let (mut book, id) = hidden_by_couch("/dev/input/event5");
+        book.expect(&id);
+        assert_eq!(book.left(node), None);
+        assert!(book.take_back(&id), "it has gone after all");
+        assert!(!book.pad(&id).unwrap().connected);
+
+        // A hide given up: the hiding and the showing again are expected
+        // before the service says either, and both come.
+        let (mut book, id) = hidden_by_couch("/dev/input/event5");
+        book.expect(&id);
+        book.expect(&id);
+        book.release("couch", |_| false);
         for _ in 0..2 {
             assert_eq!(book.left(node), None);
             book.arrived(&dualsense("/dev/input/event5"), None);
@@ -844,31 +856,11 @@ mod tests {
         }
         assert_eq!(book.left(node), Some(id.clone()), "then unplugged");
 
-        // Its going seen, and published, but not its coming back.
+        // Given up before anything was re-bound: both taken back.
         let (mut book, id) = hidden_by_couch("/dev/input/event5");
-        let arrival = book.arrival(&id).unwrap();
-        assert_eq!(book.left(node), Some(id.clone()));
-        assert!(book.expect_back_since(&id, arrival), "there after all");
-        assert!(book.pad(&id).unwrap().connected);
-        book.release("couch", |_| true);
-        book.arrived(&dualsense("/dev/input/event5"), None);
-        assert!(book.was_restored(&id), "back from being hidden");
-        assert_eq!(book.left(node), None, "shown again");
-        book.arrived(&dualsense("/dev/input/event5"), None);
-        assert!(book.was_restored(&id));
-        assert_eq!(book.left(node), Some(id.clone()), "then unplugged");
-
-        // Both seen already.
-        let (mut book, id) = hidden_by_couch("/dev/input/event5");
-        let arrival = book.arrival(&id).unwrap();
-        book.left(node);
-        book.arrived(&dualsense("/dev/input/event5"), None);
-        assert!(!book.expect_back_since(&id, arrival));
-        book.release("couch", |_| true);
-        assert_eq!(book.left(node), None);
-        book.arrived(&dualsense("/dev/input/event5"), None);
-        assert!(book.was_restored(&id));
-        assert_eq!(book.left(node), Some(id.clone()));
-        assert!(!book.expect_back_since("address:nothing", 0));
+        book.expect(&id);
+        book.expect(&id);
+        assert!(!book.take_back(&id) && !book.take_back(&id));
+        assert_eq!(book.left(node), Some(id), "unplugged, and told");
     }
 }
