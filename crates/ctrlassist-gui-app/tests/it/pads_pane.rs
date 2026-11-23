@@ -114,8 +114,8 @@ fn rows_put_connected_pads_first_and_say_what_each_is() {
     );
     assert!(dualsense.hidden);
     assert_eq!(dualsense.address, "0a:1b:2c:3d:4e:14");
-    assert_eq!(dualsense.tag, "bd:14");
-    assert_eq!(dualsense.key, "address-0c-27-56-4f-bd-14");
+    assert_eq!(dualsense.tag, "4e:14");
+    assert_eq!(dualsense.key, "address-0a-1b-2c-3d-4e-14");
     // What it is doing, its maker's tile, and whether games see it.
     assert_eq!(
         (dualsense.word.as_str(), dualsense.tone.as_str()),

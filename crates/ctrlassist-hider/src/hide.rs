@@ -236,7 +236,7 @@ mod tests {
             "0a:1b:2c:3d:4e:1",
             "0a:1b:2c:3d:4e:14 ",
             "0a:1b:2c:3d:4e\",R",
-            "0c-27-56-4f-bd-14",
+            "0a-1b-2c-3d-4e-14",
             "../../../etc/passwd",
         ] {
             assert!(!pad::is_address(hostile), "{hostile:?}");

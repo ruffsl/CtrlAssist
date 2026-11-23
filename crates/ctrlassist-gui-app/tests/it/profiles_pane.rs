@@ -174,7 +174,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     // A pad named by its bare address is the pad of that address; the
     // dropdown lists connected pads first, absent ones marked.
     let primary = field(couch, "primary");
-    assert_eq!(primary.value_label, "DualSense · bd:14");
+    assert_eq!(primary.value_label, "DualSense · 4e:14");
     assert!(!primary.read_only);
     let options: Vec<String> = primary
         .options
@@ -184,8 +184,8 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     assert_eq!(
         options,
         [
-            "DualSense · bd:14",
-            "Wireless Controller · 35:da",
+            "DualSense · 4e:14",
+            "Wireless Controller · 5e:da",
             "Xbox pad · FFB17 (not connected)"
         ]
     );
@@ -203,7 +203,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     let rows_gone = profiles::rows(&gone, &BTreeMap::new());
     let primary = field(row(&rows_gone, "couch"), "primary");
     assert!(!primary.read_only);
-    assert_eq!(primary.value_label, "bd:14 (not known)");
+    assert_eq!(primary.value_label, "4e:14 (not known)");
     assert_eq!(primary.status_word, "Not known");
     // What the profile leaves out stands at its default.
     assert_eq!(field(couch, "rumble").value_label, "Both pads");
