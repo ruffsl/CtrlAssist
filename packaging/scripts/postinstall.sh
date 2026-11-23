@@ -1,6 +1,10 @@
 #!/bin/sh
 # Post-installation script for ctrlassist.
 # Loads what the udev rule needs, and enables the units.
+#
+# Runs on an install and on every upgrade: deb and rpm run it for both,
+# and the Arch package runs it as post_upgrade too, since pacman runs
+# post_install only on a first install. Nothing in it depends on which.
 
 set -e
 
@@ -29,3 +33,7 @@ systemctl try-restart ctrlassist-hider.service 2>/dev/null || true
 # `systemctl --user mask ctrlassist-daemon ctrlassist-tray`.
 systemctl --global enable ctrlassist-daemon.service 2>/dev/null || true
 systemctl --global enable ctrlassist-tray.service 2>/dev/null || true
+
+# The settings window's entry in the launcher. Redundant where the package
+# manager's own triggers do this, harmless where they don't.
+update-desktop-database /usr/share/applications 2>/dev/null || true

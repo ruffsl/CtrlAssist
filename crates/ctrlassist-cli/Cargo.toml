@@ -58,13 +58,22 @@ contents = [
 [package.metadata.nfpm.scripts]
 postinstall = "packaging/scripts/postinstall.sh"
 preremove = "packaging/scripts/preremove.sh"
+postremove = "packaging/scripts/postremove.sh"
+
+# pacman runs post_install only on a first install and calls
+# post_upgrade on an upgrade, which nfpm's archlinux packager writes only
+# from these (arch/arch.go, createScripts). deb and rpm run postinstall
+# on both.
+[package.metadata.nfpm.archlinux.scripts]
+postupgrade = "packaging/scripts/postinstall.sh"
 
 # Runtime libraries: libudev for the daemon and the hiding service, and
-# libsystemd for the hiding service's session check. The window loads
-# its own at run time, which no linker lists: fontconfig, OpenGL and EGL,
-# and the Wayland client libraries, as TisVlay's does. Names follow Debian
-# and Ubuntu (deb), Fedora (rpm) and Arch; check them against the target
-# distribution before each release.
+# libsystemd for the hiding service's session check. The window links
+# fontconfig, so the loader needs it before the window's first line runs,
+# and loads the rest at run time, which no linker lists: OpenGL and EGL,
+# the Wayland client libraries, and libxkbcommon, which winit loads even
+# on Wayland. Names follow Debian and Ubuntu (deb), Fedora (rpm) and
+# Arch; check them against the target distribution before each release.
 #
 # These must live under `overrides.<packager>`, mirroring nfpm's own
 # schema: cargo-nfpm's per-format tables have no `depends` field, so keys
@@ -79,6 +88,7 @@ depends = [
     "libegl1",
     "libwayland-client0",
     "libwayland-egl1",
+    "libxkbcommon0",
 ]
 # Weak: the bash-completion loader, so the shipped registration autoloads.
 recommends = ["bash-completion"]
@@ -96,6 +106,7 @@ depends = [
     "mesa-libEGL",
     "libwayland-client",
     "libwayland-egl",
+    "libxkbcommon",
 ]
 recommends = ["bash-completion"]
 suggests = ["gnome-shell-extension-appindicator"]
@@ -109,6 +120,7 @@ depends = [
     "fontconfig",
     "libglvnd",
     "wayland",
+    "libxkbcommon",
 ]
 
 [[bin]]

@@ -75,6 +75,7 @@ Small fixes go straight to a PR. Anything that changes what the daemon and its c
 - [docs/build.md](/docs/build.md): the gates, the lint policy and what CI runs.
 - [docs/testing.md](/docs/testing.md): test layers, the fake pads and the virtual machine checks.
 - [packaging/README.md](/packaging/README.md): the packages, the licenses and releasing.
+- [docs/book/README.md](/docs/book/README.md): the rules for writing the user guide.
 - [docs/ideas/](/docs/ideas/README.md) and [docs/concerns/](/docs/concerns/README.md): deferred work and design concerns, each with an index. Good places to find something to pick up.
 
 ## License

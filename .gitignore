@@ -26,3 +26,7 @@ result
 
 # Worktrees that Claude Code makes for its agents.
 /.claude/worktrees/
+
+# cargo-cyclonedx output: `just sbom` moves the shipped binaries' SBOMs
+# to target/sbom/ and deletes the rest, but an interrupted run leaves them.
+/crates/*/*.cdx.json

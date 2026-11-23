@@ -16,9 +16,10 @@ accepted = [
     "Unlicense",
 ]
 
-# Linux only, so crates for other platforms are left out and the bundle
-# lists what is shipped.
-targets = ["x86_64-unknown-linux-gnu"]
+# The two architectures the packages are built for, Linux only, so crates
+# for other platforms are left out and the one bundle both ship lists what
+# either ships.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 
 # cargo-about's built-in clarifications for crates whose license files it
 # can't read unaided; rustix is in the tree.

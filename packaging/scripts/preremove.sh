@@ -22,5 +22,13 @@ case "$1" in
     # Stopping the service restores whatever it had hidden.
     systemctl stop ctrlassist-hider.socket ctrlassist-hider.service 2>/dev/null || true
     systemctl disable ctrlassist-hider.socket 2>/dev/null || true
+    # Users' running daemons, trays and windows are left alone, as
+    # TisVlay's are: a package script has no safe hold on a live user
+    # manager, and stopping a daemon mid-game would take its virtual pads
+    # from under the game. They keep running from the removed binaries
+    # until each user logs out; postremove has udev and systemd forget
+    # the rest.
+    echo "ctrlassist removed. Each user's daemon and tray keep running until they log out;"
+    echo "to stop yours now: systemctl --user stop ctrlassist-daemon ctrlassist-tray"
     ;;
 esac

@@ -138,8 +138,9 @@
             };
             cargoNfpm = pkgs.callPackage (import "${cargoNfpmSrc}/nix/package.nix") { };
             # What the settings window loads at run time, which a build
-            # doesn't link; the dev shell puts it on LD_LIBRARY_PATH so
-            # `cargo run` and the tests find it.
+            # doesn't link, and fontconfig, which it does (the list says
+            # which); the dev shell puts it on LD_LIBRARY_PATH so `cargo
+            # run` and the tests find it.
             slintRuntimeLibs = pkgs.callPackage ./packaging/nix/slint-runtime.nix { };
           in
           pkgs.mkShell {
@@ -215,6 +216,9 @@
             lldb
             llvmPkgs.bintools-unwrapped
             pkg-config
+            # Pins a newly added action to its commit SHA, with the
+            # release in a comment (docs/build.md § CI).
+            pinact
             prek
             rust
             # actionlint runs it over the workflows' `run:` lines

@@ -60,6 +60,8 @@ docs/
                               # `just docs-gen`
   plans/                      # the plan in flight
   concerns/, ideas/           # one doc per item; each README.md is its index
+  gui/, kde/                  # the settings window's theme and key navigation, and
+                              # what KDE was seen to do when it is launched
 packaging/
   nix/                        # package.nix and module.nix (CtrlAssist as installed on
                               # NixOS), crate.nix (one crate's binaries, for the VM
@@ -77,6 +79,9 @@ packaging/
                               # bundle the packages ship), and NOTICE
 .vscode/tasks.json            # editor tasks that start, stop and restart the dev stack
 .claude/CLAUDE.md             # this file
+.claude/slint.md              # Slint and its MCP server: what was learned building the
+                              # window, TisVlay's notes; read before working on ui/*.slint
+.mcp.json                     # the window's Slint MCP server, which `just gui-start` opens
 ```
 
 The crates still to come, and what each holds, are in the architecture's Crates table.

@@ -1,6 +1,6 @@
 # Installation
 
-CtrlAssist runs on Linux. It installs one command, `ctrlassist`, which is also the daemon and the tray, and a small system service that hides controllers from games.
+CtrlAssist runs on Linux. It installs one command, `ctrlassist`, which is also the daemon and the tray; a settings window, `ctrlassist-gui`; and a small system service that hides controllers from games.
 
 ## NixOS
 
@@ -53,6 +53,7 @@ The packages need glibc 2.34 or newer: Debian 12, Ubuntu 22.04, and any current 
 ## What gets installed
 
 - `ctrlassist`, the command, daemon and tray, and `ctrlassist-hider`, the hiding service.
+- `ctrlassist-gui`, the settings window, with its entry in your desktop's application launcher (**CtrlAssist**) and a session bus file through which the tray's **Settings**, or a second launch, brings the open window to the front.
 - The daemon and the tray as services of your user, enabled for every user and started at login. To opt out: `systemctl --user mask ctrlassist-daemon ctrlassist-tray`.
 - The hiding service as a system service, started the first time it is needed.
 - A udev rule giving the person at the machine access to `/dev/uinput` and `/dev/uhid`, which virtual pads are made through, and a setting that loads those and the system's PlayStation controller driver at boot.
@@ -66,6 +67,16 @@ ctrlassist status
 ```
 
 It should say the daemon is alive and which release it runs. Then `ctrlassist pads` lists the controllers it sees. If either disagrees, see [Troubleshooting](../operations/troubleshooting.md).
+
+## Removing it
+
+On NixOS, set `services.ctrlassist.enable = false` and rebuild. Elsewhere, remove the package with your package manager. A daemon and a tray that are already running may carry on until you log out; to stop yours sooner, which gives back any controllers it hid:
+
+```sh
+systemctl --user stop ctrlassist-daemon ctrlassist-tray
+```
+
+Your profiles and what CtrlAssist remembers of your controllers stay, in `~/.config/ctrlassist` and `~/.local/state/ctrlassist`; delete those to remove them too.
 
 ## GNOME
 

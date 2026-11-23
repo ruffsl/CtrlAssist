@@ -21,7 +21,7 @@ What you pick is kept at once. While the profile runs it also takes effect at on
 - **Identify** on a virtual controller rumbles it as a game would, so the controllers behind it buzz the way its profile passes rumble on: a quick check of who is mapped to it and who feels rumble.
 - **Forget** drops a controller that isn't connected from the list.
 
-The last line says how controllers are being hidden (`service` or `grab`) and whether the daemon got real-time scheduling. [How It Works](../reference/how-it-works.md) explains both.
+The line after it, just above **Settings**, says how controllers are being hidden (`service` or `grab`) and whether the daemon got real-time scheduling. [How It Works](../reference/how-it-works.md) explains both.
 
 **Settings** opens the CtrlAssist window, or brings it to the front if it is open. A left click on the tray's icon does the same.
 

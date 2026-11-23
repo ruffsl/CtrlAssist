@@ -2,7 +2,7 @@
 
 ## What runs with privilege
 
-One piece runs as root: the hiding service, `ctrlassist-hider`. Everything else runs as you.
+One piece runs as root: the hiding service, `ctrlassist-hider`. Everything else runs as you: the daemon, the tray, the settings window and the command.
 
 The hiding service is kept small so it can be read in one sitting, and is closed in on purpose:
 
