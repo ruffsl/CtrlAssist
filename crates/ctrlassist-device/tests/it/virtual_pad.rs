@@ -528,8 +528,17 @@ fn a_dualsense_on_bluetooth_is_sent_whole_output_reports() {
             && sent[2] == 0x10
             && sent[74..] == ctrlassist_test::playstation_crc32(0xa2, &sent[..74]).to_le_bytes()
     };
-    // The driver's own, from binding the pad: the shape to match.
-    let theirs = real.outputs();
+    // The driver's own, from binding the pad: the shape to match. Its
+    // worker may write them after the pad's node is there, and the
+    // stand-in notes them as it reads them.
+    let mut theirs = real.outputs();
+    for _ in 0..400 {
+        if !theirs.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        theirs = real.outputs();
+    }
     assert!(
         !theirs.is_empty(),
         "the driver set the pad's lights as it bound it"
