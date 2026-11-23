@@ -289,7 +289,6 @@ impl Daemon {
             copied,
         );
         reactor.test_pads = paths.test_pads;
-        reactor.flusher = Some(watch.flusher());
         let (steam, state) = (paths.steam.clone(), paths.state.clone());
         let blacklist = tokio::task::spawn_blocking(move || Blacklist::open(steam, &state))
             .await

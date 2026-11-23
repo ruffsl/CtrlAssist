@@ -37,6 +37,20 @@ This holds whoever re-bound the pad and however many times: the service for a hi
 - **Bluetooth.** A pad BlueZ presents through uhid, or through the kernel's HIDP, keeps its HID device through a re-bind as far as the driver model says: unbinding a driver doesn't remove the device. The hiding service leans on the same, and its VM check runs it for USB and uhid. Not seen on a real pad over Bluetooth; among the hardware checks.
 - **Two pads that share a row of the book** (no address, serial or port to tell them apart) were miscounted before; by anchor each node has its own, which should tell them apart. To be confirmed as it is built.
 
+## The anchor, by kind of pad
+
+The device crate reads a node's anchor as the hiding service finds the device it records and re-binds: the nearest HID device above the node, or with none the nearest USB interface, with the `USEC_INITIALIZED` of the nearest USB device at or above it, where there is one. The two must agree: an anchor below the device the service re-binds would go with each re-bind.
+
+- **A HID pad on USB** (a DualSense, a DualShock 4): its HID device, under its USB interface, stamped by its USB device. The HID device's name carries an instance number the kernel never hands out twice, so the stamp only repeats what the place says.
+- **A HID pad over Bluetooth through uhid** (BlueZ): its HID device, under `/sys/devices/virtual/misc/uhid`, with no stamp. BlueZ destroys the uhid device as the pad disconnects, which removes the HID device.
+- **A HID pad over Bluetooth through the kernel's HIDP:** its HID device, under the adapter's connection, stamped by the adapter's USB device where the adapter is on USB; the connection and the HID device go as the pad disconnects.
+- **A USB pad with no HID device** (xpad): its USB interface, whose place is its port's, stamped by its USB device: another pad plugged into that port is another enumeration.
+- **A uinput pad another program made:** no anchor. Nothing re-binds it (the service refuses it, and the daemon grabs it), and its event node is what goes when it does, so its node going is its unplugging, as before.
+- **A pad with several input nodes** (a DualSense's touchpad and motion sensors): the daemon takes in only a pad's joystick nodes, and those of one HID device share its anchor, each node away and back on its own.
+- **A node whose anchor can't be read** (it went as it was read, or its USB device has no stamp yet): its own anchor, as a uinput pad's.
+
+The hotplug watch hears, beside input nodes, the removal of HID devices and USB interfaces, filtered by udev; a removal unplugs every pad anchored at or under the device removed, once. A pad present as the daemon starts has its anchor read with it; one away then has none known, and its return is a pad plugged in, as it would be had it been there a moment earlier.
+
 ## Steps
 
 Each is a branch of its own, verified by the suites that make no pads, by the whole suite while Steam is closed, and by the VM checks.
@@ -49,8 +63,12 @@ Each is a branch of its own, verified by the suites that make no pads, by the wh
 
 ## State
 
-Decided; steps 1 to 3 under way.
+Decided; step 1 done on its branch, for review and merge; steps 2 and 3 under way.
 
 ## Deviations
 
-None yet.
+- **The hiding service's client gained `stop_sending`** in step 1, a half-close beside `hang_up`, where the plan has the client change only in step 4. A pad is busy until the service has really shown it again, and with the connection hung up whole the daemon can't see when that is: stopping sending alone is a hang-up to the service, which closes its end once it has shown the pad, and the daemon reads until then. The wire doesn't change.
+- **A hidden pad not kept is given up by hanging up, not shown by a reading:** one whose new node couldn't be read, one whose taking panicked before its name was kept (the fix of 4M-2, the name held by a guard that gives the pad up as it is dropped, unwinding included), and the name a pad hid under before it came back and was hidden afresh. None has a writer to wait for, and the service shows each again as the connection closes; the pad is busy until it has. So no `Show` is carried back for them, and the reactor isn't involved.
+- **The release is asked on the first connection, and on the first after the service was found gone,** not on every connection: it was asked on each for the counts. A service upgraded while the daemon held no connection to it is published with the release it had until a connection breaks.
+- **A uinput pad has no anchor,** rather than its input device as one: its event node and input device go together, and nothing re-binds it, so its node going is its unplugging, as for a node whose anchor couldn't be read.
+- **A connection hung up to show a pad is read to its end by the pad's next hide,** within that hide's errand, and kept until then or until the daemon stops: one per pad at most, as the next hide of the pad reads it, and none on the service's side once it has closed its end.

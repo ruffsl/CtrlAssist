@@ -8,6 +8,7 @@ use std::io;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::PathBuf;
 
+use crate::anchor::{self, Anchor};
 use crate::pad::Identifiers;
 
 /// A connected pad, before it is opened.
@@ -17,6 +18,8 @@ pub struct Found {
     pub node: PathBuf,
     /// What tells it from others.
     pub identifiers: Identifiers,
+    /// What its node hangs from, where that could be read.
+    pub anchor: Option<Anchor>,
 }
 
 impl Found {
@@ -35,6 +38,10 @@ pub enum Change {
     Arrived(Found),
     /// The pad whose event node this was has gone.
     Left(PathBuf),
+    /// The device at this place in sysfs, which a pad can be
+    /// [anchored](Anchor) to, has gone: after every node under it, udev
+    /// sending a device's removal after its children's.
+    Unplugged(PathBuf),
 }
 
 fn attribute(device: &udev::Device, name: &str) -> Option<String> {
@@ -84,10 +91,12 @@ pub(crate) fn found(device: &udev::Device) -> Option<Found> {
     // A pad that goes while it is being read leaves some of this empty,
     // the `phys` that marks the daemon's own pads included. What was
     // read is a pad only if the pad was still there afterwards.
-    input
-        .syspath()
-        .exists()
-        .then_some(Found { node, identifiers })
+    let anchor = anchor::of(device);
+    input.syspath().exists().then_some(Found {
+        node,
+        identifiers,
+        anchor,
+    })
 }
 
 /// Every pad connected now, the daemon's own virtual pads included; see
@@ -119,6 +128,8 @@ impl std::fmt::Debug for Monitor {
 impl Monitor {
     /// Starts watching. Changes from now on are kept until read, so
     /// calling this before [`connected`] misses nothing between the two.
+    /// Beside input nodes it hears the devices a pad can be anchored to,
+    /// filtered by udev before they are sent.
     ///
     /// # Errors
     ///
@@ -126,6 +137,8 @@ impl Monitor {
     pub fn new() -> io::Result<Self> {
         let socket = udev::MonitorBuilder::new()?
             .match_subsystem("input")?
+            .match_subsystem("hid")?
+            .match_subsystem_devtype("usb", "usb_interface")?
             .listen()?;
         Ok(Self { socket })
     }
@@ -136,6 +149,9 @@ impl Monitor {
         for event in self.socket.iter() {
             let device = event.device();
             match event.event_type() {
+                udev::EventType::Remove if anchor::can_be(&device) => {
+                    change(Change::Unplugged(device.syspath().to_path_buf()));
+                }
                 udev::EventType::Add | udev::EventType::Change => {
                     if let Some(found) = found(&device) {
                         change(Change::Arrived(found));
