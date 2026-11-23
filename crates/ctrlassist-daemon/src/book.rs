@@ -422,7 +422,8 @@ impl Book {
                 format!("{id} is part of the setup {setup}; stop that first"),
             ));
         }
-        if self.node(&id).is_some() {
+        // As it is published: one away is connected.
+        if self.rows.get(&id).is_some_and(Row::connected) {
             return Err(WireError::refusal(
                 ErrorCode::PadConnected,
                 format!("{id} is connected; unplug it to forget it"),
@@ -504,6 +505,14 @@ impl Book {
                 id.clone()
             })
             .collect()
+    }
+
+    /// Whether the pad is away: connected, as it is published, with no
+    /// node there, each of its nodes gone for a re-bind.
+    pub(crate) fn is_away(&self, id: &str) -> bool {
+        self.rows
+            .get(id)
+            .is_some_and(|row| row.nodes.is_empty() && !row.away.is_empty())
     }
 
     /// A node the pad is connected on, if it is.

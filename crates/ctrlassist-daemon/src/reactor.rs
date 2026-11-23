@@ -570,7 +570,10 @@ impl Reactor {
 
     /// The node to buzz for an `identify`, or why not; no node for a pad
     /// a setup holds, which has been buzzed through the input thread.
-    fn buzzable(&self, request: &rpc::IdentifyRequest) -> Result<Option<PathBuf>, WireError> {
+    pub(crate) fn buzzable(
+        &self,
+        request: &rpc::IdentifyRequest,
+    ) -> Result<Option<PathBuf>, WireError> {
         if !(1..=rpc::IDENTIFY_MAX_MS).contains(&request.millis) {
             return Err(WireError::bad_request(format!(
                 "a buzz lasts from 1 to {} ms, not {}",
@@ -596,9 +599,16 @@ impl Reactor {
         }
         let id = self.book.resolve(&request.pad)?;
         // A pad that isn't there is said to be that, before anything it
-        // lacks. One a setup holds is reached through the setup.
+        // lacks: one away is there in a moment, as its driver is
+        // re-bound. One a setup holds is reached through the setup.
         let node = match self.book.user(id) {
             Some(_) => None,
+            None if self.book.is_away(id) => {
+                return Err(WireError::refusal(
+                    ErrorCode::PadRefused,
+                    format!("{id} is away for a moment, its driver being re-bound; try again"),
+                ));
+            }
             None => Some(self.book.node(id).ok_or_else(|| {
                 WireError::refusal(ErrorCode::PadDisconnected, format!("{id} isn't connected"))
             })?),

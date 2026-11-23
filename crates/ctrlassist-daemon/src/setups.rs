@@ -4021,6 +4021,28 @@ mod tests {
         unplugged(&mut rig, node).await;
     }
 
+    /// A pad away for a re-bind is published as connected, so it can't
+    /// be forgotten, and `identify` says it is away rather than that it
+    /// isn't connected.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_away_is_neither_forgotten_nor_said_to_be_disconnected() {
+        let mut rig = rig().await;
+        let [_, node] = managed_with_both_pads(&mut rig);
+        let anchor = anchor_of(PRIMARY).path;
+        let present = Vec::new();
+        rig.reactor.saw(Seen::Rebinding { anchor, present }).await;
+        rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
+        let refused = rig.reactor.book.forget(PRIMARY).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::PadConnected);
+        let request = rpc::IdentifyRequest {
+            pad: PRIMARY.to_string(),
+            millis: 100,
+        };
+        let refused = rig.reactor.buzzable(&request).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::PadRefused);
+        assert!(refused.message.contains("away"), "{}", refused.message);
+    }
+
     /// A pad with two joystick nodes on one anchor, re-bound at the
     /// hiding service's request: each node is away and back on its own,
     /// so the second back is no pad plugged in either, and a profile that
