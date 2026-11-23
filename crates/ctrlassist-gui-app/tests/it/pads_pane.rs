@@ -130,10 +130,7 @@ fn rows_put_connected_pads_first_and_say_what_each_is() {
         .collect();
     assert_eq!(
         named,
-        [
-            "desk Pad Waits for a pad neutral",
-            "quick Primary Running success"
-        ]
+        ["desk Pad Waiting neutral", "quick Primary Running success"]
     );
     let free = &made[2];
     assert_eq!((free.word.as_str(), free.tone.as_str()), ("Free", "info"));

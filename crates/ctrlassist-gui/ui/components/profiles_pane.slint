@@ -329,9 +329,8 @@ component FieldRow inherits Rectangle {
                         Profiles.set-field(root.profile, root.field.key, root.field.option-values[i]);
                     }
                 }
-                // A pad the form can't offer, such as any pad of a
-                // model: it is named as the file names it, and changed
-                // there.
+                // A kind of field this window doesn't know: shown as
+                // the file has it, and changed there.
                 if root.field.read-only: VerticalLayout {
                     horizontal-stretch: 1;
                     alignment: center;
@@ -479,8 +478,10 @@ component ProfileDetailHeader inherits Rectangle {
             HorizontalLayout {
                 spacing: Design.gap-form;
                 alignment: start;
+                // The name alone: the default profile's mark is its
+                // row's in the list, and here it left the name cut short.
                 Text {
-                    text: root.profile.is-default ? root.profile.name + "\u{00A0}\u{2713}" : root.profile.name;
+                    text: root.profile.name;
                     color: Theme.text;
                     font-size: Design.font-title-3;
                     font-weight: 700;

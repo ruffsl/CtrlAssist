@@ -44,7 +44,7 @@ pub fn of(name: &str, plan: Option<&Plan>, setups: &[Setup], pads: &[Pad]) -> Wo
     if plan.sources.iter().all(|source| free(&source.pad)) {
         ("Ready", "info")
     } else {
-        ("Waits for a pad", "neutral")
+        ("Waiting", "neutral")
     }
 }
 

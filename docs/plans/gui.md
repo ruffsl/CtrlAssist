@@ -279,6 +279,8 @@ Found while building it, for review:
 - **Not exercised in the recording, and unchanged:** failed, pads only grabbed, no rumble, and the refusals.
 - **Checked on the real thing:** the daemon VM check, where the real hiding service re-binds a driver of the kernel's, asserts that nothing says a pad disconnected after a stop and that the pad reads as connected; it passes.
 
+**A pad a profile names that the daemon doesn't know** (found by the maintainer, 2026-11-22, with pads that had been forgotten). The window showed such a pad as text, with no dropdown, so there was no picking another: the same for any pad of a model. It is a dropdown as any other, reading "bd:14 (not known)" or "Any pad of model 054c:09cc". The header's name lost its check mark, which is its row's in the list: with it "default" was cut to "defa…". And a profile whose pads aren't there reads "Waiting", where it read "Waits for a pad": the chip was the header's widest and left the name no room.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps

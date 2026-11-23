@@ -174,10 +174,22 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
             "Xbox pad · FFB17 (not connected)"
         ]
     );
-    // Any pad of a model is shown, not picked.
+    // Any pad of a model is said as that, and another can be picked.
     let assist = field(couch, "assist");
-    assert!(assist.read_only);
+    assert!(!assist.read_only);
     assert_eq!(assist.value, "model:054c:09cc");
+    assert_eq!(assist.value_label, "Any pad of model 054c:09cc");
+    assert_eq!(assist.options.row_count(), 3);
+    // So can one in place of a pad the daemon doesn't know, as one
+    // that was forgotten.
+    let mut gone = known();
+    gone.pads
+        .retain(|pad| pad.id != "address:0c:27:56:4f:bd:14");
+    let rows_gone = profiles::rows(&gone, &BTreeMap::new());
+    let primary = field(row(&rows_gone, "couch"), "primary");
+    assert!(!primary.read_only);
+    assert_eq!(primary.value_label, "bd:14 (not known)");
+    assert_eq!(primary.status_word, "Not known");
     // What the profile leaves out stands at its default.
     assert_eq!(field(couch, "rumble").value_label, "Both pads");
     // Whether it is managed is the row's own, not a field of the form.
@@ -258,7 +270,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     };
     assert_eq!(said("quick"), "Running success");
     assert_eq!(said("broken"), "Wrong danger");
-    assert_eq!(said("couch"), "Waits for a pad neutral");
+    assert_eq!(said("couch"), "Waiting neutral");
     assert!(row(&rows, "couch").can_start && !row(&rows, "broken").can_start);
     assert_eq!(row(&rows, "couch").shape, "merge");
     // A field that has a default says whether it stands at it.
@@ -314,7 +326,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     // Written by hand: a shape for its tile and how it is, and nothing
     // of its text.
     assert_eq!(attic.shape, "merge", "it names more than one pad");
-    assert_eq!(attic.word, "Waits for a pad");
+    assert_eq!(attic.word, "Waiting");
     // What it names is listed, each pad with its connection.
     assert_eq!(attic.uses.row_count(), 3);
     assert!(attic.uses.iter().all(|used| !used.word.is_empty()));

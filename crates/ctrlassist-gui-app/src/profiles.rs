@@ -130,8 +130,19 @@ fn field_row(field: &Field, value: &str, pads: &[Pad], profile: &str) -> Profile
                     row.value_label = SharedString::from(pad_label(pad));
                     row.pad = SharedString::from(pad.id.as_str());
                 }
-                // Any pad of a model, or one the daemon has never seen.
-                None => row.read_only = !value.is_empty(),
+                // Any pad of a model, or one the daemon doesn't know,
+                // as one forgotten: said as what it is, and still a
+                // dropdown, so that another can be picked in its place.
+                None if !value.is_empty() => {
+                    let label = match ctrlassist_protocol::profile::PadRef::parse(value) {
+                        Some(ctrlassist_protocol::profile::PadRef::Model(vendor, product)) => {
+                            format!("Any pad of model {vendor:04x}:{product:04x}")
+                        }
+                        _ => format!("{} (not known)", crate::pads::tag_of(value)),
+                    };
+                    row.value_label = SharedString::from(label);
+                }
+                None => {}
             }
             // Nothing picked has nothing to say of. Any pad of a model
             // is spoken for by a pad of that model, if one is known.
@@ -440,7 +451,7 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                         || plan.as_ref().is_some_and(|plan| plan.managed),
                         |value| value == "true",
                     ),
-                can_start: setup.is_none() && matches!(word, "Ready" | "Waits for a pad"),
+                can_start: setup.is_none() && matches!(word, "Ready" | "Waiting"),
                 setup_index: running
                     .iter()
                     .position(|running| *running == name)
