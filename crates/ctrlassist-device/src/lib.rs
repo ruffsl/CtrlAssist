@@ -6,11 +6,23 @@
 //! uinput, or through uhid where it must pass as a pad games read raw,
 //! and written the same level-based way pads are read.
 
+// The input thread catches a panic in one setup's handling and takes
+// that setup down alone; aborting instead would end the daemon and every
+// virtual pad with it. Cargo builds tests to unwind whatever a profile
+// says, so no test can show what a shipped build does: this refuses to
+// build one that aborts.
+#[cfg(panic = "abort")]
+compile_error!(
+    "ctrlassist-device must be built to unwind on panic: the input thread keeps one setup's panic from taking the others down"
+);
+
 mod database;
+mod descriptor;
 mod dualsense;
 mod hidraw;
 mod hotplug;
 mod layout;
+mod output;
 mod pad;
 mod realtime;
 mod sink;

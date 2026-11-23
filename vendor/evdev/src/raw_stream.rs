@@ -252,7 +252,10 @@ impl RawDevice {
             supported_snd,
             auto_repeat,
             max_ff_effects,
-            event_buf: Vec::new(),
+            // Room for a batch and for a frame left over from the one
+            // before, so that reading a device whose frames are no
+            // longer than a batch never allocates.
+            event_buf: Vec::with_capacity(2 * crate::EVENT_BATCH_SIZE),
             grabbed: false,
         })
     }
@@ -683,9 +686,12 @@ impl RawDevice {
         let mut effect: sys::ff_effect = data.into();
         effect.id = -1;
 
+        // Before the upload, so that a failed dup leaves no effect on
+        // the device that nothing will erase.
+        let fd = self.fd.try_clone()?;
+
         unsafe { sys::eviocsff(self.fd.as_raw_fd(), &effect)? };
 
-        let fd = self.fd.try_clone()?;
         let id = effect.id as u16;
 
         Ok(FFEffect { fd, id })
