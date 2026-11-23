@@ -940,11 +940,13 @@ fn make(
         taken.push((pad.is_some(), token.flatten()));
         pads.push(pad);
     }
-    if asking.1.has_ended() {
-        return Err(stopped(&taken));
-    }
     let mut sinks = Vec::new();
     for sink in &plan.sinks {
+        // Nor does one stopped as it makes its virtual pads, each of which
+        // can wait on the kernel: what it made is dropped here.
+        if asking.1.has_ended() {
+            return Err(stopped(&taken));
+        }
         let made = caught(
             "making a virtual pad",
             || make_sink(setup, &sink.name, sink.identity, dualsense),
@@ -967,6 +969,9 @@ fn make(
                 });
             }
         }
+    }
+    if asking.1.has_ended() {
+        return Err(stopped(&taken));
     }
     // A pad that is only grabbed is still Steam's to read some other
     // way, so Steam is told to leave its model alone, unless a virtual

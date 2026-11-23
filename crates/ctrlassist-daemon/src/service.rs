@@ -43,10 +43,19 @@ pub fn main(args: Args) -> Result<()> {
     // Before the runtime: the input thread shares nothing with it but
     // its queues, and asks for real-time scheduling for itself alone.
     let (input, reports) = Daemon::input_thread().context("starting the input thread")?;
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(run(args, input, reports))
+        .build()?;
+    let ran = runtime.block_on(run(args, input, reports));
+    // The daemon has stopped, and waits on nothing it let go: work still
+    // out, as a virtual DualSense whose driver never answers or a request
+    // to a hiding service that never does, is left to the process's end
+    // rather than waited for, as dropping the runtime would. None of it
+    // writes anything after this that is left torn: Steam's blacklist
+    // takes no change once cleared, and every file the daemon keeps is
+    // written whole beside the old and renamed over it.
+    runtime.shutdown_background();
+    ran
 }
 
 async fn run(args: Args, input: InputThread, reports: Reports) -> Result<()> {

@@ -117,6 +117,9 @@ pub(crate) struct Blacklist {
     /// The entries the daemon added to each file, and so may remove from
     /// it: an entry may be the user's own in one file and not another.
     added: BTreeMap<PathBuf, BTreeSet<String>>,
+    /// Whether it has been [cleared](Self::clear), as the daemon stops:
+    /// work let go that still runs changes nothing after.
+    cleared: bool,
 }
 
 impl Blacklist {
@@ -135,6 +138,7 @@ impl Blacklist {
             record,
             wanted: BTreeMap::new(),
             added: left,
+            cleared: false,
         };
         if !blacklist.added.is_empty() {
             info!(entries = ?blacklist.added, "entries an earlier daemon left in Steam's controller blacklist are taken out");
@@ -150,6 +154,7 @@ impl Blacklist {
             record: PathBuf::new(),
             wanted: BTreeMap::new(),
             added: BTreeMap::new(),
+            cleared: false,
         }
     }
 
@@ -163,8 +168,12 @@ impl Blacklist {
     }
 
     /// Sets which models `setup` wants Steam to leave alone; none when
-    /// it has stopped.
+    /// it has stopped. Once cleared, as the daemon stops, nothing is set:
+    /// a setup's work let go that ends later leaves Steam as it was left.
     pub(crate) fn set(&mut self, setup: &str, models: BTreeSet<String>) {
+        if self.cleared {
+            return;
+        }
         if models.is_empty() {
             if self.wanted.remove(setup).is_none() {
                 return;
@@ -175,8 +184,10 @@ impl Blacklist {
         self.apply();
     }
 
-    /// Takes out everything the daemon added, as it stops.
+    /// Takes out everything the daemon added, as it stops, and takes no
+    /// change from then on.
     pub(crate) fn clear(&mut self) {
+        self.cleared = true;
         self.wanted.clear();
         self.apply();
     }
@@ -335,6 +346,10 @@ mod tests {
         assert_eq!(list(&config), "28de/1142");
         blacklist.set("couch", set(&["054c/0ce6"]));
         blacklist.clear();
+        assert_eq!(list(&config), "28de/1142");
+        // Cleared as the daemon stops: work let go that ends after it
+        // changes nothing.
+        blacklist.set("desk", set(&["045e/02dd"]));
         assert_eq!(list(&config), "28de/1142");
     }
 
