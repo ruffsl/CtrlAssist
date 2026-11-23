@@ -317,7 +317,10 @@ async fn without_the_hiding_service_a_setup_s_pads_are_grabbed() {
     std::fs::write(&steam, listing("28de/1142,1209/dead")).unwrap();
     let state = socket.with_file_name("state");
     std::fs::create_dir_all(&state).unwrap();
-    let left = "schema = 1\nadded = [\"1209/dead\"]\n";
+    let left = format!(
+        "schema = 1\n[added]\n\"{}\" = [\"1209/dead\"]\n",
+        steam.display()
+    );
     std::fs::write(state.join("steam-blacklist.toml"), left).unwrap();
     let daemon = start_daemon(&socket).await;
     assert_eq!(
