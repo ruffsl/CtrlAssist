@@ -373,6 +373,49 @@ fn what_is_wrong_with_a_profile_is_said_with_where() {
     );
 }
 
+/// A profile of thousands of virtual pads fits in a file the daemon
+/// takes; it is refused, saying how many, before anything is made.
+#[test]
+fn a_profile_has_at_most_32_pads_64_nodes_and_32_virtual_pads() {
+    let sources = |count: usize| -> String {
+        (0..count)
+            .map(|at| format!("[source.p{at}]\npad = \"model:0001:{:04x}\"\n", at + 1))
+            .collect()
+    };
+    let sinks = |count: usize| -> String {
+        (0..count)
+            .map(|at| format!("[sink.v{at}]\ninput = \"p0\"\n"))
+            .collect()
+    };
+    let nodes = |count: usize| -> String {
+        (0..count)
+            .map(|at| format!("[node.n{at}]\nmux = \"priority\"\ninputs = [\"p0\"]\n"))
+            .collect()
+    };
+    plan(&format!("{}{}{}", sources(32), nodes(64), sinks(32))).unwrap();
+    for (text, at, said) in [
+        (
+            format!("{}{}", sources(33), sinks(1)),
+            "source",
+            "at most 32 pads, and this one has 33",
+        ),
+        (
+            format!("{}{}{}", sources(1), nodes(65), sinks(1)),
+            "node",
+            "at most 64 nodes",
+        ),
+        (
+            format!("{}{}", sources(1), sinks(2500)),
+            "sink",
+            "at most 32 virtual pads, and this one has 2500",
+        ),
+    ] {
+        let (where_, problem) = refusal(&text);
+        assert_eq!(where_, at, "{problem}");
+        assert!(problem.contains(said), "{problem}");
+    }
+}
+
 #[test]
 fn the_two_forms_do_not_mix_and_each_preset_has_its_own_keys() {
     let said = |text: &str, want_at: &str, want: &str| {

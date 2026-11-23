@@ -6,8 +6,9 @@
 use ctrlassist_core::gamepad::*;
 use ctrlassist_core::{
     Control, DemuxConfig, DemuxFeedback, DemuxMode, EFFECTS, Effect, EffectKey, FeedbackError,
-    Graph, GraphError, GraphSpec, Input, Kind, Layout, Level, Mode, MuxConfig, MuxFeedback, NodeId,
-    NodeSpec, PadState, Router, SinkId, SourceId, SourceSet, SourceSpec, Switch,
+    Graph, GraphError, GraphSpec, Input, Kind, Layout, Level, MAX_NODES, MAX_SINKS, Mode,
+    MuxConfig, MuxFeedback, NodeId, NodeSpec, PadState, Router, SinkId, SourceId, SourceSet,
+    SourceSpec, Switch,
 };
 
 const PRIMARY: SourceId = SourceId(0);
@@ -1191,6 +1192,27 @@ fn a_graph_has_limits_on_its_size() {
         Some(GraphError::BadArity),
         "a graph takes at most 32 pads"
     );
+    // At most 64 nodes and 32 virtual pads, and exactly that many build.
+    let chain = |nodes: usize, sinks: usize| {
+        Graph::build(GraphSpec {
+            sources: vec![source()],
+            nodes: (0..nodes)
+                .map(|at| NodeSpec::Mux {
+                    inputs: vec![if at == 0 {
+                        Input::Source(SourceId(0))
+                    } else {
+                        Input::Node(NodeId(at - 1), 0)
+                    }],
+                    config: MuxConfig::new(Mode::Priority, &layout),
+                })
+                .collect(),
+            sinks: vec![Input::Source(SourceId(0)); sinks],
+        })
+    };
+    assert_eq!((MAX_NODES, MAX_SINKS), (64, 32));
+    assert!(chain(MAX_NODES, MAX_SINKS).is_ok());
+    assert_eq!(chain(MAX_NODES + 1, 1).err(), Some(GraphError::BadArity));
+    assert_eq!(chain(1, MAX_SINKS + 1).err(), Some(GraphError::BadArity));
     let none = Graph::build(GraphSpec {
         sources: vec![source()],
         nodes: vec![NodeSpec::Demux {

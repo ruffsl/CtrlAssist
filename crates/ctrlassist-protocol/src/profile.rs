@@ -12,8 +12,9 @@
 use std::collections::BTreeMap;
 
 use ctrlassist_core::{
-    Control, DemuxConfig, DemuxFeedback, DemuxMode, Graph, GraphSpec, Input, Kind, Layout, Mode,
-    MuxConfig, MuxFeedback, NodeId, NodeSpec, Rule, SourceId, SourceSpec, Switch, gamepad,
+    Control, DemuxConfig, DemuxFeedback, DemuxMode, Graph, GraphSpec, Input, Kind, Layout,
+    MAX_NODES, MAX_SINKS, MAX_SOURCES, Mode, MuxConfig, MuxFeedback, NodeId, NodeSpec, Rule,
+    SourceId, SourceSpec, Switch, gamepad,
 };
 use serde::{Deserialize, Serialize};
 
@@ -679,6 +680,18 @@ impl Profile {
     pub fn plan(&self) -> Result<Plan, ProfileError> {
         let full = self.clone().expanded()?;
         let layout = Layout::gamepad();
+        for (at, count, most, what) in [
+            ("source", full.source.len(), MAX_SOURCES, "pads"),
+            ("node", full.node.len(), MAX_NODES, "nodes"),
+            ("sink", full.sink.len(), MAX_SINKS, "virtual pads"),
+        ] {
+            if count > most {
+                return error(
+                    at,
+                    format!("a profile has at most {most} {what}, and this one has {count}"),
+                );
+            }
+        }
 
         let mut sources = Vec::new();
         let mut specs = Vec::new();

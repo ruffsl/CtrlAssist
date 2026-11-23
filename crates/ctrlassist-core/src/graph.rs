@@ -5,10 +5,19 @@ use crate::demux::{Demux, DemuxConfig};
 use crate::ids::{NodeId, SinkId, SourceId, SourceSet};
 use crate::mux::{Mux, MuxConfig};
 
-/// The most inputs one node may have.
-const MAX_INPUTS: usize = 8;
+/// The most inputs one mux may have.
+pub const MAX_INPUTS: usize = 8;
 /// The most pads one graph may have: feedback targets are a 32-bit mask.
-const MAX_SOURCES: usize = SourceSet::CAPACITY;
+pub const MAX_SOURCES: usize = SourceSet::CAPACITY;
+/// The most nodes one graph may have: two for each pad it may have, a
+/// demux to share it out and a mux to merge it in, which is more than
+/// any arrangement of people at one machine needs. The input thread
+/// steps every node on every report, so the cap bounds that work.
+pub const MAX_NODES: usize = 2 * MAX_SOURCES;
+/// The most virtual pads one graph may have: as many as pads. Each is a
+/// device the kernel and every program reading pads take on, and the
+/// kernel has only so many input device numbers for the whole machine.
+pub const MAX_SINKS: usize = MAX_SOURCES;
 
 /// Where a node or sink takes its state from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -60,7 +69,8 @@ pub enum GraphError {
     Cycle,
     /// An input names a source, node or output that doesn't exist.
     BadReference,
-    /// Too many sources, or a node with no inputs or outputs or too many.
+    /// Too many sources, nodes or sinks, or a node with no inputs or
+    /// outputs or too many.
     BadArity,
     /// A control beyond a pad state's capacity, or a switch that isn't a
     /// button on one of the node's inputs.
@@ -75,7 +85,9 @@ impl std::fmt::Display for GraphError {
         f.write_str(match self {
             Self::Cycle => "a node depends on its own output",
             Self::BadReference => "an input names a source, node or output that doesn't exist",
-            Self::BadArity => "too many sources, or a node has no or too many inputs or outputs",
+            Self::BadArity => {
+                "too many sources, nodes or sinks, or a node has no or too many inputs or outputs"
+            }
             Self::BadControl => {
                 "a control is out of range, or a switch is not a button on one of its node's inputs"
             }
@@ -164,6 +176,14 @@ impl Graph {
     /// Returns why the spec can't run. Everything a step relies on is
     /// checked here, so that no spec this accepts can make a step panic.
     pub fn build(spec: GraphSpec) -> Result<Self, GraphError> {
+        // Before anything is walked or copied, so a spec of any size is
+        // refused at the cost of reading three lengths.
+        if spec.sources.len() > MAX_SOURCES
+            || spec.nodes.len() > MAX_NODES
+            || spec.sinks.len() > MAX_SINKS
+        {
+            return Err(GraphError::BadArity);
+        }
         let output_counts: Vec<usize> = spec
             .nodes
             .iter()
@@ -190,10 +210,9 @@ impl Graph {
         if !inputs.iter().flatten().chain(&spec.sinks).all(valid) {
             return Err(GraphError::BadReference);
         }
-        if spec.sources.len() > MAX_SOURCES
-            || inputs
-                .iter()
-                .any(|inputs| inputs.is_empty() || inputs.len() > MAX_INPUTS)
+        if inputs
+            .iter()
+            .any(|inputs| inputs.is_empty() || inputs.len() > MAX_INPUTS)
         {
             return Err(GraphError::BadArity);
         }
