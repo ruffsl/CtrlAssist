@@ -273,12 +273,12 @@ pkgs.testers.runNixOSTest {
         assert not pads[HID]["hidden"] and pads[HID].get("setup") is None, pads[HID]
         # Shown again, the pad with a driver went and came back as the
         # driver was re-bound. It never left, as far as anyone is told:
-        # it comes back, and nothing says it went.
+        # it comes back, and nothing says it went, nor that it connected.
         machine.wait_until_succeeds(
-            "journalctl _SYSTEMD_USER_UNIT=ctrlassist-daemon.service -o cat | tac | sed '/a setup stopped/q' | grep -q 'a pad connected'"
+            "journalctl _SYSTEMD_USER_UNIT=ctrlassist-daemon.service -o cat | tac | sed '/a setup stopped/q' | grep -q 'a pad is back from a re-bind of its driver'"
         )
         since_stop = daemon_journal().split("a setup stopped")[-1]
-        assert "a pad disconnected" not in since_stop, since_stop
+        assert "a pad disconnected" not in since_stop and "a pad connected" not in since_stop, since_stop
         assert known()[HID]["connected"] and known()[PLAIN]["connected"], known()
 
     with subtest("udev sends a re-bind the service asks on before the removals it causes, as the daemon hears them"):

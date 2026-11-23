@@ -471,12 +471,25 @@ impl Reactor {
         }
         self.copy_from(&found);
         let changed = self.book.arrived(&found);
-        if let Some(pad) = changed.last() {
-            info!(
+        // The last is the pad that connected, if one did. One back on the
+        // anchor it was away from, as from the hiding service hiding it or
+        // showing it again, came back by itself: nobody plugged it in, and
+        // to its clients it never left.
+        let restored = changed
+            .last()
+            .is_some_and(|pad| self.book.was_restored(&pad.id));
+        match changed.last() {
+            Some(pad) if restored => info!(
+                pad = pad.id,
+                name = found.identifiers.name,
+                "a pad is back from a re-bind of its driver"
+            ),
+            Some(pad) => info!(
                 pad = pad.id,
                 name = found.identifiers.name,
                 "a pad connected"
-            );
+            ),
+            None => {}
         }
         if changed.iter().any(|changed| changed.remembered) {
             self.save().await;
@@ -484,13 +497,9 @@ impl Reactor {
         for changed in &changed {
             self.publish_pad_logged(&changed.id).await;
         }
-        // The last is the pad that connected, if one did.
         if let Some(Changed { id, .. }) = changed.last() {
-            // A pad back on the anchor it was away from, as from the
-            // hiding service showing it again, came back by itself:
-            // nobody plugged it in, so it prompts nothing. A setup stopped
-            // by hand would otherwise start again at once.
-            let restored = self.book.was_restored(id);
+            // One back from a re-bind prompts nothing: a setup stopped by
+            // hand would otherwise start again at once.
             self.pad_arrived(id).await;
             if !restored {
                 // A profile that was waiting for this pad may start now.
