@@ -9,6 +9,13 @@
 //! closes, for any reason, the service restores everything that
 //! connection hid.
 //!
+//! A re-bind makes the pad go and come back, which a caller that keeps a
+//! book of pads must not take for the pad unplugged and plugged in again.
+//! So each reply says how many times the service re-bound the pad in
+//! serving it; and a hide can be given up with [`Client::cancel`] rather
+//! than by hanging up, which leaves the pad as it was and has the service
+//! say what that took, where a hang-up would leave the caller not knowing.
+//!
 //! A pad is named by a descriptor the caller already holds, never by a
 //! path or a name, so the service grants nothing the caller couldn't
 //! already read.
@@ -24,6 +31,8 @@ use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
+use rustix::event::{PollFd, PollFlags, poll};
+use rustix::io::Errno;
 use rustix::net::{
     AddressFamily, Shutdown, SocketAddrUnix, SocketFlags, SocketType, connect, shutdown,
     socket_with,
@@ -74,8 +83,8 @@ impl From<io::Error> for Error {
     }
 }
 
-impl From<rustix::io::Errno> for Error {
-    fn from(error: rustix::io::Errno) -> Self {
+impl From<Errno> for Error {
+    fn from(error: Errno) -> Self {
         Self::Io(error.into())
     }
 }
@@ -93,6 +102,17 @@ pub struct Hidden {
     /// been; a service from before that said false for such a pad, which
     /// stayed readable by programs that already had it open.
     pub dislodged: bool,
+}
+
+/// What a hide came to, as the service said.
+#[derive(Debug)]
+pub struct Hid {
+    /// The pad hidden, or why it wasn't.
+    pub outcome: Result<Hidden, Refusal>,
+    /// How many times the service re-bound the pad in serving the hide,
+    /// each a going and a coming back: none from a service that doesn't
+    /// count, which re-bound it once if it hid it.
+    pub rebinds: Option<u8>,
 }
 
 /// A connection to the hiding service.
@@ -135,22 +155,33 @@ impl Client {
         let _ = shutdown(&self.socket, Shutdown::Both);
     }
 
-    fn ask(
-        &self,
-        request: Request,
-        pad: Option<BorrowedFd<'_>>,
-    ) -> Result<(Reply, Vec<OwnedFd>), Error> {
+    fn send(&self, request: Request, pad: Option<BorrowedFd<'_>>) -> Result<(), Error> {
         let fds: &[BorrowedFd<'_>] = match &pad {
             Some(pad) => std::slice::from_ref(pad),
             None => &[],
         };
         send(self.socket.as_fd(), &request.encode(), fds)?;
+        Ok(())
+    }
+
+    /// The next reply, refusals included.
+    fn reply(&self) -> Result<(Reply, Vec<OwnedFd>), Error> {
         let mut buffer = [0u8; Reply::SIZE];
         let (length, fds) = receive(self.socket.as_fd(), &mut buffer)?;
         let reply = buffer
             .get(..length)
             .and_then(Reply::decode)
             .ok_or(Error::Protocol)?;
+        Ok((reply, fds))
+    }
+
+    fn ask(
+        &self,
+        request: Request,
+        pad: Option<BorrowedFd<'_>>,
+    ) -> Result<(Reply, Vec<OwnedFd>), Error> {
+        self.send(request, pad)?;
+        let (reply, fds) = self.reply()?;
         match reply.refusal {
             Some(refusal) => Err(Error::Refused(refusal)),
             None => Ok((reply, fds)),
@@ -164,8 +195,19 @@ impl Client {
     /// Fails if the service refuses, as one from before it could be
     /// asked does, or the connection breaks.
     pub fn version(&self) -> Result<String, Error> {
+        self.release().map(|(release, _)| release)
+    }
+
+    /// The service's release, as [`version`](Self::version) says it, and
+    /// whether the service counts the re-binds it makes and takes
+    /// [`cancel`](Self::cancel).
+    ///
+    /// # Errors
+    ///
+    /// As [`version`](Self::version).
+    pub fn release(&self) -> Result<(String, bool), Error> {
         let (reply, _) = self.ask(Request::Version, None)?;
-        Ok(wire::unpack_release(reply.token.0))
+        Ok((wire::unpack_release(reply.token.0), reply.rebinds.is_some()))
     }
 
     fn hidden(reply: Reply, fds: Vec<OwnedFd>) -> Result<Hidden, Error> {
@@ -185,8 +227,91 @@ impl Client {
     /// the machine, the descriptor isn't a pad's, or another user has the
     /// pad hidden) or the connection breaks.
     pub fn hide(&self, pad: BorrowedFd<'_>) -> Result<Hidden, Error> {
-        let (reply, fds) = self.ask(Request::Hide, Some(pad))?;
-        Self::hidden(reply, fds)
+        self.send_hide(pad)?;
+        self.hid()?.outcome.map_err(Error::Refused)
+    }
+
+    /// Asks the service to hide the pad whose event node `pad` is open
+    /// on, and returns without waiting for the reply: [`wait`](Self::wait)
+    /// waits for it and [`hid`](Self::hid) reads it, or
+    /// [`cancel`](Self::cancel) gives the hide up meanwhile.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the connection breaks.
+    pub fn send_hide(&self, pad: BorrowedFd<'_>) -> Result<(), Error> {
+        self.send(Request::Hide, Some(pad))
+    }
+
+    /// Waits until a reply has come, the connection is hung up, or
+    /// `wake`, if given, is readable: whichever is first.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the two can't be waited on.
+    pub fn wait(&self, wake: Option<BorrowedFd<'_>>) -> Result<(), Error> {
+        let mut fds = vec![PollFd::new(&self.socket, PollFlags::IN)];
+        if let Some(wake) = wake {
+            fds.push(PollFd::from_borrowed_fd(wake, PollFlags::IN));
+        }
+        loop {
+            match poll(&mut fds, None) {
+                Ok(_) => return Ok(()),
+                Err(Errno::INTR) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    /// The reply to a hide sent with [`send_hide`](Self::send_hide):
+    /// whether the pad was hidden, and how many times the service
+    /// re-bound it, a refusal included.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the connection breaks, or the reply makes no sense.
+    pub fn hid(&self) -> Result<Hid, Error> {
+        let (reply, fds) = self.reply()?;
+        let outcome = match reply.refusal {
+            Some(refusal) => Err(refusal),
+            None => Ok(Self::hidden(reply, fds)?),
+        };
+        Ok(Hid {
+            outcome,
+            rebinds: reply.rebinds,
+        })
+    }
+
+    /// Gives up the hide sent last, leaving the pad as it was: one still
+    /// being done is ended and undone, and one done is undone. Doesn't
+    /// wait: [`cancelled`](Self::cancelled) reads what it came to. Only
+    /// for a service that says, in its [`release`](Self::release), that
+    /// it takes this.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the connection breaks.
+    pub fn cancel(&self) -> Result<(), Error> {
+        self.send(Request::Cancel, None)
+    }
+
+    /// After [`cancel`](Self::cancel): reads the hide's reply and the
+    /// cancel's, and says how many times the service re-bound the pad for
+    /// the two together, which is how many times the pad goes and comes
+    /// back for them.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the connection breaks before both replies have come, or
+    /// one doesn't count.
+    pub fn cancelled(&self) -> Result<u8, Error> {
+        let mut rebinds = 0;
+        // The hide's reply, whatever it was, and then the cancel's.
+        for _ in 0..2 {
+            let (reply, _) = self.reply()?;
+            rebinds += reply.rebinds.ok_or(Error::Protocol)?;
+        }
+        Ok(rebinds)
     }
 
     /// Opens a hidden pad again after it has reconnected. The pad was
@@ -227,12 +352,14 @@ impl Client {
         fds.into_iter().next().ok_or(Error::Protocol)
     }
 
-    /// Restores a hidden pad.
+    /// Restores a hidden pad. Returns how many times the service re-bound
+    /// it to, if it counts: none where the pad wasn't there to.
     ///
     /// # Errors
     ///
     /// Fails if the token is unknown or the connection breaks.
-    pub fn restore(&self, token: Token) -> Result<(), Error> {
-        self.ask(Request::Restore(token), None).map(|_| ())
+    pub fn restore(&self, token: Token) -> Result<Option<u8>, Error> {
+        self.ask(Request::Restore(token), None)
+            .map(|(reply, _)| reply.rebinds)
     }
 }

@@ -167,6 +167,11 @@ let
   #   hider-probe uhid <name> <phys>
   #       makes a HID game pad through uhid with that phys and no address;
   #       holds
+  #   hider-probe cancel <socket> <node> at-once|after|<fifo>
+  #       hides <node> and gives the hide up with a cancel: sent at once,
+  #       after the hide's reply, or once something is written to <fifo>;
+  #       says each reply's status and the re-binds it counted, and their
+  #       total
   probe = pkgs.writers.writePython3Bin "hider-probe" { doCheck = false; } ''
     import array
     import os
@@ -298,8 +303,40 @@ let
             print("created", flush=True)
             while True:
                 os.read(uhid, 4380)
+        case ["cancel", path, node, when]:
+            peer = connect(path)
+            fd = os.open(node, os.O_RDONLY)
+            fds = array.array("i", [fd])
+            rights = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, fds)]
+            peer.sendmsg([struct.pack("<BI", 1, 0)], rights)
+            os.close(fd)
+
+            def reply():
+                data, fds, _, _ = socket.recv_fds(peer, 6, 2)
+                for received in fds:
+                    os.close(received)
+                status, _, flags = struct.unpack("<BIB", data)
+                # Bit 1 says the re-binds are counted, bits 2 and 3 how many.
+                assert flags & 2, f"not counted: {flags}"
+                return status, flags >> 2 & 3
+
+            replies = []
+            if when == "after":
+                replies.append(reply())
+            elif when != "at-once":
+                with open(when) as go:
+                    go.read()
+            peer.send(struct.pack("<BI", 7, 0))
+            while len(replies) < 2:
+                replies.append(reply())
+            (hide, hidden), (cancel, cancelled) = replies
+            print(
+                f"hide={hide} rebinds={hidden} cancel={cancel} rebinds={cancelled} "
+                f"total={hidden + cancelled}",
+                flush=True,
+            )
         case _:
-            sys.exit("usage: hider-probe opath|hide|long|silent|idle|uids|uhid ...")
+            sys.exit("usage: hider-probe opath|hide|long|silent|idle|uids|uhid|cancel ...")
   '';
 in
 pkgs.testers.runNixOSTest {
@@ -368,6 +405,13 @@ pkgs.testers.runNixOSTest {
       # which the shipped rule's final assignments can't stop.
       (pkgs.writeTextDir "lib/udev/rules.d/99-test-retag.rules" ''
         SUBSYSTEM=="input", ATTRS{name}=="Retagged Pad", TAG+="uaccess"
+      '')
+      # Holds a re-bind of the pad of that name while /run/hold is a FIFO
+      # nobody has written to: udev runs this for each event node the
+      # re-bind makes and isn't done with the node until it ends, so the
+      # service waits too. With no FIFO there, it ends at once.
+      (pkgs.writeTextDir "lib/udev/rules.d/99-test-hold.rules" ''
+        ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="Held Pad", RUN+="${pkgs.coreutils}/bin/cat /run/hold"
       '')
     ];
     # Three ports, for three pads made as USB gadgets.
@@ -977,5 +1021,55 @@ pkgs.testers.runNixOSTest {
         assert alice_can_open(uniq)
         machine.succeed("systemctl stop pad-retagged")
         print("the service on each: " + machine.succeed("journalctl -u ctrlassist-hider.service -o cat | grep -E 'uevent file|without re-binding|wasn.t hidden'").replace("\n", " | "))
+
+    with subtest("a hide given up with a cancel leaves the pad as it was, and says how many times it re-bound the pad, which is how many times the pad went and came back"):
+        uniq = "02:00:00:00:03:01"
+        fake("pad-held", "fake-hid", "--name", "Held Pad", "--uniq", uniq, "--pulse", "20")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 'Held Pad'")
+        machine.succeed("udevadm settle")
+        sysname = pads()[uniq]["event"][0].split("/")[-1]
+        hid = machine.succeed(f"basename $(readlink -f /sys/class/input/{sysname}/device/device)").strip()
+
+        def input_number():
+            """The number of the pad's input device: each re-bind that makes the pad go and come back makes it anew under the next."""
+            return int(machine.succeed(f"ls /sys/bus/hid/devices/{hid}/input").strip().removeprefix("input"))
+
+        # Cancelled while the re-bind is under way, and held there by a
+        # rule udev runs for the node it makes: the service shows the pad
+        # again by a second re-bind, held behind the first.
+        machine.succeed("mkfifo -m 0600 /run/hold && mkfifo -m 0666 /run/go")
+        before = input_number()
+        node = pads()[uniq]["event"][0]
+        machine.succeed(f"systemd-run --unit cancel-held --uid alice hider-probe cancel {SOCKET} {node} /run/go")
+        machine.wait_until_succeeds("pgrep -f '/bin/cat /run/hold$'")
+        assert markers() != [], "the pad is being hidden"
+        machine.succeed("echo > /run/go")
+        # The service took the cancel and is showing the pad again: its
+        # markers are gone.
+        machine.wait_until_succeeds(f"test -z \"$(ls -A {MARKERS})\"")
+        machine.succeed("mv /run/hold /run/held && echo > /run/held && rm /run/held /run/go")
+        machine.wait_until_succeeds("journalctl -u cancel-held -o cat | grep -q total=")
+        told = machine.succeed("journalctl -u cancel-held -o cat | grep total=").strip()
+        machine.succeed("udevadm settle")
+        print(f"a hide cancelled as its re-bind was held: {told}; the pad's input went from input{before} to input{input_number()}")
+        assert told == "hide=9 rebinds=2 cancel=0 rebinds=0 total=2", told
+        assert input_number() - before == 2
+        wait_restored()
+        assert alice_can_open(uniq) and alice_can_open(uniq, "js")
+
+        # Cancelled after the hide's reply, which shows it again; and at
+        # once, which the service may take before it asks for a re-bind or
+        # as it waits for it. Whichever, it says what the pad went through.
+        for when, could in [("after", [2]), ("at-once", [0, 2])]:
+            before = input_number()
+            node = pads()[uniq]["event"][0]
+            told = machine.succeed(f"su -l alice -c 'hider-probe cancel {SOCKET} {node} {when}'").strip()
+            machine.succeed("udevadm settle")
+            total = int(field(r"total=(\d+)", told))
+            print(f"a hide cancelled {when}: {told}; the pad's input went from input{before} to input{input_number()}")
+            assert total in could and input_number() - before == total, told
+            wait_restored()
+            assert alice_can_open(uniq)
+        machine.succeed("systemctl stop pad-held")
   '';
 }

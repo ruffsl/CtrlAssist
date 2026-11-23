@@ -30,7 +30,7 @@ use zenoh::query::Query;
 use crate::blacklist::Blacklist;
 use crate::book::Book;
 use crate::device_identity;
-use crate::hiding::{Errand, Hiding, Token, Unhidden};
+use crate::hiding::{Errand, Hiding, Rebinds, Token, Unhidden};
 use crate::reactor::Reactor;
 
 /// One of a setup's pads.
@@ -95,10 +95,6 @@ struct Entry {
     /// How its pads are kept from games, as its profile says: how each
     /// was taken, and how one that returns is taken again.
     hide: Hide,
-    /// By source number, when the pad it starts with last connected, as
-    /// the book counts: hiding it may make it go and come back, which is
-    /// then told from a pad plugged in by whether it has been seen.
-    arrivals: Vec<Option<u64>>,
     /// Whether, failed, its pads are still being shown again: a stop or
     /// a start afresh waits for that.
     retiring: bool,
@@ -567,6 +563,8 @@ pub(crate) enum Done {
         name: String,
         outcome: Result<Made, Unmade>,
         asker: Owing,
+        /// What each hide it asked came to, as [`Hides`] says.
+        hides: Hides,
     },
     /// The pads a change brings are open, each that could be, by the
     /// new graph's source number, with the hiding service's name for
@@ -576,9 +574,8 @@ pub(crate) enum Done {
         graph: Box<Graph>,
         ids: Vec<Option<String>>,
         pads: Vec<Option<(Pad, Option<Token>)>>,
-        /// When each pad last connected before it was taken, as the book
-        /// counts.
-        arrivals: Vec<Option<u64>>,
+        /// What each hide it asked came to.
+        hides: Hides,
     },
     /// A graph the input thread replaced is gone, and the pads it had no
     /// place for are shown again: the update is answered. `unshown` are
@@ -600,10 +597,13 @@ pub(crate) enum Done {
         /// The hiding service's name for it, if it hid it just now; not
         /// one the setup had, which it opened the pad again under.
         token: Option<Token>,
-        /// When it last connected before it was sent for, as the book
-        /// counts.
-        arrival: Option<u64>,
+        /// What hiding it came to, if it was to be hidden.
+        hides: Hides,
     },
+    /// A hide given up as it was asked is settled: the hiding service
+    /// re-bound the pad this many times for it, and for showing it
+    /// again.
+    Settled { pad: String, rebinds: u8 },
     /// A setup the input thread handed back is gone, virtual pads and
     /// all, and its pads are shown again, but for `unshown`; a stop
     /// that was waiting for that is seen to.
@@ -647,6 +647,36 @@ pub(crate) struct Wanted {
     node: PathBuf,
 }
 
+/// What hiding each pad a piece of work was to hide came to: for each
+/// the reactor [expected](Reactor::expect_hides) to go and come back once
+/// as it sent the work off, by what the pad is known by.
+type Hides = Vec<(String, Rebinds)>;
+
+/// The pads of `wanted` that a piece of work taking them hides, as
+/// `hide` says: those the book expects to go and come back once each
+/// before the work is sent off.
+fn hidden_of(hide: Hide, wanted: &[Option<Wanted>]) -> impl Iterator<Item = &str> {
+    wanted
+        .iter()
+        .filter(move |_| hide == Hide::Full)
+        .filter_map(|wanted| Some(wanted.as_ref()?.id.as_str()))
+}
+
+/// What hiding each pad of [`hidden_of`] came to: `rebinds` by the place
+/// in `wanted`, as far as the work got, and nothing re-bound for the
+/// rest.
+fn hides_of(hide: Hide, wanted: &[Option<Wanted>], rebinds: Vec<Rebinds>) -> Hides {
+    let mut rebinds = rebinds.into_iter();
+    wanted
+        .iter()
+        .filter_map(|wanted| {
+            let rebinds = rebinds.next().unwrap_or(Rebinds::Known(0));
+            Some((wanted.as_ref()?.id.clone(), rebinds))
+        })
+        .filter(|_| hide == Hide::Full)
+        .collect()
+}
+
 /// The hiding service, and the errand of the setup a piece of work asks
 /// it for.
 type Asking<'a> = (&'a Hiding, &'a Arc<Errand>);
@@ -675,12 +705,26 @@ fn give_raw(pad: &mut Pad, token: Token, (hiding, errand): Asking<'_>) {
 /// profile asks: hidden by the hiding service, which hands back the
 /// only descriptor left open on it, or else grabbed; grabbed only; or
 /// left as it is. Returns the daemon's name for the pad if the service
-/// hid it. A setup stopped meanwhile takes nothing more.
+/// hid it, and what hiding it came to. A setup stopped meanwhile takes
+/// nothing more.
 fn take(
     wanted: &Wanted,
     database: &Database,
     asking: Asking<'_>,
     hide: Hide,
+) -> (Result<(Pad, Option<Token>), String>, Rebinds) {
+    let mut rebinds = Rebinds::Known(0);
+    let taken = take_counting(wanted, database, asking, hide, &mut rebinds);
+    (taken, rebinds)
+}
+
+/// [`take`], noting what hiding the pad came to in `rebinds`.
+fn take_counting(
+    wanted: &Wanted,
+    database: &Database,
+    asking: Asking<'_>,
+    hide: Hide,
+    rebinds: &mut Rebinds,
 ) -> Result<(Pad, Option<Token>), String> {
     let (hiding, errand) = asking;
     let node = wanted.node.as_path();
@@ -704,20 +748,26 @@ fn take(
             Ok(hidden) => {
                 drop(opened);
                 drop(fd);
+                *rebinds = Rebinds::Known(hidden.rebinds);
                 return match read(hidden.event, node, database) {
                     Ok(mut pad) => {
                         give_raw(&mut pad, hidden.token, asking);
                         Ok((pad, Some(hidden.token)))
                     }
                     Err(error) => {
-                        hiding.restore_token(hidden.token);
+                        let shown = hiding.restore_token(hidden.token);
+                        *rebinds = Rebinds::Known(hidden.rebinds.saturating_add(shown));
                         Err(error)
                     }
                 };
             }
             Err(Unhidden::Ended) => return Err(STOPPED.to_string()),
+            Err(Unhidden::Cut(cut)) => {
+                *rebinds = Rebinds::Cut(cut);
+                return Err(STOPPED.to_string());
+            }
             // Grabbed instead.
-            Err(Unhidden::Not) => {}
+            Err(Unhidden::Not(rebound)) => *rebinds = Rebinds::Known(rebound),
         }
     }
     drop(fd);
@@ -732,33 +782,37 @@ fn take(
 
 /// Takes back a pad that returned. One the service still has hidden is
 /// opened through it: the pad was never visible in between. Returns the
-/// daemon's name for the pad only if the service hid it afresh.
+/// daemon's name for the pad only if the service hid it afresh, and what
+/// hiding it came to.
 fn retake(
     wanted: &Wanted,
     token: Option<Token>,
     database: &Database,
     asking: Asking<'_>,
     hide: Hide,
-) -> Result<(Pad, Option<Token>), String> {
+) -> (Result<(Pad, Option<Token>), String>, Rebinds) {
     let (hiding, errand) = asking;
     if let Some(token) = token
         && let Some(event) = hiding.reopen(errand, token)
     {
         // The service knows the pad by what it is, not by its node.
-        return read(event, &wanted.node, database).map(|mut pad| {
+        let reopened = read(event, &wanted.node, database).map(|mut pad| {
             give_raw(&mut pad, token, asking);
             (pad, None)
         });
+        return (reopened, Rebinds::Known(0));
     }
-    let taken = take(wanted, database, asking, hide)?;
+    let (taken, rebinds) = take(wanted, database, asking, hide);
     // Hidden afresh, under a new name: the old one is given up, so that
-    // what it hid isn't left for the connection's end to restore.
-    if let (Some(old), Some(new)) = (token, taken.1)
-        && old != new
+    // what it hid isn't left for the connection's end to restore. The
+    // pad it named has gone, so nothing is re-bound for it.
+    if let Ok((_, Some(new))) = &taken
+        && let Some(old) = token
+        && old != *new
     {
         hiding.restore_token(old);
     }
-    Ok(taken)
+    (taken, rebinds)
 }
 
 /// The address of the virtual pad `sink` of the setup `setup`: the same
@@ -787,7 +841,12 @@ fn make_sink(
     }
 }
 
-/// The blocking part of a start.
+/// The blocking part of a start. What hiding each pad came to is noted
+/// in `rebinds`, by source number, as far as it got.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what a start's blocking work is handed, each its own"
+)]
 fn make(
     plan: Plan,
     setup: &str,
@@ -796,6 +855,7 @@ fn make(
     asking: Asking<'_>,
     dualsense: &(PathBuf, DualSenseData),
     blacklist: &Mutex<Blacklist>,
+    rebinds: &mut Vec<Rebinds>,
 ) -> Result<Made, Unmade> {
     let hide = plan.hide;
     let graph = Graph::build(plan.graph).map_err(|error| Unmade::new(error.to_string()))?;
@@ -815,14 +875,18 @@ fn make(
         // A pad that went between being chosen and being taken is one
         // the setup starts without.
         let pad = node.as_ref().and_then(|node| {
-            caught(
+            let (pad, rebound) = caught(
                 "taking a pad",
                 || take(node, database, asking, hide),
-                || Err("taking it panicked".to_string()),
-            )
-            .inspect_err(|error| warn!(error, "a setup starts without a pad"))
-            .ok()
+                || (Err("taking it panicked".to_string()), Rebinds::Known(0)),
+            );
+            rebinds.push(rebound);
+            pad.inspect_err(|error| warn!(error, "a setup starts without a pad"))
+                .ok()
         });
+        if node.is_none() {
+            rebinds.push(Rebinds::Known(0));
+        }
         let (pad, token) = pad.unzip();
         taken.push((pad.is_some(), token.flatten()));
         pads.push(pad);
@@ -897,6 +961,15 @@ fn shown_again<T>(hiding: &Hiding, dropped: T, pads: &[(String, Token)]) -> Vec<
         || hiding.restore(pads),
         || pads.iter().map(|(pad, _)| pad.clone()).collect(),
     )
+}
+
+/// Ends `errand`, as its setup stops or fails: what it has under way
+/// ends at once. Each hide it gives up is expected to go and come back
+/// once more, for the showing again that follows, until it is settled.
+fn end(hiding: &Hiding, book: &mut Book, errand: &Arc<Errand>) {
+    for pad in hiding.end(errand) {
+        book.expect(&pad);
+    }
 }
 
 fn unknown(name: &str) -> WireError {
@@ -984,24 +1057,60 @@ impl Reactor {
         });
     }
 
-    /// Notes that the hiding service has just hidden `pad`, which last
-    /// connected at `arrival`, as the book counted before the pad was
-    /// taken. Hidden by re-binding its driver, the pad went and came
-    /// back, or is about to: nobody touched it, so that isn't published
-    /// as a pad leaving and one connecting, nor taken for a pad plugged
-    /// in, and it isn't left for a later showing again to be taken for.
-    /// Returns whether the pad is now published otherwise, as when its
-    /// going has been seen already.
-    fn hid(&mut self, pad: &str, arrival: Option<u64>) -> bool {
-        self.hiding.rebinds(pad)
-            && arrival.is_some_and(|arrival| self.book.expect_back_since(pad, arrival))
+    /// Notes, before work that takes the pads of `wanted` is sent off,
+    /// that each it is to hide goes and comes back once, as hiding it by
+    /// re-binding its driver makes it do. Nobody touched it, so that isn't
+    /// published as a pad leaving and one connecting, nor taken for a pad
+    /// plugged in, whenever it comes; expected before it is asked, it
+    /// can't have come yet. What the service then did
+    /// [sets that right](Self::came_to).
+    pub(crate) fn expect_hides(&mut self, hide: Hide, wanted: &[Option<Wanted>]) {
+        for pad in hidden_of(hide, wanted) {
+            self.book.expect(pad);
+        }
+    }
+
+    /// Sets right what was expected of pads that work came back from
+    /// hiding, by what the hiding service said of each: once, as
+    /// expected, if it hid it; not at all if it didn't re-bind it; twice
+    /// if it showed it again after the re-bind. A hide given up as it
+    /// was asked, expected twice, is set right once settled.
+    async fn came_to(&mut self, hides: Hides) {
+        for (pad, rebinds) in hides {
+            match rebinds {
+                Rebinds::Known(rebinds) => self.came_back(&pad, 1, rebinds).await,
+                Rebinds::Cut(cut) => {
+                    // Waits on the service, and nothing waits on it.
+                    let hiding = Arc::clone(&self.hiding);
+                    self.work.spawn_blocking(move || Done::Settled {
+                        rebinds: hiding.settle(cut),
+                        pad,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Sets right what was expected of `pad`: `expected` goings and
+    /// comings back, where the hiding service made `rebinds`.
+    async fn came_back(&mut self, pad: &str, expected: u8, rebinds: u8) {
+        let mut gone = false;
+        for _ in rebinds..expected {
+            gone |= self.book.take_back(pad);
+        }
+        for _ in expected..rebinds {
+            self.book.expect(pad);
+        }
+        if gone {
+            self.publish_pad_logged(pad).await;
+        }
     }
 
     /// The pads the hiding service didn't show again, as it said: none
     /// of them goes and comes back now.
     async fn unshown(&mut self, pads: Vec<String>) {
         for pad in pads {
-            if self.book.not_shown(&pad) {
+            if self.book.take_back(&pad) {
                 self.publish_pad_logged(&pad).await;
             }
         }
@@ -1180,10 +1289,7 @@ impl Reactor {
             })
             .collect();
         let pads: Vec<String> = slots.iter().filter_map(|slot| slot.pad.clone()).collect();
-        let arrivals = slots
-            .iter()
-            .map(|slot| self.book.arrival(slot.pad.as_deref()?))
-            .collect();
+        self.expect_hides(plan.hide, &nodes);
         self.setups.started += 1;
         let errand = Arc::new(Errand::default());
         let entry = Entry {
@@ -1207,7 +1313,6 @@ impl Reactor {
             toml: profile.toml,
             stale: false,
             hide: plan.hide,
-            arrivals,
             retiring: false,
             errand: Arc::clone(&errand),
         };
@@ -1224,19 +1329,32 @@ impl Reactor {
             self.copied.dualsense_or_shipped(),
         );
         let blacklist = Arc::clone(&self.blacklist);
-        self.work.spawn_blocking(move || Done::Started {
-            outcome: caught(
+        self.work.spawn_blocking(move || {
+            let hide = plan.hide;
+            let mut rebinds = Vec::new();
+            let outcome = caught(
                 "starting a setup",
                 || {
                     let asking = (&*hiding, &errand);
                     make(
-                        plan, &name, &nodes, &database, asking, &dualsense, &blacklist,
+                        plan,
+                        &name,
+                        &nodes,
+                        &database,
+                        asking,
+                        &dualsense,
+                        &blacklist,
+                        &mut rebinds,
                     )
                 },
                 || Err(Unmade::new("starting it panicked")),
-            ),
-            name,
-            asker,
+            );
+            Done::Started {
+                outcome,
+                name,
+                asker,
+                hides: hides_of(hide, &nodes, rebinds),
+            }
         });
     }
 
@@ -1277,14 +1395,11 @@ impl Reactor {
         match sent {
             Ok((nodes, pads)) => {
                 let mut hidden = Vec::new();
-                for (source, (slot, (present, token))) in
-                    entry.slots.iter_mut().zip(pads).enumerate()
-                {
+                for (slot, (present, token)) in entry.slots.iter_mut().zip(pads) {
                     slot.present = present;
                     slot.token = token;
                     if let (Some(pad), Some(_)) = (&slot.pad, token) {
-                        let arrival = entry.arrivals.get(source).copied().flatten();
-                        hidden.push((pad.clone(), arrival));
+                        hidden.push(pad.clone());
                     }
                 }
                 for (sink, node) in entry.sinks.iter_mut().zip(nodes) {
@@ -1298,8 +1413,7 @@ impl Reactor {
                     phase = entry.phase.as_str(),
                     "a setup started"
                 );
-                for (pad, arrival) in hidden {
-                    self.hid(&pad, arrival);
+                for pad in hidden {
                     self.book.set_hidden(&pad, true);
                     self.publish_pad_logged(&pad).await;
                 }
@@ -1326,12 +1440,8 @@ impl Reactor {
                         continue;
                     };
                     // Shown again, it goes and comes back once more, as it
-                    // is let go below. Neither is a pad plugged in, to
-                    // start this again by.
-                    let arrival = entry
-                        .as_ref()
-                        .and_then(|entry| entry.arrivals.get(source).copied().flatten());
-                    self.hid(pad, arrival);
+                    // is let go below: no pad plugged in, to start this
+                    // again by.
                     self.book.set_hidden(pad, true);
                     shown.push((pad.clone(), token));
                 }
@@ -1424,7 +1534,7 @@ impl Reactor {
             // What it asks of the hiding service ends now, and it is
             // answered once what it took is let go and shown again.
             Phase::Starting if entry.stopping.is_none() => {
-                self.hiding.end(&entry.errand);
+                end(&self.hiding, &mut self.book, &entry.errand);
                 entry.stopping = Some(Waiting::Stop(responder));
             }
             Phase::Running | Phase::Held if entry.stopping.is_none() => {
@@ -1432,7 +1542,7 @@ impl Reactor {
                     Ok(()) => {
                         // A pad being taken back, or for a change, is
                         // given up.
-                        self.hiding.end(&entry.errand);
+                        end(&self.hiding, &mut self.book, &entry.errand);
                         entry.stopping = Some(Waiting::Stop(responder));
                     }
                     Err(error) => {
@@ -1556,29 +1666,31 @@ impl Reactor {
                     .iter()
                     .map(|wanted| Some(wanted.as_ref()?.id.clone()))
                     .collect();
-                let arrivals = fresh
-                    .iter()
-                    .map(|wanted| self.book.arrival(&wanted.as_ref()?.id))
-                    .collect();
                 if fresh.iter().all(Option::is_none) {
                     let none = fresh.iter().map(|_| None).collect();
-                    return self.send_graph(name, graph, ids, none, arrivals).await;
+                    return self.send_graph(name, graph, ids, none, Vec::new()).await;
                 }
+                let hide = plan.hide;
+                self.expect_hides(hide, &fresh);
                 let database = Arc::clone(&self.database);
                 let hiding = Arc::clone(&self.hiding);
-                let hide = plan.hide;
                 self.work.spawn_blocking(move || {
+                    let mut rebinds = Vec::new();
                     let pads = fresh
                         .iter()
                         .map(|wanted| {
-                            let wanted = wanted.as_ref()?;
-                            caught(
+                            let Some(wanted) = wanted else {
+                                rebinds.push(Rebinds::Known(0));
+                                return None;
+                            };
+                            let (pad, rebound) = caught(
                                 "taking a pad",
                                 || take(wanted, &database, (&hiding, &errand), hide),
-                                || Err("taking it panicked".to_string()),
-                            )
-                            .inspect_err(|error| warn!(error, "a setup changes without a pad"))
-                            .ok()
+                                || (Err("taking it panicked".to_string()), Rebinds::Known(0)),
+                            );
+                            rebinds.push(rebound);
+                            pad.inspect_err(|error| warn!(error, "a setup changes without a pad"))
+                                .ok()
                         })
                         .collect();
                     Done::Retaken {
@@ -1586,14 +1698,14 @@ impl Reactor {
                         graph: Box::new(graph),
                         ids,
                         pads,
-                        arrivals,
+                        hides: hides_of(hide, &fresh, rebinds),
                     }
                 });
             }
             (Phase::Running | Phase::Held, None) if free => {
                 match self.input.send(Command::Stop(entry.id)) {
                     Ok(()) => {
-                        self.hiding.end(&entry.errand);
+                        end(&self.hiding, &mut self.book, &entry.errand);
                         entry.stopping = Some(Waiting::Update(responder));
                     }
                     Err(error) => {
@@ -1642,19 +1754,10 @@ impl Reactor {
         graph: Graph,
         ids: Vec<Option<String>>,
         pads: Vec<Option<(Pad, Option<Token>)>>,
-        arrivals: Vec<Option<u64>>,
+        hides: Hides,
     ) {
         // Whatever becomes of the change, a pad hidden for it was hidden.
-        let hidden = pads.iter().zip(&ids).zip(arrivals);
-        let hidden: Vec<(String, Option<u64>)> = hidden
-            .filter(|((pad, _), _)| pad.as_ref().is_some_and(|(_, token)| token.is_some()))
-            .filter_map(|((_, id), arrival)| Some((id.clone()?, arrival)))
-            .collect();
-        for (pad, arrival) in hidden {
-            if self.hid(&pad, arrival) {
-                self.publish_pad_logged(&pad).await;
-            }
-        }
+        self.came_to(hides).await;
         let ready = self.setups.entries.get_mut(&name).and_then(|entry| {
             let Entry {
                 id,
@@ -2098,26 +2201,39 @@ impl Reactor {
         };
         slot.returning = true;
         let token = slot.token;
-        let arrival = self.book.arrival(&wanted.id);
+        // As [`expect_hides`](Self::expect_hides) does.
+        if hide == Hide::Full {
+            self.book.expect(&wanted.id);
+        }
         let database = Arc::clone(&self.database);
         let hiding = Arc::clone(&self.hiding);
         let name = name.to_string();
         self.work.spawn_blocking(move || {
             // A node from before the pad left doesn't open, or is some
             // other pad's by now; the pad's arrival will bring it back.
-            let retaken = caught(
+            let (retaken, rebinds) = caught(
                 "taking a pad back",
                 || retake(&wanted, token, &database, (&hiding, &errand), hide),
-                || Err("taking it back panicked".to_string()),
+                || {
+                    (
+                        Err("taking it back panicked".to_string()),
+                        Rebinds::Known(0),
+                    )
+                },
             );
             let (pad, token) = retaken.ok().unzip();
+            let hides = if hide == Hide::Full {
+                vec![(wanted.id.clone(), rebinds)]
+            } else {
+                Vec::new()
+            };
             Done::Returned {
                 pad: pad.map(Box::new),
                 token: token.flatten(),
                 name,
                 setup,
                 id: wanted.id,
-                arrival,
+                hides,
             }
         });
     }
@@ -2127,12 +2243,10 @@ impl Reactor {
         (name, setup): (String, SetupId),
         id: String,
         pad: Option<Box<Pad>>,
-        (token, arrival): (Option<Token>, Option<u64>),
+        (token, hides): (Option<Token>, Hides),
     ) {
         // Whatever became of the setup, a pad hidden afresh was hidden.
-        if token.is_some() && self.hid(&id, arrival) {
-            self.publish_pad_logged(&id).await;
-        }
+        self.came_to(hides).await;
         // By the pad, not by where it was when it was sent for: a setup
         // that took a change since has its pads numbered anew. Only to
         // the setup that sent for it, and only while that runs: one that
@@ -2270,12 +2384,15 @@ impl Reactor {
                 name,
                 outcome,
                 asker,
+                hides,
             } => {
                 let asker = match self.paid(asker) {
                     Some(Owed::Start(asker)) => asker,
                     // Nothing else is owed under a start's note.
                     _ => Asker::Daemon,
                 };
+                // Whatever becomes of the start, a pad hidden for it was.
+                self.came_to(hides).await;
                 self.started(name, outcome, asker).await;
             }
             Done::Returned {
@@ -2284,18 +2401,18 @@ impl Reactor {
                 id,
                 pad,
                 token,
-                arrival,
+                hides,
             } => {
-                self.returned((name, setup), id, pad, (token, arrival))
-                    .await;
+                self.returned((name, setup), id, pad, (token, hides)).await;
             }
             Done::Retaken {
                 name,
                 graph,
                 ids,
                 pads,
-                arrivals,
-            } => self.send_graph(name, *graph, ids, pads, arrivals).await,
+                hides,
+            } => self.send_graph(name, *graph, ids, pads, hides).await,
+            Done::Settled { pad, rebinds } => self.came_back(&pad, 2, rebinds).await,
             Done::Taken {
                 responder,
                 start,
@@ -2407,7 +2524,7 @@ impl Reactor {
                 };
                 let mut entry = self.setups.entries.remove(&name);
                 if let Some(entry) = &entry {
-                    self.hiding.end(&entry.errand);
+                    end(&self.hiding, &mut self.book, &entry.errand);
                 }
                 let mut hidden: Vec<(String, Token)> = entry
                     .iter()
@@ -2440,7 +2557,7 @@ impl Reactor {
                 };
                 if let Some(entry) = self.setups.entries.get(&name) {
                     // A pad being taken back, or for a change, is given up.
-                    self.hiding.end(&entry.errand);
+                    end(&self.hiding, &mut self.book, &entry.errand);
                 }
                 let mut hidden: Vec<(String, Token)> = self
                     .setups
@@ -2592,6 +2709,7 @@ mod tests {
     use ctrlassist_device::InputThread;
     use ctrlassist_protocol::bootstrap;
     use ctrlassist_protocol::caller::{Caller, RpcError};
+    use ctrlassist_test::{Cancelled, FakeHider};
     use tempfile::TempDir;
     use zenoh::Session;
     use zenoh::handlers::FifoChannelHandler;
@@ -2684,7 +2802,6 @@ mod tests {
             toml: String::new(),
             stale: false,
             hide: plan.hide,
-            arrivals: Vec::new(),
             retiring: false,
             errand: Arc::default(),
         };
@@ -2878,6 +2995,7 @@ mod tests {
                 name: "couch".to_string(),
                 outcome: made_without_pads(),
                 asker,
+                hides: Vec::new(),
             })
             .await;
         let refused = refusal(starting.await.unwrap());
@@ -2933,6 +3051,7 @@ mod tests {
                 name: "couch".to_string(),
                 outcome: Err(Unmade::new(STOPPED)),
                 asker,
+                hides: Vec::new(),
             }
         });
 
@@ -2986,6 +3105,7 @@ mod tests {
                     "making the virtual pad `virtual` (generic): no uinput",
                 )),
                 asker,
+                hides: Vec::new(),
             })
             .await;
         let refused = refusal(asked.await.unwrap());
@@ -3007,7 +3127,7 @@ mod tests {
                 id: "address:0a:1b:2c:3d:4e:14".to_string(),
                 pad: None,
                 token: None,
-                arrival: None,
+                hides: Vec::new(),
             })
             .await;
         let slot = &rig.reactor.setups.entries["couch"].slots[1];
@@ -3020,7 +3140,7 @@ mod tests {
                 id: "address:0a:1b:2c:3d:4e:14".to_string(),
                 pad: None,
                 token: None,
-                arrival: None,
+                hides: Vec::new(),
             })
             .await;
         rig.reactor.done(Done::Dropped).await;
@@ -3294,7 +3414,7 @@ mod tests {
                 id: pad.to_string(),
                 pad: None,
                 token: None,
-                arrival: None,
+                hides: Vec::new(),
             })
             .await;
 
@@ -3340,7 +3460,7 @@ mod tests {
                 id: pad.to_string(),
                 pad: None,
                 token: None,
-                arrival: None,
+                hides: Vec::new(),
             })
             .await;
         // A report of a graph nobody waits for is only a graph to drop.
@@ -3407,7 +3527,7 @@ mod tests {
                 graph: Box::new(graph),
                 ids: vec![None, None],
                 pads: vec![None, None],
-                arrivals: vec![None, None],
+                hides: Vec::new(),
             })
             .await;
         refused(updating.await.unwrap(), ErrorCode::SetupBusy);
@@ -3645,6 +3765,7 @@ mod tests {
                 name: "couch".to_string(),
                 outcome: made_without_pads(),
                 asker,
+                hides: Vec::new(),
             })
             .await;
         let entry = &rig.reactor.setups.entries["couch"];
@@ -3745,11 +3866,21 @@ mod tests {
                 id: PRIMARY.to_string(),
                 pad: None,
                 token: None,
-                arrival: None,
+                hides: Vec::new(),
             })
             .await;
         assert!(rig.reactor.setups.entries["couch"].slots[1].returning);
         finish(&mut rig.reactor).await;
+    }
+
+    /// Expects `couch`'s primary pad, at `node`, to go and come back once
+    /// for its hiding, as a start sending its work off does.
+    fn expect_hiding(reactor: &mut Reactor, node: &str) {
+        let wanted = Wanted {
+            id: PRIMARY.to_string(),
+            node: PathBuf::from(node),
+        };
+        reactor.expect_hides(Hide::Full, &[None, Some(wanted)]);
     }
 
     /// A start that fails after the hiding service hid a pad by
@@ -3763,13 +3894,7 @@ mod tests {
         let node = "/nowhere/event1";
         rig.reactor.book.arrived(&connecting(PRIMARY, node), None);
         follow(&mut rig.reactor, 7, Phase::Starting);
-        let arrival = rig.reactor.book.arrival(PRIMARY);
-        rig.reactor
-            .setups
-            .entries
-            .get_mut("couch")
-            .unwrap()
-            .arrivals = vec![None, arrival];
+        expect_hiding(&mut rig.reactor, node);
         rig.reactor.hiding.rebound(PRIMARY);
         let asker = rig.reactor.owe(Owed::Start(Asker::Daemon));
         rig.reactor
@@ -3780,6 +3905,7 @@ mod tests {
                     tokens: vec![None, Some(Token(1))],
                 }),
                 asker,
+                hides: vec![(PRIMARY.to_string(), Rebinds::Known(1))],
             })
             .await;
         assert!(rig.reactor.setups.setup("couch").is_none());
@@ -3812,13 +3938,7 @@ mod tests {
         let managed = format!("{PROFILE}managed = true\n");
         rig.reactor.profiles.put("couch", &managed).unwrap();
         follow(&mut rig.reactor, 7, Phase::Starting);
-        let arrival = rig.reactor.book.arrival(PRIMARY);
-        rig.reactor
-            .setups
-            .entries
-            .get_mut("couch")
-            .unwrap()
-            .arrivals = vec![None, arrival];
+        expect_hiding(&mut rig.reactor, node);
         rig.reactor.hiding.rebound(PRIMARY);
         let made = Made {
             setup: handed_back(),
@@ -3831,6 +3951,7 @@ mod tests {
                 name: "couch".to_string(),
                 outcome: Ok(made),
                 asker,
+                hides: vec![(PRIMARY.to_string(), Rebinds::Known(1))],
             })
             .await;
         assert_eq!(rig.reactor.setups.entries["couch"].phase, Phase::Held);
@@ -3909,7 +4030,7 @@ mod tests {
                 id: PRIMARY.to_string(),
                 pad: Some(pad),
                 token: None,
-                arrival: None,
+                hides: Vec::new(),
             })
             .await;
         let failed = rig.reactor.setups.setup("couch").unwrap();
@@ -3918,5 +4039,134 @@ mod tests {
         finish(&mut rig.reactor).await;
         ask(&mut rig, true).await.await.unwrap().unwrap();
         assert!(rig.reactor.setups.setup("couch").is_none());
+    }
+
+    /// `couch`, a profile that starts by itself, starting with its
+    /// primary pad's hide held by a hiding service that answers as
+    /// `outcome` once cancelled and let go, and stopped by hand inside
+    /// that hide. The stop is answered, whatever the service has yet to
+    /// say. Returns the pad's node too.
+    async fn stopped_inside_a_hide(outcome: Cancelled) -> (Rig, FakeHider, &'static str) {
+        let mut rig = rig().await;
+        let node = "/nowhere/event1";
+        rig.reactor.book.arrived(&connecting(PRIMARY, node), None);
+        rig.reactor
+            .book
+            .arrived(&connecting(ASSIST, "/nowhere/event2"), None);
+        let managed = format!("{PROFILE}managed = true\n");
+        rig.reactor.profiles.put("couch", &managed).unwrap();
+        let path = rig._dir.path().join("hider.sock");
+        let hider = FakeHider::holding(&path, outcome).unwrap();
+        rig.reactor.hiding = Arc::new(Hiding::new(&path));
+        let hiding = Arc::clone(&rig.reactor.hiding);
+        tokio::task::spawn_blocking(move || hiding.look())
+            .await
+            .unwrap();
+        assert_eq!(rig.reactor.hiding.mechanism(), payload::Hiding::Service);
+
+        // The start's work hides the primary pad, as `make` does, after
+        // the book is told to expect that.
+        follow(&mut rig.reactor, 7, Phase::Starting);
+        expect_hiding(&mut rig.reactor, node);
+        let asker = rig.reactor.owe(Owed::Start(Asker::Daemon));
+        let (hiding, errand) = (
+            Arc::clone(&rig.reactor.hiding),
+            Arc::clone(&rig.reactor.setups.entries["couch"].errand),
+        );
+        rig.reactor.work.spawn_blocking(move || {
+            let pad = File::open("/dev/null").unwrap();
+            let rebinds = match hiding.hide(&errand, PRIMARY, pad.as_fd()) {
+                Err(Unhidden::Cut(cut)) => Rebinds::Cut(cut),
+                other => unreachable!("a held hide is given up by the stop: {other:?}"),
+            };
+            Done::Started {
+                name: "couch".to_string(),
+                outcome: Err(Unmade::new(STOPPED)),
+                asker,
+                hides: vec![(PRIMARY.to_string(), rebinds)],
+            }
+        });
+        hider.wait_held();
+
+        // Stopped by hand: the start's work comes back at once, and the
+        // stop is answered, while the service holds what it has to say.
+        let stopping = ask(&mut rig, true).await;
+        let started = rig.reactor.work.join_next().await.unwrap().unwrap();
+        assert!(matches!(started, Done::Started { .. }), "{started:?}");
+        rig.reactor.done(started).await;
+        let retired = rig.reactor.work.join_next().await.unwrap().unwrap();
+        assert!(matches!(retired, Done::Retired { .. }), "{retired:?}");
+        rig.reactor.done(retired).await;
+        stopping.await.unwrap().unwrap();
+        assert!(rig.reactor.setups.setup("couch").is_none());
+        assert!(rig.reactor.hiding.service_release().is_some());
+        (rig, hider, node)
+    }
+
+    /// The pad goes and comes back `times` times, as the hiding service's
+    /// re-binds make it: none of that is published as it leaving, and
+    /// none of it starts the profile that was stopped by hand.
+    async fn goes_and_comes_back(rig: &mut Rig, node: &str, times: usize) {
+        for time in 0..times {
+            rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
+            assert!(
+                rig.reactor.book.pad(PRIMARY).unwrap().connected,
+                "going {time}"
+            );
+            rig.reactor
+                .saw(Seen::Arrived(connecting(PRIMARY, node), None))
+                .await;
+            assert!(
+                rig.reactor.setups.setup("couch").is_none(),
+                "not started again by coming back {time}"
+            );
+        }
+    }
+
+    /// Nothing more is expected of the pad: unplugged now, it is
+    /// published as gone.
+    async fn nothing_more_is_expected(rig: &mut Rig, node: &str) {
+        rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
+        assert!(!rig.reactor.book.pad(PRIMARY).unwrap().connected);
+    }
+
+    /// A stop that lands inside a hide the service hadn't acted on: it
+    /// says so, nothing was re-bound, and nothing is left expected.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_inside_a_hide_not_acted_on_expects_nothing() {
+        let (mut rig, hider, node) = stopped_inside_a_hide(Cancelled::Untouched).await;
+        hider.let_go();
+        finish(&mut rig.reactor).await;
+        assert!(hider.asked().contains(&ctrlassist_test::Asked::Cancel));
+        nothing_more_is_expected(&mut rig, node).await;
+    }
+
+    /// A stop that lands inside a hide the service had re-bound the pad
+    /// for, whether it was still waiting for the re-bind or had done it:
+    /// it shows the pad again by a second re-bind, and says it did. Both
+    /// goings and comings back are expected, whenever they come.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_inside_a_hide_that_re_bound_the_pad_expects_both_goings() {
+        for outcome in [Cancelled::Undone, Cancelled::DoneFirst] {
+            let (mut rig, hider, node) = stopped_inside_a_hide(outcome).await;
+            hider.let_go();
+            finish(&mut rig.reactor).await;
+            goes_and_comes_back(&mut rig, node, 2).await;
+            nothing_more_is_expected(&mut rig, node).await;
+        }
+    }
+
+    /// A stop that lands inside a hide whose re-bind is in flight: the
+    /// pad goes and comes back for it, and again as the service shows it
+    /// again, before the service has said so. Neither is published, nor
+    /// starts the profile again, and once the service says it, nothing
+    /// more is expected.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_inside_a_hide_whose_re_bind_is_in_flight_publishes_neither_going() {
+        let (mut rig, hider, node) = stopped_inside_a_hide(Cancelled::Undone).await;
+        goes_and_comes_back(&mut rig, node, 2).await;
+        hider.let_go();
+        finish(&mut rig.reactor).await;
+        nothing_more_is_expected(&mut rig, node).await;
     }
 }
