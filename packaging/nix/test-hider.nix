@@ -724,6 +724,10 @@ pkgs.testers.runNixOSTest {
         pid = machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip()
         assert pid != "0", "the service is running for the client"
         status = machine.succeed(f"cat /proc/{pid}/status")
+        # The listener systemd passed, its first descriptor, is blocking,
+        # NonBlocking= being off: an accept waits for a client.
+        listener = machine.succeed(f"cat /proc/{pid}/fdinfo/3")
+        assert int(field(r"flags:\s+([0-7]+)", listener), 8) & 0o4000 == 0, listener
         machine.succeed("systemctl stop holder")
         wait_restored()
         uids = field(r"Uid:\s+([0-9\s]+)\n", status).split()
