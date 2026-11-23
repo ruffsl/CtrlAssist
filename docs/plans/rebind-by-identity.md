@@ -51,6 +51,8 @@ Each is a branch of its own, verified by the suites that make no pads, by the wh
 
 Decided; steps 1 to 3 under way.
 
+**udev's order, read and shown.** In systemd 262, the flake's, `event_queue_start()` in `src/udev/udev-manager.c` skips an event that `event_find_blocker()` finds a blocker for ("do not start event if parent or child event is still running or queued"), and the blocker is any earlier event not yet processed with the same id or a devpath that is the same, a parent or a child (`devpath_conflict()`: "true when two paths are equivalent, or one is a child of another"). A worker sends its event to udev's listeners (`device_monitor_send()`, the answer the service waits for) after it has run the rules and their `RUN`s, and only then tells the manager it is done (`PROCESSED=1`). So a request's answer comes after every earlier request of the device has run, and the nodes an earlier re-bind made, the device's children queued after the later request, are finished only once it has run. The hider check writes a re-bind request for a pad, as the service's user, and then has the service hide the pad, with udev held on an earlier event of its HID device; the kernel and udev, read on one socket, go: both requests, then the first's unbind, bind and answer, then the second's unbind, bind and answer.
+
 ## Deviations
 
 None yet.

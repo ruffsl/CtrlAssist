@@ -194,6 +194,10 @@ let
   #       hides the pad again; says whether that descriptor still reads
   #   hider-probe uevent <text>
   #       ends once the kernel sends an event with <text> in it
+  #   hider-probe rebinds <count>
+  #       says each HID device's re-bind request, unbind and bind, as the
+  #       kernel sends it (K) and as udev answers it (U), in the order the
+  #       two were sent; ends at the <count>th answer to a request
   probe = pkgs.writers.writePython3Bin "hider-probe" { doCheck = false; } ''
     import array
     import glob
@@ -417,8 +421,33 @@ let
             while match.encode() not in events.recv(65536):
                 pass
             print("seen", flush=True)
+        case ["rebinds", count]:
+            # The kernel's group and udev's on one socket, so what each
+            # sends is queued here in the order it was sent.
+            events = socket.socket(socket.AF_NETLINK, socket.SOCK_DGRAM, 15)
+            events.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+            events.bind((0, 1 | 2))
+            print("listening", flush=True)
+            answered = 0
+            while answered < int(count):
+                data = events.recv(65536)
+                if data.startswith(b"libudev\0"):
+                    # udev's header: its properties' offset and length.
+                    offset, length = struct.unpack_from("=II", data, 16)
+                    source, fields = "U", data[offset:offset + length].split(b"\0")
+                else:
+                    source, fields = "K", data.split(b"\0")[1:]
+                found = dict(field.decode(errors="replace").split("=", 1) for field in fields if b"=" in field)
+                if found.get("SUBSYSTEM") != "hid":
+                    continue
+                action = found.get("ACTION")
+                if action == "change" and found.get("SYNTH_ARG_CTRLASSIST") == "rebind":
+                    print(f"{source} change {found['SYNTH_UUID']}", flush=True)
+                    answered += source == "U"
+                elif action in ("unbind", "bind"):
+                    print(f"{source} {action}", flush=True)
         case _:
-            sys.exit("usage: hider-probe opath|hide|long|silent|idle|uids|uhid|cancel|cancel-then-hide|uevent ...")
+            sys.exit("usage: hider-probe opath|hide|long|silent|idle|uids|uhid|cancel|cancel-then-hide|uevent|rebinds ...")
   '';
 in
 pkgs.testers.runNixOSTest {
@@ -1325,5 +1354,56 @@ pkgs.testers.runNixOSTest {
         assert input_number() - before == 4
         assert alice_can_open(uniq)
         machine.succeed("systemctl stop pad-held")
+
+    with subtest("two re-binds of a pad asked back to back are run one after the other, and a hide asked behind another is done on its own"):
+        uniq = "02:00:00:00:04:01"
+        fake("pad-queued", "fake-hid", "--name", "Queued Pad", "--uniq", uniq, "--pulse", "20")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 'Queued Pad'")
+        machine.succeed("udevadm settle")
+        node = pads()[uniq]["event"][0]
+        sysname = node.split("/")[-1]
+        hid = machine.succeed(f"basename $(readlink -f /sys/class/input/{sysname}/device/device)").strip()
+        inputs = f"ls /sys/bus/hid/devices/{hid}/input | tr -dc 0-9"
+        before = int(machine.succeed(inputs))
+        machine.succeed("systemd-run --unit queued-rebinds hider-probe rebinds 2")
+        machine.wait_until_succeeds("journalctl -u queued-rebinds -o cat | grep -q listening")
+        # udev held on an earlier event of the pad's HID device, so each
+        # request after it waits in udev's queue.
+        machine.succeed("mkfifo -m 0600 /run/hold-early")
+        machine.succeed(f"echo \"change $(cat /proc/sys/kernel/random/uuid) TESTHOLD=1\" > /sys/bus/hid/devices/{hid}/uevent")
+        machine.wait_until_succeeds("pgrep -f '/bin/cat /run/hold-early$'")
+        # The first, asked as the service asks, as its user; then a hide.
+        first = machine.succeed("cat /proc/sys/kernel/random/uuid").strip()
+        machine.succeed(
+            f"runuser -u ctrlassist-hider -- sh -c 'echo change {first} CTRLASSIST=rebind > /sys/bus/hid/devices/{hid}/uevent'"
+        )
+        machine.succeed(f"systemd-run --unit queued --uid alice ctrlassist-fixture hide {node} --socket {SOCKET} --control /tmp/queued")
+        machine.wait_until_succeeds("[ $(journalctl -u queued-rebinds -o cat | grep -c '^K change') = 2 ]")
+        assert int(machine.succeed(inputs)) == before, "udev is held before either re-bind"
+        machine.succeed("echo > /run/hold-early && rm /run/hold-early")
+        machine.wait_for_file("/tmp/queued/hide.done")
+        told = machine.succeed("cat /tmp/queued/hide.done")
+        machine.wait_until_fails("systemctl is-active queued-rebinds")
+        seen = machine.succeed("journalctl -u queued-rebinds -o cat | sed '1,/^listening$/d'").split("\n")
+        seen = [line for line in seen if line[:2] in ("K ", "U ")]
+        second = seen[1].split()[-1]
+        print(f"two re-binds asked back to back, the second a hide: {seen}; the hide: {told.strip()}")
+        # Both queued before either ran; the first run, then answered;
+        # only then the second run, then answered.
+        assert seen == [
+            f"K change {first}", f"K change {second}",
+            "K unbind", "K bind", f"U change {first}",
+            "K unbind", "K bind", f"U change {second}",
+        ], seen
+        # The hide is done on its own re-bind: its descriptor reads, and
+        # the pad's input was made anew by both.
+        assert told.startswith("ok"), told
+        assert int(field(r"reads=(\d+)", order("/tmp/queued", "count"))) > 0
+        machine.succeed("udevadm settle")
+        assert int(machine.succeed(inputs)) - before == 2
+        assert not alice_can_open(uniq)
+        assert order("/tmp/queued", "restore").startswith("ok")
+        machine.succeed("systemctl stop queued pad-queued")
+        wait_restored()
   '';
 }
