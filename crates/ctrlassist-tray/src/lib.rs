@@ -78,8 +78,7 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
     // A preset's fields, asked once of each daemon that comes.
     let mut fields = Vec::new();
     loop {
-        let mut view = snapshot(&daemon);
-        if !view.alive {
+        if !daemon.is_available() {
             fields.clear();
         } else if fields.is_empty() {
             match daemon.preset_form().await {
@@ -87,10 +86,13 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
                 Err(error) => warn!(%error, "the daemon didn't say what a preset's fields are"),
             }
         }
-        view.fields.clone_from(&fields);
-        let alive = view.alive;
-        let news = handle
-            .update(move |tray| {
+        // Read under the tray's lock, as the answers to its picks read
+        // it too: the views it takes are in the order they were read.
+        let (news, alive) = handle
+            .update(|tray| {
+                let mut view = snapshot(&daemon);
+                view.fields.clone_from(&fields);
+                let alive = view.alive;
                 let mut news = view.news_for(&tray.view, &mut tray.asked);
                 news.extend(state::daemon_news(
                     was_alive,
@@ -98,7 +100,7 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
                     !tray.view.setups.is_empty(),
                 ));
                 tray.see(view);
-                news
+                (news, alive)
             })
             .await
             .unwrap_or_default();
@@ -113,6 +115,20 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
             return;
         }
     }
+}
+
+/// Brings the tray's view up to what the client mirrors now, and says
+/// what changed: as the loop that follows the daemon does, for a daemon
+/// that is there and whose state has arrived. That loop says the rest.
+fn catch_up(tray: &mut PadTray, daemon: &DaemonClient) -> Vec<Toast> {
+    let mut view = snapshot(daemon);
+    if !(view.alive && view.hydrated) {
+        return Vec::new();
+    }
+    view.fields.clone_from(&tray.view.fields);
+    let news = view.news_for(&tray.view, &mut tray.asked);
+    tray.see(view);
+    news
 }
 
 /// What to say when something asked from the menu didn't happen.
@@ -185,12 +201,16 @@ pub(crate) async fn act(
             }
             Action::Start(name) => {
                 let outcome = daemon.start_setup(&name).await;
-                unasked(&handle, &name, outcome.is_err()).await;
+                if outcome.is_err() {
+                    unask(&handle, &name, |asked| asked.start = false).await;
+                }
                 (format!("Couldn't start {name}"), outcome)
             }
             Action::Stop(name) => {
                 let outcome = daemon.stop_setup(&name).await;
-                unasked(&handle, &name, outcome.is_err()).await;
+                if outcome.is_err() {
+                    unask(&handle, &name, |asked| asked.stop = false).await;
+                }
                 (format!("Couldn't stop {name}"), outcome)
             }
             Action::Select {
@@ -211,23 +231,43 @@ pub(crate) async fn act(
             ),
             Action::Put { name, toml } => {
                 let outcome = put_and_apply(&daemon, &name, &toml).await;
-                // The tray showed the pick as made. Refused, it shows
-                // what is kept again.
-                if outcome.is_err() {
-                    let kept = daemon.list_profiles().unwrap_or_default();
-                    let name = name.clone();
-                    handle.update(move |tray| tray.unpick(&name, kept)).await;
+                let restarted = matches!(outcome, Ok(Applied::Restarted));
+                let refused = matches!(outcome, Err(Unapplied::Refused(_)));
+                // The answer is taken with the view caught up with the
+                // daemon as it gave it: a restart is said once, and what
+                // was seen meanwhile that wasn't the restart is said too.
+                let (news, running) = handle
+                    .update(|tray| {
+                        // The tray showed the pick as made. Refused, it
+                        // shows what is kept again.
+                        if refused {
+                            tray.unpick(&name, daemon.profile(&name).ok().flatten());
+                        }
+                        let mut news = catch_up(tray, &daemon);
+                        news.extend(state::answered(
+                            &mut tray.asked,
+                            &tray.view,
+                            &name,
+                            restarted,
+                        ));
+                        (news, tray.view.setup(&name).is_some())
+                    })
+                    .await
+                    .unwrap_or_default();
+                for toast in news {
+                    notifier.notify(toast);
                 }
-                // A change that restarted the setup is said once. Its
-                // stop and start, which may be seen before or after
-                // this, are left for the start to take off the list;
-                // anything else has neither to wait for.
-                let restarted = matches!(outcome, Ok(true));
-                unasked(&handle, &name, !restarted).await;
-                if restarted {
-                    notifier.notify(state::restarted(&name));
+                match outcome {
+                    Ok(_) => continue,
+                    Err(Unapplied::Refused(error)) => {
+                        (format!("Couldn't change {name}"), Err(error))
+                    }
+                    Err(Unapplied::Untaken(error)) => {
+                        warn!(%error, setup = name, "a change was kept but not taken");
+                        notifier.notify(state::untaken(&name, &error, running));
+                        continue;
+                    }
                 }
-                (format!("Couldn't change {name}"), outcome.map(|_| ()))
             }
         };
         if let Err(error) = outcome {
@@ -237,25 +277,62 @@ pub(crate) async fn act(
     }
 }
 
+/// What came of a pick that was kept.
+#[derive(Debug)]
+enum Applied {
+    /// Kept: a setup that runs it took it as it ran, or none runs it.
+    Kept,
+    /// Kept, and the setup that runs it restarted with it.
+    Restarted,
+}
+
+/// Why a pick didn't come to all it asked.
+#[derive(Debug)]
+enum Unapplied {
+    /// It wasn't kept: nothing changed.
+    Refused(ctrlassist::Error),
+    /// It was kept, but the setup that runs it didn't take it.
+    Untaken(ctrlassist::Error),
+}
+
 /// Keeps `toml` as the profile `name`, and has a setup that runs it
 /// take the change: as it runs where it can, and by a restart where it
 /// can't. One that doesn't run is only kept.
-/// Says whether that restarted it.
-async fn put_and_apply(daemon: &DaemonClient, name: &str, toml: &str) -> ctrlassist::Result<bool> {
-    daemon.put_profile(name, toml).await?;
-    if daemon.setup(name)?.is_some() {
-        return daemon.update_setup(name, true).await;
+async fn put_and_apply(
+    daemon: &DaemonClient,
+    name: &str,
+    toml: &str,
+) -> Result<Applied, Unapplied> {
+    daemon
+        .put_profile(name, toml)
+        .await
+        .map_err(Unapplied::Refused)?;
+    let taken = async {
+        if daemon.setup(name)?.is_some() {
+            return daemon.update_setup(name, true).await;
+        }
+        Ok(false)
+    };
+    match taken.await {
+        Ok(true) => Ok(Applied::Restarted),
+        Ok(false) => Ok(Applied::Kept),
+        Err(error) => Err(Unapplied::Untaken(error)),
     }
-    Ok(false)
 }
 
-/// Takes `name` off what was asked from the tray, if `done`: what was
-/// asked failed, or has nothing more to be seen of it.
-async fn unasked(handle: &Handle, name: &str, done: bool) {
-    if done {
-        let name = name.to_string();
-        handle.update(move |tray| tray.asked.remove(&name)).await;
-    }
+/// Changes what was asked of `name` from the tray: an rpc that failed
+/// has nothing to be seen of it.
+async fn unask(handle: &Handle, name: &str, change: impl FnOnce(&mut state::Asked)) {
+    handle
+        .update(|tray| {
+            if let Some(asked) = tray.asked.get_mut(name) {
+                change(asked);
+                if asked.is_empty() {
+                    tray.asked.remove(name);
+                }
+            }
+        })
+        .await;
 }
 
 #[cfg(test)]

@@ -88,18 +88,28 @@ pub struct PadTray {
     /// The profile last started, stopped or scrolled to: what a middle
     /// click on the icon acts on, while it can be.
     pub target: Option<String>,
-    /// How far the wheel has turned toward its next notch, in the
-    /// wheel's units, signed by direction.
-    /// The profiles picked at whose pick the daemon hasn't published
-    /// yet, each with its text as it was kept and as picked.
-    picked: BTreeMap<String, (String, String)>,
+    /// The profiles picked at whose picks the daemon hasn't all
+    /// published yet.
+    picked: BTreeMap<String, Picks>,
     /// What was asked of each setup from here and hasn't been seen
     /// done yet: it isn't news to the person who asked.
     pub asked: BTreeMap<String, Asked>,
+    /// How far the wheel has turned toward its next notch, in the
+    /// wheel's units, signed by direction.
     wheel: i32,
     /// When the wheel last turned.
     turned: Option<Instant>,
     actions: mpsc::UnboundedSender<Action>,
+}
+
+/// The picks made at a profile here that the daemon hasn't all published.
+#[derive(Debug)]
+struct Picks {
+    /// The profile's text as it was kept before them.
+    was: String,
+    /// The text each of them sent, oldest first: the last is the one
+    /// shown.
+    sent: Vec<String>,
 }
 
 /// How long the wheel is still before what it had turned toward its
@@ -136,19 +146,24 @@ impl PadTray {
     /// profile last used, whoever started or stopped it.
     pub fn see(&mut self, mut view: View) {
         // A profile picked at here is shown as picked until the daemon
-        // publishes it so: a view read before it did would undo the
-        // pick, and the next would be built on the profile without it.
-        self.picked.retain(|name, (was, picked)| {
+        // publishes the last pick: a view read before it did would undo
+        // the picks, and the next would be built on the profile without
+        // them.
+        self.picked.retain(|name, picks| {
             let Some(kept) = view.profiles.iter_mut().find(|kept| kept.name == *name) else {
                 return false;
             };
-            // Still as it was: the pick hasn't arrived. As picked, it
-            // has. Anything else is someone else's change, which stands.
-            if kept.toml != *was {
+            let Some(last) = picks.sent.last() else {
+                return false;
+            };
+            // As the last pick left it, all has arrived. As it was, or
+            // as an earlier pick left it, the last is still to come.
+            // Anything else is someone else's change, which stands.
+            if kept.toml == *last || (kept.toml != picks.was && !picks.sent.contains(&kept.toml)) {
                 return false;
             }
-            kept.toml.clone_from(picked);
-            kept.unset = ctrlassist_protocol::profile::Profile::unchosen(picked);
+            kept.toml.clone_from(last);
+            kept.unset = ctrlassist_protocol::profile::Profile::unchosen(last);
             true
         });
         if self.view.hydrated && view.hydrated {
@@ -169,11 +184,25 @@ impl PadTray {
         self.view = view;
     }
 
-    /// Shows the profiles as the daemon keeps them, after it refused a
-    /// pick at `name`.
-    pub fn unpick(&mut self, name: &str, kept: Vec<ctrlassist::Profile>) {
+    /// Shows the profile `name` as the daemon keeps it, `kept`, after it
+    /// refused a pick there. The picks at other profiles stay shown.
+    pub fn unpick(&mut self, name: &str, kept: Option<ctrlassist::Profile>) {
         self.picked.remove(name);
-        self.view.profiles = kept;
+        let profiles = &mut self.view.profiles;
+        match (
+            profiles.iter().position(|profile| profile.name == name),
+            kept,
+        ) {
+            (Some(at), Some(kept)) => profiles[at] = kept,
+            (Some(at), None) => {
+                profiles.remove(at);
+            }
+            (None, Some(kept)) => {
+                let at = profiles.partition_point(|profile| profile.name.as_str() < name);
+                profiles.insert(at, kept);
+            }
+            (None, None) => {}
+        }
     }
 
     /// Makes `name` the profile last used, and has it kept if it
@@ -255,28 +284,30 @@ impl PadTray {
                 let toml = form::to_toml(fields, &values);
                 // Shown as picked until the daemon publishes it, so that
                 // a second pick made at once builds on the first.
-                let was = self
-                    .picked
-                    .remove(&profile)
-                    .map_or_else(|| kept.toml.clone(), |(was, _)| was);
+                self.picked
+                    .entry(profile.clone())
+                    .or_insert_with(|| Picks {
+                        was: kept.toml.clone(),
+                        sent: Vec::new(),
+                    })
+                    .sent
+                    .push(toml.clone());
                 kept.toml.clone_from(&toml);
                 kept.unset = ctrlassist_protocol::profile::Profile::unchosen(&toml);
-                self.picked.insert(profile.clone(), (was, toml.clone()));
-                // A setup that runs it may be restarted by this.
-                if self.view.setup(&profile).is_some() {
-                    self.asked.insert(profile.clone(), Asked::Change);
-                }
+                // A setup that runs it, or comes to, may be restarted by
+                // this.
+                self.asked.entry(profile.clone()).or_default().changes += 1;
                 Action::Put {
                     name: profile,
                     toml,
                 }
             }
             Command::Start(name) => {
-                self.asked.insert(name.clone(), Asked::Start);
+                self.asked.entry(name.clone()).or_default().start = true;
                 Action::Start(name)
             }
             Command::Stop(name) => {
-                self.asked.insert(name.clone(), Asked::Stop);
+                self.asked.entry(name.clone()).or_default().stop = true;
                 Action::Stop(name)
             }
             Command::Select {
@@ -711,7 +742,7 @@ mod tests {
         // One the daemon refused is put back as kept.
         tray.activate(Command::set("couch", "rumble", "assist"));
         let _ = clicked.try_recv();
-        tray.unpick("couch", elsewhere.profiles.clone());
+        tray.unpick("couch", Some(elsewhere.profiles[0].clone()));
         tray.see(elsewhere.clone());
         assert_eq!(tray.view.profiles[0].toml, elsewhere.profiles[0].toml);
         tray.see(arrived);
@@ -774,6 +805,87 @@ mod tests {
             tray.activate(command);
             assert_eq!(clicked.try_recv().unwrap(), action);
         }
+    }
+
+    /// The text a pick asked to keep.
+    fn sent(action: Result<Action, mpsc::error::TryRecvError>) -> String {
+        match action {
+            Ok(Action::Put { toml, .. }) => toml,
+            other => unreachable!("a pick is a put, not {other:?}"),
+        }
+    }
+
+    /// Picks made one after another are shown until the daemon has
+    /// published the last: one it publishes on the way, as it takes them
+    /// in turn, neither undoes the later ones nor is built on in their
+    /// place.
+    #[test]
+    fn picks_in_a_row_are_shown_until_the_last_is_published() {
+        let (actions, mut clicked) = mpsc::unbounded_channel();
+        let mut tray = PadTray::new(actions);
+        let kept = view(Some(Phase::Running), Hiding::Service);
+        tray.see(kept.clone());
+        tray.activate(Command::set("couch", "identity", "xbox"));
+        let second = sent(clicked.try_recv());
+        tray.activate(Command::set("couch", "rumble", "assist"));
+        let third = sent(clicked.try_recv());
+        // The first published, the second still to come.
+        let mut published = kept;
+        published.profiles[0].toml.clone_from(&second);
+        tray.see(published.clone());
+        assert_eq!(tray.view.profiles[0].toml, third);
+        // A pick now builds on all of them.
+        tray.activate(Command::set("couch", "managed", "true"));
+        let fourth = sent(clicked.try_recv());
+        for kept in [
+            "identity = \"xbox\"",
+            "rumble = \"assist\"",
+            "managed = true",
+        ] {
+            assert!(fourth.contains(kept), "{kept} in {fourth}");
+        }
+        // Published one by one, the last settles it.
+        published.profiles[0].toml.clone_from(&third);
+        tray.see(published.clone());
+        assert_eq!(tray.view.profiles[0].toml, fourth);
+        published.profiles[0].toml.clone_from(&fourth);
+        tray.see(published.clone());
+        assert!(tray.picked.is_empty());
+        // A text the tray never sent is someone else's, and stands.
+        tray.activate(Command::set("couch", "rumble", "none"));
+        let _ = clicked.try_recv();
+        let mut elsewhere = published;
+        elsewhere.profiles[0].toml = crate::state::tests::COUCH.to_string();
+        tray.see(elsewhere.clone());
+        assert_eq!(tray.view.profiles[0].toml, elsewhere.profiles[0].toml);
+        assert!(tray.picked.is_empty());
+    }
+
+    /// A pick the daemon refused puts its own profile back as kept, and
+    /// leaves the picks at other profiles shown.
+    #[test]
+    fn a_refused_pick_leaves_the_other_profiles_picks() {
+        let (actions, mut clicked) = mpsc::unbounded_channel();
+        let mut tray = PadTray::new(actions);
+        let kept = view(None, Hiding::Service);
+        tray.see(kept.clone());
+        tray.activate(Command::set("couch", "identity", "xbox"));
+        let _ = clicked.try_recv();
+        tray.activate(Command::set("desk", "outputs", "3"));
+        let desk = sent(clicked.try_recv());
+        tray.unpick("couch", Some(kept.profiles[0].clone()));
+        assert_eq!(tray.view.profiles[0].toml, kept.profiles[0].toml);
+        assert_eq!(tray.view.profiles[1].toml, desk);
+        // And holds over a view read before it was published.
+        tray.see(kept);
+        assert_eq!(tray.view.profiles[1].toml, desk);
+        // One the daemon no longer keeps goes; one it has come to keep
+        // is shown, in its place by name.
+        tray.unpick("couch", None);
+        assert_eq!(tray.view.profiles.len(), 1);
+        tray.unpick("alpha", Some(crate::state::tests::profile("alpha", None)));
+        let names: Vec<&str> = tray.view.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["alpha", "desk"]);
     }
 }
 
