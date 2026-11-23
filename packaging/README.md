@@ -13,7 +13,7 @@ How CtrlAssist is put on a machine. After TisVlay's packaging, which has the lon
 - `/usr/bin/ctrlassist-gui`, the settings window, with its entry in the launcher ([`freedesktop/`](freedesktop/)) and a session bus service file by which the bus starts it: a second launch, and the tray's Settings, raise the window that is open. The Nix package writes the entry with nixpkgs' helper, so the two are kept the same by hand.
 - The hiding service's socket and service as system units; the daemon and the tray as user units, enabled for every user and started at their next login.
 - A udev rule that gives uinput and uhid to the user at the seat, and a `modules-load.d` file that loads both, and the kernel's PlayStation driver, which a virtual DualSense is a pad of.
-- A drop-in on `user@.service` that lets users' services ask for real-time scheduling up to priority 10, which the daemon's input thread does. It reaches no login shell. Removing the file turns it off; `spikes/realtime/README.md` has what was measured and why this way.
+- A drop-in on `user@.service` that lets users' services ask for real-time scheduling up to priority 10, which the daemon's input thread does. It reaches no login shell. Removing the file turns it off; [Real-time scheduling](#real-time-scheduling) has what was measured and why this way.
 - Completions for bash, zsh and fish.
 - `NOTICE`, which carries the bundled controller database's license, and `THIRD-PARTY-LICENSES.html`, the license of every crate built in, under `/usr/share/doc/ctrlassist/`.
 
@@ -28,6 +28,22 @@ Users' running daemons, trays and windows are left running, as TisVlay leaves it
 ## How the binaries are built
 
 `just package-build` builds with the `dist` profile through cargo-zigbuild, with zig as the linker and `x86_64-unknown-linux-gnu.2.34` as the target. The binaries then name the standard ELF interpreter, not a Nix store path, and use no glibc symbol newer than 2.34, so they run on Debian 12, Ubuntu 22.04, Fedora and Arch. They link libudev, and the hiding service libsystemd, by their plain sonames, which each package declares as a dependency. The window links fontconfig too, so the loader needs it before the window's first line runs, and loads OpenGL, EGL, the Wayland client libraries and libxkbcommon at run time, which no linker lists; each package declares all of them, and the Nix package puts them on the window's rpath.
+
+## Real-time scheduling
+
+The daemon runs as a systemd user service and its input thread asks for first-in-first-out scheduling at priority 10, which a stock machine refuses. Three ways of allowing it were measured on 2026-11-21, each on a NixOS virtual machine of its own built from the pinned nixpkgs:
+
+| Machine | In a user service | In a login shell | The user's service manager |
+|---|---|---|---|
+| Stock | limit 0, refused | limit 0 | limit 0 |
+| Drop-in: `LimitRTPRIO=10` on `user@.service` | limit 10, granted | limit 0 | limit 10 |
+| PAM: `security.pam.loginLimits`, rtprio 10 for the user | limit 10, granted | limit 10 | limit 10 |
+
+- **The drop-in and a PAM limit both work for a user service.** They differ in reach: the drop-in raises the limit for every user's services and nothing else, while a PAM limit raises it for the users named, for everything they run, shells included. Elsewhere than NixOS a PAM limit reaches the user manager only where the distribution's PAM setup for it calls `pam_limits`: systemd's own `systemd-user` fragment hasn't since version 232, though Debian adds it directly and Fedora and Arch through the `system-auth` they include (read from their packaging, not measured).
+- **`LimitRTPRIO=` in the daemon's own unit changes nothing,** on any machine: a user's service manager is unprivileged, and `systemd.exec(5)` says such a setting in a user service can't raise a limit above the manager's; systemd lowers the request to the manager's hard limit without a word (`setrlimit_closest`). So the line can cap, never grant, and the daemon's unit doesn't carry it.
+- **rtkit is no alternative here.** It grants only to a user with a login session, so not to a daemon started by lingering; only with an `RLIMIT_RTTIME` of 200 ms or less set first; and only round-robin. A thread that then runs 200 ms without blocking gets the whole process killed, which for the daemon is every virtual pad. It is the one of the three available inside a Flatpak, through the portal.
+
+The drop-in is the narrowest that works, user services only, priority 10 only, with no group to join and no CPU-time limit, and is what openSUSE ships for PipeWire. Not tried: Debian, Fedora or Arch themselves, a Flatpak, the portal. The spike that measured this, a NixOS test of five machines, is in the history at `cf28e7a` under `spikes/realtime/`.
 
 ## Trying a package
 
