@@ -342,13 +342,48 @@ fn parent_of(input: &udev::Device) -> Option<(udev::Device, Option<udev::Device>
     interface.driver().is_some().then_some((interface, None))
 }
 
+/// One device above a node, as [`interface_in`] reads it: its subsystem,
+/// its device type and its kernel name.
+type Ancestor<'a> = (Option<&'a str>, Option<&'a str>, Option<&'a str>);
+
+/// The kernel name of the USB interface a pad hangs from, read from the
+/// devices above one of its nodes, nearest first: for a pad with a HID
+/// device, that device's own parent if it is a USB interface, and none
+/// otherwise, as for a pad on Bluetooth through the kernel's HIDP, whose
+/// HID device sits under the Bluetooth adapter's interface; for a pad
+/// with none, the nearest USB interface above.
+fn interface_in<'a>(mut ancestors: impl Iterator<Item = Ancestor<'a>>) -> Option<&'a str> {
+    let is_interface = |(subsystem, kind, _): Ancestor<'_>| {
+        subsystem == Some("usb") && kind == Some("usb_interface")
+    };
+    while let Some(ancestor) = ancestors.next() {
+        if ancestor.0 == Some("hid") {
+            return ancestors.next().filter(|parent| is_interface(*parent))?.2;
+        }
+        if is_interface(ancestor) {
+            return ancestor.2;
+        }
+    }
+    None
+}
+
+/// The kernel name of the USB interface the pad of `node` hangs from, as
+/// [`interface_in`] says.
+fn interface_of(node: &udev::Device) -> Option<String> {
+    let ancestors: Vec<udev::Device> =
+        std::iter::successors(Some(node.clone()), udev::Device::parent).collect();
+    interface_in(ancestors.iter().map(|device| {
+        (
+            subsystem(device),
+            device.devtype().and_then(|kind| kind.to_str()),
+            device.sysname().to_str(),
+        )
+    }))
+    .map(str::to_string)
+}
+
 /// What names this event node's pad to the rule.
 fn names_of(event: &udev::Device, input: &udev::Device, hid: Option<&udev::Device>) -> Names {
-    let interface =
-        std::iter::successors(Some(input.clone()), udev::Device::parent).find(|device| {
-            subsystem(device) == Some("usb")
-                && device.devtype().and_then(|kind| kind.to_str()) == Some("usb_interface")
-        });
     Names {
         uniq: attribute(input, "uniq"),
         serial: property(event, "ID_SERIAL_SHORT").map(str::to_string),
@@ -363,7 +398,7 @@ fn names_of(event: &udev::Device, input: &udev::Device, hid: Option<&udev::Devic
         hid_id: hid
             .and_then(|hid| property(hid, "HID_ID"))
             .map(str::to_string),
-        interface: interface.and_then(|interface| interface.sysname().to_str().map(str::to_string)),
+        interface: interface_of(input),
     }
 }
 
@@ -514,16 +549,11 @@ pub(crate) fn hidden_raw() -> Vec<(Device, BTreeSet<String>)> {
         let Some(hid) = ancestors().find(|device| subsystem(device) == Some("hid")) else {
             continue;
         };
-        let interface = ancestors().find(|device| {
-            subsystem(device) == Some("usb")
-                && device.devtype().and_then(|kind| kind.to_str()) == Some("usb_interface")
-        });
         let names = Names {
             hid: hid.sysname().to_str().map(str::to_string),
             hid_uniq: property(&hid, "HID_UNIQ").map(str::to_string),
             hid_id: property(&hid, "HID_ID").map(str::to_string),
-            interface: interface
-                .and_then(|interface| interface.sysname().to_str().map(str::to_string)),
+            interface: interface_of(&node),
             ..Names::default()
         };
         let Some(enumeration) = enumeration(&hid) else {
@@ -814,16 +844,51 @@ mod tests {
                 "raw-1-2:1.3-0003:0000054C:00000CE6",
             ])
         );
-        // On Bluetooth: no port.
+        // On Bluetooth: no port, though through the kernel's HIDP its HID
+        // device sits under the Bluetooth adapter, on USB. Its raw node is
+        // named by its address, which the HID device has from its making.
+        let usb = |name| (Some("usb"), Some("usb_interface"), Some(name));
+        let hidp = [
+            (Some("input"), None, Some("input31")),
+            (Some("hid"), None, Some("0005:054C:0CE6.0018")),
+            (Some("bluetooth"), Some("link"), Some("hci0:256")),
+            (Some("bluetooth"), Some("host"), Some("hci0")),
+            usb("1-4:1.0"),
+            (Some("usb"), Some("usb_device"), Some("1-4")),
+        ];
+        assert_eq!(interface_in(hidp.into_iter()), None);
         let bluetooth = Names {
-            interface: None,
+            interface: interface_in(hidp.into_iter()).map(str::to_string),
+            hid: Some("0005:054C:0CE6.0018".into()),
+            hid_id: Some("0005:0000054C:00000CE6".into()),
             ..dualsense
         };
-        assert!(
-            !markers(&bluetooth)
-                .iter()
-                .any(|marker| marker.starts_with("raw-"))
+        assert_eq!(
+            markers(&bluetooth),
+            set(&[
+                "addr-0a:1b:2c:3d:4e:14",
+                "hid-0005:054C:0CE6.0018",
+                "uniq-0005:0000054C:00000CE6-0a:1b:2c:3d:4e:14",
+            ])
         );
+        // On USB the HID device's own parent is the port's interface; with
+        // no HID device, as under xpad, the nearest interface above is.
+        let wired = [
+            (Some("input"), None, Some("input30")),
+            (Some("hid"), None, Some("0003:054C:0CE6.0017")),
+            usb("1-2:1.3"),
+            (Some("usb"), Some("usb_device"), Some("1-2")),
+        ];
+        assert_eq!(interface_in(wired.into_iter()), Some("1-2:1.3"));
+        let xpad = [(Some("input"), None, Some("input29")), usb("1-1:1.0")];
+        assert_eq!(interface_in(xpad.into_iter()), Some("1-1:1.0"));
+        // A uhid device has none.
+        let uhid = [
+            (Some("input"), None, Some("input28")),
+            (Some("hid"), None, Some("0003:1209:0BAE.0002")),
+            (Some("misc"), None, Some("uhid")),
+        ];
+        assert_eq!(interface_in(uhid.into_iter()), None);
     }
 
     #[test]
