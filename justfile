@@ -99,7 +99,7 @@ zizmor:
 
 # Run every local gate
 [group('check')]
-check: deny shear typos actionlint zizmor fmt build clippy doc test
+check: deny shear typos actionlint zizmor licenses-html fmt build clippy doc test
 
 # --- CI ------------------------------------------------------------------
 #
@@ -123,10 +123,56 @@ cov_exclude := "--ignore-filename-regex 'ctrlassist-test/|ctrlassist-hider/src/(
 audit:
     cargo deny --config packaging/licensing/deny.toml check advisories
 
+# Where `_cov-collect` records the test run's exit status, so the report
+# recipes can still render coverage after a failure and then exit with it.
+cov_status := "target/llvm-cov-target/cov-test-status"
+
+# Fail with the recorded test status, if the run had failures.
+cov_verdict := 'status=$(cat ' + cov_status + ' 2>/dev/null || echo 1); if [ "$status" != 0 ]; then echo "tests failed (exit $status) - coverage reflects a failing run" >&2; exit "$status"; fi'
+
+# Run the tests under coverage instrumentation, for the cov-* recipes.
+# Every test runs (`--no-fail-fast`) and a failure is recorded rather
+# than aborting, so the report recipes still render what ran; they exit
+# with the recorded status afterwards. The gate (`test-ci`) stays
+# fail-fast. TisVlay's recipes.
+[private]
+_cov-collect:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export CARGO_PROFILE_DEV_DEBUG=line-tables-only
+    status=0
+    cargo llvm-cov --no-report nextest --workspace --all-features --no-fail-fast || status=$?
+    cargo test --workspace --all-features --doc || { rc=$?; [ "$status" = 0 ] && status=$rc; }
+    mkdir -p "$(dirname {{ cov_status }})"
+    echo "$status" > {{ cov_status }}
+
 # Print a coverage summary
-[group('ci')]
-cov:
-    cargo llvm-cov nextest --workspace --all-features {{ cov_exclude }} --summary-only
+[group('coverage')]
+cov: _cov-collect
+    cargo llvm-cov report {{ cov_exclude }} --summary-only
+    @{{ cov_verdict }}
+
+# Write an HTML coverage report and open it
+[group('coverage')]
+cov-html: _cov-collect
+    cargo llvm-cov report {{ cov_exclude }} --html --open
+    @{{ cov_verdict }}
+
+# Write lcov.info for an editor's coverage gutters
+[group('coverage')]
+cov-lcov: _cov-collect
+    cargo llvm-cov report {{ cov_exclude }} --lcov --output-path lcov.info
+    @echo "Wrote lcov.info."
+    @{{ cov_verdict }}
+
+# A failing test run fails the ratchet before any comparison: partial
+# coverage must neither pass nor move the baseline.
+#
+# Fail if line coverage is below `lines` percent (default: the floor)
+[group('coverage')]
+cov-ratchet lines=cov_baseline_lines: _cov-collect
+    @{{ cov_verdict }}
+    cargo llvm-cov report {{ cov_exclude }} --fail-under-lines {{ lines }} --summary-only
 
 # One instrumented build serves clippy, the tests and the report:
 # `show-env` routes every later cargo command through cargo-llvm-cov, so

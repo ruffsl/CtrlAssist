@@ -18,6 +18,7 @@ Every project command is a `just` recipe, and each prek hook runs the recipe of 
 | `just test` | nextest, then doc tests |
 | `just actionlint` | The workflows: syntax, expressions, and shellcheck over their `run:` lines |
 | `just zizmor` | The workflows and Dependabot config for security problems |
+| `just licenses-html` | The third-party license bundle the packages ship can be written: it fails on a crate whose license `packaging/licensing/about.toml` doesn't accept |
 | `just check` | All of the above |
 
 Build and clippy use the test profile, so the tests reuse what they compiled.
@@ -32,13 +33,14 @@ Build and clippy use the test profile, so the tests reuse what they compiled.
 | `changes` | Decides whether the change touches code or only docs | |
 | `ci` | Formatting and docs hooks, then clippy and the tests under one coverage-instrumented build | `just test-ci` |
 | `msrv` | The workspace builds on its oldest supported compiler | `just msrv` |
+| `docs` | The user guide's generated pages are current, and the guide builds with its local links and anchors intact | `just docs-gen-check`, `just docs-links` |
 | `CI result` | Passes only if the others passed; the one check a branch ruleset requires | |
 
-- **Drafts and docs-only changes run only `checks`;** marking a pull request ready starts the rest. Docs-only means `docs/`, `.claude/`, the README, the license, and the contributing guide, security policy, pull request template and issue forms under `.github/`.
+- **Drafts run only `checks`, and docs-only changes `checks` and `docs`;** marking a pull request ready starts the rest. Docs-only means `docs/`, `.claude/`, the README, the license, and the contributing guide, security policy, pull request template and issue forms under `.github/`.
 - **Tools whose output can change between releases are pinned to the dev shell's versions** in the workflows (typos, zizmor, shellcheck, actionlint, cargo-about, cargo-deny, cargo-shear, tombi, lychee, mdbook and the packaging tools), so local and CI agree. Bump them together after a `nix flake update`.
 - **One instrumented build.** `just test-ci` routes clippy, nextest and the doc tests through cargo-llvm-cov's environment, so they share a target directory instead of compiling twice.
-- **Coverage has a floor,** `cov_baseline_lines` in the justfile. `just test-ci` fails below it. Raise it when coverage rises (`just cov` prints the figure); never lower it. Two things are kept out of the figure because only the virtual machine checks can run them: `ctrlassist-test`, and the hiding service's root-only files.
-- **Actions are pinned to a commit,** with the release in a comment, and Dependabot proposes updates to both after a one-week cooldown.
+- **Coverage has a floor,** `cov_baseline_lines` in the justfile. `just test-ci` fails below it. Raise it when coverage rises (`just cov` prints the figure); never lower it. Kept out of the figure, as `cov_exclude` in the justfile lists them: `ctrlassist-test`; the hiding service's root-only files, which only the virtual machine checks can run; and the tray's `desktop.rs` and `service.rs`, which need a desktop's session bus and hold only what puts the rest on a desktop. `just cov-html` and `just cov-lcov` write the same figure as a report, and `just cov-ratchet` checks it against the floor without the gates around it; all of them run every test and say afterwards if one failed.
+- **Actions are pinned to a commit,** with the release in a comment, and Dependabot proposes updates to both after a one-week cooldown. To pin a newly added action, run `GITHUB_TOKEN=$(gh auth token) pinact run`.
 
 ## Toolchain
 
@@ -91,7 +93,7 @@ Recorded so nobody re-scouts. TisVlay's build notes have the measurements.
 
 ## Dependencies
 
-Every dependency is declared once in `[workspace.dependencies]` and inherited. The core crate has none. zenoh, the control plane, brings most of the tree and every exception in `packaging/licensing/deny.toml`; its pin and feature set are TisVlay's, and the two move together.
+Every dependency is declared once in `[workspace.dependencies]` and inherited, but for `slint-build` and `i-slint-backend-testing`, which are pinned exactly to Slint's release in the one crate each that uses them, as in TisVlay; the three move together. The core crate has none. zenoh, the control plane, brings most of the tree and every exception in `packaging/licensing/deny.toml`; its pin and feature set are TisVlay's, and the two move together.
 
 A crate that needs a fix upstream doesn't have yet is carried under `vendor/` and wired in with `[patch.crates-io]`; [vendor/README.md](../vendor/README.md) lists each one and its fix. The controller database snapshot in `crates/ctrlassist-device/data` is data under the zlib license, kept beside it; `just update-controller-db` refreshes it from upstream at a named commit, and its diff is reviewed like code.
 
@@ -112,3 +114,13 @@ Things to look at again when the stated condition changes.
 | uhid bindings | The uhid events are laid out by hand, because `uhid-virt`'s FFI layer runs bindgen and needs libclang at build time. | A binding without that cost appears. |
 | `zbus` | `ksni` holds the tray at zbus 5. | `ksni` moves to a newer zbus. |
 | InputPlumber | GPL-3.0-or-later. It can be studied and spoken to, never copied from, in an Apache-2.0 project. | Never; this is a standing rule. |
+| zenoh and zenoh-ext | zenoh-ext is pinned with a tilde (`~1.10`) because the SDK's mirror rides on its `unstable` API (the advanced subscriber and its history), which may break within 1.x; both pins are TisVlay's. | zenoh 2.x, or any zenoh-ext bump: move the pin deliberately, with TisVlay's, checking the advanced subscriber the SDK uses. |
+| winit's SCTK 0.19 path | winit 0.30, which Slint's `unstable-winit-030` backend uses, forces the SCTK 0.19 entries in `deny.toml`'s skip-list. | Each Slint or winit bump; one that moves winit to SCTK 0.20 drops them. |
+| Slint's `Focusable` init | `Focusable` runs `focus-in` from `init` for a control created already focused, because Slint doesn't run the `has-focus` change handler for a control created and focused in one pass (slint-ui/slint#14927, as TisVlay records it). | A Slint release with the fix: drop that `init`; the navigation tests cover the created-and-focused case. |
+| `packaging/nix/slint-lsp.nix` | The editor's slint-lsp has to read the workspace's Slint edition, and nixpkgs' is older. | nixpkgs' slint-lsp reaches the Slint pin: delete the file and use nixpkgs' package in the dev shell. |
+| tombi | The flake overrides nixpkgs' tombi to the version CI installs, so local and CI formatting agree. | nixpkgs reaches the pinned version: drop the override. Bump the pin and CI's `tombi@<version>` together. |
+| `LLVM_PROFILE_FILE` in `.cargo/config.toml` | Defaulted so a test binary left instrumented by an earlier coverage run writes its data under `target/profraw/`, not into each crate's directory. Cargo leaves this to the user. | rust-lang/cargo#13040 or #13136 progress. |
+| cargo-shear | It finds unused and misplaced dependencies, which cargo may learn to do itself. | The toolchain pin reaches the release that stabilizes cargo's own lints: try `[workspace.lints.cargo]` `unused_dependencies` and `missing_lints_inheritance`, and if they cover what shear finds, retire `just shear`. |
+| clippy's test allowances | `.config/clippy.toml` allows lints in tests one key at a time, and they don't reach helpers under `tests/`, so each integration-test root carries a reasoned `#![expect]`. | clippy's generic `allow-in-tests` (rust-clippy#17520) ships: replace the per-lint keys, and delete the roots' `#![expect(clippy::unwrap_used)]`. |
+| The pedantic group | No lint group is ever enabled (see the lint policy), so new lints worth having arrive only when looked for. | Once a year: run clippy once with `-W clippy::pedantic`, and the nursery lints worth a look, and consider new hand-picked lints for `[workspace.lints]`. |
+| actionlint and `$/` | zizmor asks for GitHub's `uses: $/…` self-repository syntax, which actionlint doesn't accept yet, so `release.yml`'s call to `build-packages.yml` carries a zizmor ignore. | actionlint accepts `$/`: switch the call over, drop the ignore, and check that the next tag's attestations still name `build-packages.yml` as the signer. |

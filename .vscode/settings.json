@@ -1,4 +1,5 @@
 {
+    "slint.lspServerPath": "slint-lsp",
     "rust-analyzer.server.path": "rust-analyzer",
     "cSpell.words": [
         "actionlint",

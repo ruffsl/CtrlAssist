@@ -216,6 +216,9 @@
             lldb
             llvmPkgs.bintools-unwrapped
             pkg-config
+            # Pins a newly added action to its commit SHA, with the
+            # release in a comment (docs/build.md § CI).
+            pinact
             prek
             rust
             # actionlint runs it over the workflows' `run:` lines
