@@ -27,6 +27,13 @@ pub(crate) enum Seen {
     /// The device at this place in sysfs, which pads can be anchored to,
     /// has gone.
     Unplugged(PathBuf),
+    /// The hiding service has asked a re-bind of the device at `anchor`,
+    /// and of the event nodes under it only those at `present` are still
+    /// there: see [`Change::Rebinding`](ctrlassist_device::Change).
+    Rebinding {
+        anchor: PathBuf,
+        present: Vec<PathBuf>,
+    },
 }
 
 /// Whether the pad on `node` can rumble; `None` when it can't be opened
@@ -91,6 +98,9 @@ impl Watch {
                             Change::Arrived(found) => arrived(found),
                             Change::Left(node) => Seen::Left(node),
                             Change::Unplugged(device) => Seen::Unplugged(device),
+                            Change::Rebinding { anchor, present } => {
+                                Seen::Rebinding { anchor, present }
+                            }
                             // A change this release doesn't know says
                             // nothing it can act on.
                             _ => return,

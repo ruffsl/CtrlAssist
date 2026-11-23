@@ -4,13 +4,17 @@
 //! Re-binding a pad's driver, as the hiding service does to hide a pad
 //! and to show it again, removes the pad's input nodes and makes new
 //! ones, and never removes the device whose driver it re-binds. So a node
-//! that goes while that device is still there is the pad away for a
-//! moment, and the device's own removal is the pad unplugged.
+//! that goes for a re-bind the service asked of that device is the pad
+//! away for a moment, one that comes on it is the pad back, and the
+//! device's own removal is the pad unplugged. A node can also go while
+//! its device stays for no re-bind: a pad on a wireless receiver,
+//! switched off, whose receiver is the device.
 
 use std::path::PathBuf;
 
 /// One enumeration of the device a pad's driver is bound to: its HID
-/// device, or for a pad with none its USB interface. A pad with neither,
+/// device, or for a pad with none its USB interface; for a pad on a
+/// wireless receiver, the receiver's. A pad with neither,
 /// as a uinput pad another program made, has no anchor: nothing re-binds
 /// it, and its node is what goes when it does.
 ///

@@ -281,6 +281,42 @@ pkgs.testers.runNixOSTest {
         assert "a pad disconnected" not in since_stop, since_stop
         assert known()[HID]["connected"] and known()[PLAIN]["connected"], known()
 
+    with subtest("udev sends a re-bind the service asks on before the removals it causes, as the daemon hears them"):
+        # The device crate's monitor, as the daemon's watch reads it, says
+        # each change in the order udev sent it, through a hide and a
+        # showing again of the pad with a HID driver.
+        machine.succeed("systemd-run --unit watch -p StandardOutput=file:/tmp/watch ctrlassist-fixture watch")
+        machine.wait_until_succeeds("grep -qx watching /tmp/watch")
+        node = nodes()[HID]["event"][0]
+        anchor = machine.succeed(f"readlink -f /sys/class/input/{node.split('/')[-1]}/device/device").strip()
+        cli("start", "couch")
+        phase_is("running")
+        machine.succeed("udevadm settle")
+        cli("stop", "couch")
+        retry(lambda _last: not known()[HID]["hidden"])
+        machine.succeed("udevadm settle")
+        machine.succeed("systemctl stop watch")
+        heard = machine.succeed("cat /tmp/watch").splitlines()[1:]
+        # The pad's own: the requests on its HID device, the arrivals
+        # under it, and the removals of the nodes it had.
+        ours, order, present = {node}, [], []
+        for line in heard:
+            word = line.split()
+            if word[0] == "rebinding" and word[1] == anchor:
+                order.append("rebinding")
+                present = word[2].removeprefix("present=").split(",")
+            elif word[0] == "arrived" and word[3] == f"anchor={anchor}":
+                if order[-1:] != ["arrived"]:
+                    # The rule re-bound the driver before udev sent the
+                    # request on: the node it made was there to be seen.
+                    assert word[2] in present, (line, present, heard)
+                    order.append("arrived")
+                ours.add(word[1])
+            elif word[0] == "left" and word[1] in ours and order[-1:] != ["left"]:
+                order.append("left")
+        print("\n".join(heard))
+        assert order == ["rebinding", "left", "arrived"] * 2, (order, heard)
+
     with subtest("a connected DualSense is copied through the service, and virtual ones are made from it"):
         # A stand-in for a real one: a pad of the kernel's PlayStation
         # driver with an address a real pad could have.
@@ -342,6 +378,31 @@ pkgs.testers.runNixOSTest {
         assert "a profile starts by itself" not in daemon_journal().split("a setup stopped")[-1]
         cli("start", "couch")
         phase_is("running")
+
+    with subtest("a pad re-bound by anyone but the service has left and is plugged in, which starts a profile that starts by itself"):
+        # As a pad on a wireless receiver switched off and on again: its
+        # node goes and comes back while the device above it stays, with
+        # no request from the service.
+        cli("stop", "couch")
+        retry(lambda _last: not known()[HID]["hidden"])
+        machine.wait_until_succeeds('test -z "$(ls -A /run/ctrlassist/hide)"')
+        machine.succeed("udevadm settle")
+        assert setup() is None, setup()
+        node = nodes()[HID]["event"][0]
+        hid = machine.succeed(f"basename $(readlink -f /sys/class/input/{node.split('/')[-1]}/device/device)").strip()
+        machine.succeed(f"echo -n {hid} > /sys/bus/hid/devices/{hid}/driver/unbind")
+        retry(lambda _last: not known()[HID]["connected"])
+        since_stop = daemon_journal().split("a setup stopped")[-1]
+        assert since_stop.count("a pad disconnected") == 1, since_stop
+        machine.succeed(f"echo -n {hid} > /sys/bus/hid/drivers_probe")
+        phase_is("running")
+        assert known()[HID]["connected"] and known()[HID]["hidden"], known()
+        # The start hid the pad, a re-bind of the service's own: not
+        # published as the pad leaving.
+        machine.succeed("udevadm settle")
+        since_stop = daemon_journal().split("a setup stopped")[-1]
+        assert since_stop.count("a pad disconnected") == 1, since_stop
+        assert "a profile starts by itself" in since_stop, since_stop
 
     with subtest("stopping the service restores the pads"):
         machine.succeed(as_alice("systemctl --user stop ctrlassist-daemon.service"))

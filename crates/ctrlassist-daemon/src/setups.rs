@@ -3617,6 +3617,7 @@ mod tests {
         let address = id.strip_prefix("address:").unwrap();
         Found {
             node: PathBuf::from(node),
+            syspath: anchor_of(id).path.join(node.trim_start_matches('/')),
             identifiers: ctrlassist_device::Identifiers {
                 name: "Wireless Controller".to_string(),
                 bus: 3,
@@ -3911,11 +3912,14 @@ mod tests {
     }
 
     /// The primary pad, at `node`, goes and comes back `times` times on
-    /// its anchor, as re-binds of its driver make it, whoever asked for
-    /// them: none of that is published as it leaving, and none of it
+    /// its anchor, as re-binds of its driver the hiding service asked
+    /// make it: none of that is published as it leaving, and none of it
     /// starts the profile that was stopped.
     async fn goes_and_comes_back(rig: &mut Rig, node: &str, times: usize) {
         for time in 0..times {
+            let anchor = anchor_of(PRIMARY).path;
+            let present = Vec::new();
+            rig.reactor.saw(Seen::Rebinding { anchor, present }).await;
             rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
             assert!(
                 rig.reactor.book.pad(PRIMARY).unwrap().connected,
@@ -3931,11 +3935,12 @@ mod tests {
         }
     }
 
-    /// The primary pad, at `node`, is unplugged: its node goes, and then
-    /// its anchor, which is when it is published as gone.
+    /// The primary pad, at `node`, is unplugged: its node goes, with no
+    /// re-bind asked, which is when it is published as gone, and then its
+    /// anchor.
     async fn unplugged(rig: &mut Rig, node: &str) {
         rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
-        assert!(rig.reactor.book.pad(PRIMARY).unwrap().connected, "away");
+        assert!(!rig.reactor.book.pad(PRIMARY).unwrap().connected, "gone");
         rig.reactor
             .saw(Seen::Unplugged(anchor_of(PRIMARY).path))
             .await;
@@ -3994,9 +3999,9 @@ mod tests {
     }
 
     /// A profile that starts by itself, stopped by hand, stays stopped
-    /// through its pad's re-binds, whoever made them and in whatever
-    /// number: the showing again its stop asked, a hide given up and
-    /// the service's showing the pad again for it, another's. None is
+    /// through its pad's re-binds the hiding service asked, in whatever
+    /// number: the showing again its stop asked, a hide given up and the
+    /// service's showing the pad again for it, its sweep's. None is
     /// published as the pad leaving. Unplugged, the pad is told gone.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_profile_stopped_by_hand_is_not_started_again_by_re_binds() {
@@ -4036,6 +4041,28 @@ mod tests {
             ..connecting(PRIMARY, node)
         };
         rig.reactor.saw(Seen::Arrived(again, None)).await;
+        assert!(rig.reactor.setups.setup("couch").is_some(), "started");
+        finish(&mut rig.reactor).await;
+    }
+
+    /// A pad whose node goes while its anchor stays, with no re-bind the
+    /// hiding service asked, as a pad on a wireless receiver switched off
+    /// does, has left, and is published so; switched on again it is a
+    /// pad plugged in, and a profile that starts by itself and waits for
+    /// it does. The start makes its virtual pad, so this needs uinput.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_back_on_its_receiver_starts_a_profile_that_starts_by_itself() {
+        const TEST: &str = "a_pad_back_on_its_receiver_starts_a_profile_that_starts_by_itself";
+        let mut rig = rig().await;
+        let [_, node] = managed_with_both_pads(&mut rig);
+        rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
+        assert!(!rig.reactor.book.pad(PRIMARY).unwrap().connected, "left");
+        if !ctrlassist_test::can_make_pads(TEST) {
+            return;
+        }
+        rig.reactor
+            .saw(Seen::Arrived(connecting(PRIMARY, node), None))
+            .await;
         assert!(rig.reactor.setups.setup("couch").is_some(), "started");
         finish(&mut rig.reactor).await;
     }

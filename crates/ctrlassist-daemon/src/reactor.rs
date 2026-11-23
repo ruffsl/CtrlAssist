@@ -451,10 +451,15 @@ impl Reactor {
                     remembered,
                 )
             }
-            // A pad whose anchor is still there is away, and nothing is
-            // said of it until its anchor goes.
+            // A pad whose node went for a re-bind the hiding service
+            // asked is away, and nothing is said of it unless its anchor
+            // goes.
             Seen::Left(node) => (self.book.left(&node).into_iter().collect(), false),
             Seen::Unplugged(device) => (self.book.unplugged(&device), false),
+            Seen::Rebinding { anchor, present } => {
+                self.book.rebinding(&anchor, &present);
+                return;
+            }
         };
         if !arrived {
             for pad in &changed {

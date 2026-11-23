@@ -16,6 +16,10 @@ use crate::pad::Identifiers;
 pub struct Found {
     /// Its event node.
     pub node: PathBuf,
+    /// Its event node's place in sysfs, which no node made after it has:
+    /// the input device above it is numbered afresh each time, where the
+    /// event node's own number is handed on.
+    pub syspath: PathBuf,
     /// What tells it from others.
     pub identifiers: Identifiers,
     /// What its node hangs from, where that could be read.
@@ -42,6 +46,52 @@ pub enum Change {
     /// [anchored](Anchor) to, has gone: after every node under it, udev
     /// sending a device's removal after its children's.
     Unplugged(PathBuf),
+    /// The hiding service has asked udev to re-bind the driver of the
+    /// device at `anchor`, which a pad can be anchored to. udev runs the
+    /// rule that re-binds it before it sends the request on, so this
+    /// comes once the kernel has removed the device's nodes and made new
+    /// ones, and before udev sends any of that: `present` is the place in
+    /// sysfs of each event node under the device now, and a node of the
+    /// device's that isn't among them is going for the re-bind.
+    Rebinding {
+        /// The device re-bound.
+        anchor: PathBuf,
+        /// The event nodes under it as the request is heard.
+        present: Vec<PathBuf>,
+    },
+}
+
+/// The argument the hiding service's request for a re-bind carries, as
+/// udev has it: the kernel prefixes each argument written to a device's
+/// `uevent` file with `SYNTH_ARG_`, and nothing a device or a driver
+/// reports has that name. Only root and the service's group may write
+/// the `uevent` files of the devices the service may ask for (the rule
+/// gives those to the group), and udev's listeners take its events from
+/// root alone, so neither a pad nor another user can forge it.
+const REBIND: (&str, &str) = ("SYNTH_ARG_CTRLASSIST", "rebind");
+
+/// Whether a udev change event is the hiding service's request for a
+/// re-bind of a device a pad can be anchored to.
+fn is_rebind(device: &udev::Device) -> bool {
+    anchor::can_be(device)
+        && device
+            .property_value(REBIND.0)
+            .is_some_and(|value| value == REBIND.1)
+}
+
+/// The place in sysfs of each event node under `device` now; none if
+/// udev can't be asked.
+fn event_nodes_under(device: &udev::Device) -> Vec<PathBuf> {
+    let listed = udev::Enumerator::new().and_then(|mut nodes| {
+        nodes.match_parent(device)?;
+        nodes.match_subsystem("input")?;
+        nodes.match_sysname("event*")?;
+        Ok(nodes
+            .scan_devices()?
+            .map(|node| node.syspath().to_path_buf())
+            .collect())
+    });
+    listed.unwrap_or_default()
 }
 
 fn attribute(device: &udev::Device, name: &str) -> Option<String> {
@@ -90,10 +140,14 @@ pub(crate) fn found(device: &udev::Device) -> Option<Found> {
     };
     // A pad that goes while it is being read leaves some of this empty,
     // the `phys` that marks the daemon's own pads included. What was
-    // read is a pad only if the pad was still there afterwards.
+    // read is a pad only if its node was still there afterwards: once
+    // its input device has gone, udev takes the nearest device above
+    // that is still there for the node's parent, its HID device, say.
     let anchor = anchor::of(device);
-    input.syspath().exists().then_some(Found {
+    let syspath = device.syspath().to_path_buf();
+    syspath.exists().then_some(Found {
         node,
+        syspath,
         identifiers,
         anchor,
     })
@@ -151,6 +205,12 @@ impl Monitor {
             match event.event_type() {
                 udev::EventType::Remove if anchor::can_be(&device) => {
                     change(Change::Unplugged(device.syspath().to_path_buf()));
+                }
+                udev::EventType::Change if is_rebind(&device) => {
+                    change(Change::Rebinding {
+                        anchor: device.syspath().to_path_buf(),
+                        present: event_nodes_under(&device),
+                    });
                 }
                 udev::EventType::Add | udev::EventType::Change => {
                     if let Some(found) = found(&device) {
