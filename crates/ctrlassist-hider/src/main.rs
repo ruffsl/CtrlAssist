@@ -40,7 +40,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::connections::Connections;
 use crate::hide::Leave;
-use crate::pad::Pad;
+use crate::pad::{Device, Pad};
 
 /// Where a hidden pad is in its life.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -98,7 +98,7 @@ impl State {
     fn held(&self) -> Vec<PathBuf> {
         self.entries
             .iter()
-            .map(|entry| entry.pad.parent.clone())
+            .map(|entry| entry.pad.parent.path.clone())
             .collect()
     }
 }
@@ -175,7 +175,7 @@ fn show(shared: &Shared, token: u32, client: Option<BorrowedFd<'_>>, rebind: boo
         };
         entry.phase = Phase::Showing;
         let markers = entry.pad.markers.clone();
-        let parent = (rebind && pad::is_there(&entry.pad)).then(|| entry.pad.parent.clone());
+        let parent = (rebind && entry.pad.parent.is_there()).then(|| entry.pad.parent.clone());
         let remaining = state.markers();
         for marker in markers.difference(&remaining) {
             hide::delete(marker);
@@ -190,7 +190,7 @@ fn show(shared: &Shared, token: u32, client: Option<BorrowedFd<'_>>, rebind: boo
         if let Err(refusal) = rebound.outcome {
             warn!(
                 token,
-                device = %parent.display(),
+                device = %parent.path.display(),
                 %refusal,
                 "the pad's driver wasn't re-bound to show it again; it is shown at its next event"
             );
@@ -269,13 +269,13 @@ fn marked(
     let pad = presented(user, fd.as_fd())?;
     // Before any marker is made: without the rule, the request can't be
     // made, and the pad is left as it was for the caller to grab.
-    hide::may_request(&pad.parent)?;
+    hide::may_request(&pad.parent.path)?;
     let token = {
         let mut state = shared.state();
         if state
             .entries
             .iter()
-            .any(|entry| entry.pad.parent == pad.parent)
+            .any(|entry| entry.pad.parent.path == pad.parent.path)
         {
             return Err(Refusal::Busy);
         }
@@ -307,14 +307,23 @@ fn marked(
 }
 
 /// Opens a hidden pad's event node again, finding the pad first if it
-/// reconnected: only once the device it was checked as is gone, and only
+/// reconnected: only once the device it was checked as is gone, or is
+/// another enumeration at the same place (a pad on USB with no HID device
+/// is recorded by its USB interface, whose place is its port's), and only
 /// for a caller in front, now, on the pad's seat, since the pad found may
 /// be another the rule hides.
 fn reopen(shared: &Shared, owner: u64, user: Option<u32>, token: u32) -> Result<OwnedFd, Refusal> {
     let seats = seats_in_front(user);
     let (parent, ordinal) = {
         let mut state = shared.state();
-        let held = state.held();
+        // Every other hidden pad's device: this one's may be at the same
+        // place, enumerated afresh.
+        let taken: Vec<PathBuf> = state
+            .entries
+            .iter()
+            .filter(|entry| entry.token != token)
+            .map(|entry| entry.pad.parent.path.clone())
+            .collect();
         let entry = state
             .entries
             .iter_mut()
@@ -322,11 +331,11 @@ fn reopen(shared: &Shared, owner: u64, user: Option<u32>, token: u32) -> Result<
                 entry.token == token && entry.owner == owner && entry.phase == Phase::Hidden
             })
             .ok_or(Refusal::UnknownToken)?;
-        if !pad::is_there(&entry.pad) {
+        if !entry.pad.parent.is_there() {
             if !seats.contains(&entry.pad.identity.seat) {
                 return Err(Refusal::NotPermitted);
             }
-            let taken: Vec<&Path> = held.iter().map(PathBuf::as_path).collect();
+            let taken: Vec<&Path> = taken.iter().map(PathBuf::as_path).collect();
             let found = pad::returned(&entry.pad, group(), &taken).ok_or(Refusal::Absent)?;
             for marker in found.markers.difference(&entry.pad.markers) {
                 if let Err(error) = hide::create(marker) {
@@ -344,12 +353,12 @@ fn reopen(shared: &Shared, owner: u64, user: Option<u32>, token: u32) -> Result<
         }
         (entry.pad.parent.clone(), entry.pad.ordinal)
     };
-    let node = pad::event_node(&parent, ordinal).ok_or(Refusal::Absent)?;
+    let node = pad::event_node(&parent.path, ordinal).ok_or(Refusal::Absent)?;
     hide::open_under(&node, &parent, Some(group()))
 }
 
 /// The device of a pad connection `owner` has hidden.
-fn hidden_parent(shared: &Shared, owner: u64, token: u32) -> Result<PathBuf, Refusal> {
+fn hidden_parent(shared: &Shared, owner: u64, token: u32) -> Result<Device, Refusal> {
     shared
         .state()
         .entries
@@ -359,9 +368,9 @@ fn hidden_parent(shared: &Shared, owner: u64, token: u32) -> Result<PathBuf, Ref
         .ok_or(Refusal::UnknownToken)
 }
 
-/// Opens the raw node of the pad whose device is at `parent`.
-fn raw_of(parent: &Path) -> Result<OwnedFd, Refusal> {
-    let node = pad::raw_node(parent)?;
+/// Opens the raw node of the pad whose device is `parent`.
+fn raw_of(parent: &Device) -> Result<OwnedFd, Refusal> {
+    let node = pad::raw_node(&parent.path)?;
     hide::open_under(&node, parent, None)
 }
 

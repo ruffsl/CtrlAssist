@@ -27,7 +27,7 @@ use rustix::rand::{GetRandomFlags, getrandom};
 use rustix::time::{ClockId, clock_gettime};
 use tracing::{debug, error, warn};
 
-use crate::pad::{self, Pad};
+use crate::pad::{self, Device, Pad};
 
 /// Where the markers are, as the shipped rule names it. The unit's
 /// runtime directory, kept when the service stops.
@@ -219,19 +219,20 @@ impl Rebound {
     }
 }
 
-/// Where the re-bind of the device at `parent` has got to. `before` is
-/// its inputs before it was asked for, `since` when it was asked for, and
-/// `answered` whether udev has said it acted on the request.
+/// Where the re-bind of `device` has got to. `before` is its inputs
+/// before it was asked for, `since` when it was asked for, and `answered`
+/// whether udev has said it acted on the request.
 fn progress(
-    parent: &Path,
+    device: &Device,
     before: &[PathBuf],
     since: u64,
     leave: Leave,
     answered: bool,
 ) -> Progress {
-    let device = parent.display();
-    if !parent.exists() {
-        debug!(%device, "the pad was unplugged as its driver was re-bound");
+    let parent = device.path.as_path();
+    let shown = parent.display();
+    if !device.is_there() {
+        debug!(device = %shown, "the pad was unplugged as its driver was re-bound");
         return Progress::Failed(Refusal::Absent, false);
     }
     // The rule unbinds the driver and probes again before udev says it
@@ -240,7 +241,7 @@ fn progress(
     if before.iter().any(|input| input.exists()) {
         if answered {
             error!(
-                %device,
+                device = %shown,
                 "udev acted on the request to re-bind the pad's driver without re-binding it: the shipped rule isn't installed, or isn't the one shipped"
             );
             return Progress::Failed(Refusal::Failed, false);
@@ -249,7 +250,7 @@ fn progress(
     }
     if !pad::has_driver(parent) {
         if answered {
-            warn!(%device, "no driver took the pad again after its driver was re-bound");
+            warn!(device = %shown, "no driver took the pad again after its driver was re-bound");
             return Progress::Failed(Refusal::Failed, false);
         }
         return Progress::Waiting;
@@ -264,7 +265,7 @@ fn progress(
         for node in &nodes {
             if let Some(wrong) = pad::unhidden_node(node, group) {
                 error!(
-                    %device,
+                    device = %shown,
                     node = %node.devnode().unwrap_or(node.syspath()).display(),
                     wrong,
                     "a node of the pad wasn't hidden when made again: another rule undoes the shipped one, or it isn't installed"
@@ -294,12 +295,13 @@ fn progress(
 /// each hidden if it is to be. It fails at once when the rule's effect is
 /// missing: udev has acted on the request and the driver is as it was, no
 /// driver took the pad again, or a node came back not hidden.
-pub(crate) fn rebind(parent: &Path, leave: Leave, asker: Asker<'_>) -> Rebound {
+pub(crate) fn rebind(device: &Device, leave: Leave, asker: Asker<'_>) -> Rebound {
+    let parent = device.path.as_path();
     if let Err(refusal) = may_request(parent) {
         return Rebound::not_asked(refusal);
     }
     let before = pad::inputs_under(parent);
-    let device = parent.display();
+    let shown = parent.display();
     // Listening from before the request, so nothing it causes is missed.
     let monitor = udev::MonitorBuilder::new()
         .and_then(|monitor| monitor.match_subsystem("hid"))
@@ -315,14 +317,14 @@ pub(crate) fn rebind(parent: &Path, leave: Leave, asker: Asker<'_>) -> Rebound {
         }
     };
     if asker.has_cancelled() {
-        debug!(%device, "the client cancelled before the pad's driver was re-bound");
+        debug!(device = %shown, "the client cancelled before the pad's driver was re-bound");
         return Rebound::not_asked(Refusal::Cancelled);
     }
     let since = now();
     let uuid = match request(parent) {
         Ok(uuid) => uuid,
         Err(error) => {
-            warn!(%device, %error, "couldn't ask udev to re-bind the pad's driver");
+            warn!(device = %shown, %error, "couldn't ask udev to re-bind the pad's driver");
             return Rebound::not_asked(Refusal::Failed);
         }
     };
@@ -342,18 +344,18 @@ pub(crate) fn rebind(parent: &Path, leave: Leave, asker: Asker<'_>) -> Rebound {
         match poll(&mut fds, None) {
             Ok(_) | Err(Errno::INTR) => {}
             Err(error) => {
-                warn!(%device, %error, "couldn't wait on udev for the pad's driver to be re-bound");
+                warn!(device = %shown, %error, "couldn't wait on udev for the pad's driver to be re-bound");
                 return ended(Refusal::Failed);
             }
         }
         if fds.get(1).is_some_and(|fd| !fd.revents().is_empty()) {
             return match asker {
                 Asker::Cancels(_) => {
-                    debug!(%device, "the client cancelled, or hung up, as the pad's driver was re-bound");
+                    debug!(device = %shown, "the client cancelled, or hung up, as the pad's driver was re-bound");
                     ended(Refusal::Cancelled)
                 }
                 Asker::HangsUp(_) | Asker::Nobody => {
-                    debug!(%device, "the client hung up as the pad's driver was re-bound");
+                    debug!(device = %shown, "the client hung up as the pad's driver was re-bound");
                     ended(Refusal::Failed)
                 }
             };
@@ -369,7 +371,7 @@ pub(crate) fn rebind(parent: &Path, leave: Leave, asker: Asker<'_>) -> Rebound {
                     .and_then(|value| value.to_str())
                     == Some(uuid.as_str());
         }
-        match progress(parent, &before, since, leave, answered) {
+        match progress(device, &before, since, leave, answered) {
             Progress::Waiting => {}
             Progress::Done => {
                 return Rebound {
@@ -390,15 +392,23 @@ pub(crate) fn rebind(parent: &Path, leave: Leave, asker: Asker<'_>) -> Rebound {
 }
 
 /// Opens a pad's node for a client, for reading and writing, if it is
-/// still a node under `parent`: a node found by its path could have gone,
-/// and its number been given to another device's, before it was opened.
-/// With `hidden`, the node must also be as the rule hides a node for that
-/// group.
+/// still a node of `parent`, the enumeration of the device that was
+/// checked: a node found by its path could have gone, and its number been
+/// given to another device's, before it was opened, and on USB another
+/// pad can have taken the port meanwhile. With `hidden`, the node must
+/// also be as the rule hides a node for that group.
 pub(crate) fn open_under(
     node: &Path,
-    parent: &Path,
+    parent: &Device,
     hidden: Option<u32>,
 ) -> Result<OwnedFd, Refusal> {
+    let gone = |refusal| {
+        if parent.is_there() {
+            refusal
+        } else {
+            Refusal::Absent
+        }
+    };
     let fd: OwnedFd = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -406,19 +416,22 @@ pub(crate) fn open_under(
         .open(node)
         .map_err(|error| {
             warn!(node = %node.display(), %error, "couldn't open a pad's node");
-            Refusal::Failed
+            gone(Refusal::Failed)
         })?
         .into();
     let stat = rustix::fs::fstat(&fd).map_err(|error| {
         warn!(node = %node.display(), %error, "couldn't look at a pad's node once open");
-        Refusal::Failed
+        gone(Refusal::Failed)
     })?;
+    // Under the device's place, and that place still this enumeration of
+    // it: looked at once the node is open, so a device replaced before or
+    // after the opening is seen either way.
     let opened = pad::device_of(udev::DeviceType::Character, stat.st_rdev)
-        .filter(|device| device.syspath().starts_with(parent));
+        .filter(|device| device.syspath().starts_with(&parent.path) && parent.is_there());
     let Some(opened) = opened else {
         warn!(
             node = %node.display(),
-            device = %parent.display(),
+            device = %parent.path.display(),
             "a pad's node was another device's by the time it was opened"
         );
         return Err(Refusal::Absent);
@@ -452,11 +465,11 @@ pub(crate) fn sweep(group: u32, held: &[&Path], markers: &BTreeSet<String>) {
     for pad in pad::hidden(group) {
         let named = pad.markers.intersection(markers).next().is_some();
         if !named
-            && !held.contains(&pad.parent.as_path())
-            && let Err(error) = request(&pad.parent)
+            && !held.contains(&pad.parent.path.as_path())
+            && let Err(error) = request(&pad.parent.path)
         {
             warn!(
-                device = %pad.parent.display(),
+                device = %pad.parent.path.display(),
                 %error,
                 "couldn't ask for a pad no marker names to be shown again; it stays hidden until it is plugged in again"
             );
@@ -487,7 +500,7 @@ pub(crate) fn cut_off(
     };
     let rebound = rebind(&pad.parent, leave, Asker::Cancels(client));
     let opened = rebound.outcome.and_then(|()| {
-        let node = pad::event_node(&pad.parent, pad.ordinal).ok_or(Refusal::Absent)?;
+        let node = pad::event_node(&pad.parent.path, pad.ordinal).ok_or(Refusal::Absent)?;
         open_under(&node, &pad.parent, Some(group))
     });
     (opened, rebound)
@@ -535,25 +548,48 @@ mod tests {
         assert!(first > 0 && second >= first);
     }
 
+    /// A device every machine has, with no driver and no `uevent` file the
+    /// service may write, standing in for a pad's.
+    fn stand_in() -> Device {
+        Device::at(Path::new("/sys/devices/virtual/mem/null")).expect("/dev/null has a device")
+    }
+
     #[test]
     fn a_re_bind_that_the_rule_never_acted_on_fails_once_udev_has_answered() {
         // A device that isn't there: the pad was unplugged.
-        let gone = Path::new("/sys/devices/virtual/ctrlassist-test-no-such-device");
+        let gone = Device {
+            path: PathBuf::from("/sys/devices/virtual/ctrlassist-test-no-such-device"),
+            enumeration: None,
+        };
         let leave = Leave::AsTheRuleSays;
         // Neither of these makes the pad go and come back.
         assert_eq!(
-            progress(gone, &[], 0, leave, false),
+            progress(&gone, &[], 0, leave, false),
             Progress::Failed(Refusal::Absent, false)
         );
         // A device there whose inputs are still those from before: waiting
-        // until udev has answered, then failed. Any directory stands in.
-        let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let before = [here.join("src")];
-        assert_eq!(progress(here, &before, 0, leave, false), Progress::Waiting);
+        // until udev has answered, then failed. Any directory stands in for
+        // an input.
+        let here = stand_in();
+        let before = [PathBuf::from(env!("CARGO_MANIFEST_DIR"))];
+        assert_eq!(progress(&here, &before, 0, leave, false), Progress::Waiting);
         assert_eq!(
-            progress(here, &before, 0, leave, true),
+            progress(&here, &before, 0, leave, true),
             Progress::Failed(Refusal::Failed, false)
         );
+    }
+
+    /// A device is the enumeration of it that was checked: one stamped
+    /// otherwise at the same place is another plugged into the same port.
+    #[test]
+    fn a_device_at_the_same_place_enumerated_again_is_not_there() {
+        let here = stand_in();
+        assert!(here.is_there());
+        let other = Device {
+            enumeration: Some(1),
+            ..here
+        };
+        assert!(!other.is_there());
     }
 
     /// A client that has sent something, as a `cancel`, or hung up, has
@@ -589,8 +625,7 @@ mod tests {
     /// back for: here the device's `uevent` file isn't the group's.
     #[test]
     fn a_re_bind_never_asked_is_not_counted() {
-        let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let rebound = rebind(here, Leave::AsTheRuleSays, Asker::Nobody);
+        let rebound = rebind(&stand_in(), Leave::AsTheRuleSays, Asker::Nobody);
         assert_eq!(rebound.outcome, Err(Refusal::Failed));
         assert!(!rebound.went);
     }

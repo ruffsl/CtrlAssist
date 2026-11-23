@@ -25,14 +25,68 @@ pub(crate) struct Identity {
     pub(crate) virtual_device: bool,
 }
 
+/// One enumeration of a device: its place in sysfs, and what tells this
+/// enumeration from a later one at the same place.
+///
+/// A HID device's place names one enumeration already: its kernel name
+/// ends in an instance number the kernel never hands out twice. A USB
+/// interface's place is its port's, and whatever is next plugged in there
+/// has the same one. So a device on USB is told by when udev first saw
+/// the USB device above it (`USEC_INITIALIZED`), a time in microseconds
+/// that udev stamps a device with once, as it first finishes with it, and
+/// keeps through every later event of that device, a re-bind of its
+/// interfaces' drivers among them; a device enumerated afresh is stamped
+/// afresh. The USB device's own number (`devnum`) would do as well but
+/// for wrapping after 127 enumerations on a bus, and the interface itself
+/// has no record in udev's database to keep a stamp in.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct Device {
+    pub(crate) path: PathBuf,
+    /// When udev first saw the USB device at or above it, if it is on
+    /// USB.
+    pub(crate) enumeration: Option<u64>,
+}
+
+impl Device {
+    /// The enumeration of the device at `path` there now.
+    pub(crate) fn at(path: &Path) -> Option<Self> {
+        let device = udev::Device::from_syspath(path).ok()?;
+        Some(Self {
+            path: path.to_path_buf(),
+            enumeration: enumeration(&device)?,
+        })
+    }
+
+    /// Whether this enumeration of the device is still there: not
+    /// unplugged, and not replaced by another plugged into the same port.
+    pub(crate) fn is_there(&self) -> bool {
+        Self::at(&self.path).is_some_and(|now| now == *self)
+    }
+}
+
+/// When udev first saw the USB device at or above `device`: `Some(None)`
+/// for a device not on USB, and `None` where udev hasn't stamped the USB
+/// device yet, which isn't then one this service has checked.
+fn enumeration(device: &udev::Device) -> Option<Option<u64>> {
+    let usb = std::iter::successors(Some(device.clone()), udev::Device::parent).find(|device| {
+        subsystem(device) == Some("usb")
+            && device.devtype().and_then(|kind| kind.to_str()) == Some("usb_device")
+    });
+    let Some(usb) = usb else {
+        return Some(None);
+    };
+    let stamp = property(&usb, "USEC_INITIALIZED")?.parse::<u64>().ok()?;
+    Some(Some(stamp))
+}
+
 /// A pad the service has checked: the device whose driver is re-bound to
 /// cut its readers off, and what names it to the rule.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Pad {
     /// The pad's HID device, or with none its USB interface: the device
     /// that was checked, which keeps its place in sysfs through a re-bind
-    /// of its driver.
-    pub(crate) parent: PathBuf,
+    /// of its driver, as the enumeration of it that was checked.
+    pub(crate) parent: Device,
     /// Which of the joystick event nodes under `parent` it is, in order.
     pub(crate) ordinal: usize,
     pub(crate) identity: Identity,
@@ -339,7 +393,10 @@ fn classify(event: &udev::Device, tagged: bool) -> Result<Pad, Refusal> {
         virtual_device: parent.syspath().starts_with("/sys/devices/virtual"),
     };
     Ok(Pad {
-        parent: parent.syspath().to_path_buf(),
+        parent: Device {
+            path: parent.syspath().to_path_buf(),
+            enumeration: enumeration(&parent).ok_or(Refusal::Failed)?,
+        },
         ordinal,
         identity,
         markers,
@@ -355,9 +412,9 @@ pub(crate) fn identify(fd: BorrowedFd<'_>) -> Result<Pad, Refusal> {
     let event = udev::Device::from_devnum(udev::DeviceType::Character, devnum)
         .map_err(|_| Refusal::NotAPad)?;
     let pad = classify(&event, true)?;
-    if shares_with_keyboard_or_pointer(&pad.parent) {
+    if shares_with_keyboard_or_pointer(&pad.parent.path) {
         tracing::info!(
-            device = %pad.parent.display(),
+            device = %pad.parent.path.display(),
             "refused a pad whose device has a keyboard or a pointer among its inputs: re-binding its driver would cut that off too"
         );
         return Err(Refusal::Unsupported);
@@ -370,12 +427,6 @@ pub(crate) fn event_node(parent: &Path, ordinal: usize) -> Option<PathBuf> {
     joysticks_under(parent)
         .get(ordinal)
         .and_then(|event| Some(event.devnode()?.to_path_buf()))
-}
-
-/// Whether the device the pad was checked as is still there: a pad that
-/// reconnected has another.
-pub(crate) fn is_there(pad: &Pad) -> bool {
-    pad.parent.exists()
 }
 
 /// Whether a node belongs to `group`, which only the rule that hides a
@@ -408,7 +459,9 @@ pub(crate) fn hidden(group: u32) -> Vec<Pad> {
             continue;
         }
         if let Ok(pad) = classify(&event, false)
-            && !found.iter().any(|other| other.parent == pad.parent)
+            && !found
+                .iter()
+                .any(|other| other.parent.path == pad.parent.path)
         {
             found.push(pad);
         }
@@ -432,7 +485,7 @@ fn rank(marker: &str) -> usize {
 fn best(was: &Pad, candidates: Vec<Pad>, taken: &[&Path]) -> Option<Pad> {
     candidates
         .into_iter()
-        .filter(|pad| pad.identity == was.identity && !taken.contains(&pad.parent.as_path()))
+        .filter(|pad| pad.identity == was.identity && !taken.contains(&pad.parent.path.as_path()))
         .filter_map(|pad| {
             let best = pad
                 .markers
@@ -451,7 +504,7 @@ fn best(was: &Pad, candidates: Vec<Pad>, taken: &[&Path]) -> Option<Pad> {
 pub(crate) fn returned(was: &Pad, group: u32, taken: &[&Path]) -> Option<Pad> {
     let candidates = hidden(group)
         .into_iter()
-        .filter(|pad| !shares_with_keyboard_or_pointer(&pad.parent))
+        .filter(|pad| !shares_with_keyboard_or_pointer(&pad.parent.path))
         .collect();
     best(was, candidates, taken)
 }
@@ -581,7 +634,10 @@ mod tests {
 
     fn pad(parent: &str, seat: &str, markers: &[&str]) -> Pad {
         Pad {
-            parent: PathBuf::from(parent),
+            parent: Device {
+                path: PathBuf::from(parent),
+                enumeration: None,
+            },
             ordinal: 0,
             identity: Identity {
                 bus: 3,
@@ -766,12 +822,15 @@ mod tests {
             vec![in_port.clone(), other.clone(), addressed.clone()],
             &[],
         );
-        assert_eq!(found.map(|pad| pad.parent), Some(addressed.parent.clone()));
+        assert_eq!(
+            found.map(|pad| pad.parent.path),
+            Some(addressed.parent.path.clone())
+        );
         // The one with its address is held by another hidden pad: the one
         // in its port is taken.
-        let taken = [addressed.parent.as_path()];
+        let taken = [addressed.parent.path.as_path()];
         let found = best(&was, vec![in_port.clone(), addressed.clone()], &taken);
-        assert_eq!(found.map(|pad| pad.parent), Some(in_port.parent));
+        assert_eq!(found.map(|pad| pad.parent.path), Some(in_port.parent.path));
         // Of another model, or named by nothing it was, none is.
         assert_eq!(best(&was, vec![other], &[]), None);
         let unnamed = pad("/sys/devices/d", "seat0", &["addr-02:00:00:00:00:09"]);

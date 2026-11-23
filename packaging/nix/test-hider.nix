@@ -415,8 +415,9 @@ pkgs.testers.runNixOSTest {
         ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="Held Pad", RUN+="${pkgs.coreutils}/bin/cat /run/hold"
       '')
     ];
-    # Three ports, for three pads made as USB gadgets.
-    boot.extraModprobeConfig = "options dummy_hcd num=3";
+    # Five ports, each its own bus, for the pads made as USB gadgets and
+    # what is plugged in after them.
+    boot.extraModprobeConfig = "options dummy_hcd num=5";
 
     environment.systemPackages = [
       fixture
@@ -942,6 +943,63 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl stop switched")
         wait_restored()
         assert alice_can_open(A)
+
+    def switch_away():
+        machine.succeed("chvt 3")
+        machine.wait_until_succeeds("[ -z \"$(loginctl show-seat seat0 -p ActiveSession --value)\" ]")
+
+    def switch_back():
+        machine.succeed("chvt 1")
+        machine.wait_until_succeeds("[ \"$(loginctl show-session $(loginctl show-seat seat0 -p ActiveSession --value) -p Name --value)\" = alice ]")
+
+    def unplug(gadget, gone):
+        machine.succeed(f"echo > /sys/kernel/config/usb_gadget/{gadget}/UDC")
+        machine.wait_until_fails(f"ctrlassist-fixture pads | grep -F {shlex.quote(gone)}")
+
+    def plug(gadget, udc, name):
+        machine.succeed(f"echo dummy_udc.{udc} > /sys/kernel/config/usb_gadget/{gadget}/UDC")
+        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -F {shlex.quote(name)}", timeout=60)
+        machine.succeed("udevadm settle")
+
+    with subtest("a pad on USB with no HID device is found again only as the same pad, and only for a user in front"):
+        # An Xbox 360 pad with no serial number: recorded by its USB
+        # interface, whose place is its port's, and hidden by its port.
+        unplug("xpad", "X-Box")
+        machine.succeed("systemd-run --unit gadget-xpad-port usb-gadget xpad xpadport - 3")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -F X-Box", timeout=60)
+        machine.succeed("udevadm settle")
+        key = [key for key in pads() if "X-Box" in key][0]
+        node = pads()[key]["event"][0]
+        interface = sysfs(node, "device").split("/")[-1]
+        control, told = hide("switched-port", node)
+        assert told.startswith("ok"), told
+        assert markers() == [f"./port-{interface}"], markers()
+        # Taken out and put back in while she is away: it could be anyone's
+        # pad in that port, so it isn't found for her.
+        switch_away()
+        replug("xpadport", 3, "X-Box")
+        told = order(control, "reopen")
+        print(f"a reopen while switched away, a pad back in the port {interface}: {told.strip()}")
+        assert "isn't the user in front" in told, told
+        switch_back()
+        # Another model in that port: hidden by the port's marker, and not
+        # taken for hers.
+        unplug("xpadport", "X-Box")
+        machine.succeed("systemd-run --unit gadget-port-other usb-gadget hid portother - 3 0x5ef3 'Other Pad'")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -F 'Fixture Other Pad'", timeout=60)
+        machine.succeed("udevadm settle")
+        told = order(control, "reopen")
+        print(f"a reopen in front, another model in the port: {told.strip()}")
+        assert "isn't connected" in told, told
+        # Her pad back in its port: found again, and shown again.
+        unplug("portother", "Fixture Other Pad")
+        plug("xpadport", 3, "X-Box")
+        assert order(control, "reopen").startswith("ok")
+        assert order(control, "restore").startswith("ok")
+        machine.succeed("udevadm settle")
+        assert alice_can_open(key, "event")
+        machine.succeed("systemctl stop switched-port")
+        wait_restored()
 
     with subtest("users with no seat share one cap however many user IDs they connect as, and leave room for the user at the seat"):
         control, told = hide("keeper-again", pads()[B]["event"][0])
