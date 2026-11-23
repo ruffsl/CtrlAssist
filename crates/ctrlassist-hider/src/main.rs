@@ -133,28 +133,16 @@ fn reply(socket: BorrowedFd<'_>, reply: Reply, fd: Option<&OwnedFd>) {
     }
 }
 
-/// A refusal of a request that re-bound nothing. It says so: every reply
-/// of a service that counts carries a count, refusals included.
 fn refuse(socket: BorrowedFd<'_>, refusal: Refusal) {
-    reply(socket, refused(refusal, 0), None);
+    reply(socket, Reply::refused(refusal), None);
 }
 
-/// A reply that did as asked, saying how many times the pad was re-bound
-/// for it.
-fn ok(token: u32, dislodged: bool, rebinds: u8) -> Reply {
+/// A reply that did as asked.
+fn ok(token: u32, dislodged: bool) -> Reply {
     Reply {
         refusal: None,
         token: Token(token),
         dislodged,
-        rebinds: Some(rebinds),
-    }
-}
-
-/// A refusal, saying how many times the pad was re-bound all the same.
-fn refused(refusal: Refusal, rebinds: u8) -> Reply {
-    Reply {
-        rebinds: Some(rebinds),
-        ..Reply::refused(refusal)
     }
 }
 
@@ -166,14 +154,12 @@ fn refused(refusal: Refusal, rebinds: u8) -> Reply {
 /// the wait for it ends when udev is done, the pad is unplugged, or
 /// `client`, the one that asked, hangs up. A hide of the pad once the
 /// entry has gone asks its re-bind after this one's, which udev runs
-/// first. Returns how many times the pad was
-/// re-bound for it, which it goes and comes back for, as
-/// [`hide::Rebound::went`] counts.
-fn show(shared: &Arc<Shared>, token: u32, client: Option<BorrowedFd<'_>>, rebind: bool) -> u8 {
+/// first.
+fn show(shared: &Arc<Shared>, token: u32, client: Option<BorrowedFd<'_>>, rebind: bool) {
     let parent = {
         let mut state = shared.state();
         let Some(entry) = state.entries.iter_mut().find(|entry| entry.token == token) else {
-            return 0;
+            return;
         };
         entry.phase = Phase::Showing;
         let markers = entry.pad.markers.clone();
@@ -184,11 +170,8 @@ fn show(shared: &Arc<Shared>, token: u32, client: Option<BorrowedFd<'_>>, rebind
         }
         parent
     };
-    let mut rebinds = 0;
     if let Some(parent) = parent {
-        let asker = client.map_or(hide::Asker::Nobody, hide::Asker::HangsUp);
-        let rebound = hide::rebind(&parent, Leave::AsTheRuleSays, asker);
-        rebinds = u8::from(rebound.went);
+        let rebound = hide::rebind(&parent, Leave::AsTheRuleSays, client);
         if let Err(refusal) = rebound.outcome {
             warn!(
                 token,
@@ -200,7 +183,6 @@ fn show(shared: &Arc<Shared>, token: u32, client: Option<BorrowedFd<'_>>, rebind
     }
     shared.state().entries.retain(|entry| entry.token != token);
     sweep(shared);
-    rebinds
 }
 
 /// Shows again what the rule hides that nothing should, waiting for none
@@ -231,40 +213,32 @@ fn presented(user: Option<u32>, fd: BorrowedFd<'_>) -> Result<Pad, Refusal> {
     Ok(pad)
 }
 
-/// Hides the pad `fd` is open on, for connection `owner`. Returns too how
-/// many times the pad was re-bound for it, which it goes and comes back
-/// for: once if it was hidden, and once more if it was then shown again,
-/// as it is when anything after the re-bind fails, or the client sends
-/// `cancel`, or hangs up, before the hide is done.
+/// Hides the pad `fd` is open on, for connection `owner`. Anything after
+/// the re-bind failing, or the client hanging up before the hide is done,
+/// shows the pad again.
 fn hide_pad(
     shared: &Arc<Shared>,
     socket: BorrowedFd<'_>,
     owner: u64,
     user: Option<u32>,
     fd: OwnedFd,
-) -> (Result<(u32, OwnedFd), Refusal>, u8) {
-    match marked(shared, owner, user, fd) {
-        Ok((token, pad)) => {
-            let (opened, rebound) = hide::cut_off(&pad, group(), socket);
-            let rebinds = u8::from(rebound.went);
-            match opened {
-                Ok(event) => {
-                    let mut state = shared.state();
-                    if let Some(entry) = state.entries.iter_mut().find(|entry| entry.token == token)
-                    {
-                        entry.phase = Phase::Hidden;
-                    }
-                    (Ok((token, event)), rebinds)
-                }
-                Err(refusal) => {
-                    // Shown again with a re-bind only if hiding it asked
-                    // for one, so the pad is left as it was.
-                    let shown = show(shared, token, None, rebound.asked);
-                    (Err(refusal), rebinds + shown)
-                }
+) -> Result<(u32, OwnedFd), Refusal> {
+    let (token, pad) = marked(shared, owner, user, fd)?;
+    let (opened, rebound) = hide::cut_off(&pad, group(), socket);
+    match opened {
+        Ok(event) => {
+            let mut state = shared.state();
+            if let Some(entry) = state.entries.iter_mut().find(|entry| entry.token == token) {
+                entry.phase = Phase::Hidden;
             }
+            Ok((token, event))
         }
-        Err(refusal) => (Err(refusal), 0),
+        Err(refusal) => {
+            // Shown again with a re-bind only if hiding it asked for one,
+            // so the pad is left as it was.
+            show(shared, token, None, rebound.asked);
+            Err(refusal)
+        }
     }
 }
 
@@ -390,8 +364,6 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
     // A client found to be in front stays permitted: one that later
     // leaves the foreground keeps what it has.
     let mut permitted = user.is_some_and(seat::is_in_front);
-    // The pad the last hide hid, while it is: what `cancel` undoes.
-    let mut last_hidden: Option<u32> = None;
     loop {
         let mut buffer = [0u8; Request::SIZE];
         let (length, mut fds) = match receive(socket, &mut buffer) {
@@ -410,11 +382,6 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
         fds.truncate(1);
         let fd = fds.pop();
         let request = buffer.get(..length).and_then(Request::decode);
-        // A hide asked is the one a `cancel` gives up, whatever becomes of
-        // it: one refused, at the gate or after, leaves nothing to undo.
-        if request == Some(Request::Hide) {
-            last_hidden = None;
-        }
         if !permitted {
             permitted = user.is_some_and(seat::is_in_front);
         }
@@ -424,10 +391,9 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
         }
         match request {
             Some(Request::Version) => {
-                // Counting nothing here, it says it counts.
                 reply(
                     socket,
-                    ok(pack_release(env!("CARGO_PKG_VERSION")), false, 0),
+                    ok(pack_release(env!("CARGO_PKG_VERSION")), false),
                     None,
                 );
             }
@@ -437,44 +403,26 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
                     continue;
                 };
                 match hide_pad(shared, socket, owner, user, fd) {
-                    (Ok((token, event)), rebinds) => {
+                    Ok((token, event)) => {
                         info!(token, "hid a pad");
-                        last_hidden = Some(token);
                         // Every pad hidden is cut off by a re-bind, and
                         // shown again by another.
-                        reply(socket, ok(token, true, rebinds), Some(&event));
+                        reply(socket, ok(token, true), Some(&event));
                     }
-                    (Err(refusal), rebinds) => {
-                        // A cancel that ended it is read, and answered,
-                        // next: nothing is left for it to do. A request
-                        // sent ahead of it is served first, in order.
-                        reply(socket, refused(refusal, rebinds), None);
-                    }
+                    // A request sent during the hide is served next, in
+                    // order.
+                    Err(refusal) => refuse(socket, refusal),
                 }
             }
-            Some(Request::Cancel) => {
-                let rebinds = match last_hidden.take() {
-                    Some(token) if hidden_parent(shared, owner, token).is_ok() => {
-                        let rebinds = show(shared, token, None, true);
-                        info!(token, "showed a pad again, its hide cancelled");
-                        rebinds
-                    }
-                    _ => 0,
-                };
-                reply(socket, ok(0, false, rebinds), None);
-            }
             Some(Request::Reopen(Token(token))) => match reopen(shared, owner, user, token) {
-                Ok(event) => reply(socket, ok(token, true, 0), Some(&event)),
+                Ok(event) => reply(socket, ok(token, true), Some(&event)),
                 Err(refusal) => refuse(socket, refusal),
             },
             Some(Request::Restore(Token(token))) => {
                 if hidden_parent(shared, owner, token).is_ok() {
-                    if last_hidden == Some(token) {
-                        last_hidden = None;
-                    }
-                    let rebinds = show(shared, token, Some(socket), true);
+                    show(shared, token, Some(socket), true);
                     info!(token, "showed a pad again");
-                    reply(socket, ok(token, false, rebinds), None);
+                    reply(socket, ok(token, false), None);
                 } else {
                     refuse(socket, Refusal::UnknownToken);
                 }
@@ -485,13 +433,13 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
                     continue;
                 };
                 match presented(user, fd.as_fd()).and_then(|pad| raw_of(&pad.parent)) {
-                    Ok(raw) => reply(socket, ok(0, false, 0), Some(&raw)),
+                    Ok(raw) => reply(socket, ok(0, false), Some(&raw)),
                     Err(refusal) => refuse(socket, refusal),
                 }
             }
             Some(Request::RawOf(Token(token))) => {
                 match hidden_parent(shared, owner, token).and_then(|parent| raw_of(&parent)) {
-                    Ok(raw) => reply(socket, ok(token, false, 0), Some(&raw)),
+                    Ok(raw) => reply(socket, ok(token, false), Some(&raw)),
                     Err(refusal) => refuse(socket, refusal),
                 }
             }

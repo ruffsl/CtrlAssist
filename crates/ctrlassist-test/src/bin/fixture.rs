@@ -198,7 +198,7 @@ fn hide(node: &Path, socket: &Path, control: &Path) -> Result<()> {
                     Err(error) => format!("refused: {error}"),
                 },
                 "restore" => match client.restore(hidden.token) {
-                    Ok(_) => "ok".to_string(),
+                    Ok(()) => "ok".to_string(),
                     Err(error) => format!("refused: {error}"),
                 },
                 "raw" => match client.raw_of(hidden.token) {
