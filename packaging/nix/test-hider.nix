@@ -1041,7 +1041,7 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds(f"ls /sys/bus/usb/devices/{interface}/*/hidraw", timeout=60)
         machine.succeed("udevadm settle")
         keyboard = raw_under(interface)
-        print(f"a keyboard in a hidden pad's port: " + machine.succeed(f"stat -c '%n %a %U:%G' {keyboard}").strip())
+        print("a keyboard in a hidden pad's port: " + machine.succeed(f"stat -c '%n %a %U:%G' {keyboard}").strip())
         assert alice_opens(keyboard), "a keyboard's raw node in a hidden pad's port"
         machine.succeed("echo > /sys/kernel/config/usb_gadget/keyboard/UDC")
         machine.wait_until_fails(f"ls /sys/bus/usb/devices/{interface}")
