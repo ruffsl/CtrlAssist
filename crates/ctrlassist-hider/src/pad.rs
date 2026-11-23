@@ -321,7 +321,7 @@ fn children(parent: &Path, subsystem: &str) -> Option<Vec<udev::Device>> {
 /// re-binding the pad's driver would cut it off too, and the rule can't
 /// see one from the pad's own node. When that can't be read, it is taken
 /// that one is.
-fn shares_with_keyboard_or_pointer(parent: &Path) -> bool {
+pub(crate) fn shares_with_keyboard_or_pointer(parent: &Path) -> bool {
     children(parent, "input").is_none_or(|inputs| inputs.iter().any(is_keyboard_or_pointer))
 }
 

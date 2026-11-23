@@ -181,9 +181,11 @@ let
   #       subordinate IDs would, opens <each> connections and asks each
   #       the release; says how many were answered and how many closed at
   #       once; with hold, holds them
-  #   hider-probe uhid <name> <phys>
+  #   hider-probe uhid <name> <phys> [<uniq> combo]
   #       makes a HID game pad through uhid with that phys and no address;
-  #       holds
+  #       holds. With combo, a game pad and a keyboard in one descriptor,
+  #       each its own report, product 0bad, with that address
+
   #   hider-probe cancel <socket> <node> at-once|after|ahead|<fifo>
   #       hides <node> and gives the hide up with a cancel: sent at once,
   #       after the hide's reply, at once behind a version request, or once
@@ -311,7 +313,7 @@ let
             print(f"answered={answered} closed={closed}", flush=True)
             if hold:
                 time.sleep(3600)
-        case ["uhid", name, phys]:
+        case ["uhid", name, phys, *combo]:
             # The test crate's uhid pad's descriptor: a game pad.
             descriptor = bytes([
                 0x05, 0x01, 0x09, 0x05, 0xA1, 0x01, 0xA1, 0x00, 0x05, 0x09,
@@ -320,13 +322,25 @@ let
                 0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x02, 0x81, 0x02,
                 0xC0, 0xC0,
             ])
+            uniq, product = b"", 0x0bae
+            if combo:
+                # The same game pad as report 1, then a keyboard as report
+                # 2: modifiers, a reserved byte and six keys.
+                uniq, product = combo[0].encode(), 0x0bad
+                descriptor = descriptor[:6] + bytes([0x85, 0x01]) + descriptor[6:] + bytes([
+                    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x02, 0x05, 0x07,
+                    0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01,
+                    0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01,
+                    0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65, 0x05, 0x07,
+                    0x19, 0x00, 0x29, 0x65, 0x81, 0x00, 0xC0,
+                ])
             uhid = os.open("/dev/uhid", os.O_RDWR)
             # UHID_CREATE2: name, phys, uniq, the descriptor's size, the
             # bus (USB), vendor, product, version, country, the descriptor.
             os.write(uhid, struct.pack(
                 "<I128s64s64sHHIIII4096s",
-                11, name.encode(), phys.encode(), b"", len(descriptor),
-                3, 0x1209, 0x0bae, 1, 0, descriptor,
+                11, name.encode(), phys.encode(), uniq, len(descriptor),
+                3, 0x1209, product, 1, 0, descriptor,
             ))
             print("created", flush=True)
             while True:
@@ -535,6 +549,9 @@ pkgs.testers.runNixOSTest {
     # Four ports, each its own bus, for the pads made as USB gadgets and
     # what is plugged in after them.
     boot.extraModprobeConfig = "options dummy_hcd num=4";
+    # The probe's uhid device that is a pad and a keyboard: an input of
+    # each of its reports, as a real one with two collections can have.
+    boot.kernelParams = [ "usbhid.quirks=0x1209:0x0bad:0x40" ];
 
     environment.systemPackages = [
       fixture
@@ -1404,6 +1421,45 @@ pkgs.testers.runNixOSTest {
         assert not alice_can_open(uniq)
         assert order("/tmp/queued", "restore").startswith("ok")
         machine.succeed("systemctl stop queued pad-queued")
+        wait_restored()
+
+    with subtest("a device with a keyboard beside its pad is left as it is by the sweep, as a hide refuses it"):
+        uniq = "02:00:00:00:05:01"
+        fake("pad-shared", "fake-hid", "--name", "Shared Address Pad", "--uniq", uniq, "--pulse", "20")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 'Shared Address Pad'")
+        machine.succeed("udevadm settle")
+        control, told = hide("shared", pads()[uniq]["event"][0])
+        assert told.startswith("ok"), told
+        # A joystick and a keyboard, each an input of one HID device, with
+        # the hidden pad's address: its joystick node is hidden by the
+        # pad's marker, its keyboard's is not.
+        machine.succeed("modprobe usbhid && grep -q 0bad /sys/module/usbhid/parameters/quirks")
+        machine.succeed(f"systemd-run --unit combo hider-probe uhid 'Combo Pad' combo {uniq} combo")
+        machine.wait_until_succeeds("[ $(ls -d /sys/bus/hid/devices/0003:1209:0BAD.*/input/input* | wc -l) = 2 ]")
+        machine.succeed("udevadm settle")
+
+        def combo():
+            """Each event node of the device: its input, whether it is a keyboard, and its group."""
+            return machine.succeed(
+                "for event in /sys/bus/hid/devices/0003:1209:0BAD.*/input/input*/event*; do "
+                "node=/dev/input/$(basename $event); "
+                "echo $(basename $(dirname $event)) $(udevadm info -q property -n $node | grep -c '^ID_INPUT_KEYBOARD=1') $(stat -c %G $node); "
+                "done"
+            ).strip().split("\n")
+
+        was = combo()
+        print(f"a pad and a keyboard on one device, with a hidden pad's address: {was}")
+        groups = dict(line.split()[1:] for line in was)
+        assert len(was) == 2 and groups["0"] == "ctrlassist-hider" and groups["1"] != "ctrlassist-hider", was
+        # The pad shown again: nothing names the device's joystick node any
+        # more, and the sweep leaves it hidden rather than re-bind the
+        # keyboard away.
+        # The sweep is done before the restore's reply.
+        assert order(control, "restore").startswith("ok")
+        machine.succeed("udevadm settle")
+        assert combo() == was, combo()
+        machine.succeed("journalctl -u ctrlassist-hider.service -o cat | grep -q 'left hidden a pad no marker names'")
+        machine.succeed("systemctl stop shared combo pad-shared")
         wait_restored()
   '';
 }

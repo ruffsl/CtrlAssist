@@ -675,11 +675,22 @@ pub(crate) fn unnamed(
 /// event isn't the service's to send, its `uevent` file being root's; its
 /// HID device's is, for a pad's.
 ///
+/// A device with a keyboard or a pointer among its inputs is left as it
+/// is, until it is plugged in again: a hide refuses one, the re-bind
+/// cutting that off too.
+///
 /// Waits for none of them: udev runs a device's events in order, so a
 /// later re-bind of the device, such as a hide's, runs after this one and
 /// is judged on its own answer.
 pub(crate) fn sweep(group: u32, held: &[&Path], markers: &BTreeSet<String>) {
     for (device, _) in unnamed(group, held, markers) {
+        if pad::shares_with_keyboard_or_pointer(&device.path) {
+            warn!(
+                device = %device.path.display(),
+                "left hidden a pad no marker names, which has a keyboard or a pointer among its inputs: re-binding its driver would cut that off; it is shown again when plugged in again"
+            );
+            continue;
+        }
         match request(&device.path) {
             Ok(_) => {
                 debug!(device = %device.path.display(), "asked for a pad no marker names to be shown again");
