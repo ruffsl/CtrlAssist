@@ -33,8 +33,7 @@
 //!   to the service.
 //!
 //! Hiding a pad and showing it again re-bind its driver, which the
-//! [book](crate::book) knows by the device that stays, and nothing here
-//! counts.
+//! [book](crate::book) knows by the device that stays.
 
 use std::collections::BTreeMap;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -43,7 +42,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
-use ctrlassist_hider::{Client, Error, Hid, Refusal};
+use ctrlassist_hider::{Client, Error, Refusal};
 use ctrlassist_protocol::payload;
 use rustix::event::{EventfdFlags, eventfd};
 use tracing::{debug, info, warn};
@@ -758,7 +757,7 @@ impl Hiding {
         connection: &Arc<Connection>,
         pad: &str,
         fd: BorrowedFd<'_>,
-    ) -> Result<Hid, Unasked> {
+    ) -> Result<ctrlassist_hider::Hidden, Unasked> {
         self.asking(errand, connection, Kind::Hide)?;
         let turn = connection.turn();
         // Not sent once its errand has ended, as seen with the turn held:
@@ -781,6 +780,17 @@ impl Hiding {
         }
         let outcome = sent.and_then(|()| connection.client.hid());
         drop(turn);
+        if let Err(Error::Refused(refusal)) = outcome {
+            if refusal == Refusal::Absent {
+                debug!(
+                    pad,
+                    "the hiding service has nothing to hide: the pad isn't connected"
+                );
+            } else {
+                warn!(pad, %refusal, "the hiding service didn't do as asked");
+            }
+            return Err(Unasked::Refused(refusal));
+        }
         self.answered(connection, Some(outcome))
     }
 
@@ -836,8 +846,7 @@ impl Hiding {
         let asked = !connection.is_hung_up() && connection.read_past(None, &|| false);
         if asked {
             match connection.client.restore(reading.token) {
-                // What it re-bound is the book's to see.
-                Ok(_) => return,
+                Ok(()) => return,
                 Err(Error::Refused(refusal)) => {
                     warn!(%refusal, "the hiding service didn't show a pad again");
                 }
@@ -983,24 +992,7 @@ impl Hiding {
             Err(Unasked::Refused(_) | Unasked::NotThere) => return Err(Unhidden::Not),
         };
         let hidden = match self.ask_hide(errand, &connection, pad, fd) {
-            Ok(Hid {
-                outcome: Ok(hidden),
-                ..
-            }) => hidden,
-            Ok(Hid {
-                outcome: Err(refusal),
-                ..
-            }) => {
-                if refusal == Refusal::Absent {
-                    debug!(
-                        pad,
-                        "the hiding service has nothing to hide: the pad isn't connected"
-                    );
-                } else {
-                    warn!(pad, %refusal, "the hiding service didn't do as asked");
-                }
-                return Err(Unhidden::Not);
-            }
+            Ok(hidden) => hidden,
             Err(Unasked::Ended) => return Err(Unhidden::Ended),
             Err(Unasked::Refused(_) | Unasked::NotThere) => return Err(Unhidden::Not),
         };

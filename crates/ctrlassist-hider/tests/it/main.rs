@@ -47,21 +47,12 @@ fn next(connection: &OwnedFd) -> (Request, Vec<OwnedFd>) {
     (Request::decode(&buffer[..length]).unwrap(), fds)
 }
 
-/// A reply that did as asked, from a service that doesn't count.
+/// A reply that did as asked.
 fn ok(token: u32, dislodged: bool) -> Reply {
     Reply {
         refusal: None,
         token: Token(token),
         dislodged,
-        rebinds: None,
-    }
-}
-
-/// `reply`, from a service that counts `rebinds` re-binds for it.
-fn counted(reply: Reply, rebinds: u8) -> Reply {
-    Reply {
-        rebinds: Some(rebinds),
-        ..reply
     }
 }
 
@@ -92,7 +83,6 @@ fn every_request_and_reply_survives_the_wire() {
         Request::Raw,
         Request::RawOf(Token(9)),
         Request::Version,
-        Request::Cancel,
     ] {
         assert_eq!(Request::decode(&request.encode()), Some(request));
     }
@@ -105,16 +95,20 @@ fn every_request_and_reply_survives_the_wire() {
         Refusal::Failed,
         Refusal::BadRequest,
         Refusal::Unsupported,
-        Refusal::Cancelled,
     ];
-    for refusal in refusals {
+    for (status, refusal) in (1..).zip(refusals) {
         let reply = Reply::refused(refusal);
+        assert_eq!(reply.encode(), [status, 0, 0, 0, 0, 0]);
         assert_eq!(Reply::decode(&reply.encode()), Some(reply));
         assert!(!refusal.to_string().is_empty());
     }
-    for reply in [ok(1, true), ok(0xdead_beef, false), counted(ok(3, true), 2)] {
+    for reply in [ok(1, true), ok(0xdead_beef, false)] {
         assert_eq!(Reply::decode(&reply.encode()), Some(reply));
     }
+    // The flags say whether the pad was dislodged, in bit 0, and nothing
+    // else is read from them.
+    assert_eq!(ok(3, true).encode()[5], 1);
+    assert_eq!(Reply::decode(&[0, 3, 0, 0, 0, 0xff]), Some(ok(3, true)));
 }
 
 #[test]
@@ -125,6 +119,7 @@ fn what_is_not_a_message_is_not_decoded() {
         &[1, 0, 0, 0],
         &[1, 0, 0, 0, 0, 0],
         &[0, 0, 0, 0, 0],
+        &[7, 0, 0, 0, 0],
         &[9, 0, 0, 0, 0],
     ] {
         assert_eq!(Request::decode(bytes), None, "{bytes:?}");
@@ -133,6 +128,7 @@ fn what_is_not_a_message_is_not_decoded() {
         &[][..],
         &[0, 0, 0, 0, 0],
         &[0, 0, 0, 0, 0, 0, 0],
+        &[9, 0, 0, 0, 0, 0],
         &[200, 0, 0, 0, 0, 0],
     ] {
         assert_eq!(Reply::decode(bytes), None, "{bytes:?}");
@@ -273,159 +269,48 @@ fn a_service_that_is_not_there_or_goes_away_is_an_io_error() {
     assert!(matches!(error, Error::Io(_) | Error::Protocol), "{error:?}");
 }
 
-/// What a service that counts says of a hide given up: the hide's reply,
-/// then the cancel's, each with how many times the pad was re-bound,
-/// which the client adds up. While it waits for the hide's reply the
-/// client can be woken, and then cancels.
+/// A hide sent without waiting: the wait for its reply ends at the reply,
+/// or sooner at a wake, and the reply is read once it has come, a refusal
+/// as the reason given. And the reply to a request given up waiting for
+/// is read past, to the reply to the one asked after it.
 #[test]
-fn a_hide_given_up_is_answered_with_what_it_took() {
-    let (path, service) = stand_in(|connection| {
-        let (request, _) = next(&connection);
-        assert_eq!(request, Request::Version);
-        send(
-            connection.as_fd(),
-            &counted(ok(pack_release("0.5.0"), false), 0).encode(),
-            &[],
-        )
-        .unwrap();
-        // The hide is held until the cancel comes, which ends it: re-bound
-        // once to hide it and once to show it again.
+fn a_hide_sent_is_waited_for_and_read_and_a_reply_given_up_is_read_past() {
+    let (woken_up, held) = std::sync::mpsc::channel::<()>();
+    let (path, service) = stand_in(move |connection| {
+        // Answered once the client has been woken without it.
         let (request, fds) = next(&connection);
         assert_eq!((request, fds.len()), (Request::Hide, 1));
-        let (request, _) = next(&connection);
-        assert_eq!(request, Request::Cancel);
-        let ended = counted(Reply::refused(Refusal::Cancelled), 2);
-        send(connection.as_fd(), &ended.encode(), &[]).unwrap();
-        send(connection.as_fd(), &counted(ok(0, false), 0).encode(), &[]).unwrap();
-        // A hide done before its cancel came, which shows it again.
-        let _ = next(&connection);
+        held.recv().unwrap();
         let event = readable("hidden");
-        send(
-            connection.as_fd(),
-            &counted(ok(4, true), 1).encode(),
-            &[event.as_fd()],
-        )
-        .unwrap();
+        send(connection.as_fd(), &ok(2, true).encode(), &[event.as_fd()]).unwrap();
+        let _ = next(&connection);
+        let refused = Reply::refused(Refusal::Failed);
+        send(connection.as_fd(), &refused.encode(), &[]).unwrap();
+        // A reopen given up, then a restore asked after it.
         let (request, _) = next(&connection);
-        assert_eq!(request, Request::Cancel);
-        send(connection.as_fd(), &counted(ok(0, false), 1).encode(), &[]).unwrap();
-        // And one with nothing to undo, from a service that doesn't count.
-        let _ = next(&connection);
-        send(
-            connection.as_fd(),
-            &Reply::refused(Refusal::Busy).encode(),
-            &[],
-        )
-        .unwrap();
-        let _ = next(&connection);
-        send(connection.as_fd(), &ok(0, false).encode(), &[]).unwrap();
+        assert_eq!(request, Request::Reopen(Token(2)));
+        let event = readable("again");
+        send(connection.as_fd(), &ok(2, true).encode(), &[event.as_fd()]).unwrap();
+        let (request, _) = next(&connection);
+        assert_eq!(request, Request::Restore(Token(2)));
+        send(connection.as_fd(), &ok(2, false).encode(), &[]).unwrap();
     });
     let client = Client::connect(&path).unwrap();
-    assert_eq!(client.release().unwrap(), ("0.5.0".to_string(), true));
     let pad = readable("the pad");
     let (wake, woken) = std::os::unix::net::UnixStream::pair().unwrap();
     client.send_hide(pad.as_fd()).unwrap();
     // Nothing has come yet: the wake ends the wait.
     (&woken).write_all(b"!").unwrap();
     client.wait(Some(wake.as_fd())).unwrap();
-    client.cancel().unwrap();
-    assert_eq!(client.cancelled().unwrap(), 2);
-
-    client.send_hide(pad.as_fd()).unwrap();
-    client.cancel().unwrap();
-    assert_eq!(client.cancelled().unwrap(), 2);
-
-    client.send_hide(pad.as_fd()).unwrap();
-    client.cancel().unwrap();
-    assert!(matches!(client.cancelled(), Err(Error::Protocol)));
-    service.join().unwrap();
-}
-
-/// A hide's reply says how many times the pad was re-bound, refused or
-/// not; a service from before says nothing, nor that it counts.
-#[test]
-fn a_hide_s_reply_says_how_many_times_the_pad_was_re_bound() {
-    let (path, service) = stand_in(|connection| {
-        let _ = next(&connection);
-        let event = readable("hidden");
-        send(
-            connection.as_fd(),
-            &counted(ok(2, true), 1).encode(),
-            &[event.as_fd()],
-        )
-        .unwrap();
-        let _ = next(&connection);
-        let refused = counted(Reply::refused(Refusal::Failed), 2);
-        send(connection.as_fd(), &refused.encode(), &[]).unwrap();
-        let _ = next(&connection);
-        send(
-            connection.as_fd(),
-            &ok(pack_release("0.5.0"), false).encode(),
-            &[],
-        )
-        .unwrap();
-        let (request, _) = next(&connection);
-        assert_eq!(request, Request::Restore(Token(2)));
-        send(connection.as_fd(), &counted(ok(2, false), 1).encode(), &[]).unwrap();
-    });
-    let client = Client::connect(&path).unwrap();
-    let pad = readable("the pad");
-    client.send_hide(pad.as_fd()).unwrap();
+    woken_up.send(()).unwrap();
     client.wait(None).unwrap();
-    let hid = client.hid().unwrap();
-    assert_eq!(hid.rebinds, Some(1));
-    assert_eq!(read_all(hid.outcome.unwrap().event), "hidden");
-    client.send_hide(pad.as_fd()).unwrap();
-    let hid = client.hid().unwrap();
-    assert_eq!(
-        (hid.outcome.unwrap_err(), hid.rebinds),
-        (Refusal::Failed, Some(2))
-    );
-    assert_eq!(client.release().unwrap(), ("0.5.0".to_string(), false));
-    assert_eq!(client.restore(Token(2)).unwrap(), Some(1));
-    service.join().unwrap();
-}
+    assert_eq!(read_all(client.hid().unwrap().event), "hidden");
 
-/// A refusal that says no count, as one at the service's gate doesn't,
-/// re-bound nothing: a hide's, and a hide's and a cancel's given up. And
-/// the reply to a request given up waiting for is read past, to the
-/// reply to the one asked after it.
-#[test]
-fn a_refusal_that_says_no_count_re_bound_nothing() {
-    let (path, service) = stand_in(|connection| {
-        let refused = Reply::refused(Refusal::NotPermitted).encode();
-        for _ in 0..3 {
-            let _ = next(&connection);
-            send(connection.as_fd(), &refused, &[]).unwrap();
-        }
-        // A reopen given up, then a restore asked after it.
-        let (request, _) = next(&connection);
-        assert_eq!(request, Request::Reopen(Token(3)));
-        let event = readable("hidden");
-        send(
-            connection.as_fd(),
-            &counted(ok(3, true), 0).encode(),
-            &[event.as_fd()],
-        )
-        .unwrap();
-        let (request, _) = next(&connection);
-        assert_eq!(request, Request::Restore(Token(3)));
-        send(connection.as_fd(), &counted(ok(3, false), 1).encode(), &[]).unwrap();
-    });
-    let client = Client::connect(&path).unwrap();
-    let pad = readable("the pad");
     client.send_hide(pad.as_fd()).unwrap();
-    let hid = client.hid().unwrap();
-    assert_eq!(
-        (hid.outcome.unwrap_err(), hid.rebinds),
-        (Refusal::NotPermitted, Some(0))
-    );
-    client.send_hide(pad.as_fd()).unwrap();
-    client.cancel().unwrap();
-    assert_eq!(client.cancelled().unwrap(), 0);
+    assert!(matches!(client.hid(), Err(Error::Refused(Refusal::Failed))));
 
-    client.send_reopen(Token(3)).unwrap();
+    client.send_reopen(Token(2)).unwrap();
     client.skip().unwrap();
-    assert_eq!(client.restore(Token(3)).unwrap(), Some(1));
+    client.restore(Token(2)).unwrap();
     service.join().unwrap();
 }

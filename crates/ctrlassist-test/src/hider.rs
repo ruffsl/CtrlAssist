@@ -29,8 +29,6 @@ pub enum Asked {
     Raw(String),
     /// For the raw HID node of a pad it has hidden.
     RawOf(String),
-    /// To give up the hide asked last on a connection.
-    Cancel,
     /// Nothing more: a connection closed with a pad still hidden through
     /// it, which restores it. One that closes with nothing hidden says
     /// nothing.
@@ -126,7 +124,7 @@ impl Hold {
 /// A hiding service that speaks the real one's protocol on a socket of
 /// its own and hides nothing: it hands back the pad's node opened for
 /// reading and writing, as the real service does, and notes what it was
-/// asked. It re-binds nothing, and its replies say so. The real service
+/// asked. It re-binds nothing. The real service
 /// runs as its own user with the rule shipped with it installed, which a
 /// test can't arrange; the virtual machine check runs it.
 pub struct FakeHider {
@@ -182,14 +180,12 @@ fn open(node: &Path) -> Option<OwnedFd> {
         .map(OwnedFd::from)
 }
 
-/// A reply that did as asked, re-binding nothing, as the stand-in never
-/// does.
+/// A reply that did as asked.
 fn done(token: Token) -> Reply {
     Reply {
         refusal: None,
         token,
         dislodged: false,
-        rebinds: Some(0),
     }
 }
 
@@ -272,7 +268,7 @@ fn serve_scripted(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>, hold: &Hold) 
                 }
                 None => answer(Reply::refused(Refusal::UnknownToken), &[]),
             },
-            Request::Cancel | Request::Raw => answer(Reply::refused(Refusal::Unsupported), &[]),
+            Request::Raw => answer(Reply::refused(Refusal::Unsupported), &[]),
         };
         if !answered {
             break;
@@ -297,8 +293,6 @@ fn serve(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>, before_restore: &Befor
     };
     let mut hidden: BTreeMap<u32, PadId> = BTreeMap::new();
     let mut tokens = 0u32;
-    // The pad the last hide hid, while it is: what a cancel shows again.
-    let mut last_hidden = None;
     loop {
         let mut buffer = [0u8; Request::SIZE];
         let Ok((length, fds)) = receive(connection.as_fd(), &mut buffer) else {
@@ -317,7 +311,6 @@ fn serve(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>, before_restore: &Befor
                     note(Asked::Hide(id.to_string()));
                     tokens += 1;
                     hidden.insert(tokens, id);
-                    last_hidden = Some(tokens);
                     pass = open(&node);
                     Reply {
                         refusal: pass.is_none().then_some(Refusal::Failed),
@@ -357,14 +350,6 @@ fn serve(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>, before_restore: &Befor
                 }
                 None => Reply::refused(Refusal::UnknownToken),
             },
-            // Shows again what the last hide hid, as the real service does.
-            Some(Request::Cancel) => {
-                note(Asked::Cancel);
-                if let Some(id) = last_hidden.take().and_then(|token| hidden.remove(&token)) {
-                    note(Asked::Restore(id.to_string()));
-                }
-                done(Token(0))
-            }
             // The real service opens it for the kinds of pad it names;
             // the stand-in for any pad whose raw node this user can open.
             Some(Request::Raw) => match fds.first().and_then(pad_of) {
