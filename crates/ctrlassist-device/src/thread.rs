@@ -4,9 +4,10 @@
 //! virtual pad, one wake descriptor and one timer, and makes no wakeups
 //! while idle, but for a virtual pad that passes as one which reports all
 //! the time, and so must itself: a virtual DualSense wakes it up to 100
-//! times a second for as long as it exists. Everything it works on is built elsewhere and handed over
-//! whole, and what it retires is handed back, so that it neither
-//! allocates nor frees, and it never waits for the side that commands it.
+//! times a second for as long as it exists. Everything it works on is
+//! built elsewhere and handed over whole, and what it retires is handed
+//! back, so that it neither allocates nor frees, and it never waits for
+//! the side that commands it.
 
 use std::io;
 use std::mem::MaybeUninit;
@@ -206,7 +207,6 @@ pub struct Setup {
     /// When a rumble level next changes by itself, or a virtual pad
     /// that reports all the time is next due.
     next_ms: Option<u64>,
-    /// When the virtual pads that report all the time next do.
     /// Each node's selection as last reported, by node number.
     selected: Vec<Option<usize>>,
     /// The rumble level the games want of each pad, by source number.
