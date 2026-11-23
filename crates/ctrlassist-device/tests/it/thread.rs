@@ -639,15 +639,16 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
     game.join().unwrap();
 
     // Stopped, the setup is handed back, and dropping it drops the pad,
-    // which erases the effect it kept. The stand-in answers that as a
-    // pad's driver does: unanswered, the kernel waits 30 seconds for it,
-    // holding the pad, and again as the pad's node is closed.
+    // whose own thread then erases the effect it kept. The stand-in
+    // answers that as a pad's driver does: unanswered, the kernel holds
+    // that thread 30 seconds, and again as the pad's node is closed, but
+    // not whoever dropped the pad, which here is the stand-in's server.
     thread.send(Command::Stop(ID)).unwrap();
     let setup = match reports.recv().unwrap() {
         Report::Stopped(_, setup) => setup,
         other => unreachable!("expected the setup back, got {other:?}"),
     };
-    let dropping = std::thread::spawn(move || drop(setup));
+    drop(setup);
     let mut erased = false;
     for _ in 0..400 {
         let mut fds = [PollFd::new(&motors, PollFlags::IN)];
@@ -666,7 +667,6 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
             break;
         }
     }
-    dropping.join().unwrap();
     assert!(erased, "the pad's effect is erased as the pad is dropped");
 
     let level = Effect {
@@ -901,6 +901,85 @@ fn a_buzz_outranks_a_game_s_rumble_and_then_gives_the_pad_back_to_it() {
     game.thread().unpark();
     game.join().unwrap();
     assert_eq!(levels().len(), 3);
+}
+
+/// A pad another program makes through uinput, as Steam Input or a
+/// game-streaming host does, has its effect updated by asking that
+/// program, and the kernel holds whoever asks until it answers, up to 30
+/// seconds. One that has stopped answering holds only its own pad's
+/// rumble: every other setup's input still flows, commands are still
+/// taken, and the level goes to the pad once its maker answers again.
+#[test]
+fn a_pad_whose_maker_stops_answering_holds_nothing_but_its_own_rumble() {
+    if !can_make_pads("a_pad_whose_maker_stops_answering_holds_nothing_but_its_own_rumble") {
+        return;
+    }
+    const OTHER: SetupId = SetupId(8);
+    let motors = ctrlassist_test::RumblePad::new("Thread Hung Pad", 0x1209, 0x5ef0).unwrap();
+    // Its one effect is uploaded as it is opened, which it answers.
+    let pad = writable(motors.event_node());
+    motors.stop_answering();
+    let one = || {
+        Graph::build(GraphSpec {
+            sources: vec![source()],
+            nodes: Vec::new(),
+            sinks: vec![Input::Source(PRIMARY)],
+        })
+        .unwrap()
+    };
+    let (sink, _reader) = sink();
+    let game_node = sink.event_node().to_path_buf();
+    let mut other = FakePad::new("Thread Other Primary", 0x1209, 0x5eed).unwrap();
+    let (other_sink, mut other_game) = self::sink();
+    let (thread, reports) = InputThread::spawn().unwrap();
+    for (id, pad, sink) in [(ID, pad, sink), (OTHER, read(&other), other_sink)] {
+        let setup = Setup::new(one(), vec![Some(pad)], vec![sink]);
+        thread.send(Command::Start(id, Box::new(setup))).unwrap();
+    }
+
+    // A game rumbles the hung pad's setup, and the pad's effect is asked
+    // to take the level.
+    let mut game = game_opens(&game_node);
+    let mut effect = game.upload_ff_effect(rumble(0x7000, 0x1000, 0, 0)).unwrap();
+    effect.play(1).unwrap();
+    for _ in 0..400 {
+        if motors.is_asked() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(motors.is_asked(), "the pad was never asked for the level");
+
+    // While that waits, the other setup's input reaches its game.
+    other.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    let frames = read_until(&mut other_game, |frames| {
+        frames
+            .last()
+            .is_some_and(|state| state.get(gamepad::SOUTH) > 0.0)
+    });
+    assert!(
+        frames
+            .last()
+            .is_some_and(|state| state.get(gamepad::SOUTH) > 0.0),
+        "the other setup's press never arrived: {frames:?}"
+    );
+    // And a command is taken.
+    thread.send(Command::Stop(OTHER)).unwrap();
+    match reports.recv().unwrap() {
+        Report::Stopped(OTHER, _) => {}
+        report => unreachable!("expected the other setup back, got {report:?}"),
+    }
+
+    // Answered again, the level reaches the motors.
+    motors.answer_again();
+    for _ in 0..400 {
+        if motors.motors().contains(&(0x7000, 0x1000)) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(motors.motors(), [(0x7000, 0x1000)]);
+    drop(effect);
 }
 
 /// A virtual DualSense reports all the time, as a real one does, with

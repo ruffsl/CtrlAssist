@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
 use evdev::uinput::VirtualDevice;
@@ -18,15 +18,28 @@ use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 /// How hard the two motors were set: strong, then weak.
 pub type Motors = (u16, u16);
 
+/// Whether the pad's maker answers what it is asked.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Answering {
+    Yes,
+    /// It has stopped answering, as a program that hangs does.
+    No,
+    /// The pad is being dropped.
+    Ended,
+}
+
 /// A gamepad made through uinput that accepts rumble, as a real pad's
 /// driver does, and remembers what its motors were told.
 ///
 /// The kernel holds whoever asks a uinput pad to rumble until the pad's
-/// maker answers, so a thread of the pad's own answers for it.
+/// maker answers, so a thread of the pad's own answers for it, until it
+/// is told to [stop answering](Self::stop_answering).
 pub struct RumblePad {
     event_node: PathBuf,
     motors: Arc<Mutex<Vec<Motors>>>,
-    stop: Arc<AtomicBool>,
+    answering: Arc<(Mutex<Answering>, Condvar)>,
+    /// The pad's uinput descriptor, to look at what waits unread.
+    asked: OwnedFd,
     serving: Option<JoinHandle<()>>,
 }
 
@@ -116,16 +129,17 @@ impl RumblePad {
             .ok_or_else(|| io::Error::other("the fake pad has no event node"))?;
         let flags = fcntl_getfl(&device)?;
         fcntl_setfl(&device, flags | OFlags::NONBLOCK)?;
+        let asked = device.as_fd().try_clone_to_owned()?;
         // As for `FakePad`: wait for udev to finish with the node.
         let _ = std::process::Command::new("udevadm").arg("settle").status();
 
         let motors = Arc::new(Mutex::new(Vec::new()));
-        let stop = Arc::new(AtomicBool::new(false));
+        let answering = Arc::new((Mutex::new(Answering::Yes), Condvar::new()));
         let serving = std::thread::Builder::new()
             .name("rumble-pad".into())
             .spawn({
                 let motors = Arc::clone(&motors);
-                let stop = Arc::clone(&stop);
+                let answering = Arc::clone(&answering);
                 move || {
                     let mut effects = HashMap::new();
                     // Test support: a short poll, so the thread notices
@@ -134,9 +148,18 @@ impl RumblePad {
                         tv_sec: 0,
                         tv_nsec: 10_000_000,
                     };
-                    while !stop.load(Ordering::Relaxed) {
+                    loop {
                         let _ = poll(&mut [PollFd::new(&device, PollFlags::IN)], Some(&wait));
-                        if serve(&mut device, &mut effects, &motors).is_err() {
+                        // Held while serving, so that once told to stop
+                        // answering, nothing more is answered.
+                        let (mode, changed) = &*answering;
+                        let mut mode = mode.lock().unwrap_or_else(PoisonError::into_inner);
+                        while *mode == Answering::No {
+                            mode = changed.wait(mode).unwrap_or_else(PoisonError::into_inner);
+                        }
+                        if *mode == Answering::Ended
+                            || serve(&mut device, &mut effects, &motors).is_err()
+                        {
                             return;
                         }
                     }
@@ -145,7 +168,8 @@ impl RumblePad {
         Ok(Self {
             event_node,
             motors,
-            stop,
+            answering,
+            asked,
             serving: Some(serving),
         })
     }
@@ -169,13 +193,46 @@ impl RumblePad {
             .expect("nothing panics while the motor log is held")
             .clone()
     }
+
+    fn answer(&self, now: Answering) {
+        let (mode, changed) = &*self.answering;
+        *mode.lock().unwrap_or_else(PoisonError::into_inner) = now;
+        changed.notify_all();
+    }
+
+    /// From now on leaves everything it is asked unanswered, as a program
+    /// that has hung does: whoever updates or erases one of its effects
+    /// waits, up to the kernel's 30 seconds. Nothing is answered once
+    /// this returns.
+    pub fn stop_answering(&self) {
+        self.answer(Answering::No);
+    }
+
+    /// Answers again, what waits and what comes.
+    pub fn answer_again(&self) {
+        self.answer(Answering::Yes);
+    }
+
+    /// Whether something waits unread: while it isn't answering, a
+    /// request.
+    #[must_use]
+    pub fn is_asked(&self) -> bool {
+        let mut fds = [PollFd::new(&self.asked, PollFlags::IN)];
+        let now = Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        poll(&mut fds, Some(&now)).is_ok_and(|ready| ready > 0)
+    }
 }
 
 impl Drop for RumblePad {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.answer(Answering::Ended);
         if let Some(serving) = self.serving.take() {
             let _ = serving.join();
         }
+        // The pad goes with the serving thread's descriptor and this
+        // one: the kernel then fails whatever still waits on it.
     }
 }

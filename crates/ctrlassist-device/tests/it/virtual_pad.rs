@@ -65,6 +65,32 @@ fn serve_while<T: Send + 'static>(
     (requests, outcome)
 }
 
+/// Serves the virtual pad, noting each request in `requests`, until
+/// `enough` says the requests so far are what was waited for, or gives
+/// up after a bounded number of waits so that a failing test ends.
+fn serve_until(
+    sink: &mut VirtualPad,
+    requests: &mut Vec<Request>,
+    enough: impl Fn(&[Request]) -> bool,
+) {
+    for _ in 0..400 {
+        if enough(requests) {
+            return;
+        }
+        let mut fds = [PollFd::new(&*sink, PollFlags::IN)];
+        let wait = rustix::event::Timespec {
+            tv_sec: 0,
+            tv_nsec: 10_000_000,
+        };
+        let _ = poll(&mut fds, Some(&wait));
+        sink.serve(|request| {
+            requests.push(request);
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
 pub(crate) fn game_opens(node: &Path) -> Device {
     // A game writes to the node to play effects.
     Device::open(node).unwrap()
@@ -254,24 +280,35 @@ fn a_rumble_level_is_one_endless_effect_updated_in_place_and_stopped_at_zero() {
     let node = motors.event_node().to_path_buf();
     let _ = std::process::Command::new("udevadm").arg("settle").status();
 
-    let player = move || {
-        let mut pad = writable(&node);
-        assert!(pad.can_rumble());
-        let first = Level {
-            strong: 0x8000,
-            weak: 0,
-        };
-        let second = Level {
-            strong: 0x2000,
-            weak: 0xffff,
-        };
-        pad.rumble(first).unwrap();
-        // The same level again asks the pad for nothing.
-        pad.rumble(first).unwrap();
-        pad.rumble(second).unwrap();
-        pad.rumble(Level::default()).unwrap();
+    // Opening the pad uploads its effect, which the stand-in answers.
+    let opening = move || writable(&node);
+    let (mut requests, mut pad) = serve_while(&mut motors, opening, |_| Ok(()));
+    assert!(pad.can_rumble());
+    // A thread of the pad's own sends it each level, and a newer level
+    // takes the place of one not yet sent: each is waited for here, so
+    // that each is sent.
+    let first = Level {
+        strong: 0x8000,
+        weak: 0,
     };
-    let (requests, ()) = serve_while(&mut motors, player, |_| Ok(()));
+    let second = Level {
+        strong: 0x2000,
+        weak: 0xffff,
+    };
+    pad.rumble(first).unwrap();
+    // The same level again asks the pad for nothing.
+    pad.rumble(first).unwrap();
+    serve_until(&mut motors, &mut requests, |requests| requests.len() >= 3);
+    pad.rumble(second).unwrap();
+    serve_until(&mut motors, &mut requests, |requests| requests.len() >= 5);
+    pad.rumble(Level::default()).unwrap();
+    serve_until(&mut motors, &mut requests, |requests| requests.len() >= 6);
+    // Dropped, the pad has its effect erased by that thread, which the
+    // dropping doesn't wait for.
+    drop(pad);
+    serve_until(&mut motors, &mut requests, |requests| {
+        requests.last() == Some(&Request::Erase { id: 0 })
+    });
     let endless = |strong, weak| Effect {
         strong,
         weak,

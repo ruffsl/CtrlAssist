@@ -1,27 +1,34 @@
-//! Writing to a pad's raw HID node, off the input thread.
+//! Writing to a pad off the input thread.
 //!
-//! A write to a USB pad's raw node is a synchronous transfer: the kernel
-//! sends it at the pad's next interval and waits, up to five seconds for
-//! a pad that stalls, whatever the descriptor's flags. The input thread
-//! can't wait, so each pad sent whole output reports has a thread of its
-//! own that writes them. The input thread only leaves what the pad should
-//! be sent in a one-slot mailbox and wakes the writer: neither waits for
-//! the other, and nothing is allocated. What the input thread passes is
-//! everything the games have set, not a change, so a newer one takes the
-//! place of one not yet written and loses nothing; what a report asks
-//! once is gathered beside it until it is written. Every report written
-//! carries the latest rumble level, so a level and the games' settings
-//! that change together are written once, together.
+//! What a pad is sent can wait on something the input thread must never
+//! wait on. A write to a USB pad's raw node is a synchronous transfer:
+//! the kernel sends it at the pad's next interval and waits, up to five
+//! seconds for a pad that stalls, whatever the descriptor's flags. An
+//! update of a pad's kernel effect, for a pad another program makes
+//! through uinput, waits until that program answers, up to 30 seconds;
+//! and every write and request on a pad's event node waits while anyone
+//! else's request holds that node, as such an update does. So each pad
+//! that is sent anything has a thread of its own that sends it: whole
+//! output reports to its raw node, or its rumble level to its one kernel
+//! effect. The input thread only leaves what the pad should be sent in
+//! a one-slot mailbox and wakes the writer: neither waits for the other,
+//! and nothing is allocated. What the input thread passes is everything
+//! the games have set, not a change, so a newer one takes the place of
+//! one not yet written and loses nothing; what a report asks once is
+//! gathered beside it until it is written. Every report written carries
+//! the latest rumble level, so a level and the games' settings that
+//! change together are written once, together.
 
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering, fence};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{JoinHandle, Thread};
 
 use ctrlassist_core::Level;
+use evdev::{FFEffect, FFEffectData, FFEffectKind, FFReplay, FFTrigger};
 
 use crate::dualsense::{Composer, GAME_SIZE, Kind, Once};
 
@@ -135,25 +142,133 @@ struct Shared {
     /// it looks in the mailbox, so it goes with those settings or later
     /// ones, never earlier.
     once: AtomicU32,
+    /// Something handed over to go after the pad's last write: dropped
+    /// by the writer as it ends, and never by whoever let the pad go.
+    after: Mutex<Option<Box<dyn Send>>>,
 }
 
-/// A PlayStation pad's raw HID node, as somewhere to write: the pad
-/// is sent whole output reports, so that what a game sends a virtual
-/// DualSense beyond rumble reaches the pad behind it. A DualSense gets
-/// the game's report as it is, lights and trigger effects; a DualShock 4
-/// gets the lightbar's color. Rumble then goes this way too, and not
-/// through the kernel's own effects, so every report written carries the
-/// level the pad should be at.
+/// Where a writer writes: what it does with what the pad should be sent,
+/// and how it leaves the pad.
+pub(crate) trait Target: Send + 'static {
+    /// Sends the pad `level`, with the games' settings where they changed
+    /// since they were last sent, and what is asked `once`.
+    fn send(&mut self, game: Option<&[u8; GAME_SIZE]>, level: Level, once: Once) -> io::Result<()>;
+
+    /// Leaves the pad as no game had it. The writer's last act on it.
+    fn rest(self);
+}
+
+/// A PlayStation pad's raw HID node: the pad is sent whole output
+/// reports. Left with its motors stopped, a DualSense's trigger effects
+/// off, and the lights its kernel driver keeps (see
+/// [`Kind::driver_lights`]).
+struct RawNode<W> {
+    out: W,
+    kind: Kind,
+    composer: Composer,
+    /// The HID device the node is of, whose LED devices say what its
+    /// driver shows: read as the writer ends.
+    device: Option<PathBuf>,
+}
+
+impl<W: Write + Send + 'static> RawNode<W> {
+    fn new(out: W, kind: Kind, device: Option<PathBuf>) -> Self {
+        Self {
+            out,
+            kind,
+            composer: Composer::new(kind),
+            device,
+        }
+    }
+}
+
+impl<W: Write + Send + 'static> Target for RawNode<W> {
+    fn send(&mut self, game: Option<&[u8; GAME_SIZE]>, level: Level, once: Once) -> io::Result<()> {
+        let (report, length) = self.composer.compose(game, level, once);
+        self.out.write_all(report.get(..length).unwrap_or(&report))
+    }
+
+    fn rest(mut self) {
+        let lights = self.kind.driver_lights(self.device.as_deref());
+        let (rest, length) = self.composer.rest(lights);
+        let _ = self.out.write_all(rest.get(..length).unwrap_or(&rest));
+    }
+}
+
+/// A rumble at `level` with no length: it runs until it is changed or
+/// stopped. When each rumble ends is the router's business.
+pub(crate) fn endless(level: Level) -> FFEffectData {
+    FFEffectData {
+        direction: 0,
+        trigger: FFTrigger::default(),
+        replay: FFReplay {
+            length: 0,
+            delay: 0,
+        },
+        kind: FFEffectKind::Rumble {
+            strong_magnitude: level.strong,
+            weak_magnitude: level.weak,
+        },
+    }
+}
+
+/// The one kernel effect a pad holds however many games rumble it,
+/// uploaded at rest as the pad was opened: a new level updates it in
+/// place and plays it, with no gap and no second slot, and a level of
+/// nothing stops it. Left erased, which stops it.
+struct KernelEffect {
+    effect: FFEffect,
+    /// The level it is at, zero while it is stopped.
+    level: Level,
+}
+
+impl Target for KernelEffect {
+    fn send(&mut self, _: Option<&[u8; GAME_SIZE]>, level: Level, _: Once) -> io::Result<()> {
+        if level == self.level {
+            return Ok(());
+        }
+        if level == Level::default() {
+            self.effect.stop()?;
+        } else {
+            // Played again as well as updated: a memless driver, as a
+            // rumble-only pad's is, goes on at the new strength either
+            // way, and another program's uinput pad may act only on a
+            // play.
+            self.effect.update(endless(level))?;
+            self.effect.play(1)?;
+        }
+        self.level = level;
+        Ok(())
+    }
+
+    fn rest(self) {
+        // Dropping the effect erases it, and the kernel stops an effect
+        // before it erases it, whatever the pad's driver then answers: so
+        // the pad's last write is a level of nothing. For a pad another
+        // program makes, the erase waits for that program; here, that
+        // holds nobody else.
+        drop(self.effect);
+    }
+}
+
+/// What a pad is sent, as the input thread tells it: its rumble level,
+/// and for a PlayStation pad given its raw node, what the games set on
+/// a virtual DualSense. A DualSense gets the game's report as it is,
+/// lights and trigger effects; a DualShock 4 gets the lightbar's color.
+/// Rumble then goes that way too, and not through the kernel's own
+/// effects, so every report written carries the level the pad should be
+/// at. Any other pad that can rumble is sent its level through its one
+/// kernel effect.
 ///
 /// The writes are made by a thread of the pad's own, at ordinary
-/// priority. Dropping this has it write what is left, and then leave the
-/// pad as no game had it: its motors stopped, a DualSense's trigger
-/// effects off, and the lights its kernel driver keeps (see
-/// [`Kind::driver_lights`]). Then it closes the node and ends.
-pub(crate) struct RawOutput {
+/// priority. Dropping this has it write what is left, then leave the pad
+/// as no game had it (see [`Target::rest`]), and then end; whoever drops
+/// this doesn't wait for any of it.
+pub(crate) struct Output {
     shared: Arc<Shared>,
     writer: Thread,
-    kind: Kind,
+    /// The kind of pad whose raw node this writes to; none for an effect.
+    kind: Option<Kind>,
     wanted: Wanted,
     /// What was asked once and not yet put.
     once: Once,
@@ -163,10 +278,10 @@ pub(crate) struct RawOutput {
     changed: bool,
 }
 
-impl RawOutput {
+impl Output {
     /// Takes a pad's raw node, if it is one this knows how to write to:
     /// a DualSense's or a DualShock 4's, over USB or Bluetooth.
-    pub(crate) fn open(raw: OwnedFd) -> io::Result<Self> {
+    pub(crate) fn raw(raw: OwnedFd) -> io::Result<Self> {
         let kind = Kind::of(raw.as_fd())?;
         // The HID device the node is of, whose LED devices say what its
         // driver shows: read as the writer ends, off the input thread.
@@ -177,34 +292,49 @@ impl RawOutput {
             );
             PathBuf::from(format!("/sys/dev/char/{major}:{minor}/device"))
         });
-        let (output, _) = Self::start(File::from(raw), kind, device)?;
+        let target = RawNode::new(File::from(raw), kind, device);
+        let (output, _) = Self::start(target, Some(kind), "pad-output")?;
         Ok(output)
     }
 
-    /// Starts the writer on `out`, a pad's raw node whose HID device is
-    /// `device` in sysfs.
-    fn start<W: Write + Send + 'static>(
-        mut out: W,
-        kind: Kind,
-        device: Option<PathBuf>,
+    /// Takes a pad's one kernel effect, uploaded at rest.
+    pub(crate) fn effect(effect: FFEffect) -> io::Result<Self> {
+        let target = KernelEffect {
+            effect,
+            level: Level::default(),
+        };
+        let (output, _) = Self::start(target, None, "pad-rumble")?;
+        Ok(output)
+    }
+
+    /// Starts a writer, named `name`, on `target`: a raw node of a pad of
+    /// `kind`, or an effect.
+    fn start<T: Target>(
+        mut target: T,
+        kind: Option<Kind>,
+        name: &str,
     ) -> io::Result<(Self, JoinHandle<()>)> {
         let shared = Arc::new(Shared {
             mailbox: Mailbox::new(),
             stop: AtomicBool::new(false),
             refused: AtomicI32::new(0),
             once: AtomicU32::new(0),
+            after: Mutex::new(None),
         });
         let writer = {
             let shared = Arc::clone(&shared);
             std::thread::Builder::new()
-                .name("pad-output".to_string())
+                .name(name.to_string())
                 .spawn(move || {
-                    let mut composer = Composer::new(kind);
-                    write_out(&shared, &mut out, &mut composer);
+                    write_out(&shared, &mut target);
                     // What the pad is left with, after whatever was left.
-                    let lights = kind.driver_lights(device.as_deref());
-                    let (rest, length) = composer.rest(lights);
-                    let _ = out.write_all(rest.get(..length).unwrap_or(&rest));
+                    target.rest();
+                    let after = shared
+                        .after
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take();
+                    drop(after);
                 })?
         };
         let output = Self {
@@ -223,6 +353,11 @@ impl RawOutput {
         Ok((output, writer))
     }
 
+    /// Whether this writes whole output reports to a raw node.
+    pub(crate) fn is_raw(&self) -> bool {
+        self.kind.is_some()
+    }
+
     /// Makes the pad's motors run at `level`, with nothing else changed.
     ///
     /// Fails if the pad refused a write since a refusal was last said.
@@ -239,18 +374,22 @@ impl RawOutput {
     /// one report, with the rumble the pad should be at in place of the
     /// report's: the whole of it for a DualSense, with what it asks once,
     /// and for a DualShock 4 the lightbar's color, if it is set. The same
-    /// settings again are nothing new.
+    /// settings again are nothing new, and so is anything for a pad that
+    /// is sent only its level.
     ///
     /// Fails if the pad refused a write since a refusal was last said.
     pub(crate) fn pass(&mut self, report: &[u8]) -> io::Result<()> {
+        let Some(kind) = self.kind else {
+            return Ok(());
+        };
         let mut game = [0u8; GAME_SIZE];
         for (place, byte) in game.iter_mut().zip(report) {
             *place = *byte;
         }
-        if !self.kind.wants(&game) {
+        if !kind.wants(&game) {
             return Ok(());
         }
-        let once = match self.kind {
+        let once = match kind {
             Kind::DualSense { .. } => Once::of(&game),
             Kind::DualShock4 { .. } => Once::default(),
         };
@@ -279,6 +418,16 @@ impl RawOutput {
         if std::mem::take(&mut self.changed) {
             self.publish();
         }
+    }
+
+    /// Hands the writer `after`, to drop once it has left the pad at
+    /// rest, as it ends, so that whoever drops this never waits on it.
+    pub(crate) fn leave_after(&mut self, after: Box<dyn Send>) {
+        *self
+            .shared
+            .after
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(after);
     }
 
     fn change(&mut self) {
@@ -320,7 +469,7 @@ impl RawOutput {
     }
 }
 
-impl Drop for RawOutput {
+impl Drop for Output {
     fn drop(&mut self) {
         if std::mem::take(&mut self.changed) {
             self.publish();
@@ -330,10 +479,10 @@ impl Drop for RawOutput {
     }
 }
 
-/// The writer: writes what is wanted each time it changes, and sleeps
+/// The writer: sends what is wanted each time it changes, and sleeps
 /// between. Ends once the input thread's side is gone and what it left
-/// is written.
-fn write_out<W: Write>(shared: &Shared, out: &mut W, composer: &mut Composer) {
+/// is sent.
+fn write_out<T: Target>(shared: &Shared, target: &mut T) {
     let (mut written, mut games) = (0u64, 0u32);
     loop {
         // Before the mailbox is looked in, so that what was put before
@@ -348,9 +497,7 @@ fn write_out<W: Write>(shared: &Shared, out: &mut W, composer: &mut Composer) {
             let wanted = Wanted::from_words(words);
             let game = (wanted.games != games).then_some(&wanted.game);
             games = wanted.games;
-            let (report, length) = composer.compose(game, wanted.level, once);
-            let report = report.get(..length).unwrap_or(&report);
-            if let Err(error) = out.write_all(report) {
+            if let Err(error) = target.send(game, wanted.level, once) {
                 let errno = error
                     .raw_os_error()
                     .unwrap_or(rustix::io::Errno::IO.raw_os_error());
@@ -417,7 +564,7 @@ mod tests {
         gated: bool,
         refuse: Option<i32>,
     ) -> (
-        RawOutput,
+        Output,
         JoinHandle<()>,
         mpsc::Receiver<Vec<u8>>,
         mpsc::Sender<()>,
@@ -429,7 +576,8 @@ mod tests {
             gate: gated.then_some(gate),
             refuse,
         };
-        let (output, writer) = RawOutput::start(recorder, USB, None).unwrap();
+        let target = RawNode::new(recorder, USB, None);
+        let (output, writer) = Output::start(target, Some(USB), "pad-output").unwrap();
         (output, writer, reports, open)
     }
 
@@ -629,5 +777,74 @@ mod tests {
         assert_eq!(refused.raw_os_error(), Some(enodev));
         drop(output);
         writer.join().unwrap();
+    }
+
+    /// What a pad sent only its level is told, as the writer says it.
+    #[derive(PartialEq, Debug)]
+    enum Told {
+        Level(Level),
+        Rest,
+        /// What was left with the writer was dropped.
+        After,
+    }
+
+    /// Stands in for a pad whose every write waits until the test says,
+    /// as one another program makes waits for that program to answer.
+    struct Stalling {
+        told: mpsc::Sender<Told>,
+        gate: mpsc::Receiver<()>,
+    }
+
+    impl Target for Stalling {
+        fn send(&mut self, _: Option<&[u8; GAME_SIZE]>, level: Level, _: Once) -> io::Result<()> {
+            self.told.send(Told::Level(level)).unwrap();
+            self.gate.recv().unwrap();
+            Ok(())
+        }
+
+        fn rest(self) {
+            self.told.send(Told::Rest).unwrap();
+        }
+    }
+
+    struct Left(mpsc::Sender<Told>);
+
+    impl Drop for Left {
+        fn drop(&mut self) {
+            self.0.send(Told::After).unwrap();
+        }
+    }
+
+    /// While a pad's write waits, whoever tells it a level, or drops it,
+    /// goes on at once: the newest level is sent once the write is let
+    /// go, then the pad is left at rest, and only then is what was left
+    /// with the writer dropped.
+    #[test]
+    fn a_pad_whose_write_waits_holds_nobody_who_tells_it_or_drops_it() {
+        let (told_by, told) = mpsc::channel();
+        let (open, gate) = mpsc::channel();
+        let target = Stalling {
+            told: told_by.clone(),
+            gate,
+        };
+        let (mut output, writer) = Output::start(target, None, "pad-rumble").unwrap();
+        assert!(!output.is_raw());
+        output.rumble(level(0x1000, 0)).unwrap();
+        assert_eq!(told.recv().unwrap(), Told::Level(level(0x1000, 0)));
+        // The writer is held in that write.
+        output.rumble(level(0x2000, 0)).unwrap();
+        output.rumble(level(0x3000, 0x3000)).unwrap();
+        // Nothing for a pad that is sent only its level.
+        output.pass(&lights(0x11)).unwrap();
+        output.leave_after(Box::new(Left(told_by)));
+        drop(output);
+        assert!(told.try_recv().is_err(), "{:?}", told.try_recv());
+        open.send(()).unwrap();
+        assert_eq!(told.recv().unwrap(), Told::Level(level(0x3000, 0x3000)));
+        open.send(()).unwrap();
+        assert_eq!(told.recv().unwrap(), Told::Rest);
+        assert_eq!(told.recv().unwrap(), Told::After);
+        writer.join().unwrap();
+        assert!(told.try_recv().is_err(), "nothing after");
     }
 }

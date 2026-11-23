@@ -156,8 +156,10 @@ async fn identify_buzzes_the_pad_for_as_long_as_asked() {
         .identify_pad(&segment, Duration::from_millis(300))
         .await
         .unwrap();
-    // The reply means the motors run.
-    assert_eq!(fake.motors(), [(0xa000, 0xa000)]);
+    // The reply means the pad took the effect; a thread of the pad's own
+    // then sets the motors running.
+    eventually("the buzz never started", async || !fake.motors().is_empty()).await;
+    assert_eq!(fake.motors()[..1], [(0xa000, 0xa000)]);
     eventually("the buzz never ended", async || fake.motors().len() > 1).await;
     assert_eq!(fake.motors(), [(0xa000, 0xa000), (0, 0)]);
     let buzzed = asked.elapsed();

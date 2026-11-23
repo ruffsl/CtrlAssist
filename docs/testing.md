@@ -29,7 +29,7 @@ How the workspace is tested and where a new test goes. The approach is TisVlay's
 | Fake | Made through | Has | Stands in for |
 |---|---|---|---|
 | `FakePad` | uinput | An event node and a js node; buttons, two sticks, two triggers, a hat | Any evdev gamepad; a pad with no HID driver |
-| `RumblePad` | uinput | An event node; two buttons, a stick, and rumble motors that note what they were told | A pad a buzz or a game's rumble must reach |
+| `RumblePad` | uinput | An event node; two buttons, a stick, and rumble motors that note what they were told; its maker can stop answering, as a hung program does | A pad a buzz or a game's rumble must reach, or one another program makes that has hung |
 | `FakeHider` | a socket | The hiding service's protocol, hiding nothing: it hands back the pad's node and notes what it was asked | The hiding service, for what the daemon asks of it and when |
 | `synthetic_dualsense` | nothing | A report descriptor of the test crate's own that declares the reports the kernel's PlayStation driver exchanges, by number and size, and a firmware report for either rumble layout | A connected DualSense's copied data, none of which is in the repository: the driver binds a virtual pad made from it as it does one made from the real thing |
 | `FakeHidPad` | uhid | Those, plus a HID device with a driver bound, a hidraw node and an address | A PlayStation pad, any Bluetooth pad, anything whose driver is re-bound or whose hidraw node is read |
