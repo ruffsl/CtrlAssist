@@ -8,8 +8,19 @@
 //! and a user logged in at a seat, whose daemon is the service's client,
 //! has room of their own that no other user's connections take. Nobody
 //! can log in at a seat as a subordinate user ID.
+//!
+//! A connection the service won't serve is closed on a thread of its own.
+//! A client may send descriptors as soon as it has connected, before it
+//! is accepted, and closing its connection releases them on the thread
+//! that closes it, which one whose release blocks (a TCP socket made to
+//! linger) holds there. So the main thread, which accepts, closes none.
 
 use std::collections::BTreeMap;
+use std::io;
+use std::os::fd::OwnedFd;
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+
+use tracing::error;
 
 /// The most connections a user with a session on a seat may hold at
 /// once. Their daemon holds one for each pad it has hidden, and one more
@@ -87,9 +98,160 @@ impl Connections {
     }
 }
 
+/// How many connections may wait for the closer. A close that blocks
+/// holds these behind it, and the service accepts nothing more until
+/// there is room, leaving clients in the backlog.
+pub(crate) const CLOSING: usize = 64;
+
+/// The thread that closes the connections the service won't serve.
+#[derive(Debug)]
+pub(crate) struct Closer {
+    queue: SyncSender<OwnedFd>,
+    /// Connections the queue had no room for, kept until it has.
+    kept: Vec<OwnedFd>,
+}
+
+impl Closer {
+    /// Starts the thread, with room for `room` connections waiting, and
+    /// `closed` called after each close.
+    pub(crate) fn start(room: usize, closed: impl Fn() + Send + 'static) -> io::Result<Self> {
+        let (queue, closing) = mpsc::sync_channel::<OwnedFd>(room);
+        std::thread::Builder::new()
+            .name("closer".into())
+            .spawn(move || {
+                for connection in closing {
+                    drop(connection);
+                    closed();
+                }
+            })?;
+        Ok(Self {
+            queue,
+            kept: Vec::new(),
+        })
+    }
+
+    /// Has `connection` closed on the closer's thread, never this one:
+    /// kept, if there is no room for it yet.
+    pub(crate) fn close(&mut self, connection: OwnedFd) {
+        match self.queue.try_send(connection) {
+            Ok(()) => {}
+            Err(TrySendError::Full(connection)) => self.kept.push(connection),
+            Err(TrySendError::Disconnected(connection)) => {
+                // The thread ends only by a panic. Left open, as closing
+                // it here could block whoever accepts.
+                error!("the closer has stopped; a connection it was to close is left open");
+                std::mem::forget(connection);
+            }
+        }
+    }
+
+    /// Whether a connection is kept for want of room. Until it is handed
+    /// over, nothing more should be accepted.
+    pub(crate) fn full(&self) -> bool {
+        !self.kept.is_empty()
+    }
+
+    /// Hands over what was kept, as far as there is room now.
+    pub(crate) fn retry(&mut self) {
+        for connection in std::mem::take(&mut self.kept) {
+            self.close(connection);
+        }
+    }
+}
+
+impl Drop for Closer {
+    /// Only as the service ends: what is kept is left for the kernel to
+    /// close as the process exits, when a socket never lingers.
+    fn drop(&mut self) {
+        for connection in self.kept.drain(..) {
+            std::mem::forget(connection);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+    use std::net::{TcpListener, TcpStream};
+    use std::os::fd::AsFd;
+    use std::time::Duration;
+
+    use rustix::event::{PollFd, PollFlags, poll};
+    use rustix::io::Errno;
+    use rustix::net::{AddressFamily, RecvFlags, SocketFlags, SocketType, socketpair};
+
     use super::*;
+
+    /// A TCP socket whose close lingers: its peer, returned with it, never
+    /// reads, so once its window is full neither its data nor the end
+    /// after it can go. Dropping the peer resets it, which ends the wait.
+    fn lingering() -> (OwnedFd, TcpStream) {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut stuck = TcpStream::connect(server.local_addr().unwrap()).unwrap();
+        let (peer, _) = server.accept().unwrap();
+        rustix::net::sockopt::set_socket_linger(&stuck, Some(Duration::from_secs(3600))).unwrap();
+        stuck.set_nonblocking(true).unwrap();
+        let chunk = [0u8; 65536];
+        let full = loop {
+            if let Err(error) = stuck.write(&chunk) {
+                break error;
+            }
+        };
+        assert_eq!(full.kind(), io::ErrorKind::WouldBlock);
+        (OwnedFd::from(stuck), peer)
+    }
+
+    /// A connection, as the service's end and the client's, that carries
+    /// `fds` as a client can send them before it is accepted.
+    fn connection(fds: &[OwnedFd]) -> (OwnedFd, OwnedFd) {
+        let (service, client) = socketpair(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        let fds: Vec<_> = fds.iter().map(AsFd::as_fd).collect();
+        ctrlassist_hider::send(client.as_fd(), &[6, 0, 0, 0, 0], &fds).unwrap();
+        (service, client)
+    }
+
+    /// Whether the service's end of the client's connection is still open.
+    fn open(client: &OwnedFd) -> bool {
+        rustix::net::recv(client, &mut [0u8; 8], RecvFlags::DONTWAIT) == Err(Errno::AGAIN)
+    }
+
+    #[test]
+    fn a_close_that_blocks_holds_up_the_closer_and_nothing_else() {
+        let (closes, closed) = mpsc::channel();
+        let mut closer = Closer::start(2, move || closes.send(()).unwrap()).unwrap();
+        let (stuck, peer) = lingering();
+        let (service, blocked) = connection(&[stuck]);
+        closer.close(service);
+        // The closer has begun closing it, and is held in the close.
+        poll(&mut [PollFd::new(&blocked, PollFlags::IN)], None).unwrap();
+        // Each handed over at once all the same: two have room behind it,
+        // and the next is kept, with nothing more to be accepted.
+        let behind: Vec<_> = (0..3).map(|_| connection(&[])).collect();
+        let mut clients = Vec::new();
+        for (count, (service, client)) in behind.into_iter().enumerate() {
+            assert!(!closer.full(), "{count} handed over");
+            closer.close(service);
+            clients.push(client);
+        }
+        assert!(closer.full());
+        assert!(clients.iter().all(open));
+        assert_eq!(closed.try_recv(), Err(mpsc::TryRecvError::Empty));
+        // The close ends: the rest are closed, what was kept once there is
+        // room for it.
+        drop(peer);
+        for _ in 0..4 {
+            closed.recv().unwrap();
+            closer.retry();
+        }
+        assert!(!closer.full());
+        assert!(!clients.iter().any(open));
+    }
 
     #[test]
     fn a_user_at_a_seat_has_room_for_a_daemon_with_sixteen_pads() {

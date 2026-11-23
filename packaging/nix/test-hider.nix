@@ -181,6 +181,10 @@ let
   #       subordinate IDs would, opens <each> connections and asks each
   #       the release; says how many were answered and how many closed at
   #       once; with hold, holds them
+  #   hider-probe lingering <socket> <count>
+  #       opens <count> connections and sends nothing, then one more that
+  #       passes a TCP socket whose close lingers, its data never read;
+  #       says how many it holds and whether the last was closed; holds
   #   hider-probe uhid <name> <phys> [<uniq> combo]
   #       makes a HID game pad through uhid with that phys and no address;
   #       holds. With combo, a game pad and a keyboard in one descriptor,
@@ -312,6 +316,31 @@ let
             print(f"answered={answered} closed={closed}", flush=True)
             if hold:
                 time.sleep(3600)
+        case ["lingering", path, count]:
+            peers = [connect(path) for _ in range(int(count))]
+            # A TCP connection whose other end never reads: once its window
+            # is full, a close that lingers waits for data that can't go.
+            server = socket.create_server(("127.0.0.1", 0))
+            stuck = socket.create_connection(server.getsockname())
+            reader, _ = server.accept()
+            stuck.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 3600))
+            stuck.setblocking(False)
+            try:
+                while True:
+                    stuck.send(bytes(65536))
+            except BlockingIOError:
+                pass
+            # Sent before the service accepts, so the service's end is the
+            # last to hold it.
+            last = connect(path)
+            socket.send_fds(last, [struct.pack("<BI", 6, 0)], [stuck.fileno()])
+            stuck.close()
+            try:
+                closed = last.recv(6) == b""
+            except ConnectionResetError:
+                closed = True
+            print(f"held={len(peers)} closed={closed}", flush=True)
+            time.sleep(3600)
         case ["uhid", name, phys, *combo]:
             # The test crate's uhid pad's descriptor: a game pad.
             descriptor = bytes([
@@ -423,7 +452,7 @@ let
                 elif action in ("unbind", "bind"):
                     print(f"{source} {action}", flush=True)
         case _:
-            sys.exit("usage: hider-probe opath|hide|long|silent|idle|uids|uhid|hang-up|stop-then-hide|uevent|rebinds ...")
+            sys.exit("usage: hider-probe opath|hide|long|silent|idle|uids|lingering|uhid|hang-up|stop-then-hide|uevent|rebinds ...")
   '';
 in
 pkgs.testers.runNixOSTest {
@@ -1184,6 +1213,32 @@ pkgs.testers.runNixOSTest {
         assert machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip() == pid, "the service didn't restart"
         assert order(control, "restore").startswith("ok")
         machine.succeed("systemctl stop keeper-again")
+        wait_restored()
+
+    with subtest("a connection over the cap that carries a socket whose close lingers is closed off the main thread, and the user at the seat is served at once"):
+        # A user with no seat holds the eight connections they may, then
+        # sends a ninth a TCP socket before it is accepted: closing the
+        # ninth, the service is left holding the socket's last reference.
+        machine.succeed(f"systemd-run --unit lingering --uid bob hider-probe lingering {SOCKET} 8")
+        machine.wait_until_succeeds("journalctl -u lingering -o cat | grep -q held=")
+        told = machine.succeed("journalctl -u lingering -o cat | grep held=").strip()
+        assert told == "held=8 closed=True", told
+        pid = machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip()
+        # The close lingers, on the service's closer.
+        closer = f"for task in /proc/{pid}/task/*; do if grep -qx closer $task/comm; then cat $task/stack; fi; done"
+        machine.wait_until_succeeds(f"{closer} | grep -q tcp_close")
+        print("the closer, closing the ninth: " + " < ".join(line.split()[-1] for line in machine.succeed(closer).splitlines()[:8]))
+        # Served all the same: her release told, a pad hidden and shown
+        # again.
+        told = machine.succeed(f"su -l alice -c 'ctrlassist-fixture version --socket {SOCKET}'").strip()
+        assert told == "version: ${hider.version}", told
+        control, told = hide("past-lingering", pads()[A]["event"][0])
+        assert told.startswith("ok"), told
+        assert order(control, "restore").startswith("ok")
+        assert machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip() == pid, "the service didn't restart"
+        # The probe gone, its unread data is reset and the close ends.
+        machine.succeed("systemctl stop past-lingering lingering")
+        machine.wait_until_fails(f"{closer} | grep -q tcp_close")
         wait_restored()
 
     def refused_at_once(unit, name, uniq):

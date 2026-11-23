@@ -10,10 +10,11 @@
 //!
 //! Each connection has a thread of its own, so a client that stops
 //! reading its replies, or passes a descriptor whose closing blocks,
-//! holds up nobody but itself. What is hidden is shared, behind one lock
-//! that no thread holds while it waits on a client or on udev. A
-//! connection owns the pads it has hidden; when it closes, for any
-//! reason, they are shown again.
+//! holds up nobody but itself; a connection that isn't served is closed
+//! by a thread kept for that, never by the one that accepts. What is
+//! hidden is shared, behind one lock that no thread holds while it waits
+//! on a client or on udev. A connection owns the pads it has hidden;
+//! when it closes, for any reason, they are shown again.
 
 mod activation;
 mod connections;
@@ -24,9 +25,11 @@ mod seat;
 
 use std::collections::BTreeSet;
 use std::io::{self, Write};
+use std::mem::ManuallyDrop;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::mpsc::{self, SendError};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use ctrlassist_hider::{Refusal, Reply, Request, Token, pack_release, receive, send};
@@ -38,7 +41,7 @@ use rustix::net::{
 };
 use tracing::{debug, error, info, warn};
 
-use crate::connections::Connections;
+use crate::connections::{CLOSING, Closer, Connections};
 use crate::hide::Leave;
 use crate::pad::{Device, Pad};
 
@@ -116,6 +119,13 @@ impl Shared {
         self.state
             .lock()
             .expect("nothing panics while the service's state is held")
+    }
+
+    /// Wakes the main thread: a connection has closed.
+    fn say_closed(&self) {
+        if let Err(error) = rustix::io::write(&self.closed, &1u64.to_ne_bytes()) {
+            warn!(%error, "couldn't say a connection closed");
+        }
     }
 }
 
@@ -508,6 +518,11 @@ fn wait(shared: &Shared, listener: &OwnedFd, exhausted: bool) -> Woken {
 }
 
 /// Serves clients until none is left, or forever if `stay` is set.
+///
+/// The caller never closes `listener`, leaving it to the kernel as the
+/// process exits: closing the last reference to a listener releases the
+/// connections still queued on it, with what their clients sent, on the
+/// thread that closes it, which a lingering socket would hold there.
 fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
@@ -515,6 +530,10 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
         // waiting on that alone.
         closed: eventfd(0, EventfdFlags::CLOEXEC)?,
     });
+    // Woken after each close the closer makes, the main thread hands it
+    // any connection it kept for want of room.
+    let closing = Arc::clone(&shared);
+    let mut closer = Closer::start(CLOSING, move || closing.say_closed())?;
     // Nothing is connected yet, so anything still hidden was left by a
     // service that died.
     hide::clear();
@@ -523,13 +542,16 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
     // closes, which frees both.
     let mut exhausted = false;
     loop {
-        let woken = wait(&shared, listener, exhausted);
+        // With the closer behind, accepting is left until it has room:
+        // the clients wait in the backlog, as they do for one another.
+        let woken = wait(&shared, listener, exhausted || closer.full());
         if woken.closed {
             let mut count = [0u8; 8];
             if let Err(error) = rustix::io::read(&shared.closed, &mut count) {
                 warn!(%error, "couldn't read how many connections closed");
             }
             exhausted = false;
+            closer.retry();
         }
         if !woken.waiting {
             let state = shared.state();
@@ -574,34 +596,47 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
             let mut state = shared.state();
             state.served_anyone = true;
             let Some(holder) = state.connections.admit(user, seated) else {
-                // Closed at once, here, with no thread made and nothing
-                // read: neither one user nor every user with no seat can
-                // take every descriptor. What no cap reaches is the queue
-                // of connections not yet accepted, which is everyone's:
-                // one who connects without pause can keep it near full,
-                // and a client that connects without waiting is then
-                // refused by the kernel, but nobody holds an accepted
-                // connection over their cap longer than this.
-                debug!(user, seated, "closed a connection over the cap");
+                // Closed at once, by the closer, with no thread made and
+                // nothing read: neither one user nor every user with no
+                // seat can take every descriptor. What no cap reaches is
+                // the queue of connections not yet accepted, which is
+                // everyone's: one who connects without pause can keep it
+                // near full, and a client that connects without waiting
+                // is then refused by the kernel, but nobody holds an
+                // accepted connection over their cap longer than the
+                // closer takes to close it.
+                debug!(user, seated, "closing a connection over the cap");
+                closer.close(socket);
                 continue;
             };
             state.next_connection += 1;
             (state.next_connection, holder)
         };
+        // The connection is handed over once the thread runs, so that one
+        // whose thread couldn't be started is still here, for the closer.
+        let (hand, handed) = mpsc::channel::<OwnedFd>();
         let client = Arc::clone(&shared);
         let spawned = std::thread::Builder::new()
             .name("client".into())
             .spawn(move || {
-                serve(&client, &socket, owner, user);
-                drop(socket);
-                client.state().connections.release(holder);
-                if let Err(error) = rustix::io::write(&client.closed, &1u64.to_ne_bytes()) {
-                    warn!(%error, "couldn't say a connection closed");
+                if let Ok(socket) = handed.recv() {
+                    serve(&client, &socket, owner, user);
                 }
+                client.state().connections.release(holder);
+                client.say_closed();
             });
-        if let Err(error) = spawned {
-            shared.state().connections.release(holder);
-            warn!(%error, "couldn't start a thread for a connection; it is closed");
+        match spawned {
+            Ok(_) => {
+                // The thread takes it before anything else.
+                if let Err(SendError(socket)) = hand.send(socket) {
+                    closer.close(socket);
+                }
+            }
+            Err(error) => {
+                shared.state().connections.release(holder);
+                warn!(%error, "couldn't start a thread for a connection; it is closed");
+                closer.close(socket);
+            }
         }
     }
 }
@@ -658,14 +693,14 @@ fn main() -> ExitCode {
     let outcome = match arguments.as_slice() {
         // Started by systemd on a client's first connection.
         [] => unprivileged().and_then(|()| match activation::listener() {
-            Some(listener) => run(&listener, false),
+            Some(listener) => run(&ManuallyDrop::new(listener), false),
             None => Err(io::Error::other(
                 "not started by a systemd socket; use --listen <path>",
             )),
         }),
         ["--listen", path] => unprivileged()
             .and_then(|()| listen_at(Path::new(path)))
-            .and_then(|listener| run(&listener, true)),
+            .and_then(|listener| run(&ManuallyDrop::new(listener), true)),
         // Undo whatever is still hidden: run by the unit after the service
         // stops, so a service that died doesn't leave pads hidden until
         // the next one starts.
