@@ -1,0 +1,8 @@
+# The hiding service's group may unbind and bind the pad drivers it
+# re-binds. A driver object has an add event when its module registers it,
+# and another at coldplug; sysfs keeps a file's owner and mode until the
+# driver goes. usbhid stands in for xpad on the USB bus where no xpad pad
+# can be made.
+SUBSYSTEM=="drivers", ACTION!="remove", KERNEL=="playstation|xpad|usbhid", \
+  RUN+="@coreutils@/bin/chgrp ctrlassist-hider %S%p/bind %S%p/unbind", \
+  RUN+="@coreutils@/bin/chmod g+w %S%p/bind %S%p/unbind"
