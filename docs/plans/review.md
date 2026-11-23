@@ -337,10 +337,10 @@ Three reviewers again, on what the third review's fixes changed, without editing
 
 **Device.**
 
-- [ ] **4D-1. A `deliver` that panics leaves the daemon running and deaf, where before it ended.** `crates/ctrlassist-device/src/thread.rs:981`. The panic is caught and the callback kept, so the daemon's channel never closes and its path for an input thread that ended never runs: no stop is answered, no pad's going heard. Fix: drop the callback at the first panic. **Low; none can panic today. Verified by reading.**
-- [ ] **4D-2. After a writer panics, each rumble or report allocates on the input thread,** in building the error. `output.rs:645`. **Low; after a panic that can't happen today.**
+- [x] **4D-1. A `deliver` that panics leaves the daemon running and deaf, where before it ended.** `crates/ctrlassist-device/src/thread.rs:981`. The panic is caught and the callback kept, so the daemon's channel never closes and its path for an input thread that ended never runs: no stop is answered, no pad's going heard. Fix: drop the callback at the first panic. **Low; none can panic today. Verified by reading.**
+- [x] **4D-2. After a writer panics, each rumble or report allocates on the input thread,** in building the error. `output.rs:645`. **Low; after a panic that can't happen today.**
 - [ ] **4D-3. Over Bluetooth, a pad at rest may be a rest report queued and not sent.** `output.rs:216`. A write to a raw node on USB waits for the pad; on Bluetooth it is queued for the session's thread, and unbinding the driver may empty the queue. If so, a game's trigger effect stays on a Bluetooth DualSense, which is what 3D-1 was to close. **Low. Suspected; the kernel from memory.** For the hardware checks.
-- [ ] **4D-4. Smaller:** the comment on what is said once claims a little more than holds, a bit can go in the report just after its own settings; a write that fails loses that report's once-bits, from before; one fake-pad test would pass if the handle were done early, the gated unit test being what shows the order. **Low.**
+- [x] **4D-4. Smaller:** the comment on what is said once claims a little more than holds, a bit can go in the report just after its own settings; a write that fails loses that report's once-bits, from before; one fake-pad test would pass if the handle were done early, the gated unit test being what shows the order. **Low.**
 
 **What the reviewers said of making it simpler.**
 
@@ -618,6 +618,8 @@ Each area is fixed on a branch of its own and merged here as it comes back; a fi
 - **The fourth review is done:** nothing critical or high; eleven findings, ids beginning with 4, one near medium; the device crate's are all low and latent. Two reviewers recommend making the re-bind's wait and the count simpler, not patching them a fourth time: under Findings. The daemon's, service's and device's VM checks pass on the tree it read. Not yet acted on.
 
 - **The maintainer's choice on the fourth review, 2026-11-23:** make it simpler, that night, by `docs/plans/rebind-by-identity.md`; `cancel` and the counts leave the wire; and the findings that doesn't remove are fixed with it.
+
+- **Fourth review, device (4D-1, 4D-2, 4D-4): merged.** A `deliver` that panics is dropped, which closes the daemon's channel, so the daemon ends as for an input thread that ended and systemd starts it again. A broken writer's error is one that allocates nothing. A write refused for a moment keeps what it carried, the once-bits too, for the next write; one refused because the pad is gone keeps nothing. Each test was seen to fail on the code before. 4D-3 is `docs/concerns/rest-over-bluetooth.md`, with the check on hardware that settles it.
 
 
 ## Deviations
