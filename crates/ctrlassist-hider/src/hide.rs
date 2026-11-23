@@ -20,7 +20,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use ctrlassist_hider::Refusal;
-use rustix::event::{PollFd, PollFlags, poll};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{Access, OFlags};
 use rustix::io::Errno;
 use rustix::rand::{GetRandomFlags, getrandom};
@@ -152,7 +152,71 @@ pub(crate) enum Leave {
 enum Progress {
     Waiting,
     Done,
-    Failed(Refusal),
+    /// Failed, and whether the pad went and came back all the same.
+    Failed(Refusal, bool),
+}
+
+/// Who asked for a re-bind, and so what else ends the wait for it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Asker<'a> {
+    /// Nobody waits for it now: it ends on state alone.
+    Nobody,
+    /// A client whose hanging up ends it.
+    HangsUp(BorrowedFd<'a>),
+    /// A client whose hanging up ends it, and so does anything it sends
+    /// meanwhile, as `cancel` is: that is looked for before the re-bind
+    /// is asked as well, and then it isn't.
+    Cancels(BorrowedFd<'a>),
+}
+
+impl<'a> Asker<'a> {
+    /// The client to watch, and what of it ends the wait.
+    fn watch(self) -> Option<(BorrowedFd<'a>, PollFlags)> {
+        match self {
+            Self::Nobody => None,
+            Self::HangsUp(client) => Some((client, PollFlags::RDHUP)),
+            Self::Cancels(client) => Some((client, PollFlags::IN | PollFlags::RDHUP)),
+        }
+    }
+
+    /// Whether the client has hung up, or sent what cancels, already.
+    fn has_cancelled(self) -> bool {
+        let Self::Cancels(client) = self else {
+            return false;
+        };
+        let mut fds = [PollFd::from_borrowed_fd(
+            client,
+            PollFlags::IN | PollFlags::RDHUP,
+        )];
+        // Looked at as it is now, not waited on.
+        let now = Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        matches!(poll(&mut fds, Some(&now)), Ok(ready) if ready > 0)
+    }
+}
+
+/// What a re-bind came to.
+#[derive(Debug)]
+pub(crate) struct Rebound {
+    pub(crate) outcome: Result<(), Refusal>,
+    /// Whether udev was asked for it.
+    pub(crate) asked: bool,
+    /// Whether the pad goes and comes back for it, or is still to: it was
+    /// asked, and wasn't seen to end with the pad unplugged, the rule not
+    /// acting, or no driver taking the pad.
+    pub(crate) went: bool,
+}
+
+impl Rebound {
+    fn not_asked(refusal: Refusal) -> Self {
+        Self {
+            outcome: Err(refusal),
+            asked: false,
+            went: false,
+        }
+    }
 }
 
 /// Where the re-bind of the device at `parent` has got to. `before` is
@@ -168,7 +232,7 @@ fn progress(
     let device = parent.display();
     if !parent.exists() {
         debug!(%device, "the pad was unplugged as its driver was re-bound");
-        return Progress::Failed(Refusal::Absent);
+        return Progress::Failed(Refusal::Absent, false);
     }
     // The rule unbinds the driver and probes again before udev says it
     // has acted on the request, so after that the inputs that were there
@@ -179,14 +243,14 @@ fn progress(
                 %device,
                 "udev acted on the request to re-bind the pad's driver without re-binding it: the shipped rule isn't installed, or isn't the one shipped"
             );
-            return Progress::Failed(Refusal::Failed);
+            return Progress::Failed(Refusal::Failed, false);
         }
         return Progress::Waiting;
     }
     if !pad::has_driver(parent) {
         if answered {
             warn!(%device, "no driver took the pad again after its driver was re-bound");
-            return Progress::Failed(Refusal::Failed);
+            return Progress::Failed(Refusal::Failed, false);
         }
         return Progress::Waiting;
     }
@@ -205,7 +269,7 @@ fn progress(
                     wrong,
                     "a node of the pad wasn't hidden when made again: another rule undoes the shipped one, or it isn't installed"
                 );
-                return Progress::Failed(Refusal::Failed);
+                return Progress::Failed(Refusal::Failed, true);
             }
         }
         // A driver may make its pad's input later than its probe, as one
@@ -218,8 +282,9 @@ fn progress(
 }
 
 /// Has udev re-bind the driver of the device at `parent`, and waits until
-/// it has finished with the nodes that makes. Gives up if `client` hangs
-/// up meanwhile, or the pad is unplugged.
+/// it has finished with the nodes that makes. Gives up if the pad is
+/// unplugged, or if `asker` goes or cancels meanwhile; one that has
+/// cancelled already has nothing re-bound.
 ///
 /// It waits on state, not on particular events: at every event udev sends
 /// for a pad's devices, and after the monitor's socket overran and lost
@@ -229,12 +294,10 @@ fn progress(
 /// each hidden if it is to be. It fails at once when the rule's effect is
 /// missing: udev has acted on the request and the driver is as it was, no
 /// driver took the pad again, or a node came back not hidden.
-pub(crate) fn rebind(
-    parent: &Path,
-    leave: Leave,
-    client: Option<BorrowedFd<'_>>,
-) -> Result<(), Refusal> {
-    may_request(parent)?;
+pub(crate) fn rebind(parent: &Path, leave: Leave, asker: Asker<'_>) -> Rebound {
+    if let Err(refusal) = may_request(parent) {
+        return Rebound::not_asked(refusal);
+    }
     let before = pad::inputs_under(parent);
     let device = parent.display();
     // Listening from before the request, so nothing it causes is missed.
@@ -243,32 +306,57 @@ pub(crate) fn rebind(
         .and_then(|monitor| monitor.match_subsystem("usb"))
         .and_then(|monitor| monitor.match_subsystem("input"))
         .and_then(|monitor| monitor.match_subsystem("hidraw"))
-        .and_then(udev::MonitorBuilder::listen)
-        .map_err(|error| {
+        .and_then(udev::MonitorBuilder::listen);
+    let monitor = match monitor {
+        Ok(monitor) => monitor,
+        Err(error) => {
             warn!(%error, "couldn't listen to udev");
-            Refusal::Failed
-        })?;
+            return Rebound::not_asked(Refusal::Failed);
+        }
+    };
+    if asker.has_cancelled() {
+        debug!(%device, "the client cancelled before the pad's driver was re-bound");
+        return Rebound::not_asked(Refusal::Cancelled);
+    }
     let since = now();
-    let uuid = request(parent).map_err(|error| {
-        warn!(%device, %error, "couldn't ask udev to re-bind the pad's driver");
-        Refusal::Failed
-    })?;
+    let uuid = match request(parent) {
+        Ok(uuid) => uuid,
+        Err(error) => {
+            warn!(%device, %error, "couldn't ask udev to re-bind the pad's driver");
+            return Rebound::not_asked(Refusal::Failed);
+        }
+    };
+    // Asked: from here on the pad goes and comes back for it, unless the
+    // re-bind is seen to end otherwise.
+    let ended = |refusal| Rebound {
+        outcome: Err(refusal),
+        asked: true,
+        went: true,
+    };
     let mut answered = false;
     loop {
         let mut fds = vec![PollFd::new(&monitor, PollFlags::IN)];
-        if let Some(client) = client {
-            fds.push(PollFd::from_borrowed_fd(client, PollFlags::RDHUP));
+        if let Some((client, flags)) = asker.watch() {
+            fds.push(PollFd::from_borrowed_fd(client, flags));
         }
         match poll(&mut fds, None) {
             Ok(_) | Err(Errno::INTR) => {}
             Err(error) => {
                 warn!(%device, %error, "couldn't wait on udev for the pad's driver to be re-bound");
-                return Err(Refusal::Failed);
+                return ended(Refusal::Failed);
             }
         }
         if fds.get(1).is_some_and(|fd| !fd.revents().is_empty()) {
-            debug!(%device, "the client hung up as the pad's driver was re-bound");
-            return Err(Refusal::Failed);
+            return match asker {
+                Asker::Cancels(_) => {
+                    debug!(%device, "the client cancelled, or hung up, as the pad's driver was re-bound");
+                    ended(Refusal::Cancelled)
+                }
+                Asker::HangsUp(_) | Asker::Nobody => {
+                    debug!(%device, "the client hung up as the pad's driver was re-bound");
+                    ended(Refusal::Failed)
+                }
+            };
         }
         drop(fds);
         // Each event is only a reason to look again. One lost to an
@@ -283,8 +371,20 @@ pub(crate) fn rebind(
         }
         match progress(parent, &before, since, leave, answered) {
             Progress::Waiting => {}
-            Progress::Done => return Ok(()),
-            Progress::Failed(refusal) => return Err(refusal),
+            Progress::Done => {
+                return Rebound {
+                    outcome: Ok(()),
+                    asked: true,
+                    went: true,
+                };
+            }
+            Progress::Failed(refusal, went) => {
+                return Rebound {
+                    outcome: Err(refusal),
+                    asked: true,
+                    went,
+                };
+            }
         }
     }
 }
@@ -374,15 +474,23 @@ pub(crate) fn reconcile(group: u32) {
 
 /// Cuts off whatever has a pad open, once its markers are made: the
 /// re-bind, then a descriptor on its event node as the re-bind made it,
-/// checked to be hidden. `client` hanging up stops the wait.
-pub(crate) fn cut_off(pad: &Pad, group: u32, client: BorrowedFd<'_>) -> Result<OwnedFd, Refusal> {
+/// checked to be hidden. `client` hanging up, or sending anything, stops
+/// the wait. Returns too what the re-bind came to.
+pub(crate) fn cut_off(
+    pad: &Pad,
+    group: u32,
+    client: BorrowedFd<'_>,
+) -> (Result<OwnedFd, Refusal>, Rebound) {
     let leave = Leave::Hidden {
         group,
         ordinal: pad.ordinal,
     };
-    rebind(&pad.parent, leave, Some(client))?;
-    let node = pad::event_node(&pad.parent, pad.ordinal).ok_or(Refusal::Absent)?;
-    open_under(&node, &pad.parent, Some(group))
+    let rebound = rebind(&pad.parent, leave, Asker::Cancels(client));
+    let opened = rebound.outcome.and_then(|()| {
+        let node = pad::event_node(&pad.parent, pad.ordinal).ok_or(Refusal::Absent)?;
+        open_under(&node, &pad.parent, Some(group))
+    });
+    (opened, rebound)
 }
 
 #[cfg(test)]
@@ -432,9 +540,10 @@ mod tests {
         // A device that isn't there: the pad was unplugged.
         let gone = Path::new("/sys/devices/virtual/ctrlassist-test-no-such-device");
         let leave = Leave::AsTheRuleSays;
+        // Neither of these makes the pad go and come back.
         assert_eq!(
             progress(gone, &[], 0, leave, false),
-            Progress::Failed(Refusal::Absent)
+            Progress::Failed(Refusal::Absent, false)
         );
         // A device there whose inputs are still those from before: waiting
         // until udev has answered, then failed. Any directory stands in.
@@ -443,8 +552,47 @@ mod tests {
         assert_eq!(progress(here, &before, 0, leave, false), Progress::Waiting);
         assert_eq!(
             progress(here, &before, 0, leave, true),
-            Progress::Failed(Refusal::Failed)
+            Progress::Failed(Refusal::Failed, false)
         );
+    }
+
+    /// A client that has sent something, as a `cancel`, or hung up, has
+    /// cancelled; one that has sent nothing hasn't, and one that may only
+    /// hang up never cancels.
+    #[test]
+    fn a_client_has_cancelled_once_it_sends_anything_or_hangs_up() {
+        use std::os::fd::AsFd;
+
+        use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
+        let pair = || {
+            socketpair(
+                AddressFamily::UNIX,
+                SocketType::SEQPACKET,
+                SocketFlags::CLOEXEC,
+                None,
+            )
+            .unwrap()
+        };
+        let (service, client) = pair();
+        let cancels = Asker::Cancels(service.as_fd());
+        assert!(!cancels.has_cancelled());
+        rustix::net::send(&client, &[7, 0, 0, 0, 0], rustix::net::SendFlags::empty()).unwrap();
+        assert!(cancels.has_cancelled());
+        assert!(!Asker::HangsUp(service.as_fd()).has_cancelled());
+        assert!(!Asker::Nobody.has_cancelled());
+        let (service, client) = pair();
+        drop(client);
+        assert!(Asker::Cancels(service.as_fd()).has_cancelled());
+    }
+
+    /// A re-bind that is never asked is never one the pad goes and comes
+    /// back for: here the device's `uevent` file isn't the group's.
+    #[test]
+    fn a_re_bind_never_asked_is_not_counted() {
+        let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let rebound = rebind(here, Leave::AsTheRuleSays, Asker::Nobody);
+        assert_eq!(rebound.outcome, Err(Refusal::Failed));
+        assert!(!rebound.went);
     }
 
     #[test]

@@ -3,7 +3,8 @@
 //! One message per request and one per reply, on a sequenced-packet
 //! socket, so there is no framing to get wrong. A request is an opcode and
 //! a token; a reply is a status, a token and flags. Descriptors travel
-//! beside them as ancillary data.
+//! beside them as ancillary data. Every request has exactly one reply, and
+//! replies come in the order of their requests.
 
 use std::io::{IoSlice, IoSliceMut};
 use std::mem::MaybeUninit;
@@ -41,10 +42,14 @@ pub enum Refusal {
     /// driver to re-bind, which it can't hide, or one whose raw node it
     /// doesn't open.
     Unsupported,
+    /// A hide given up because the client sent something before it was
+    /// done, as it sends [`Request::Cancel`]: the pad is left as it was.
+    /// Only a client that sends `cancel` is ever told this.
+    Cancelled,
 }
 
 impl Refusal {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::NotPermitted,
         Self::NotAPad,
         Self::Busy,
@@ -53,6 +58,7 @@ impl Refusal {
         Self::Failed,
         Self::BadRequest,
         Self::Unsupported,
+        Self::Cancelled,
     ];
 
     fn code(self) -> u8 {
@@ -65,6 +71,7 @@ impl Refusal {
             Self::Failed => 6,
             Self::BadRequest => 7,
             Self::Unsupported => 8,
+            Self::Cancelled => 9,
         }
     }
 }
@@ -80,6 +87,7 @@ impl std::fmt::Display for Refusal {
             Self::Failed => "the service couldn't carry the request out",
             Self::BadRequest => "the request wasn't understood",
             Self::Unsupported => "the service can't do that for this kind of pad",
+            Self::Cancelled => "the hide was given up as asked, and the pad left as it was",
         })
     }
 }
@@ -104,6 +112,16 @@ pub enum Request {
     /// goes, packed by [`pack_release`]. A service from before this
     /// request refuses it as one it doesn't understand.
     Version,
+    /// Give up the hide asked last on this connection, leaving the pad as
+    /// it was. Sent while the hide is still being done, it ends it: the
+    /// hide's reply is then [`Refusal::Cancelled`], with the pad shown
+    /// again, and this request's says nothing more was done. Sent after
+    /// the hide's reply, it shows the pad that hide hid again. Either way
+    /// the two replies' [`rebinds`](Reply::rebinds) together say how many
+    /// times the pad was re-bound. A service that says it counts, in its
+    /// reply to [`Request::Version`], takes this; one from before
+    /// refuses it as one it doesn't understand.
+    Cancel,
 }
 
 /// A release, `major.minor.patch`, as the 32 bits a reply has room for:
@@ -149,6 +167,7 @@ impl Request {
             Self::Raw => (4, 0),
             Self::RawOf(token) => (5, token.0),
             Self::Version => (6, 0),
+            Self::Cancel => (7, 0),
         };
         let token = token.to_le_bytes();
         [opcode, token[0], token[1], token[2], token[3]]
@@ -168,6 +187,7 @@ impl Request {
             4 => Some(Self::Raw),
             5 => Some(Self::RawOf(token)),
             6 => Some(Self::Version),
+            7 => Some(Self::Cancel),
             _ => None,
         }
     }
@@ -182,11 +202,22 @@ pub struct Reply {
     pub token: Token,
     /// Whether programs that had the pad open were cut off.
     pub dislodged: bool,
+    /// How many times the service re-bound the pad's driver in serving
+    /// the request, each of which makes the pad go and come back: a
+    /// re-bind it saw end without that, the pad unplugged or the rule
+    /// not acting, isn't counted, and one still under way is. Said by a
+    /// service that counts, and none by one from before; in its reply to
+    /// [`Request::Version`], `Some(0)` says the service counts and takes
+    /// [`Request::Cancel`]. At most [`Reply::MOST_REBINDS`].
+    pub rebinds: Option<u8>,
 }
 
 impl Reply {
     /// A reply's size on the wire.
     pub const SIZE: usize = 6;
+
+    /// The most re-binds a reply can say: two bits of the flags.
+    pub const MOST_REBINDS: u8 = 3;
 
     /// A refusal.
     #[must_use]
@@ -195,21 +226,27 @@ impl Reply {
             refusal: Some(refusal),
             token: Token(0),
             dislodged: false,
+            rebinds: None,
         }
     }
 
-    /// The reply as bytes.
+    /// The reply as bytes: the flags are whether the pad was dislodged
+    /// (bit 0), whether re-binds are counted (bit 1), and how many
+    /// (bits 2 and 3).
     #[must_use]
     pub fn encode(self) -> [u8; Self::SIZE] {
         let status = self.refusal.map_or(0, Refusal::code);
         let token = self.token.0.to_le_bytes();
+        let counted = self
+            .rebinds
+            .map_or(0, |rebinds| 0b10 | rebinds.min(Self::MOST_REBINDS) << 2);
         [
             status,
             token[0],
             token[1],
             token[2],
             token[3],
-            u8::from(self.dislodged),
+            u8::from(self.dislodged) | counted,
         ]
     }
 
@@ -223,10 +260,12 @@ impl Reply {
             0 => None,
             code => Some(*Refusal::ALL.iter().find(|refusal| refusal.code() == code)?),
         };
+        // Bits above these are left for later, and not read.
         Some(Self {
             refusal,
             token: Token(u32::from_le_bytes([a, b, c, d])),
             dislodged: flags & 1 != 0,
+            rebinds: (flags & 0b10 != 0).then_some(flags >> 2 & 0b11),
         })
     }
 }
@@ -288,4 +327,60 @@ pub fn receive(
         }
     }
     Ok((received.bytes, fds))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cancel_and_a_count_of_re_binds_survive_the_wire() {
+        assert_eq!(
+            Request::decode(&Request::Cancel.encode()),
+            Some(Request::Cancel)
+        );
+        assert_eq!(Request::Cancel.encode(), [7, 0, 0, 0, 0]);
+        for rebinds in [None, Some(0), Some(1), Some(2), Some(3)] {
+            for refusal in [None, Some(Refusal::Cancelled), Some(Refusal::Failed)] {
+                let reply = Reply {
+                    refusal,
+                    token: Token(5),
+                    dislodged: refusal.is_none(),
+                    rebinds,
+                };
+                assert_eq!(Reply::decode(&reply.encode()), Some(reply));
+            }
+        }
+        // More than fits is said as the most that does.
+        let many = Reply {
+            rebinds: Some(9),
+            ..Reply::refused(Refusal::Cancelled)
+        };
+        assert_eq!(Reply::decode(&many.encode()).unwrap().rebinds, Some(3));
+        assert!(!Refusal::Cancelled.to_string().is_empty());
+    }
+
+    /// A client from before the count reads the flags' first bit alone, and
+    /// a service from before sets no other: each reads the other as it did.
+    #[test]
+    fn a_count_is_invisible_to_a_peer_from_before_it() {
+        let reply = Reply {
+            refusal: None,
+            token: Token(1),
+            dislodged: true,
+            rebinds: Some(1),
+        };
+        assert_eq!(reply.encode()[5] & 1, 1, "dislodged where it always was");
+        let from_before = [0, 1, 0, 0, 0, 1];
+        let read = Reply::decode(&from_before).unwrap();
+        assert!(read.dislodged);
+        assert_eq!(read.rebinds, None, "a service from before counts nothing");
+        // Bits above the count are read as nothing.
+        assert_eq!(
+            Reply::decode(&[0, 1, 0, 0, 0, 0xf0 | 0b0110])
+                .unwrap()
+                .rebinds,
+            Some(1)
+        );
+    }
 }

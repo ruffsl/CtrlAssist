@@ -16,7 +16,7 @@ mod rumble;
 pub use hid::{
     FakeBluetoothDualSense, FakeDualSense, FakeHidPad, playstation_crc32, synthetic_dualsense,
 };
-pub use hider::{Asked, FakeHider, raw_node_of};
+pub use hider::{Asked, Cancelled, FakeHider, raw_node_of};
 pub use inspect::{NodeKind, Pad, Reads, can_open, count_reads, pads};
 pub use pad::FakePad;
 pub use rumble::{Motors, RumblePad};
