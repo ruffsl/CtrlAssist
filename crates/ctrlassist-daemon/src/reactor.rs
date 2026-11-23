@@ -17,7 +17,7 @@ use ctrlassist_device::{Database, Found, InputThread, Pad};
 use ctrlassist_protocol::endpoint::{daemon, pad, profile, setup};
 use ctrlassist_protocol::error::{ErrorCode, WireError};
 use ctrlassist_protocol::profile::Identity;
-use ctrlassist_protocol::serve::Responder;
+use ctrlassist_protocol::serve::{self, Responder};
 use ctrlassist_protocol::{VERSION, keys, payload, rpc};
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -36,7 +36,7 @@ use crate::device_identity;
 use crate::hiding::Hiding;
 use crate::hotplug::Seen;
 use crate::profiles::Profiles;
-use crate::setups::{Done, Setups};
+use crate::setups::{Done, Owed, Owing, Setups};
 use crate::store::Store;
 
 /// Heartbeat period for sample-miss recovery on cached publishers: a
@@ -50,7 +50,7 @@ const BUZZ: Level = Level {
     weak: 0xa000,
 };
 
-type Rpc = Queryable<FifoChannelHandler<Query>>;
+pub(crate) type Rpc = Queryable<FifoChannelHandler<Query>>;
 
 /// The rpc families the reactor answers, one queryable each.
 pub(crate) struct Rpcs {
@@ -106,6 +106,10 @@ pub(crate) struct Reactor {
     /// The pads that connected while another was being copied, to try
     /// if that one can't be: a pad another program has hidden can't.
     pub(crate) candidates: Vec<Found>,
+    /// Who is owed an answer once work off the reactor comes back.
+    pub(crate) owed: BTreeMap<Owing, Owed>,
+    /// The last [`Owing`] noted.
+    pub(crate) owings: u64,
 }
 
 impl std::fmt::Debug for Reactor {
@@ -177,6 +181,8 @@ impl Reactor {
             test_pads: false,
             state: None,
             candidates: Vec::new(),
+            owed: BTreeMap::new(),
+            owings: 0,
         }
     }
 
@@ -652,14 +658,36 @@ impl Reactor {
                 }
             }
         }
-        // Pads still buzzing stop as their tasks are dropped.
-        self.buzzes.shutdown().await;
+        let Rpcs {
+            daemon,
+            pad,
+            profile,
+            setup,
+        } = &rpcs;
+        self.wind_down(&[daemon, pad, profile, setup]).await;
+    }
+
+    /// Ends the reactor's work, waiting on nothing: every rpc it holds,
+    /// and every one queued on `queued`, is answered that the daemon is
+    /// stopping, and the work still out is given up. A setup's start or
+    /// update caught by a restart says so, and isn't dropped unanswered.
+    pub(crate) async fn wind_down(&mut self, queued: &[&Rpc]) {
         // Nothing waits on the hiding service from here: every request
         // under way is hung up, which ends it at once, and the service
         // shows again what each connection hid as it closes.
         self.hiding.close();
-        // What is being made or dropped finishes; the setups themselves
-        // go with the input thread.
-        while self.work.join_next().await.is_some() {}
+        self.answer_as_stopping().await;
+        let refusal = WireError::daemon_shutting_down();
+        for rpcs in queued {
+            while let Ok(Some(query)) = rpcs.try_recv() {
+                serve::refuse(query, &refusal).await;
+            }
+        }
+        // Pads still buzzing stop as their tasks are dropped.
+        self.buzzes.shutdown().await;
+        // What is being made or dropped is left to finish by itself, off
+        // the runtime's workers, and what it made is dropped there; the
+        // setups themselves go with the input thread.
+        self.work.detach_all();
     }
 }

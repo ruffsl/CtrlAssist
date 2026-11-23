@@ -104,8 +104,10 @@ pub struct Daemon {
     /// What the daemon has in Steam's controller blacklist, taken out
     /// as it stops.
     blacklist: Arc<std::sync::Mutex<Blacklist>>,
-    // Declared in the order they are torn down: the token first, so a
-    // client sees the daemon gone before what it served goes.
+    // Declared in the order a daemon dropped without being stopped tears
+    // them down: the token first, so a client sees the daemon gone
+    // before what it served goes. One that is stopped answers what it
+    // holds first; see `stop`.
     alive: LivelinessToken,
     stop: oneshot::Sender<()>,
     /// The reactor, until it is seen to have ended.
@@ -380,7 +382,8 @@ impl Daemon {
         }
     }
 
-    /// Stops the daemon: clients see it gone, then the control plane
+    /// Stops the daemon: what it holds and has queued is answered that it
+    /// is stopping, then clients see it gone, then the control plane
     /// closes, then the input thread stops and its virtual pads go.
     pub async fn stop(self) {
         let Self {
@@ -392,15 +395,22 @@ impl Daemon {
             session,
             input,
         } = self;
-        if let Err(error) = alive.undeclare().await {
-            warn!(%error, "withdrawing the daemon's liveliness failed");
-        }
-        // The reactor ends when told, or when its sender is gone.
+        // The reactor first, which ends when told, or when its sender is
+        // gone, answering every rpc it holds or has queued that the
+        // daemon is stopping, and waiting on nothing. The token goes
+        // after: a client waiting on a write ends its wait at whichever
+        // reaches it first, the answer or the token's going, and would
+        // otherwise take a daemon stopping for one that went away. A
+        // query that comes in between finds nothing to answer it, which
+        // ends its call unanswered.
         drop(stop);
         if let Some(reactor) = reactor
             && let Err(error) = reactor.await
         {
             error!(%error, "the daemon's reactor panicked as it stopped");
+        }
+        if let Err(error) = alive.undeclare().await {
+            warn!(%error, "withdrawing the daemon's liveliness failed");
         }
         if let Err(error) = session.close().await {
             warn!(%error, "closing the control plane failed");

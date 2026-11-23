@@ -30,11 +30,13 @@ pub(crate) async fn connect(socket: &Path) -> Result<(DaemonClient, StateWatcher
     match client.check_release().await {
         Ok(()) => {}
         Err(Error::Unavailable { .. }) => bail!("no daemon is running on {}", socket.display()),
+        Err(Error::Stopping { .. }) => bail!("the daemon on {} is stopping", socket.display()),
         Err(error) => return Err(error.into()),
     }
     // Answered, on a session in client mode, after the daemon's token
-    // reached the client if it held one: a daemon without one is
-    // stopping, though it answers, and is no daemon to a command.
+    // reached the client if it held one: a daemon declares it before it
+    // answers anything, and withdraws it only as it goes, so one that
+    // answered without it is going away, and is no daemon to a command.
     if !client.token_present() {
         bail!("no daemon is running on {}", socket.display());
     }

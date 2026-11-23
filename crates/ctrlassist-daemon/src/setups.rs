@@ -479,6 +479,37 @@ impl Asker {
     }
 }
 
+/// Who is owed an answer once work off the reactor comes back. Kept by
+/// the reactor and not by the work, so that a daemon that stops answers
+/// it that it is stopping, whatever has become of the work.
+#[derive(Debug)]
+pub(crate) enum Owed {
+    /// Whoever asked for a start.
+    Start(Asker),
+    /// Whoever asked for an update the setup took as it ran.
+    Update(Updating),
+    /// Whoever waits for a setup to have stopped.
+    Wait(Waiting),
+}
+
+impl Owed {
+    /// Answers that the daemon is stopping.
+    pub(crate) async fn stopping(self) {
+        let refusal = WireError::daemon_shutting_down();
+        match self {
+            Self::Start(asker) => asker.err(&refusal).await,
+            Self::Update(responder) | Self::Wait(Waiting::Update(responder)) => {
+                responder.err(&refusal).await;
+            }
+            Self::Wait(Waiting::Stop(responder)) => responder.err(&refusal).await,
+        }
+    }
+}
+
+/// The reactor's note of what it [owes](Owed) while work is out.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(crate) struct Owing(u64);
+
 /// Work done off the reactor, come back to it.
 #[derive(Debug)]
 pub(crate) enum Done {
@@ -486,14 +517,14 @@ pub(crate) enum Done {
     Started {
         name: String,
         outcome: Result<Made, Unmade>,
-        asker: Asker,
+        asker: Owing,
     },
     /// The pads a change brings are open, each that could be, by the
     /// new graph's source number, with the hiding service's name for
     /// each it hid; `ids` says what each source's pad is known by.
     Retaken {
         name: String,
-        graph: Graph,
+        graph: Box<Graph>,
         ids: Vec<Option<String>>,
         pads: Vec<Option<(Pad, Option<Token>)>>,
         /// When each pad last connected before it was taken, as the book
@@ -504,7 +535,7 @@ pub(crate) enum Done {
     /// place for are shown again: the update is answered. `unshown` are
     /// the pads the hiding service didn't show again.
     Taken {
-        responder: Updating,
+        responder: Owing,
         /// The setup's start, which took the change.
         start: SetupId,
         unshown: Vec<String>,
@@ -530,7 +561,7 @@ pub(crate) enum Done {
     Retired {
         name: String,
         setup: SetupId,
-        waiting: Option<Waiting>,
+        waiting: Option<Owing>,
         unshown: Vec<String>,
     },
     /// Pads let go were shown again, but for these, which the hiding
@@ -827,6 +858,37 @@ fn unknown(name: &str) -> WireError {
 }
 
 impl Reactor {
+    /// Notes that `owed` is owed an answer once work comes back.
+    pub(crate) fn owe(&mut self, owed: Owed) -> Owing {
+        self.owings += 1;
+        let owing = Owing(self.owings);
+        self.owed.insert(owing, owed);
+        owing
+    }
+
+    /// Who was owed the answer to `owing`, now that its work is back.
+    fn paid(&mut self, owing: Owing) -> Option<Owed> {
+        self.owed.remove(&owing)
+    }
+
+    /// Answers each caller the reactor holds that the daemon is stopping,
+    /// whatever has become of the work it waits on, which is given up.
+    pub(crate) async fn answer_as_stopping(&mut self) {
+        let mut owed: Vec<Owed> = std::mem::take(&mut self.owed).into_values().collect();
+        for entry in self.setups.entries.values_mut() {
+            owed.extend(entry.stopping.take().map(Owed::Wait));
+            owed.extend(
+                entry
+                    .taking
+                    .take()
+                    .map(|taking| Owed::Update(taking.responder)),
+            );
+        }
+        for owed in owed {
+            owed.stopping().await;
+        }
+    }
+
     /// Drops `thing` where dropping may block: a pad's close can wait on
     /// its driver, and a virtual pad's on the kernel.
     fn drop_off<T: Send + 'static>(&mut self, thing: T) {
@@ -858,6 +920,7 @@ impl Reactor {
     ) {
         let hiding = Arc::clone(&self.hiding);
         let blacklist = Arc::clone(&self.blacklist);
+        let waiting = waiting.map(|waiting| self.owe(Owed::Wait(waiting)));
         self.work.spawn_blocking(move || {
             let unshown = shown_again(&hiding, setup, &pads);
             if let Ok(mut blacklist) = blacklist.lock() {
@@ -1087,6 +1150,7 @@ impl Reactor {
         for pad in pads {
             self.publish_pad_logged(&pad).await;
         }
+        let asker = self.owe(Owed::Start(asker));
         let database = Arc::clone(&self.database);
         let hiding = Arc::clone(&self.hiding);
         let dualsense = (
@@ -1211,6 +1275,7 @@ impl Reactor {
                 // are shown again, as any stop is.
                 let (setup, waiting) =
                     entry.map_or((SetupId(0), None), |entry| (entry.id, entry.stopping));
+                let waiting = waiting.map(|waiting| self.owe(Owed::Wait(waiting)));
                 let hiding = Arc::clone(&self.hiding);
                 let blacklist = Arc::clone(&self.blacklist);
                 let stopped = name.clone();
@@ -1450,7 +1515,7 @@ impl Reactor {
                         .collect();
                     Done::Retaken {
                         name,
-                        graph,
+                        graph: Box::new(graph),
                         ids,
                         pads,
                         arrivals,
@@ -1694,6 +1759,7 @@ impl Reactor {
         }
         self.publish_setup(&name).await;
         let hiding = Arc::clone(&self.hiding);
+        let responder = self.owe(Owed::Update(responder));
         self.work.spawn_blocking(move || {
             let unshown = shown_again(&hiding, old, &hidden);
             Done::Taken {
@@ -2125,7 +2191,14 @@ impl Reactor {
                 name,
                 outcome,
                 asker,
-            } => self.started(name, outcome, asker).await,
+            } => {
+                let asker = match self.paid(asker) {
+                    Some(Owed::Start(asker)) => asker,
+                    // Nothing else is owed under a start's note.
+                    _ => Asker::Daemon,
+                };
+                self.started(name, outcome, asker).await;
+            }
             Done::Returned {
                 name,
                 setup,
@@ -2143,21 +2216,31 @@ impl Reactor {
                 ids,
                 pads,
                 arrivals,
-            } => self.send_graph(name, graph, ids, pads, arrivals).await,
+            } => self.send_graph(name, *graph, ids, pads, arrivals).await,
             Done::Taken {
                 responder,
                 start,
                 unshown,
             } => {
                 self.unshown(unshown).await;
-                responder.ok(&taken(start)).await;
+                if let Some(Owed::Update(responder)) = self.paid(responder) {
+                    responder.ok(&taken(start)).await;
+                }
             }
             Done::Retired {
                 name,
                 setup,
                 waiting,
                 unshown,
-            } => self.retired(name, setup, waiting, unshown).await,
+            } => {
+                let waiting = waiting
+                    .and_then(|waiting| self.paid(waiting))
+                    .and_then(|owed| match owed {
+                        Owed::Wait(waiting) => Some(waiting),
+                        _ => None,
+                    });
+                self.retired(name, setup, waiting, unshown).await;
+            }
             Done::Shown(unshown) => self.unshown(unshown).await,
             Done::Copied(data) => {
                 self.copying = false;
@@ -2710,11 +2793,12 @@ mod tests {
 
         // The start's work comes back, having made all it was to, as a
         // start the stop came too late to end has.
+        let asker = rig.reactor.owe(Owed::Start(Asker::Client(responder)));
         rig.reactor
             .done(Done::Started {
                 name: "couch".to_string(),
                 outcome: made_without_pads(),
-                asker: Asker::Client(responder),
+                asker,
             })
             .await;
         let refused = refusal(starting.await.unwrap());
@@ -2724,6 +2808,73 @@ mod tests {
         assert_eq!(rig.reactor.book.user(PRIMARY), None);
         finish(&mut rig.reactor).await;
         stopping.await.unwrap().unwrap();
+    }
+
+    /// As the daemon stops, every rpc the reactor holds or has queued is
+    /// answered that it is stopping, and nothing is waited on: not the
+    /// work of a start held up by a hiding service that never answers.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_daemon_that_stops_answers_what_it_holds_that_it_is_stopping() {
+        use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, bind, listen, socket};
+
+        let mut rig = rig().await;
+        // A service that takes connections and never answers.
+        let path = rig._dir.path().join("hider.sock");
+        let listener = socket(AddressFamily::UNIX, SocketType::SEQPACKET, None).unwrap();
+        bind(&listener, &SocketAddrUnix::new(&path).unwrap()).unwrap();
+        listen(&listener, 16).unwrap();
+        rig.reactor.hiding = Arc::new(Hiding::new(&path));
+        rig.reactor.look_for_the_hiding_service();
+        follow(&mut rig.reactor, 7, Phase::Starting);
+
+        // A start whose work waits on the service.
+        let caller = Caller::new(rig.client.clone());
+        let starting = tokio::spawn(async move {
+            let request = rpc::SetupRequest {
+                name: "couch".to_string(),
+            };
+            caller.call::<setup::Start>(&(), &request).await
+        });
+        let query = rig.requests.recv_async().await.unwrap();
+        let Some(((), setup::Incoming::Start(_, responder))) =
+            setup::Incoming::receive(query).await
+        else {
+            unreachable!("the request is a start")
+        };
+        let asker = rig.reactor.owe(Owed::Start(Asker::Client(responder)));
+        let (hiding, errand) = (
+            Arc::clone(&rig.reactor.hiding),
+            Arc::clone(&rig.reactor.setups.entries["couch"].errand),
+        );
+        rig.reactor.work.spawn_blocking(move || {
+            // Given up, and so never read: what it says is nothing.
+            let pad = File::open("/dev/null").unwrap();
+            drop(hiding.hide(&errand, PRIMARY, pad.as_fd()));
+            Done::Started {
+                name: "couch".to_string(),
+                outcome: Err(Unmade::new(STOPPED)),
+                asker,
+            }
+        });
+
+        // And a stop the reactor has yet to read.
+        let caller = Caller::new(rig.client.clone());
+        let stopping = tokio::spawn(async move {
+            let request = rpc::SetupRequest {
+                name: "couch".to_string(),
+            };
+            caller.call::<setup::Stop>(&(), &request).await
+        });
+        while rig.requests.is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let requests = &rig.requests;
+        rig.reactor.wind_down(&[requests]).await;
+        for asked in [starting, stopping] {
+            let refused = refusal(asked.await.unwrap());
+            assert_eq!(refused.code, ErrorCode::DaemonShuttingDown);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2748,13 +2899,14 @@ mod tests {
         else {
             unreachable!("the request is a start")
         };
+        let asker = rig.reactor.owe(Owed::Start(Asker::Client(responder)));
         rig.reactor
             .done(Done::Started {
                 name: "couch".to_string(),
                 outcome: Err(Unmade::new(
                     "making the virtual pad `virtual` (generic): no uinput",
                 )),
-                asker: Asker::Client(responder),
+                asker,
             })
             .await;
         let refused = refusal(asked.await.unwrap());
@@ -3173,7 +3325,7 @@ mod tests {
         rig.reactor
             .done(Done::Retaken {
                 name: "couch".to_string(),
-                graph,
+                graph: Box::new(graph),
                 ids: vec![None, None],
                 pads: vec![None, None],
                 arrivals: vec![None, None],
@@ -3319,11 +3471,12 @@ mod tests {
         assert_eq!(rig.reactor.book.user(PRIMARY), Some("couch"), "named");
         assert_eq!(rig.reactor.book.user(ASSIST), None);
 
+        let asker = rig.reactor.owe(Owed::Start(Asker::Daemon));
         rig.reactor
             .done(Done::Started {
                 name: "couch".to_string(),
                 outcome: made_without_pads(),
-                asker: Asker::Daemon,
+                asker,
             })
             .await;
         let entry = &rig.reactor.setups.entries["couch"];
@@ -3450,6 +3603,7 @@ mod tests {
             .unwrap()
             .arrivals = vec![None, arrival];
         rig.reactor.hiding.rebound(PRIMARY);
+        let asker = rig.reactor.owe(Owed::Start(Asker::Daemon));
         rig.reactor
             .done(Done::Started {
                 name: "couch".to_string(),
@@ -3457,7 +3611,7 @@ mod tests {
                     reason: "making the virtual pad `virtual` (dualsense): no uhid".to_string(),
                     tokens: vec![None, Some(Token(1))],
                 }),
-                asker: Asker::Daemon,
+                asker,
             })
             .await;
         assert!(rig.reactor.setups.setup("couch").is_none());
@@ -3503,11 +3657,12 @@ mod tests {
             nodes: Vec::new(),
             pads: vec![(false, None), (true, Some(Token(1)))],
         };
+        let asker = rig.reactor.owe(Owed::Start(Asker::Daemon));
         rig.reactor
             .done(Done::Started {
                 name: "couch".to_string(),
                 outcome: Ok(made),
-                asker: Asker::Daemon,
+                asker,
             })
             .await;
         assert_eq!(rig.reactor.setups.entries["couch"].phase, Phase::Held);

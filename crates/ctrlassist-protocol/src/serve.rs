@@ -83,6 +83,13 @@ pub(crate) fn payload(query: &Query) -> Vec<u8> {
         .unwrap_or_default()
 }
 
+/// Refuses `query`, of whatever rpc, without decoding it: for a server
+/// that serves nothing more, as one that is stopping answers what it
+/// has queued.
+pub async fn refuse(query: Query, error: &WireError) {
+    reply_err(&query, error).await;
+}
+
 /// Refuse `query` with a typed error: a query no family decoded.
 pub(crate) async fn reply_err(query: &Query, error: &WireError) {
     let bytes = serde_json::to_vec(error).expect("WireError always encodes as JSON");

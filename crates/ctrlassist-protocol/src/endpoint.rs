@@ -36,11 +36,15 @@ pub trait Unary: Rpc {
     /// service, the kernel making or dropping a virtual pad, the input
     /// thread handing a setup back, or the disk. Its call waits for the
     /// reply for as long as the service is there, which the service's
-    /// liveliness token says: the service answers each rpc once, or drops
-    /// it as it ends, which ends the call too, and it withdraws its token
-    /// before that. The query itself is declared with a limit of six
-    /// hours, only so that zenoh's task for it ends. Every other rpc's
-    /// call gives up after [`RPC_TIMEOUT`](crate::caller::RPC_TIMEOUT).
+    /// liveliness token says: the service answers each rpc it holds once,
+    /// as it stops with [`DaemonShuttingDown`] before its token goes, and
+    /// only one that ends otherwise, as by a panic, drops what it holds,
+    /// which ends the call too. The query itself is declared with a
+    /// limit of six hours, only so that zenoh's task for it ends. Every
+    /// other rpc's call gives up after
+    /// [`RPC_TIMEOUT`](crate::caller::RPC_TIMEOUT).
+    ///
+    /// [`DaemonShuttingDown`]: crate::error::ErrorCode::DaemonShuttingDown
     const UNTIMED: bool;
 }
 

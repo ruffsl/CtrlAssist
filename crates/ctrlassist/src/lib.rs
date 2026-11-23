@@ -192,12 +192,12 @@ impl DaemonClient {
     /// to this client: a mirror read, which unlike [`Self::is_available`]
     /// doesn't wait for the client to have subscribed to the daemon's
     /// state. A daemon declares its token before anything it serves can
-    /// answer, and as it stops withdraws it before anything else, then
-    /// answers what is in flight. Over a session in client mode, as
-    /// `ctrlassist_protocol::bootstrap::client_config` opens, the
-    /// daemon's token reaches the client in order with its replies, so
-    /// once a call has been answered this is false only for a daemon
-    /// that is stopping, never for one that is starting.
+    /// answer, and as it stops answers what it holds that it is stopping
+    /// ([`Error::Stopping`]) before it withdraws it. Over a session in
+    /// client mode, as `ctrlassist_protocol::bootstrap::client_config`
+    /// opens, the daemon's token reaches the client in order with its
+    /// replies, so once a call has been answered this is false only for
+    /// a daemon that is going away, never for one that is starting.
     #[must_use]
     pub fn token_present(&self) -> bool {
         self.mirror.token_present()
@@ -718,11 +718,13 @@ impl TrayClient {
 /// waits for its answer for as long as the service's liveliness token is
 /// there, and fails with [`Error::Gone`] once it isn't, at once and
 /// without asking if it isn't now. An rpc the service holds is answered
-/// once, or dropped when what serves it ends, which ends the call too; a
-/// stopping service withdraws its token before anything else, and a
-/// service whose link drops is seen without its token. So the token's
-/// going is what ends the wait; the protocol's caller gives up only after
-/// six hours, a limit there so that zenoh's task for the query ends.
+/// once: the daemon, as it stops, answers what it holds that it is
+/// stopping ([`Error::Stopping`]) before its token goes; a server that
+/// ends otherwise, as by a panic, drops what it holds, which ends the
+/// call too; and a service whose link drops is seen without its token.
+/// So an answer, or the token's going, ends the wait; the protocol's
+/// caller gives up only after six hours, a limit there so that zenoh's
+/// task for the query ends.
 /// Every other rpc waits as long as the protocol's caller does.
 async fn call_while_there<R: Unary<Target = ()>>(
     caller: &Caller,

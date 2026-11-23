@@ -45,6 +45,15 @@ pub enum Error {
         /// The service the call went to.
         service: Service,
     },
+    /// The service was stopping, and answered so in place of what was
+    /// asked: a call it held when it began to stop, such as a start
+    /// waiting on the hiding service, or one that reached it as it did.
+    /// What a write had begun is undone with the service, and the
+    /// service goes away next.
+    Stopping {
+        /// The service the call went to.
+        service: Service,
+    },
     /// The local link failed: opening the session, a subscription, or a
     /// stream that ended early.
     Transport {
@@ -105,6 +114,9 @@ impl fmt::Display for Error {
             Self::Unavailable { service } => write!(f, "the {service} is unavailable"),
             Self::Timeout { service } => write!(f, "the {service} didn't answer"),
             Self::Gone { service } => write!(f, "the {service} went away before it answered"),
+            Self::Stopping { service } => {
+                write!(f, "the {service} was stopping, and gave up what was asked")
+            }
             Self::Transport { what, .. } => f.write_str(what),
             Self::VersionMismatch {
                 service,
@@ -158,6 +170,9 @@ impl Error {
     /// zenoh's or serde's cause) as the source.
     pub(crate) fn from_rpc(service: Service, error: RpcError) -> Self {
         match error {
+            RpcError::Service(refusal) if refusal.code == ErrorCode::DaemonShuttingDown => {
+                Self::Stopping { service }
+            }
             RpcError::Service(refusal) => Self::Rpc {
                 code: refusal.code,
                 message: refusal.message,
@@ -222,6 +237,20 @@ mod tests {
             service: Service::Daemon,
         };
         assert_eq!(gone.to_string(), "the daemon went away before it answered");
+        // A daemon that answers that it is stopping is told from one that
+        // went away.
+        let stopping = from_rpc(RpcError::Service(WireError::daemon_shutting_down()));
+        assert!(matches!(
+            stopping,
+            Error::Stopping {
+                service: Service::Daemon
+            }
+        ));
+        assert_eq!(stopping.rpc_code(), None);
+        assert_eq!(
+            stopping.to_string(),
+            "the daemon was stopping, and gave up what was asked"
+        );
 
         let absent = from_rpc(RpcError::Unavailable { key: key() });
         assert_eq!(absent.rpc_code(), None);
