@@ -607,3 +607,71 @@ fn a_dualsense_on_bluetooth_is_sent_whole_output_reports() {
     let numbers: Vec<u8> = ours().iter().map(|sent| sent[1] >> 4).collect();
     assert_eq!(numbers, [0, 1, 2], "{:?}", ours());
 }
+
+/// A DualSense its setup lets go of is left as no game had it: its
+/// motors stopped, its trigger effects off, and the lights its kernel
+/// driver keeps, the driver's blue and the player LEDs it gave the pad.
+#[test]
+fn a_dualsense_let_go_is_left_as_its_driver_keeps_it() {
+    const TEST: &str = "a_dualsense_let_go_is_left_as_its_driver_keeps_it";
+    if !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    let real = ctrlassist_test::FakeDualSense::new(0x33).unwrap();
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    let raw = ctrlassist_test::raw_node_of(real.event_node()).unwrap();
+    if !ctrlassist_test::can_open(&raw, true) {
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED {TEST}: a DualSense's raw node isn't this user's to open here"
+        );
+        return;
+    }
+    let arrived = |wanted: &dyn Fn(&[u8]) -> bool| {
+        for _ in 0..400 {
+            if real.outputs().iter().any(|sent| wanted(sent)) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    };
+    // The driver's own, as it bound the pad: the player LEDs it gave it.
+    assert!(arrived(&|sent| sent[2] & 0x10 != 0));
+    let players = real
+        .outputs()
+        .iter()
+        .find(|sent| sent[2] & 0x10 != 0)
+        .map(|sent| sent[44])
+        .unwrap();
+
+    let mut pad = writable(real.event_node());
+    let raw: OwnedFd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(raw)
+        .unwrap()
+        .into();
+    pad.set_raw(raw).unwrap();
+    pad.rumble(Level {
+        strong: 0x8000,
+        weak: 0x4000,
+    })
+    .unwrap();
+    let mut game = [0u8; 48];
+    game[0] = 0x02;
+    (game[1], game[11], game[12]) = (0x04, 0x01, 0x80);
+    (game[2], game[44], game[45]) = (0x14, !players & 0x1f, 0xee);
+    pad.pass(&game).unwrap();
+    assert!(arrived(&|sent| sent[11] == 0x01 && sent[45] == 0xee));
+    drop(pad);
+    let rest = |sent: &[u8]| sent[1] == 0x0c && sent[11] == 0x05 && sent[22] == 0x05;
+    assert!(arrived(&rest), "{:?}", real.outputs());
+    let outputs = real.outputs();
+    let last = outputs.last().unwrap();
+    assert!(rest(last), "the rest is the last report: {outputs:?}");
+    assert_eq!((last[3], last[4], last[39] & 0x04), (0, 0, 0), "no rumble");
+    assert_eq!((last[2], last[44]), (0x14, players));
+    assert_eq!(last[45..48], [0, 0, 128]);
+}

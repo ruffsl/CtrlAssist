@@ -657,7 +657,111 @@ impl Kind {
             Self::DualShock4 { .. } => game[0] == OUTPUT_REPORT && game[2] & 0x04 != 0,
         }
     }
+
+    /// The lights the kernel's driver keeps for this pad, which it set
+    /// as it bound the pad and shows while no game sets them: read from
+    /// the LED devices it registers under the pad's HID device, `device`
+    /// in sysfs.
+    ///
+    /// For a DualSense the player LEDs are read as the driver holds them
+    /// (its `dualsense_player_led_get_brightness`). Its lightbar is the
+    /// blue the driver sets as it binds every DualSense, unless the
+    /// lightbar's LED device was given a color, which sysfs shows only
+    /// then: the driver sets its blue without telling the LED device.
+    /// For a DualShock 4 the lightbar's color is read as the driver holds
+    /// it, its player's color (its `dualshock4_led_get_brightness`), and
+    /// off if its LED device is.
+    pub(crate) fn driver_lights(self, device: Option<&Path>) -> Lights {
+        let leds: Vec<(String, PathBuf)> = device
+            .and_then(|device| std::fs::read_dir(device.join("leds")).ok())
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| {
+                        (
+                            entry.file_name().to_string_lossy().into_owned(),
+                            entry.path(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let led = |suffix: &str| {
+            leds.iter()
+                .find(|(name, _)| name.ends_with(suffix))
+                .map(|(_, path)| path.as_path())
+        };
+        let number = |dir: Option<&Path>, file: &str| -> Option<u32> {
+            std::fs::read_to_string(dir?.join(file))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()
+        };
+        match self {
+            Self::DualSense { .. } => {
+                let given = led(":rgb:indicator").and_then(|dir| {
+                    let intensity = std::fs::read_to_string(dir.join("multi_intensity")).ok()?;
+                    let intensity: Vec<u32> = intensity
+                        .split_whitespace()
+                        .filter_map(|value| value.parse().ok())
+                        .collect();
+                    let brightness = number(Some(dir), "brightness")?;
+                    // The LED class's own sum: each color's intensity
+                    // scaled by the brightness, out of the lightbar's 255.
+                    let [red, green, blue] = <[u32; 3]>::try_from(intensity).ok()?;
+                    let scaled = |value: u32| (value * brightness / 255).min(255) as u8;
+                    (red | green | blue != 0).then(|| [scaled(red), scaled(green), scaled(blue)])
+                });
+                let mut players = Some(0u8);
+                for (bit, player) in (1..=5).enumerate() {
+                    let on = number(led(&format!(":white:player-{player}")), "brightness");
+                    players = players
+                        .zip(on)
+                        .map(|(bits, on)| bits | (u8::from(on > 0) << bit));
+                }
+                Lights {
+                    color: Some(given.unwrap_or(DRIVER_BLUE)),
+                    players,
+                }
+            }
+            Self::DualShock4 { .. } => {
+                let red = number(led(":red"), "brightness");
+                let green = number(led(":green"), "brightness");
+                let blue = number(led(":blue"), "brightness");
+                let on = number(led(":global"), "brightness");
+                let color = match (red, green, blue, on) {
+                    (Some(_), Some(_), Some(_), Some(0)) => Some([0; 3]),
+                    (Some(red), Some(green), Some(blue), Some(_)) => {
+                        Some([red, green, blue].map(|value| value.min(255) as u8))
+                    }
+                    _ => None,
+                };
+                Lights {
+                    color,
+                    players: None,
+                }
+            }
+        }
+    }
 }
+
+/// The lightbar's color the kernel's driver gives every DualSense as it
+/// binds it: `dualsense_set_lightbar(ds, 0, 0, 128)`.
+const DRIVER_BLUE: [u8; 3] = [0, 0, 128];
+
+/// A pad's lights as its kernel driver keeps them, where they are known.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub(crate) struct Lights {
+    /// The lightbar's color.
+    pub(crate) color: Option<[u8; 3]>,
+    /// A DualSense's five player LEDs, a bit each from the left.
+    pub(crate) players: Option<u8>,
+}
+
+/// The trigger effect that turns one off: mode 5, which SDL's test
+/// program sends to clear an effect, with nothing after it.
+const TRIGGER_OFF: u8 = 0x05;
 
 /// The size of the game's report a pad is passed.
 pub(crate) const GAME_SIZE: usize = OUTPUT_SIZE;
@@ -716,6 +820,35 @@ impl Composer {
                     self.color = Some([game[45], game[46], game[47]]);
                 }
                 dualshock4_report(level, self.color, bluetooth)
+            }
+        }
+    }
+
+    /// The last report a pad is written, as its setup lets it go: its
+    /// motors stopped, a DualSense's trigger effects off, and the lights
+    /// its driver keeps, where they are known. Whatever else a game set,
+    /// its audio and its microphone's LED, is left as it is: the driver
+    /// keeps no state of those to put back.
+    pub(crate) fn rest(&mut self, lights: Lights) -> ([u8; RAW_SIZE], usize) {
+        match self.kind {
+            Kind::DualSense { .. } => {
+                let mut rest = [0u8; OUTPUT_SIZE];
+                rest[0] = OUTPUT_REPORT;
+                rest[FLAG0] = 0x04 | 0x08;
+                (rest[11], rest[22]) = (TRIGGER_OFF, TRIGGER_OFF);
+                if let Some(color) = lights.color {
+                    rest[FLAG1] |= 0x04;
+                    rest[45..48].copy_from_slice(&color);
+                }
+                if let Some(players) = lights.players {
+                    rest[FLAG1] |= 0x10;
+                    rest[44] = players;
+                }
+                self.compose(Some(&rest), Level::default(), Once::default())
+            }
+            Kind::DualShock4 { bluetooth } => {
+                // Unknown, the color is left as the game set it.
+                dualshock4_report(Level::default(), lights.color, bluetooth)
             }
         }
     }
