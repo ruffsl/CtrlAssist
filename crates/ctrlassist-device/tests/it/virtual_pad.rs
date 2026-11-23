@@ -658,6 +658,13 @@ fn a_dualsense_on_bluetooth_is_sent_whole_output_reports() {
 /// A DualSense its setup lets go of is left as no game had it: its
 /// motors stopped, its trigger effects off, and the lights its kernel
 /// driver keeps, the driver's blue and the player LEDs it gave the pad.
+///
+/// This doesn't show that the handle is done only once that last report
+/// is written: the fake pad hears a write on a thread of its own, some
+/// time after the kernel took it, so the report is looked for until it
+/// comes, and this would pass with a handle done early. The writer's
+/// unit test, `a_pad_let_go_is_rested_once_its_last_report_is_written`,
+/// is what shows the order, holding the write until it says.
 #[test]
 fn a_dualsense_let_go_is_left_as_its_driver_keeps_it() {
     const TEST: &str = "a_dualsense_let_go_is_left_as_its_driver_keeps_it";
@@ -712,8 +719,9 @@ fn a_dualsense_let_go_is_left_as_its_driver_keeps_it() {
     (game[2], game[44], game[45]) = (0x14, !players & 0x1f, 0xee);
     pad.pass(&game).unwrap();
     assert!(arrived(&|sent| sent[11] == 0x01 && sent[45] == 0xee));
-    // Let go, the pad's last report is written once its writer says so,
-    // which whoever re-binds the pad's driver waits for.
+    // Let go, the pad's writer says when it has written the last report,
+    // which whoever re-binds the pad's driver waits for; the report is
+    // then looked for, as above.
     let rested = pad.let_go();
     assert_eq!(rested.writes(), Writes::Reports);
     rested.wait();
