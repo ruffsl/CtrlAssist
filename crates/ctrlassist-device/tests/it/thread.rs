@@ -608,9 +608,10 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
                 Ok(())
             })
             .unwrap();
+        // The pad's effect is stopped, and kept for its next rumble.
         if requests
             .iter()
-            .any(|request| matches!(request, Request::Erase { .. }))
+            .any(|request| matches!(request, Request::Play { count: 0, .. }))
         {
             ended = Some(started.elapsed());
             break;
@@ -634,7 +635,6 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
             },
             Request::Play { id: 0, count: 1 },
             Request::Play { id: 0, count: 0 },
-            Request::Erase { id: 0 },
         ]
     );
     let ended = ended.unwrap().as_millis();

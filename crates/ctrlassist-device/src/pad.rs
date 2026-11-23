@@ -199,7 +199,8 @@ pub struct Pad {
     /// The state with the events of a frame still arriving applied.
     pending: PadState,
     can_rumble: bool,
-    /// The one effect kept on the pad while it rumbles, and its level.
+    /// The one effect kept on the pad once it has rumbled, and the level
+    /// it is at, zero while it is stopped.
     rumble: Option<(FFEffect, Level)>,
     /// The pad's raw node, for a pad that is sent whole output reports.
     raw: Option<RawOutput>,
@@ -456,9 +457,10 @@ impl Pad {
     /// Makes the pad's motors run at `level` until told otherwise; a
     /// level of zero stops them. A pad that can't rumble ignores this.
     ///
-    /// The pad holds one effect however many games are rumbling it: the
-    /// new level starts before the old effect is removed, so there is no
-    /// gap between them.
+    /// The pad holds one effect however many games are rumbling it,
+    /// uploaded the first time it rumbles and kept until it is dropped:
+    /// a new level updates it in place, with no gap and no second slot,
+    /// and a level of zero stops it.
     ///
     /// # Errors
     ///
@@ -470,31 +472,50 @@ impl Pad {
         if let Some(raw) = &mut self.raw {
             return Ok(raw.rumble(level)?);
         }
-        if !self.can_rumble || self.rumble.as_ref().is_some_and(|(_, held)| *held == level) {
+        if !self.can_rumble {
             return Ok(());
         }
-        if level == Level::default() {
-            // Dropping the effect stops and removes it.
-            self.rumble = None;
-            return Ok(());
+        let stop = level == Level::default();
+        match &mut self.rumble {
+            Some((_, held)) if *held == level => {}
+            Some((effect, held)) if stop => {
+                effect.stop()?;
+                *held = level;
+            }
+            Some((effect, held)) => {
+                // Played again as well as updated: a memless driver, as a
+                // rumble-only pad's is, goes on at the new strength either
+                // way, and another program's uinput pad may act only on a
+                // play.
+                effect.update(endless(level))?;
+                effect.play(1)?;
+                *held = level;
+            }
+            None if stop => {}
+            None => {
+                let mut effect = self.device.upload_ff_effect(endless(level))?;
+                effect.play(1)?;
+                self.rumble = Some((effect, level));
+            }
         }
-        let mut effect = self.device.upload_ff_effect(FFEffectData {
-            direction: 0,
-            trigger: FFTrigger::default(),
-            // No length: it runs until it is replaced or removed. When
-            // each rumble ends is the router's business.
-            replay: FFReplay {
-                length: 0,
-                delay: 0,
-            },
-            kind: FFEffectKind::Rumble {
-                strong_magnitude: level.strong,
-                weak_magnitude: level.weak,
-            },
-        })?;
-        effect.play(1)?;
-        self.rumble = Some((effect, level));
         Ok(())
+    }
+}
+
+/// A rumble at `level` with no length: it runs until it is changed or
+/// stopped. When each rumble ends is the router's business.
+fn endless(level: Level) -> FFEffectData {
+    FFEffectData {
+        direction: 0,
+        trigger: FFTrigger::default(),
+        replay: FFReplay {
+            length: 0,
+            delay: 0,
+        },
+        kind: FFEffectKind::Rumble {
+            strong_magnitude: level.strong,
+            weak_magnitude: level.weak,
+        },
     }
 }
 

@@ -267,7 +267,9 @@ impl VirtualDevice {
 
         Ok(VirtualDevice {
             fd,
-            event_buf: vec![],
+            // Room for a batch from the start, so that reading never
+            // allocates: every read drains the buffer whole.
+            event_buf: Vec::with_capacity(crate::EVENT_BATCH_SIZE),
         })
     }
 
@@ -331,7 +333,7 @@ impl VirtualDevice {
     /// # Panics
     ///
     /// This function will panic if `event.code()` is not `UI_FF_UPLOAD`.
-    pub fn process_ff_upload(&mut self, event: UInputEvent) -> io::Result<FFUploadEvent> {
+    pub fn process_ff_upload(&mut self, event: UInputEvent) -> io::Result<FFUploadEvent<'_>> {
         assert_eq!(event.code(), UInputCode::UI_FF_UPLOAD);
 
         let mut request: sys::uinput_ff_upload = unsafe { std::mem::zeroed() };
@@ -340,7 +342,9 @@ impl VirtualDevice {
 
         request.retval = 0;
 
-        let fd = self.fd.try_clone()?;
+        // Borrowed, not duplicated: a failed dup here would leave the
+        // upload begun and never ended.
+        let fd = self.fd.as_fd();
 
         Ok(FFUploadEvent { fd, request })
     }
@@ -355,7 +359,7 @@ impl VirtualDevice {
     /// # Panics
     ///
     /// This function will panic if `event.code()` is not `UI_FF_ERASE`.
-    pub fn process_ff_erase(&mut self, event: UInputEvent) -> io::Result<FFEraseEvent> {
+    pub fn process_ff_erase(&mut self, event: UInputEvent) -> io::Result<FFEraseEvent<'_>> {
         assert_eq!(event.code(), UInputCode::UI_FF_ERASE);
 
         let mut request: sys::uinput_ff_erase = unsafe { std::mem::zeroed() };
@@ -364,7 +368,9 @@ impl VirtualDevice {
 
         request.retval = 0;
 
-        let fd = self.fd.try_clone()?;
+        // Borrowed, not duplicated: a failed dup here would leave the
+        // erase begun and never ended.
+        let fd = self.fd.as_fd();
 
         Ok(FFEraseEvent { fd, request })
     }
@@ -486,12 +492,12 @@ impl AsRawFd for VirtualDevice {
 }
 
 /// Represents a force feedback upload event that we are currently processing.
-pub struct FFUploadEvent {
-    fd: OwnedFd,
+pub struct FFUploadEvent<'a> {
+    fd: BorrowedFd<'a>,
     request: sys::uinput_ff_upload,
 }
 
-impl FFUploadEvent {
+impl FFUploadEvent<'_> {
     /// Returns the old effect data.
     pub fn old_effect(&self) -> FFEffectData {
         self.request.old.into()
@@ -523,7 +529,7 @@ impl FFUploadEvent {
     }
 }
 
-impl Drop for FFUploadEvent {
+impl Drop for FFUploadEvent<'_> {
     fn drop(&mut self) {
         unsafe {
             let _ = sys::ui_end_ff_upload(self.fd.as_raw_fd(), &self.request);
@@ -532,12 +538,12 @@ impl Drop for FFUploadEvent {
 }
 
 /// Represents a force feedback erase event that we are currently processing.
-pub struct FFEraseEvent {
-    fd: OwnedFd,
+pub struct FFEraseEvent<'a> {
+    fd: BorrowedFd<'a>,
     request: sys::uinput_ff_erase,
 }
 
-impl FFEraseEvent {
+impl FFEraseEvent<'_> {
     /// Returns the effect ID to erase.
     pub fn effect_id(&self) -> u32 {
         self.request.effect_id
@@ -554,7 +560,7 @@ impl FFEraseEvent {
     }
 }
 
-impl Drop for FFEraseEvent {
+impl Drop for FFEraseEvent<'_> {
     fn drop(&mut self) {
         unsafe {
             let _ = sys::ui_end_ff_erase(self.fd.as_raw_fd(), &self.request);

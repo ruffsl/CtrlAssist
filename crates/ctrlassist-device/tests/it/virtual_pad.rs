@@ -244,10 +244,8 @@ pub(crate) fn writable(node: &Path) -> Pad {
 }
 
 #[test]
-fn a_rumble_level_is_one_endless_effect_replaced_without_a_gap_and_removed_at_zero() {
-    if !can_make_pads(
-        "a_rumble_level_is_one_endless_effect_replaced_without_a_gap_and_removed_at_zero",
-    ) {
+fn a_rumble_level_is_one_endless_effect_updated_in_place_and_stopped_at_zero() {
+    if !can_make_pads("a_rumble_level_is_one_endless_effect_updated_in_place_and_stopped_at_zero") {
         return;
     }
     // A virtual pad stands in for a real pad with motors: it reports what
@@ -288,16 +286,17 @@ fn a_rumble_level_is_one_endless_effect_replaced_without_a_gap_and_removed_at_ze
                 effect: endless(0x8000, 0)
             },
             Request::Play { id: 0, count: 1 },
-            // The second level starts before the first is taken away.
+            // The second level takes the first's place: one slot, and no
+            // gap between them.
             Request::Upload {
-                id: 1,
+                id: 0,
                 effect: endless(0x2000, 0xffff)
             },
-            Request::Play { id: 1, count: 1 },
+            Request::Play { id: 0, count: 1 },
+            // Zero stops it, and it stays until the pad is dropped.
+            Request::Play { id: 0, count: 0 },
             Request::Play { id: 0, count: 0 },
             Request::Erase { id: 0 },
-            Request::Play { id: 1, count: 0 },
-            Request::Erase { id: 1 },
         ]
     );
 }
