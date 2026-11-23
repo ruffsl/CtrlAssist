@@ -11,13 +11,25 @@
 //! always free when taken: taking it is one atomic operation and never a
 //! wait. The receiver sleeps by parking, and a send wakes it with an
 //! unpark, which takes no lock either.
+//!
+//! The two counts go round when they pass the largest `usize`, after
+//! some 4 billion items on a machine of 32 bits. A count is mapped to
+//! its place by its low bits, the number of places being a power of two,
+//! so a count's place is the same on both sides of the wrap; and how
+//! full the queue is, the difference of the two counts taken round, is
+//! right across it too. The room is still exactly the capacity asked:
+//! the queue counts itself full at that number, whatever places beyond
+//! it the power of two adds, which are then never all in use at once.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::thread::Thread;
 
 struct Shared<T> {
+    /// A power of two of them, at least `capacity`.
     places: Box<[Mutex<Option<T>>]>,
+    /// How many may wait at once.
+    capacity: usize,
     /// How many have been sent, written by the sender alone.
     sent: AtomicUsize,
     /// How many have been taken, written by the receiver alone.
@@ -28,7 +40,8 @@ struct Shared<T> {
 
 impl<T> Shared<T> {
     fn place(&self, count: usize) -> &Mutex<Option<T>> {
-        &self.places[count % self.places.len()]
+        // The length is a power of two: this is the count's low bits.
+        &self.places[count & (self.places.len() - 1)]
     }
 }
 
@@ -46,13 +59,24 @@ pub(crate) struct Receiver<T> {
     shared: Arc<Shared<T>>,
 }
 
-/// A queue with room for `capacity`, at least one. The sending side is
-/// bound to the receiving thread once that is started.
+/// A queue with room for exactly `capacity`, at least one. The sending
+/// side is bound to the receiving thread once that is started.
 pub(crate) fn queue<T>(capacity: usize) -> (Unbound<T>, Receiver<T>) {
+    queue_from(capacity, 0)
+}
+
+/// As [`queue`], with both counts starting at `count`: for trying their
+/// wrap.
+fn queue_from<T>(capacity: usize, count: usize) -> (Unbound<T>, Receiver<T>) {
+    let capacity = capacity.max(1);
+    let places = capacity
+        .checked_next_power_of_two()
+        .expect("a queue's room is some reports, far from half of the address space");
     let shared = Arc::new(Shared {
-        places: (0..capacity.max(1)).map(|_| Mutex::new(None)).collect(),
-        sent: AtomicUsize::new(0),
-        taken: AtomicUsize::new(0),
+        places: (0..places).map(|_| Mutex::new(None)).collect(),
+        capacity,
+        sent: AtomicUsize::new(count),
+        taken: AtomicUsize::new(count),
         sender_gone: AtomicBool::new(false),
         receiver_gone: AtomicBool::new(false),
     });
@@ -76,7 +100,7 @@ impl<T> Sender<T> {
         let shared = &*self.shared;
         let sent = shared.sent.load(Ordering::Relaxed);
         let taken = shared.taken.load(Ordering::Acquire);
-        if sent.wrapping_sub(taken) >= shared.places.len()
+        if sent.wrapping_sub(taken) >= shared.capacity
             || shared.receiver_gone.load(Ordering::Acquire)
         {
             return Err(item);
@@ -182,9 +206,34 @@ mod tests {
         assert!(sender.send(Arc::clone(&waiting)).is_err());
     }
 
+    /// Across the counts' wrap, with a room that isn't a power of two,
+    /// the queue holds exactly its room and hands everything over once,
+    /// in order.
+    #[test]
+    fn the_counts_going_round_lose_nothing_and_keep_the_room() {
+        let (unbound, receiver) = queue_from(3, usize::MAX - 4);
+        let sender = unbound.to(std::thread::current());
+        let (mut next, mut expected) = (0, 0);
+        for _ in 0..6 {
+            while sender.send(next).is_ok() {
+                next += 1;
+            }
+            assert_eq!(next - expected, 3, "full at exactly its room");
+            for _ in 0..2 {
+                assert_eq!(receiver.try_recv(), Some(expected));
+                expected += 1;
+            }
+        }
+        let rest: Vec<i32> = std::iter::from_fn(|| receiver.try_recv()).collect();
+        assert_eq!(rest, (expected..next).collect::<Vec<_>>());
+        assert!(
+            receiver.shared.sent.load(Ordering::Relaxed) < 16,
+            "the counts went round"
+        );
+    }
+
     /// Sent from one thread and received on another, round the queue
-    /// many times, everything arrives once, in order, and the receiver
-    /// sleeps while there is nothing.
+    /// many times, everything arrives once and in order.
     #[test]
     fn what_one_thread_sends_another_receives_whole_and_in_order() {
         const ITEMS: u64 = 200_000;

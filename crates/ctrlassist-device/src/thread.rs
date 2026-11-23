@@ -41,7 +41,9 @@ const QUEUE: usize = 64;
 /// fit beside these, so none of them is ever dropped.
 const OWED: usize = (SETUPS + 1) * (1 + MAX_SOURCES);
 /// How many reports may wait unread: room for every one the thread can
-/// owe, and as many again as commands for those that only tell.
+/// owe, and as many again as commands for those that only tell. The
+/// queue holds exactly this many, however many places it has, so the
+/// count of what may wait here is the count the queue refuses beyond.
 const REPORTS: usize = OWED + QUEUE;
 /// Room kept, beside what the thread runs, for the one report that hands
 /// something back which a piece of handling has in hand when it tells
