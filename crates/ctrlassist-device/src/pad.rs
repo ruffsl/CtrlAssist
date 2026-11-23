@@ -1,6 +1,7 @@
 //! A pad, read from an open descriptor on its event node.
 
-use crate::dualsense::RawOutput;
+use crate::dualsense::Kind;
+use crate::output::RawOutput;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
@@ -388,13 +389,16 @@ impl Pad {
     }
 
     /// Gives the pad its raw HID node, where it has one this is able to
-    /// write to: a DualSense's or a DualShock 4's. From then on the pad's rumble is
-    /// written there, and so is what [`pass`](Self::pass) is given.
+    /// write to: a DualSense's or a DualShock 4's. From then on the pad's
+    /// rumble is written there, and so is what [`pass`](Self::pass) is
+    /// given, by a thread of the pad's own: a write to a pad on USB
+    /// waits for the pad. Dropping the pad has that thread write what is
+    /// left and end.
     ///
     /// # Errors
     ///
-    /// Fails, leaving the pad as it was, if the node isn't such a pad's
-    /// or can't be read.
+    /// Fails, leaving the pad as it was, if the node isn't such a pad's,
+    /// can't be read, or the thread can't be started.
     pub fn set_raw(&mut self, raw: OwnedFd) -> io::Result<()> {
         let raw = RawOutput::open(raw)?;
         // The kernel's own effect, if one runs, ends here.
@@ -408,7 +412,7 @@ impl Pad {
     #[must_use]
     pub fn could_take_output(&self) -> bool {
         let ids = &self.identifiers;
-        RawOutput::takes(ids.bus, ids.vendor, ids.product)
+        Kind::takes(ids.bus, ids.vendor, ids.product)
     }
 
     /// Whether the pad is sent whole output reports.
@@ -419,15 +423,33 @@ impl Pad {
 
     /// Sends the pad an output report a game sent a virtual pad of its
     /// own kind, keeping the rumble the pad is at. A pad that isn't sent
-    /// whole output reports ignores this.
+    /// whole output reports ignores this. It is written without waiting
+    /// for the pad, and takes the place of a report not yet written.
     ///
     /// # Errors
     ///
-    /// Fails if the pad's raw node refuses the write.
+    /// Fails if the pad's raw node refused a write since that was last
+    /// said.
     pub fn pass(&mut self, report: &[u8]) -> Result<(), PadError> {
         match &mut self.raw {
             Some(raw) => Ok(raw.pass(report)?),
             None => Ok(()),
+        }
+    }
+
+    /// Keeps back what the pad's raw node is told, until
+    /// [`release_output`](Self::release_output): a level and a report
+    /// told together are then written once.
+    pub(crate) fn hold_output(&mut self) {
+        if let Some(raw) = &mut self.raw {
+            raw.hold();
+        }
+    }
+
+    /// Has what was kept back from the pad's raw node written.
+    pub(crate) fn release_output(&mut self) {
+        if let Some(raw) = &mut self.raw {
+            raw.release();
         }
     }
 
@@ -442,6 +464,8 @@ impl Pad {
     ///
     /// Fails if the pad has gone, the descriptor isn't open for writing,
     /// or the pad refuses the effect; the motors then stay as they were.
+    /// A pad sent whole output reports is written without waiting, and
+    /// fails if its raw node refused a write since that was last said.
     pub fn rumble(&mut self, level: Level) -> Result<(), PadError> {
         if let Some(raw) = &mut self.raw {
             return Ok(raw.rumble(level)?);

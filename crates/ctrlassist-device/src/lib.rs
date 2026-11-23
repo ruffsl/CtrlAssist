@@ -11,6 +11,7 @@ mod dualsense;
 mod hidraw;
 mod hotplug;
 mod layout;
+mod output;
 mod pad;
 mod realtime;
 mod sink;

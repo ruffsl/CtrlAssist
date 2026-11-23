@@ -406,125 +406,117 @@ fn dualshock4_report(
 }
 
 /// Which pad a raw node is, for what it is written.
-enum Kind {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Kind {
     /// A DualSense, whether its firmware takes the newer rumble, and
-    /// over Bluetooth, where its report is another one, the number of
-    /// the next report sent it.
-    DualSense { newer: bool, bluetooth: Option<u8> },
-    /// A DualShock 4, the bus it is on, and the lightbar color a game
-    /// last asked for, if one has.
-    DualShock4 {
-        bluetooth: bool,
-        color: Option<[u8; 3]>,
-    },
+    /// whether it is on Bluetooth, where its report is another one.
+    DualSense { newer: bool, bluetooth: bool },
+    /// A DualShock 4, and whether it is on Bluetooth.
+    DualShock4 { bluetooth: bool },
 }
 
-/// A PlayStation pad's raw HID node, as somewhere to write: the pad
-/// is sent whole output reports, so that what a game sends a virtual
-/// DualSense beyond rumble reaches the pad behind it. A DualSense gets
-/// the game's report as it is, lights and trigger effects; a DualShock 4
-/// gets the lightbar's color. Rumble then goes this way too, and not
-/// through the kernel's own effects, so every report written carries the
-/// level the pad should be at: a DualSense takes a report without the
-/// rumble as the rumble's end, and the kernel's driver sends a DualShock
-/// 4 its own lightbar color with every rumble.
-pub(crate) struct RawOutput {
-    raw: File,
-    kind: Kind,
-    level: Level,
-}
-
-impl RawOutput {
-    /// Takes a pad's raw node, if it is one this knows how to write to:
-    /// a DualSense's or a DualShock 4's, over USB or Bluetooth.
-    pub(crate) fn open(raw: std::os::fd::OwnedFd) -> io::Result<Self> {
-        let (bus, vendor, product) = hidraw::info(raw.as_fd())?;
+impl Kind {
+    /// Which pad a raw node is, if it is one this knows how to write
+    /// to: a DualSense or a DualShock 4, over USB or Bluetooth.
+    pub(crate) fn of(raw: BorrowedFd<'_>) -> io::Result<Self> {
+        let (bus, vendor, product) = hidraw::info(raw)?;
         let wired_or_not = bus == BUS_USB || bus == BUS_BLUETOOTH;
-        let kind = if (vendor, product) == (VENDOR, PRODUCT) && wired_or_not {
-            let firmware = hidraw::feature(raw.as_fd(), FIRMWARE, FIRMWARE_SIZE)?;
+        if (vendor, product) == (VENDOR, PRODUCT) && wired_or_not {
+            let firmware = hidraw::feature(raw, FIRMWARE, FIRMWARE_SIZE)?;
             let update = u16::from_le_bytes([
                 firmware.get(44).copied().unwrap_or(0),
                 firmware.get(45).copied().unwrap_or(0),
             ]);
-            Kind::DualSense {
+            Ok(Self::DualSense {
                 newer: update >= NEWER_RUMBLE,
-                bluetooth: (bus == BUS_BLUETOOTH).then_some(0),
-            }
-        } else if vendor == VENDOR && DUALSHOCK4.contains(&product) && wired_or_not {
-            Kind::DualShock4 {
                 bluetooth: bus == BUS_BLUETOOTH,
-                color: None,
-            }
+            })
+        } else if vendor == VENDOR && DUALSHOCK4.contains(&product) && wired_or_not {
+            Ok(Self::DualShock4 {
+                bluetooth: bus == BUS_BLUETOOTH,
+            })
         } else {
-            return Err(io::Error::new(
+            Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "not a DualSense or a DualShock 4",
-            ));
-        };
-        Ok(Self {
-            raw: File::from(raw),
-            kind,
-            level: Level::default(),
-        })
+            ))
+        }
     }
 
-    /// Whether a pad with these numbers is one [`open`](Self::open)
-    /// takes.
+    /// Whether a pad with these numbers is one [`of`](Self::of) takes.
     pub(crate) fn takes(bus: u16, vendor: u16, product: u16) -> bool {
         vendor == VENDOR
             && (product == PRODUCT || DUALSHOCK4.contains(&product))
             && (bus == BUS_USB || bus == BUS_BLUETOOTH)
     }
 
-    /// Writes the pad a report of what it should be at; for a DualSense,
-    /// `game` is the game's report to carry it.
-    fn write(&mut self, game: [u8; OUTPUT_SIZE]) -> io::Result<()> {
-        match &mut self.kind {
-            Kind::DualSense {
-                newer,
-                bluetooth: None,
-            } => self.raw.write_all(&with_rumble(game, self.level, *newer)),
-            Kind::DualSense {
-                newer,
-                bluetooth: Some(sequence),
-            } => {
-                let report = over_bluetooth(with_rumble(game, self.level, *newer), *sequence);
-                *sequence = (*sequence + 1) & 0x0f;
-                self.raw.write_all(&report)
-            }
-            Kind::DualShock4 { bluetooth, color } => {
-                let (report, length) = dualshock4_report(self.level, *color, *bluetooth);
-                self.raw.write_all(&report[..length])
-            }
+    /// Whether a game's report says anything this pad is sent: all of it
+    /// to a DualSense, and to a DualShock 4 the lightbar's color, where
+    /// the report says to take it.
+    pub(crate) fn wants(self, game: &[u8; OUTPUT_SIZE]) -> bool {
+        match self {
+            Self::DualSense { .. } => true,
+            Self::DualShock4 { .. } => game[0] == OUTPUT_REPORT && game[2] & 0x04 != 0,
+        }
+    }
+}
+
+/// The size of the game's report a pad is passed.
+pub(crate) const GAME_SIZE: usize = OUTPUT_SIZE;
+/// The longest report written to a pad's raw node.
+pub(crate) const RAW_SIZE: usize = BLUETOOTH_OUTPUT_SIZE;
+
+/// Builds the reports written to one pad's raw node. Each carries the
+/// level the pad should be at: a DualSense takes a report without the
+/// rumble as the rumble's end, and the kernel's driver sends a DualShock
+/// 4 its own lightbar color with every rumble.
+pub(crate) struct Composer {
+    kind: Kind,
+    /// Over Bluetooth, the number of the next report.
+    sequence: u8,
+    /// The lightbar color a game last asked of a DualShock 4, if one has.
+    color: Option<[u8; 3]>,
+}
+
+impl Composer {
+    pub(crate) fn new(kind: Kind) -> Self {
+        Self {
+            kind,
+            sequence: 0,
+            color: None,
         }
     }
 
-    /// Makes the pad's motors run at `level`, with nothing else changed.
-    pub(crate) fn rumble(&mut self, level: Level) -> io::Result<()> {
-        if level == self.level {
-            return Ok(());
-        }
-        self.level = level;
-        self.write([0; OUTPUT_SIZE])
-    }
-
-    /// Sends the pad what a game sent a virtual DualSense, with the
-    /// rumble the pad should be at in place of the report's: the whole
-    /// report for a DualSense, and for a DualShock 4 the lightbar's
-    /// color, if the report sets it.
-    pub(crate) fn pass(&mut self, report: &[u8]) -> io::Result<()> {
-        let mut whole = [0u8; OUTPUT_SIZE];
-        for (place, byte) in whole.iter_mut().zip(report) {
-            *place = *byte;
-        }
-        if let Kind::DualShock4 { color, .. } = &mut self.kind {
-            // The lightbar's color, where the report says to take it.
-            if whole[0] != OUTPUT_REPORT || whole[2] & 0x04 == 0 {
-                return Ok(());
+    /// The report that leaves the pad at `level`, carrying `game`, a
+    /// game's report not yet written: a DualSense's whole, or the
+    /// lightbar's color for a DualShock 4. Without one, a DualSense's
+    /// report changes nothing but rumble, and a DualShock 4's keeps the
+    /// color it was last given. Returns the report and its length.
+    pub(crate) fn compose(
+        &mut self,
+        game: Option<&[u8; OUTPUT_SIZE]>,
+        level: Level,
+    ) -> ([u8; RAW_SIZE], usize) {
+        match self.kind {
+            Kind::DualSense { newer, bluetooth } => {
+                let usb = with_rumble(game.copied().unwrap_or([0; OUTPUT_SIZE]), level, newer);
+                if bluetooth {
+                    let report = over_bluetooth(usb, self.sequence);
+                    self.sequence = (self.sequence + 1) & 0x0f;
+                    (report, BLUETOOTH_OUTPUT_SIZE)
+                } else {
+                    let mut report = [0u8; RAW_SIZE];
+                    report[..OUTPUT_SIZE].copy_from_slice(&usb);
+                    (report, OUTPUT_SIZE)
+                }
             }
-            *color = Some([whole[45], whole[46], whole[47]]);
+            Kind::DualShock4 { bluetooth } => {
+                if let Some(game) = game.filter(|game| self.kind.wants(game)) {
+                    self.color = Some([game[45], game[46], game[47]]);
+                }
+                dualshock4_report(level, self.color, bluetooth)
+            }
         }
-        self.write(whole)
     }
 }
 
@@ -1098,12 +1090,12 @@ mod tests {
         assert_eq!(bluetooth[..11], [0x11, 0xc4, 0, 0x03, 0, 0, 0, 0, 9, 8, 7]);
         let checksum = u32::from_le_bytes(bluetooth[74..].try_into().unwrap());
         assert_eq!(checksum, crc32(0xa2, &bluetooth[..74]));
-        assert!(RawOutput::takes(BUS_USB, VENDOR, PRODUCT));
-        assert!(RawOutput::takes(BUS_BLUETOOTH, VENDOR, PRODUCT));
-        assert!(!RawOutput::takes(6, VENDOR, PRODUCT), "another bus");
-        assert!(RawOutput::takes(BUS_BLUETOOTH, VENDOR, 0x05c4));
-        assert!(RawOutput::takes(BUS_USB, VENDOR, 0x09cc));
-        assert!(!RawOutput::takes(BUS_USB, 0x045e, 0x05c4));
+        assert!(Kind::takes(BUS_USB, VENDOR, PRODUCT));
+        assert!(Kind::takes(BUS_BLUETOOTH, VENDOR, PRODUCT));
+        assert!(!Kind::takes(6, VENDOR, PRODUCT), "another bus");
+        assert!(Kind::takes(BUS_BLUETOOTH, VENDOR, 0x05c4));
+        assert!(Kind::takes(BUS_USB, VENDOR, 0x09cc));
+        assert!(!Kind::takes(BUS_USB, 0x045e, 0x05c4));
     }
 
     /// Over Bluetooth a DualSense's report is the USB one's settings
@@ -1133,6 +1125,54 @@ mod tests {
         // The checksum is the CRC-32 everyone's is, over the seed byte
         // and then the rest: its check value, for "123456789".
         assert_eq!(crc32(b'1', b"23456789"), 0xcbf4_3926);
+    }
+
+    /// What each report written to a pad's raw node carries besides the
+    /// one thing that changed.
+    #[test]
+    fn each_report_written_carries_what_the_pad_is_owed() {
+        // A DualShock 4 keeps the color it was given at each rumble, and
+        // a report that sets no color leaves it.
+        let mut ds4 = Composer::new(Kind::DualShock4 { bluetooth: false });
+        let (report, length) = ds4.compose(None, level_of(0x80, 0));
+        assert_eq!(length, 32);
+        assert_eq!(report[..9], [0x05, 0x01, 0, 0, 0, 0x80, 0, 0, 0]);
+        let mut game = [0u8; OUTPUT_SIZE];
+        game[0] = OUTPUT_REPORT;
+        (game[2], game[45], game[46], game[47]) = (0x04, 1, 2, 3);
+        ds4.compose(Some(&game), level_of(0x80, 0));
+        game[2] = 0;
+        game[45] = 9;
+        ds4.compose(Some(&game), level_of(0x80, 0));
+        let (report, _) = ds4.compose(None, Level::default());
+        assert_eq!(report[..9], [0x05, 0x03, 0, 0, 0, 0, 1, 2, 3]);
+        // A DualSense's report without a game's changes nothing but
+        // rumble; one with it carries it whole.
+        let mut usb = Composer::new(Kind::DualSense {
+            newer: true,
+            bluetooth: false,
+        });
+        let (alone, length) = usb.compose(None, level_of(0x80, 0x40));
+        assert_eq!(length, OUTPUT_SIZE);
+        assert_eq!(
+            alone[..OUTPUT_SIZE],
+            with_rumble([0; OUTPUT_SIZE], level_of(0x80, 0x40), true)
+        );
+        let (whole, _) = usb.compose(Some(&game), Level::default());
+        assert_eq!(
+            whole[..OUTPUT_SIZE],
+            with_rumble(game, Level::default(), true)
+        );
+        // Over Bluetooth each report written is numbered on from the last.
+        let mut bluetooth = Composer::new(Kind::DualSense {
+            newer: true,
+            bluetooth: true,
+        });
+        let numbers: Vec<u8> = (0..17)
+            .map(|_| bluetooth.compose(None, Level::default()).0[1] >> 4)
+            .collect();
+        assert_eq!(numbers[..4], [0, 1, 2, 3]);
+        assert_eq!(numbers[15..], [15, 0]);
     }
 
     fn level_of(strong: u8, weak: u8) -> Level {

@@ -217,6 +217,9 @@ pub struct Setup {
     /// The pads that have each virtual pad's last output report, by sink
     /// number.
     passed: Vec<SourceSet>,
+    /// Whether each virtual pad was sent an output report in the
+    /// handling under way, by sink number.
+    fresh: Vec<bool>,
     /// What passed through its feedback in the handling under way.
     taps: [Option<Tap>; TAPS],
     failed: bool,
@@ -235,6 +238,7 @@ impl Setup {
         let wanted = vec![Level::default(); pads.len()];
         let buzz = vec![None; pads.len()];
         let passed = vec![SourceSet::EMPTY; sinks.len()];
+        let fresh = vec![false; sinks.len()];
         Self {
             graph,
             router,
@@ -245,6 +249,7 @@ impl Setup {
             wanted,
             buzz,
             passed,
+            fresh,
             taps: [None; TAPS],
             failed: false,
         }
@@ -587,6 +592,7 @@ impl Setup {
             wanted,
             buzz,
             passed,
+            fresh,
             taps,
             failed,
             ..
@@ -604,14 +610,18 @@ impl Setup {
                 Err(_) => *failed = true,
             }
         }
+        // What each pad's raw node is told here is written at once, so a
+        // level and a report that change together are one write.
+        for pad in pads.iter_mut().flatten() {
+            pad.hold_output();
+        }
         for (index, sink) in sinks.iter_mut().enumerate() {
-            let targets = graph.feedback_targets(SinkId(index));
-            router.set_targets(SinkId(index), targets);
-            // What a game sent this virtual pad beyond rumble goes to
-            // the pads its feedback goes to: to all of them when it is
-            // new, and to one that has just become one of them.
-            let fresh = sink.take_output().is_some();
-            if let (true, Some(sent)) = (fresh, sink.last_output()) {
+            router.set_targets(SinkId(index), graph.feedback_targets(SinkId(index)));
+            let new = sink.take_output().is_some();
+            if let Some(place) = fresh.get_mut(index) {
+                *place = new;
+            }
+            if let (true, Some(sent)) = (new, sink.last_output()) {
                 let mut report = [0u8; 48];
                 for (place, byte) in report.iter_mut().zip(sent) {
                     *place = *byte;
@@ -619,20 +629,9 @@ impl Setup {
                 let sink = SinkId(index);
                 note(taps, Tap::Output { sink, report });
             }
-            let had = passed.get(index).copied().unwrap_or(SourceSet::EMPTY);
-            if let Some(report) = sink.last_output() {
-                for source in targets.iter() {
-                    if (fresh || !had.contains(source))
-                        && let Some(Some(pad)) = pads.get_mut(source.0)
-                    {
-                        let _ = pad.pass(report);
-                    }
-                }
-            }
-            if let Some(had) = passed.get_mut(index) {
-                *had = targets;
-            }
         }
+        // The levels before the reports, so that a report that changes a
+        // level is passed on with the level it brought.
         *next_ms = router.poll(now_ms, &mut |source, level| {
             note(taps, Tap::Told { source, level });
             if let Some(want) = wanted.get_mut(source.0) {
@@ -661,6 +660,29 @@ impl Setup {
             if let (Some(Some(pad)), Some(level)) = (pads.get_mut(index), wanted.get(index)) {
                 let _ = pad.rumble(*level);
             }
+        }
+        // What a game sent a virtual pad beyond rumble goes to the pads
+        // its feedback goes to: to all of them when it is new, and to one
+        // that has just become one of them.
+        for (index, sink) in sinks.iter().enumerate() {
+            let targets = graph.feedback_targets(SinkId(index));
+            let new = fresh.get(index).copied().unwrap_or(false);
+            let had = passed.get(index).copied().unwrap_or(SourceSet::EMPTY);
+            if let Some(report) = sink.last_output() {
+                for source in targets.iter() {
+                    if (new || !had.contains(source))
+                        && let Some(Some(pad)) = pads.get_mut(source.0)
+                    {
+                        let _ = pad.pass(report);
+                    }
+                }
+            }
+            if let Some(had) = passed.get_mut(index) {
+                *had = targets;
+            }
+        }
+        for pad in pads.iter_mut().flatten() {
+            pad.release_output();
         }
         if let Some(due) = due {
             *next_ms = Some(next_ms.map_or(due, |next| next.min(due)));
