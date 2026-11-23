@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ctrlassist_core::Level;
-use ctrlassist_device::{Database, Found, InputThread, Pad, Report};
+use ctrlassist_device::{Database, Found, InputThread, Pad};
 use ctrlassist_protocol::endpoint::{daemon, pad, profile, setup};
 use ctrlassist_protocol::error::{ErrorCode, WireError};
 use ctrlassist_protocol::profile::Identity;
@@ -602,7 +602,7 @@ impl Reactor {
         mut self,
         rpcs: Rpcs,
         mut seen: UnboundedReceiver<Seen>,
-        mut reports: UnboundedReceiver<Report>,
+        mut reports: crate::Reports,
         mut stop: oneshot::Receiver<()>,
     ) {
         loop {

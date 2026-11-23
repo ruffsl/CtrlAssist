@@ -20,6 +20,7 @@ use std::fs::OpenOptions;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, anyhow};
 use ctrlassist_device::{Database, InputThread, Report};
@@ -151,9 +152,57 @@ pub(crate) fn device_identity(identity: Identity) -> ctrlassist_device::Identity
     }
 }
 
+/// The most taps a daemon may have left unread. The queue the input
+/// thread's reports arrive in has no bound, so that a report that hands
+/// something back is never dropped; a tap hands nothing back, and one a
+/// game can cause many times a second, so past this a tap is dropped
+/// before it is queued, and the reactor falling behind costs it taps,
+/// never memory.
+const UNREAD_TAPS: usize = 1024;
+
 /// Where the input thread's reports arrive for a daemon to read: the
 /// queue the input thread's own forwarding thread fills.
-pub type Reports = mpsc::UnboundedReceiver<Report>;
+#[derive(Debug)]
+pub struct Reports {
+    queue: mpsc::UnboundedReceiver<Report>,
+    /// How many taps are queued and not yet read.
+    taps: Arc<AtomicUsize>,
+}
+
+impl Reports {
+    /// The next report, waiting for one: none once nothing can send any
+    /// more.
+    pub(crate) async fn recv(&mut self) -> Option<Report> {
+        let report = self.queue.recv().await?;
+        if matches!(report, Report::Tapped { .. }) {
+            self.taps.fetch_sub(1, Ordering::Relaxed);
+        }
+        Some(report)
+    }
+}
+
+/// A queue for the input thread's reports: what puts a report in it, on
+/// the input thread's forwarding thread, and where reports come out.
+fn report_queue() -> (impl FnMut(Report) + Send + 'static, Reports) {
+    let (reported, queue) = mpsc::unbounded_channel();
+    let taps = Arc::new(AtomicUsize::new(0));
+    let unread = Arc::clone(&taps);
+    let deliver = move |report: Report| {
+        if matches!(report, Report::Tapped { .. }) {
+            // Counted before it is queued, so the reader never counts
+            // down what wasn't counted up; one past the bound is counted
+            // down again here, this being the only thread that counts up.
+            if unread.fetch_add(1, Ordering::Relaxed) >= UNREAD_TAPS {
+                unread.fetch_sub(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        // Not read any more, the daemon having stopped: dropped here,
+        // off the input thread.
+        let _ = reported.send(report);
+    };
+    (deliver, Reports { queue, taps })
+}
 
 impl Daemon {
     /// Starts the input thread a daemon runs around, with where its
@@ -165,12 +214,8 @@ impl Daemon {
     ///
     /// Fails if the input thread can't start.
     pub fn input_thread() -> std::io::Result<(InputThread, Reports)> {
-        let (reported, reports) = mpsc::unbounded_channel();
-        let input = InputThread::spawn_with(move |report| {
-            // Not read any more, the daemon having stopped: dropped
-            // here, off the input thread.
-            let _ = reported.send(report);
-        })?;
+        let (deliver, reports) = report_queue();
+        let input = InputThread::spawn_with(deliver)?;
         Ok((input, reports))
     }
 
@@ -369,5 +414,59 @@ impl Daemon {
         })
         .await;
         info!("the daemon has stopped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ctrlassist_core::{Graph, Level, SourceId};
+    use ctrlassist_device::{Setup, SetupId, Tap};
+    use ctrlassist_protocol::profile::Profile;
+
+    use super::*;
+
+    fn tapped() -> Report {
+        Report::Tapped {
+            setup: SetupId(1),
+            tap: Tap::Told {
+                source: SourceId(0),
+                level: Level::default(),
+            },
+        }
+    }
+
+    /// A setup as the input thread hands one back.
+    fn stopped() -> Report {
+        let plan = Profile::check("mode = \"unicast\"\npad = \"0a:1b:2c:3d:4e:14\"\n").unwrap();
+        let graph = Graph::build(plan.graph).unwrap();
+        Report::Stopped(
+            SetupId(1),
+            Box::new(Setup::new(graph, vec![None], Vec::new())),
+        )
+    }
+
+    /// Taps the reactor hasn't read are kept up to a bound, and past it
+    /// dropped; a report that hands something back is queued whatever
+    /// the taps, and a tap read makes room for another.
+    #[tokio::test]
+    async fn unread_taps_have_a_bound_and_nothing_handed_back_is_dropped() {
+        let (mut deliver, mut reports) = report_queue();
+        for _ in 0..UNREAD_TAPS + 100 {
+            deliver(tapped());
+        }
+        deliver(stopped());
+        deliver(tapped());
+        for _ in 0..UNREAD_TAPS {
+            assert!(matches!(reports.recv().await, Some(Report::Tapped { .. })));
+        }
+        assert!(
+            matches!(reports.recv().await, Some(Report::Stopped(..))),
+            "handed back after the taps that fit, and with no tap after it"
+        );
+        // Every tap read, there is room again.
+        deliver(tapped());
+        assert!(matches!(reports.recv().await, Some(Report::Tapped { .. })));
+        drop(deliver);
+        assert!(reports.recv().await.is_none(), "nothing else was queued");
     }
 }
