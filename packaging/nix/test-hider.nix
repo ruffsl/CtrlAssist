@@ -92,6 +92,65 @@ let
 
     main(sys.argv[1])
   '';
+
+  # A client of the service that does what the fixture's well-behaved one
+  # doesn't, speaking the wire format directly: a request and a token,
+  # five bytes; a status, a token and a flag, six.
+  #
+  #   hider-probe opath <socket> <opcode> <node>
+  #       passes a descriptor on <node> opened O_PATH, says the status
+  #   hider-probe hide <socket> <node>
+  #       hides <node>, says the status and the name of the pad whose
+  #       node came back, then closes, which shows the pad again
+  probe = pkgs.writers.writePython3Bin "hider-probe" { doCheck = false; } ''
+    import array
+    import os
+    import socket
+    import struct
+    import sys
+
+
+    def connect(path):
+        peer = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        peer.connect(path)
+        return peer
+
+
+    def ask(peer, opcode, fd=None):
+        message = struct.pack("<BI", opcode, 0)
+        rights = []
+        if fd is not None:
+            fds = array.array("i", [fd])
+            rights = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, fds)]
+        peer.sendmsg([message], rights)
+        data, fds, _, _ = socket.recv_fds(peer, 6, 2)
+        status, token, _ = struct.unpack("<BIB", data)
+        return status, token, fds
+
+
+    def name_of(fd):
+        node = os.readlink(f"/proc/self/fd/{fd}")
+        base = os.path.basename(node)
+        with open(f"/sys/class/input/{base}/device/name") as file:
+            return node, file.read().strip()
+
+
+    match sys.argv[1:]:
+        case ["opath", path, opcode, node]:
+            fd = os.open(node, os.O_PATH)
+            status, _, fds = ask(connect(path), int(opcode), fd)
+            print(f"status={status} fds={len(fds)}")
+        case ["hide", path, node]:
+            fd = os.open(node, os.O_RDONLY)
+            status, token, fds = ask(connect(path), 1, fd)
+            if fds:
+                node, name = name_of(fds[0])
+                print(f"status={status} node={node} name={name}")
+            else:
+                print(f"status={status}")
+        case _:
+            sys.exit("usage: hider-probe opath|hide ...")
+  '';
 in
 pkgs.testers.runNixOSTest {
   name = "ctrlassist-hider";
@@ -140,11 +199,17 @@ pkgs.testers.runNixOSTest {
       (pkgs.writeTextDir "lib/udev/rules.d/60-steam-input.rules" ''
         KERNEL=="hidraw*", KERNELS=="*054C:0CE6*", MODE="0660", TAG+="uaccess"
       '')
+      # A pad on another seat, as a pad plugged into a second seat's hub
+      # is: by its name, the fake pad of that name is put on seat1.
+      (pkgs.writeTextDir "lib/udev/rules.d/61-test-seat.rules" ''
+        SUBSYSTEM=="input", ATTRS{name}=="Seat One Pad", ENV{ID_SEAT}="seat1"
+      '')
     ];
 
     environment.systemPackages = [
       fixture
       hider
+      probe
       xpad
     ];
   };
@@ -374,6 +439,62 @@ pkgs.testers.runNixOSTest {
         assert order(control, "restore").startswith("ok")
         machine.succeed("systemctl stop hostile pad-evil")
         wait_restored()
+
+    def listing(as_user=None):
+        """Each pad the fixture lists, as its name, its address and its nodes: for pads that share an address."""
+        command = "ctrlassist-fixture pads"
+        if as_user:
+            command = f"su -l {as_user} -c '{command}'"
+        found = []
+        quoted = r'"((?:[^"\\]|\\.)*)"'
+        for line in machine.succeed(command).splitlines():
+            nodes = {kind: tuple(node.rsplit(":", 1)) for kind, node in re.findall(r"(event|js|hidraw)=(\S+)", line)}
+            found.append((field("name=" + quoted, line), field("uniq=" + quoted, line), nodes))
+        return found
+
+    def one(name, uniq, as_user=None):
+        return [nodes for named, address, nodes in listing(as_user) if named == name and address == uniq][0]
+
+    with subtest("a descriptor opened O_PATH names no pad"):
+        node = pads()[A]["event"][0]
+        # Hide, then raw: each refused as no pad, with nothing passed back.
+        for opcode in (1, 4):
+            told = machine.succeed(f"su -l alice -c 'hider-probe opath {SOCKET} {opcode} {node}'")
+            assert "status=2 fds=0" in told, told
+        assert alice_can_open(A)
+        wait_restored()
+
+    with subtest("a forged twin with another pad's numbers and address doesn't get the real pad"):
+        fake("pad-twin", "fake-hid", "--name", "Twin Pad", "--uniq", A, "--pulse", "20")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 'Twin Pad'")
+        machine.succeed("udevadm settle")
+        real = one("Fixture Fake HID Pad", A)["event"][0]
+        twin = one("Twin Pad", A)["event"][0]
+        told = machine.succeed(f"su -l alice -c 'hider-probe hide {SOCKET} {twin}'")
+        print(f"hiding the twin {twin} beside the real pad {real}: {told.strip()}")
+        assert "status=0" in told and "name=Twin Pad" in told, told
+        assert field(r"node=(\S+)", told) != real, told
+        wait_restored()
+        assert one("Fixture Fake HID Pad", A, as_user="alice")["event"] == (real, "open"), "the real pad untouched"
+        # The real pad can still be hidden, and is.
+        control, told = hide("real", real)
+        assert told.startswith("ok"), told
+        assert one("Fixture Fake HID Pad", A, as_user="alice")["event"][1] == "denied"
+        assert order(control, "restore").startswith("ok")
+        machine.succeed("systemctl stop real pad-twin")
+        wait_restored()
+
+    with subtest("a pad on another seat is refused to the user in front on this one"):
+        fake("pad-seat1", "fake-hid", "--name", "Seat One Pad", "--uniq", "02:00:00:00:01:01", "--pulse", "20")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 'Seat One Pad'")
+        machine.succeed("udevadm settle")
+        node = pads()["02:00:00:00:01:01"]["event"][0]
+        assert machine.succeed(f"udevadm info -q property -n {node} | grep ^ID_SEAT=").strip() == "ID_SEAT=seat1"
+        # Alice can open it, by the input group, and still may not hide it.
+        _, told = hide("seat1", node)
+        assert "isn't the user in front" in told, told
+        assert markers() == [], markers()
+        machine.succeed("systemctl stop pad-seat1")
 
     with subtest("a pad with no driver to re-bind is refused, for the daemon to grab"):
         fake("pad-plain", "fake-pad", "--pulse", "20")

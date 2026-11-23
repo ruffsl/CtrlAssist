@@ -11,7 +11,6 @@ use std::os::fd::BorrowedFd;
 use std::path::{Path, PathBuf};
 
 use ctrlassist_hider::Refusal;
-use rustix::fs::{FileType, fstat};
 
 /// What tells this pad from others, beyond its markers.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -275,18 +274,13 @@ fn classify(event: &udev::Device, tagged: bool) -> Result<Pad, Refusal> {
 }
 
 /// The event device the descriptor is open on.
-fn event_of(fd: BorrowedFd<'_>) -> Result<udev::Device, Refusal> {
-    let stat = fstat(fd).map_err(|_| Refusal::NotAPad)?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::CharacterDevice {
-        return Err(Refusal::NotAPad);
-    }
-    udev::Device::from_devnum(udev::DeviceType::Character, stat.st_rdev)
-        .map_err(|_| Refusal::NotAPad)
-}
-
-/// The pad the descriptor is open on, if a seat user could open it.
+/// The pad the descriptor is open on, if it was opened for reading and a
+/// seat user could open it. Which seat it is on is the caller's to check.
 pub(crate) fn identify(fd: BorrowedFd<'_>) -> Result<Pad, Refusal> {
-    classify(&event_of(fd)?, true)
+    let devnum = crate::descriptor::event_node(fd)?;
+    let event = udev::Device::from_devnum(udev::DeviceType::Character, devnum)
+        .map_err(|_| Refusal::NotAPad)?;
+    classify(&event, true)
 }
 
 /// The event node of the pad under `parent` that is `ordinal`th, now.

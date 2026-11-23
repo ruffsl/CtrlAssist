@@ -12,13 +12,14 @@
 //! hidden; when it closes, for any reason, they are shown again.
 
 mod activation;
+mod descriptor;
 mod hide;
 mod pad;
 mod seat;
 
 use std::collections::BTreeSet;
 use std::io::{self, Write};
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -136,6 +137,22 @@ fn follow(connections: &mut [Connection], index: usize, position: usize) -> Resu
     Ok(())
 }
 
+/// The pad a descriptor names, if the caller may have it hidden or its
+/// raw node opened: the descriptor was opened for reading on a pad the
+/// seat user could open, and the caller is in front, now, on the seat the
+/// pad is on. A caller who has left the foreground takes nothing new.
+fn presented(connection: &Connection, fd: BorrowedFd<'_>) -> Result<Pad, Refusal> {
+    let pad = pad::identify(fd)?;
+    let seats = connection
+        .user
+        .map(seat::seats_in_front)
+        .unwrap_or_default();
+    if !seats.contains(&pad.identity.seat) {
+        return Err(Refusal::NotPermitted);
+    }
+    Ok(pad)
+}
+
 /// Serves one request. Returns false when the client has closed.
 fn serve(connections: &mut [Connection], index: usize, next_token: &mut u32) -> bool {
     let mut buffer = [0u8; Request::SIZE];
@@ -162,7 +179,7 @@ fn serve(connections: &mut [Connection], index: usize, next_token: &mut u32) -> 
                 refuse(&connections[index], Refusal::BadRequest);
                 return true;
             };
-            let pad = match pad::identify(descriptor.as_fd()) {
+            let pad = match presented(&connections[index], descriptor.as_fd()) {
                 Ok(pad) => pad,
                 Err(refusal) => {
                     refuse(&connections[index], refusal);
@@ -233,7 +250,7 @@ fn serve(connections: &mut [Connection], index: usize, next_token: &mut u32) -> 
                 refuse(connection, Refusal::BadRequest);
                 return true;
             };
-            let raw = pad::identify(descriptor.as_fd())
+            let raw = presented(connection, descriptor.as_fd())
                 .and_then(|pad| pad::raw_node(&pad.parent))
                 .and_then(|node| hide::open(&node));
             match raw {
