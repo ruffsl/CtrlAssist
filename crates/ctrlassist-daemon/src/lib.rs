@@ -1,8 +1,8 @@
 //! CtrlAssist's daemon: the control side.
 //!
 //! It owns the input thread and serves the control plane on a Unix socket
-//! in the user's runtime directory. So far it answers the version check
-//! and publishes its own state; pads, profiles and setups follow.
+//! in the user's runtime directory: the pads it knows, the profiles it
+//! keeps and the setups that run them, as state and rpcs.
 
 mod blacklist;
 mod book;
