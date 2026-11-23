@@ -153,13 +153,16 @@ fn twice(source: &str, id: &str) -> WireError {
 /// that wants the same pad; failing that, of a slot that wants the same
 /// pad under another name; failing that, a pad the setup has that the
 /// source could mean. So a pad stays open wherever the new profile has a
-/// use for it. Any other source is found a pad as at a start.
+/// use for it. Any other source is found a pad as at a start. As at a
+/// start, a pad a source names exactly is that source's: no source that
+/// names a model keeps it or takes it.
 fn rebind(
     book: &Book,
     name: &str,
     has: &[Slot],
     plan: &Plan,
 ) -> Result<(Vec<Slot>, Vec<Option<usize>>), WireError> {
+    let named = named_exactly(plan);
     let mut keep: Vec<Option<usize>> = vec![None; plan.sources.len()];
     let mut kept = vec![false; has.len()];
     for pass in 0..3 {
@@ -167,8 +170,14 @@ fn rebind(
             if place.is_some() {
                 continue;
             }
+            let by_model = !matches!(source.pad, PadRef::Exact(_));
             let found = has.iter().zip(&kept).position(|(slot, kept)| {
+                let reserved = slot
+                    .pad
+                    .as_deref()
+                    .is_some_and(|pad| by_model && named.contains(&pad));
                 !kept
+                    && !reserved
                     && match pass {
                         0 => slot.name == source.name && slot.wanted == source.pad,
                         1 => slot.wanted == source.pad,
@@ -184,40 +193,80 @@ fn rebind(
             }
         }
     }
-    let mut slots: Vec<Slot> = Vec::new();
-    for (source, keep) in plan.sources.iter().zip(&keep) {
-        let taken = |id: &str| slots.iter().any(|slot| slot.pad.as_deref() == Some(id));
-        let kept = keep.and_then(|kept| has.get(kept));
-        let pad = match (kept, &source.pad) {
-            (Some(kept), _) => kept.pad.clone(),
-            (None, PadRef::Exact(id)) => {
-                match book.user(id) {
-                    // Its own pad, which another source keeps.
-                    Some(user) if user == name => return Err(twice(&source.name, id)),
-                    Some(user) => {
-                        return Err(WireError::refusal(
-                            ErrorCode::PadInUse,
-                            format!("{id} is part of the setup {user}"),
-                        ));
-                    }
-                    None if taken(id) => return Err(twice(&source.name, id)),
-                    None => {}
-                }
-                Some(id.clone())
+    // The sources that name a pad exactly first, so that one that names
+    // a model takes none of theirs.
+    let mut pads: Vec<Option<String>> = vec![None; plan.sources.len()];
+    for exact in [true, false] {
+        for (place, (source, keep)) in plan.sources.iter().zip(&keep).enumerate() {
+            if matches!(source.pad, PadRef::Exact(_)) != exact {
+                continue;
             }
-            (None, wanted) => book
-                .fitting(wanted)
-                .into_iter()
-                .find(|id| !taken(id))
-                .map(str::to_string),
-        };
-        slots.push(Slot {
-            present: kept.is_some_and(|kept| kept.present),
-            token: kept.and_then(|kept| kept.token),
-            ..Slot::new(source.name.clone(), source.pad.clone(), pad)
-        });
+            let taken = |id: &str| pads.iter().flatten().any(|pad| pad == id);
+            let kept = keep.and_then(|kept| has.get(kept));
+            let pad = match (kept, &source.pad) {
+                (Some(kept), _) => kept.pad.clone(),
+                (None, PadRef::Exact(id)) => {
+                    match book.user(id) {
+                        // Its own pad, which another source keeps.
+                        Some(user) if user == name => return Err(twice(&source.name, id)),
+                        Some(user) => {
+                            return Err(WireError::refusal(
+                                ErrorCode::PadInUse,
+                                format!("{id} is part of the setup {user}"),
+                            ));
+                        }
+                        None if taken(id) => return Err(twice(&source.name, id)),
+                        None => {}
+                    }
+                    Some(id.clone())
+                }
+                (None, wanted) => book
+                    .fitting(wanted)
+                    .into_iter()
+                    .find(|id| !taken(id) && !named.contains(id))
+                    .map(str::to_string),
+            };
+            pads[place] = pad;
+        }
     }
+    let slots = plan
+        .sources
+        .iter()
+        .zip(&keep)
+        .zip(pads)
+        .map(|((source, keep), pad)| {
+            let kept = keep.and_then(|kept| has.get(kept));
+            Slot {
+                present: kept.is_some_and(|kept| kept.present),
+                token: kept.and_then(|kept| kept.token),
+                ..Slot::new(source.name.clone(), source.pad.clone(), pad)
+            }
+        })
+        .collect();
     Ok((slots, keep))
+}
+
+/// The pads `plan`'s sources name exactly: each is that source's, and
+/// no source that names a model takes it.
+fn named_exactly(plan: &Plan) -> Vec<&str> {
+    plan.sources
+        .iter()
+        .filter_map(|source| match &source.pad {
+            PadRef::Exact(id) => Some(id.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The pads a setup's sources name exactly, as [`named_exactly`].
+fn named_by(slots: &[Slot]) -> Vec<String> {
+    slots
+        .iter()
+        .filter_map(|slot| match &slot.wanted {
+            PadRef::Exact(id) => Some(id.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Who asked for an update, and is told how it went.
@@ -1039,36 +1088,53 @@ impl Reactor {
         self.publish_pad_logged(pad).await;
     }
 
-    /// Finds a pad for each source of `plan`, and notes them as `name`'s.
+    /// Finds a pad for each source of `plan`, and notes them as `name`'s:
+    /// first each pad a source names exactly, then for each source that
+    /// names a model, in the order of their names, the first pad of the
+    /// model to have connected that no setup uses, no source names
+    /// exactly and no source before it has taken.
     fn bind(&mut self, name: &str, plan: &Plan) -> Result<Vec<Slot>, WireError> {
-        let mut slots: Vec<Slot> = Vec::new();
-        for source in &plan.sources {
-            let taken = |id: &str| slots.iter().any(|slot| slot.pad.as_deref() == Some(id));
-            let pad = match &source.pad {
-                // That pad and no other, there or not.
-                PadRef::Exact(id) => {
-                    if let Some(user) = self.book.user(id) {
-                        return Err(WireError::refusal(
-                            ErrorCode::PadInUse,
-                            format!("{id} is part of the setup {user}"),
-                        ));
-                    }
-                    if taken(id) {
-                        return Err(twice(&source.name, id));
-                    }
-                    Some(id.clone())
+        let named = named_exactly(plan);
+        let mut pads: Vec<Option<String>> = vec![None; plan.sources.len()];
+        for exact in [true, false] {
+            for (place, source) in plan.sources.iter().enumerate() {
+                if matches!(source.pad, PadRef::Exact(_)) != exact {
+                    continue;
                 }
-                // The first of the model to have connected that nothing
-                // else has taken; none yet is a pad to wait for.
-                wanted => self
-                    .book
-                    .fitting(wanted)
-                    .into_iter()
-                    .find(|id| !taken(id))
-                    .map(str::to_string),
-            };
-            slots.push(Slot::new(source.name.clone(), source.pad.clone(), pad));
+                let taken = |id: &str| pads.iter().flatten().any(|pad| pad == id);
+                let pad = match &source.pad {
+                    // That pad and no other, there or not.
+                    PadRef::Exact(id) => {
+                        if let Some(user) = self.book.user(id) {
+                            return Err(WireError::refusal(
+                                ErrorCode::PadInUse,
+                                format!("{id} is part of the setup {user}"),
+                            ));
+                        }
+                        if taken(id) {
+                            return Err(twice(&source.name, id));
+                        }
+                        Some(id.clone())
+                    }
+                    // The first of the model to have connected that
+                    // nothing else has taken; none yet is a pad to wait
+                    // for.
+                    wanted => self
+                        .book
+                        .fitting(wanted)
+                        .into_iter()
+                        .find(|id| !taken(id) && !named.contains(id))
+                        .map(str::to_string),
+                };
+                pads[place] = pad;
+            }
         }
+        let slots: Vec<Slot> = plan
+            .sources
+            .iter()
+            .zip(pads)
+            .map(|(source, pad)| Slot::new(source.name.clone(), source.pad.clone(), pad))
+            .collect();
         for slot in &slots {
             if let Some(pad) = &slot.pad {
                 self.book.claim(pad, name);
@@ -1319,12 +1385,14 @@ impl Reactor {
             return;
         };
         let mut claimed = Vec::new();
+        let named = named_by(&entry.slots);
         for slot in &mut entry.slots {
             if slot.pad.is_none() {
                 slot.pad = self
                     .book
                     .fitting(&slot.wanted)
-                    .first()
+                    .into_iter()
+                    .find(|id| !named.iter().any(|named| named == id))
                     .map(ToString::to_string);
             }
             if let Some(pad) = &slot.pad
@@ -1707,6 +1775,7 @@ impl Reactor {
         } = taking;
         let mut hidden = Vec::new();
         let mut changed = Vec::new();
+        let named = named_by(&slots);
         for (index, slot) in entry.slots.iter().enumerate() {
             if !keep.contains(&Some(index))
                 && let Some(pad) = &slot.pad
@@ -1727,7 +1796,11 @@ impl Reactor {
             }
             // A source still without a pad takes one that came meanwhile.
             if slot.pad.is_none() {
-                let came = self.book.fitting(&slot.wanted).first().copied();
+                let came = self
+                    .book
+                    .fitting(&slot.wanted)
+                    .into_iter()
+                    .find(|id| !named.iter().any(|named| named == id));
                 slot.pad = came.map(str::to_string);
                 if let Some(pad) = &slot.pad {
                     self.book.claim(pad, &name);
@@ -1908,8 +1981,14 @@ impl Reactor {
     /// Whether every pad `plan` names is connected and free, so that
     /// started now it would run and not be held.
     fn ready(&self, plan: &Plan) -> bool {
+        // Bound as a start binds them: each pad named exactly first.
+        let named = named_exactly(plan);
         let mut taken: Vec<&str> = Vec::new();
-        plan.sources.iter().all(|source| {
+        let (exact, by_model): (Vec<_>, Vec<_>) = plan
+            .sources
+            .iter()
+            .partition(|source| matches!(source.pad, PadRef::Exact(_)));
+        exact.into_iter().chain(by_model).all(|source| {
             let pad = match &source.pad {
                 PadRef::Exact(id) => {
                     let free = self.book.node(id).is_some() && self.book.user(id).is_none();
@@ -1919,7 +1998,7 @@ impl Reactor {
                     .book
                     .fitting(wanted)
                     .into_iter()
-                    .find(|id| !taken.contains(id)),
+                    .find(|id| !taken.contains(id) && !named.contains(id)),
             };
             pad.inspect(|pad| taken.push(pad)).is_some()
         })
@@ -3451,6 +3530,95 @@ mod tests {
             nodes: Vec::new(),
             pads: vec![(false, None); 2],
         })
+    }
+
+    /// Another pad of [`PRIMARY`]'s model.
+    const OTHER: &str = "address:0a:1b:2c:3d:4e:21";
+
+    /// A toggle whose primary and assist are named as given.
+    fn toggle(primary: &str, assist: &str) -> Plan {
+        let toml = format!("mode = \"toggle\"\nprimary = \"{primary}\"\nassist = \"{assist}\"\n");
+        Profile::check(&toml).unwrap()
+    }
+
+    /// The pad each source of `slots` has, in the plan's order: the
+    /// assist's, then the primary's.
+    fn pads_of(slots: &[Slot]) -> Vec<Option<&str>> {
+        slots.iter().map(|slot| slot.pad.as_deref()).collect()
+    }
+
+    /// Each pad a part names exactly is that part's: a part named by
+    /// model takes the first of the model to have connected among the
+    /// pads left, though it comes first by name. Two parts of one model
+    /// take a pad each, in the order of their names; one short is
+    /// waited for.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_named_exactly_is_that_part_s_whatever_the_order() {
+        let primary = PRIMARY.strip_prefix("address:").unwrap();
+        let model = "model:054c:0ce6";
+        let mut rig = rig().await;
+        // The pad the primary names connected first.
+        rig.reactor
+            .book
+            .arrived(&connecting(PRIMARY, "/nowhere/event1"), None);
+        let exact = toggle(primary, model);
+        // With only that pad, the assist is one short: waited for, and
+        // the profile isn't one that would run if started now.
+        assert!(!rig.reactor.ready(&exact));
+        let slots = rig.reactor.bind("couch", &exact).unwrap();
+        assert_eq!(pads_of(&slots), [None, Some(PRIMARY)]);
+        rig.reactor.book.release("couch", |_| false);
+
+        rig.reactor
+            .book
+            .arrived(&connecting(OTHER, "/nowhere/event2"), None);
+        assert!(rig.reactor.ready(&exact));
+        let slots = rig.reactor.bind("couch", &exact).unwrap();
+        assert_eq!(pads_of(&slots), [Some(OTHER), Some(PRIMARY)]);
+        rig.reactor.book.release("couch", |_| false);
+
+        // Two parts of the model: the assist, first by name, takes the
+        // first to have connected.
+        let both = toggle(model, model);
+        assert!(rig.reactor.ready(&both));
+        let slots = rig.reactor.bind("couch", &both).unwrap();
+        assert_eq!(pads_of(&slots), [Some(PRIMARY), Some(OTHER)]);
+        rig.reactor.book.release("couch", |_| false);
+        rig.reactor.book.left(Path::new("/nowhere/event2"));
+        assert!(!rig.reactor.ready(&both));
+        let slots = rig.reactor.bind("couch", &both).unwrap();
+        assert_eq!(pads_of(&slots), [Some(PRIMARY), None]);
+    }
+
+    /// A running setup that takes a profile naming exactly a pad it has
+    /// under a part named by model gives that pad to the part that names
+    /// it, and finds the model's part another.
+    #[test]
+    fn a_change_gives_a_pad_named_exactly_to_the_part_that_names_it() {
+        let primary = PRIMARY.strip_prefix("address:").unwrap();
+        let other = OTHER.strip_prefix("address:").unwrap();
+        let model = "model:054c:0ce6";
+        let slot = |name: &str, wanted: &str, pad: &str| Slot {
+            present: true,
+            ..Slot::new(
+                name.to_string(),
+                PadRef::parse(wanted).unwrap(),
+                Some(pad.to_string()),
+            )
+        };
+        // The assist, by model, has the pad the primary is to name.
+        let has = [
+            slot("assist", model, PRIMARY),
+            slot("primary", other, OTHER),
+        ];
+        let mut book = Book::new(Vec::new());
+        for (pad, node) in [(PRIMARY, "/nowhere/event1"), (OTHER, "/nowhere/event2")] {
+            book.arrived(&connecting(pad, node), None);
+            book.claim(pad, "couch");
+        }
+        let (slots, keep) = rebind(&book, "couch", &has, &toggle(primary, model)).unwrap();
+        assert_eq!(pads_of(&slots), [Some(OTHER), Some(PRIMARY)]);
+        assert_eq!(keep, [Some(1), Some(0)], "both pads stay open");
     }
 
     /// A pad that connects while its setup starts has nowhere to go
