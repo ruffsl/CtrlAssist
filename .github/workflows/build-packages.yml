@@ -52,12 +52,14 @@ jobs:
         run: rustup show
 
       # Pinned to the flake's versions, so the release build matches the dev
-      # shell's; bump them together after a `nix flake update`.
+      # shell's; bump them together after a `nix flake update`. cargo-about
+      # is the same 0.9.1 as packaging/nix/cargo-about.nix and ci.yml: older
+      # releases drop Slint's license text from the bundle.
       - name: Setup
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: |
-            cargo-about@0.9.0
+            cargo-about@0.9.1
             cargo-auditable@0.7.7
             cargo-cyclonedx@0.5.10
             cargo-nfpm@0.1.3
@@ -111,7 +113,7 @@ jobs:
             target/nfpm-dist/ctrlassist-*.pkg.tar.zst target/sbom/*.cdx.json "$out/assets/"
           (cd "$out/assets" && sha256sum ctrlassist_*.deb ctrlassist-*.rpm ctrlassist-*.pkg.tar.zst) > "$att/packages.sha256"
           # Each SBOM names its binary, so no filename glob can mistake
-          # `ctrlassist-hider-…` for `ctrlassist-…`.
+          # `ctrlassist-hider-…` or `ctrlassist-gui-…` for `ctrlassist-…`.
           for sbom in target/sbom/*.cdx.json; do
             bin=$(jq -r .metadata.component.name "$sbom")
             echo "$(sha256sum < "target/nfpm-dist/$bin" | cut -d' ' -f1)  $arch/$bin" > "$att/$bin.sha256"
@@ -119,7 +121,7 @@ jobs:
             cp "$sbom" "$att/$bin.cdx.json"
           done
           cat "$att/packages.sha256" "$att/ctrlassist.sha256" "$att/ctrlassist-hider.sha256" \
-            > "$att/provenance-subjects.sha256"
+            "$att/ctrlassist-gui.sha256" > "$att/provenance-subjects.sha256"
           find "$out" -type f | sort
 
       - name: Upload
@@ -130,7 +132,7 @@ jobs:
           path: target/release-out/
 
   # Signing, one leg per architecture: one provenance attestation over that
-  # architecture's three packages and two binaries, and one SBOM attestation
+  # architecture's three packages and three binaries, and one SBOM attestation
   # per binary, over the binary and the packages that ship it. Each
   # attestation's Sigstore bundle is uploaded too, for the release to carry,
   # named after what it signs.
@@ -177,6 +179,13 @@ jobs:
           subject-checksums: in/attest/${{ matrix.arch }}/ctrlassist-hider-sbom-subjects.sha256
           sbom-path: in/attest/${{ matrix.arch }}/ctrlassist-hider.cdx.json
 
+      - name: SBOM (ctrlassist-gui)
+        id: sbom-ctrlassist-gui
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: in/attest/${{ matrix.arch }}/ctrlassist-gui-sbom-subjects.sha256
+          sbom-path: in/attest/${{ matrix.arch }}/ctrlassist-gui.cdx.json
+
       # <binary>-<version>-<arch>.cdx.sigstore.json signs that SBOM asset;
       # ctrlassist-<version>-<arch>.provenance.sigstore.json signs the build.
       - name: Bundles
@@ -184,6 +193,7 @@ jobs:
           PROVENANCE: ${{ steps.provenance.outputs.bundle-path }}
           SBOM_CTRLASSIST: ${{ steps.sbom-ctrlassist.outputs.bundle-path }}
           SBOM_CTRLASSIST_HIDER: ${{ steps.sbom-ctrlassist-hider.outputs.bundle-path }}
+          SBOM_CTRLASSIST_GUI: ${{ steps.sbom-ctrlassist-gui.outputs.bundle-path }}
           ARCH: ${{ matrix.arch }}
         run: |
           arch=$ARCH
@@ -192,6 +202,7 @@ jobs:
           cp "$PROVENANCE" "bundles/ctrlassist-$version-$arch.provenance.sigstore.json"
           cp "$SBOM_CTRLASSIST" "bundles/ctrlassist-$version-$arch.cdx.sigstore.json"
           cp "$SBOM_CTRLASSIST_HIDER" "bundles/ctrlassist-hider-$version-$arch.cdx.sigstore.json"
+          cp "$SBOM_CTRLASSIST_GUI" "bundles/ctrlassist-gui-$version-$arch.cdx.sigstore.json"
           ls bundles
 
       - name: Upload

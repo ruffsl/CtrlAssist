@@ -527,7 +527,7 @@ verify-assets dir ref:
             *.deb) bsdtar -xOf "$pkg" 'data.tar*' | bsdtar -xf - -C "$root" ;;
             *) if ! err=$(bsdtar -xf "$pkg" -C "$root" 2>&1); then echo "$err" >&2; exit 1; fi ;;
         esac
-        for bin in ctrlassist ctrlassist-hider; do
+        for bin in ctrlassist ctrlassist-hider ctrlassist-gui; do
             if [ ! -f "$work/$arch/$bin" ]; then
                 cp "$root/usr/bin/$bin" "$work/$arch/$bin"
             elif ! cmp -s "$root/usr/bin/$bin" "$work/$arch/$bin"; then
@@ -540,12 +540,12 @@ verify-assets dir ref:
         deb_arch=$([ "$arch" = x86_64 ] && echo amd64 || echo arm64)
         packages=(ctrlassist_*_"$deb_arch".deb ctrlassist-*."$arch".rpm ctrlassist-*-"$arch".pkg.tar.zst)
         provenance=ctrlassist-$version-$arch.provenance.sigstore.json
-        for subject in "${packages[@]}" "$work/$arch/ctrlassist" "$work/$arch/ctrlassist-hider"; do
+        for subject in "${packages[@]}" "$work/$arch/ctrlassist" "$work/$arch/ctrlassist-hider" "$work/$arch/ctrlassist-gui"; do
             gh attestation verify "$subject" "${identity[@]}" > /dev/null
             gh attestation verify "$subject" "${identity[@]}" --bundle "$provenance" > /dev/null
             echo "${subject#"$work"/}: provenance OK"
         done
-        for bin in ctrlassist ctrlassist-hider; do
+        for bin in ctrlassist ctrlassist-hider ctrlassist-gui; do
             sbom=$bin-$version-$arch.cdx.json
             bundle=$bin-$version-$arch.cdx.sigstore.json
             for subject in "$work/$arch/$bin" "${packages[@]}"; do

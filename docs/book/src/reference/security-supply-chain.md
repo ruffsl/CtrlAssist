@@ -28,7 +28,7 @@ gh attestation verify ctrlassist_*.deb \
     --signer-workflow CtrlAssist/CtrlAssist/.github/workflows/build-packages.yml
 ```
 
-The same works for the `.rpm`, the Arch package, and the `ctrlassist` and `ctrlassist-hider` binaries inside them. Each release also carries `checksums-sha256.txt`:
+The same works for the `.rpm`, the Arch package, and the `ctrlassist`, `ctrlassist-hider` and `ctrlassist-gui` binaries inside them. Each release also carries `checksums-sha256.txt`:
 
 ```sh
 sha256sum --ignore-missing -c checksums-sha256.txt
@@ -36,7 +36,7 @@ sha256sum --ignore-missing -c checksums-sha256.txt
 
 ## What a package is built from
 
-Each binary has a software bill of materials among the release's files, `ctrlassist-<version>-<arch>.cdx.json` and `ctrlassist-hider-<version>-<arch>.cdx.json`, in CycloneDX format, itself signed. The binaries also carry their dependency list inside them, which tools such as `cargo audit bin` read.
+Each binary has a software bill of materials among the release's files, `ctrlassist-<version>-<arch>.cdx.json`, `ctrlassist-hider-<version>-<arch>.cdx.json` and `ctrlassist-gui-<version>-<arch>.cdx.json`, in CycloneDX format, itself signed. The binaries also carry their dependency list inside them, which tools such as `cargo audit bin` read.
 
 The licenses of everything built in are installed with the package, in `/usr/share/doc/ctrlassist/THIRD-PARTY-LICENSES.html`.
 
