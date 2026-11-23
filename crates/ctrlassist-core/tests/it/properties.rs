@@ -404,18 +404,29 @@ fn any_mux() -> impl Strategy<Value = MuxConfig> {
         ),
         any_rule(),
         any_rule(),
-        any_threshold(),
-        any_threshold(),
+        // Mostly within the 0 to 1 a mux takes, so that most build.
+        prop_oneof![19 => 0.01f32..=1.0, 1 => any::<f32>()],
+        prop_oneof![19 => 0.01f32..=1.0, 1 => any::<f32>()],
         prop::option::of((prop::option::of(0usize..3), any_control())),
         prop_oneof![
             Just(MuxFeedback::None),
             Just(MuxFeedback::Active),
             any::<u32>().prop_map(MuxFeedback::Inputs),
         ],
+        prop::bool::weighted(0.25),
     )
         .prop_map(
-            |(groups, ungrouped_buttons, ungrouped_axes, engage, release, switch, feedback)| {
-                MuxConfig {
+            |(
+                groups,
+                ungrouped_buttons,
+                ungrouped_axes,
+                engage,
+                release,
+                switch,
+                feedback,
+                stray,
+            )| {
+                let mut config = MuxConfig {
                     rules: groups
                         .into_iter()
                         .filter_map(|(controls, rule)| Some((Group::of(&controls).ok()?, rule)))
@@ -435,7 +446,13 @@ fn any_mux() -> impl Strategy<Value = MuxConfig> {
                     },
                     switch: switch.map(|(input, button)| Switch { input, button }),
                     feedback,
+                };
+                // Usually a switch only where something follows it, as
+                // in a real profile; sometimes one that is refused.
+                if !stray && !config.selects() {
+                    config.switch = None;
                 }
+                config
             },
         )
 }
@@ -450,15 +467,20 @@ fn any_node() -> impl Strategy<Value = NodeSpec> {
             prop_oneof![9 => 1usize..4, 1 => 0usize..20],
             prop::option::of(any_control()),
             prop::sample::select(vec![DemuxFeedback::None, DemuxFeedback::Active]),
+            prop::bool::weighted(0.25),
         )
-            .prop_map(|(input, mode, outputs, switch, feedback)| NodeSpec::Demux {
-                input,
-                config: DemuxConfig {
-                    mode,
-                    outputs,
-                    switch,
-                    feedback
-                },
+            .prop_map(|(input, mode, outputs, switch, feedback, stray)| {
+                NodeSpec::Demux {
+                    input,
+                    config: DemuxConfig {
+                        mode,
+                        outputs,
+                        // Usually a switch only on a unicast, which
+                        // selects; sometimes one that is refused.
+                        switch: switch.filter(|_| stray || mode == DemuxMode::Unicast),
+                        feedback,
+                    },
+                }
             }),
     ]
 }
@@ -568,4 +590,79 @@ fn nothing_a_profile_or_a_pad_says_can_panic_a_step() {
         "only {} of {CASES} generated profiles were accepted",
         built.get()
     );
+}
+
+/// Where a virtual pad's feedback goes, found the slow way: walking back
+/// from it along every path, as the architecture describes it.
+fn walk_back(spec: &GraphSpec, graph: &Graph, input: Input) -> SourceSet {
+    match input {
+        Input::Source(source) => source.into(),
+        Input::Node(node, output) => match &spec.nodes[node.0] {
+            NodeSpec::Mux { inputs, config } => {
+                let all = (1u32 << inputs.len()) - 1;
+                let ports = match config.feedback {
+                    MuxFeedback::None => 0,
+                    MuxFeedback::Inputs(mask) => mask & all,
+                    MuxFeedback::Active => {
+                        graph.selected(node).map_or(all, |selected| 1 << selected)
+                    }
+                };
+                let mut targets = SourceSet::EMPTY;
+                for (port, input) in inputs.iter().enumerate() {
+                    if ports & (1 << port) != 0 {
+                        targets |= walk_back(spec, graph, *input);
+                    }
+                }
+                targets
+            }
+            NodeSpec::Demux { input, config } => {
+                let reached = config.feedback == DemuxFeedback::Active
+                    && graph
+                        .selected(node)
+                        .is_none_or(|selected| selected == output);
+                if reached {
+                    walk_back(spec, graph, *input)
+                } else {
+                    SourceSet::EMPTY
+                }
+            }
+        },
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2000))]
+
+    /// The feedback each step works out, node by node, is where a walk
+    /// back from the virtual pad along every path would end, after any
+    /// sequence of events.
+    #[test]
+    fn feedback_goes_where_a_walk_back_from_the_virtual_pad_ends(
+        sources in prop::collection::vec(any_source(), 3..5),
+        nodes in prop::collection::vec(any_node(), 0..4),
+        sinks in prop::collection::vec(any_input(), 0..4),
+        pokes in prop::collection::vec(any_poke(), 0..40),
+    ) {
+        let spec = GraphSpec { sources, nodes, sinks };
+        let Ok(mut graph) = Graph::build(spec.clone()) else {
+            return Ok(());
+        };
+        for poke in pokes {
+            match poke {
+                Poke::Update(source, state) => graph.update(SourceId(source), state, &mut |_| {}),
+                Poke::Present(source, present) => {
+                    graph.set_present(SourceId(source), present, &mut |_| {});
+                }
+                Poke::Switch(node) => graph.switch(NodeId(node), &mut |_| {}),
+                Poke::Select(node, index) => graph.select(NodeId(node), index, &mut |_| {}),
+            }
+            for (sink, input) in spec.sinks.iter().enumerate() {
+                prop_assert_eq!(
+                    graph.feedback_targets(SinkId(sink)),
+                    walk_back(&spec, &graph, *input),
+                    "virtual pad {}", sink
+                );
+            }
+        }
+    }
 }

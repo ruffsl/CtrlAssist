@@ -6,8 +6,9 @@
 use ctrlassist_core::gamepad::*;
 use ctrlassist_core::{
     Control, DemuxConfig, DemuxFeedback, DemuxMode, EFFECTS, Effect, EffectKey, FeedbackError,
-    Graph, GraphError, GraphSpec, Input, Kind, Layout, Level, Mode, MuxConfig, MuxFeedback, NodeId,
-    NodeSpec, PadState, Router, SinkId, SourceId, SourceSet, SourceSpec, Switch,
+    Graph, GraphError, GraphSpec, Group, Input, Kind, Layout, Level, MAX_NODES, MAX_SINKS, Mode,
+    MuxConfig, MuxFeedback, NodeId, NodeSpec, PadState, Router, Rule, SinkId, SourceId, SourceSet,
+    SourceSpec, Switch,
 };
 
 const PRIMARY: SourceId = SourceId(0);
@@ -644,6 +645,78 @@ fn feedback_follows_one_helper_between_two_players() {
     );
 }
 
+/// Where feedback goes is found at once however many ways a pad reaches
+/// a virtual pad: here by 8^20 and 2^32 paths, more than could ever be
+/// walked one by one on the input thread.
+#[test]
+fn feedback_is_found_however_many_ways_a_pad_reaches_a_virtual_pad() {
+    let layout = Layout::gamepad();
+    let node = |inputs: Vec<Input>| NodeSpec::Mux {
+        inputs,
+        config: MuxConfig::new(Mode::Priority, &layout),
+    };
+    // A chain of muxes, each taking the one before eight times over.
+    let chain = GraphSpec {
+        sources: vec![source()],
+        nodes: (0..20)
+            .map(|at| {
+                node(vec![
+                    if at == 0 {
+                        Input::Source(SourceId(0))
+                    } else {
+                        Input::Node(NodeId(at - 1), 0)
+                    };
+                    8
+                ])
+            })
+            .collect(),
+        sinks: vec![Input::Node(NodeId(19), 0)],
+    };
+    // A lattice two wide: each layer's two muxes take both of the layer
+    // before, in either order.
+    let layers = 32;
+    let lattice = GraphSpec {
+        sources: vec![source(), source()],
+        nodes: (0..layers * 2)
+            .map(|at| {
+                let (layer, side) = (at / 2, at % 2);
+                let before = |side: usize| {
+                    if layer == 0 {
+                        Input::Source(SourceId(side))
+                    } else {
+                        Input::Node(NodeId((layer - 1) * 2 + side), 0)
+                    }
+                };
+                node(vec![before(side), before(1 - side)])
+            })
+            .collect(),
+        sinks: vec![
+            Input::Node(NodeId(layers * 2 - 2), 0),
+            Input::Node(NodeId(layers * 2 - 1), 0),
+        ],
+    };
+
+    let started = std::time::Instant::now();
+    let mut chain = Graph::build(chain).unwrap();
+    let mut lattice = Graph::build(lattice).unwrap();
+    for at in 0..100 {
+        let state = pad().with(SOUTH, (at % 2) as f32);
+        step(&mut chain, SourceId(0), state);
+        step(&mut lattice, SourceId(at % 2), state);
+        assert_eq!(chain.feedback_targets(SinkId(0)), bit(SourceId(0)));
+        for sink in [SinkId(0), SinkId(1)] {
+            assert_eq!(
+                lattice.feedback_targets(sink),
+                bit(SourceId(0)) | bit(SourceId(1))
+            );
+        }
+    }
+    // Generous for a debug build on a busy machine; a walk path by path
+    // would take years.
+    let took = started.elapsed();
+    assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+}
+
 // --- feedback: how hard ------------------------------------------------------
 
 const KEY: EffectKey = EffectKey {
@@ -1061,6 +1134,65 @@ fn a_switch_must_be_a_button_on_one_of_the_inputs() {
     assert_eq!(result.err(), Some(GraphError::BadControl));
 }
 
+/// A switch is taken out of the input whatever it does, so one on a node
+/// that never selects would only keep a button from the game.
+#[test]
+fn a_switch_is_refused_on_a_node_that_never_selects() {
+    let layout = Layout::gamepad();
+    let switch = Some(Switch {
+        input: None,
+        button: SELECT,
+    });
+    for mode in [Mode::Priority, Mode::Average] {
+        let mut config = MuxConfig::new(mode, &layout);
+        assert!(!config.selects(), "{mode:?}");
+        config.switch = switch;
+        assert_eq!(
+            build_mux(config).err(),
+            Some(GraphError::BadControl),
+            "{mode:?}"
+        );
+    }
+    // One switched group is enough: that group follows the selection.
+    let mut config = MuxConfig::new(Mode::Priority, &layout);
+    for (_, rule) in config.rules.iter_mut().take(1) {
+        *rule = Rule::Switched;
+    }
+    config.switch = switch;
+    assert!(config.selects());
+    let mut graph = build_mux(config).unwrap();
+    assert_eq!(graph.selected(NodeId(0)), Some(0));
+    step(&mut graph, PRIMARY, pad().with(SELECT, 1.0));
+    assert_eq!(graph.selected(NodeId(0)), Some(1));
+    // So is a control in no group, where there is one.
+    let mut config = MuxConfig::new(Mode::Priority, &layout);
+    config.ungrouped_axes = Rule::Switched;
+    assert!(config.selects(), "the gamepad leaves axes in no group");
+    config.rules = vec![(
+        Group::of(&(0..16).map(Control::Axis).collect::<Vec<_>>()).unwrap(),
+        Rule::Owned,
+    )];
+    assert!(!config.selects(), "every axis is in a group");
+
+    let demux = |mode: DemuxMode| {
+        let mut config = DemuxConfig::new(mode, 2);
+        config.switch = Some(SELECT);
+        Graph::build(GraphSpec {
+            sources: vec![source()],
+            nodes: vec![NodeSpec::Demux {
+                input: Input::Source(SourceId(0)),
+                config,
+            }],
+            sinks: vec![Input::Node(NodeId(0), 0)],
+        })
+    };
+    assert_eq!(
+        demux(DemuxMode::Multicast).err(),
+        Some(GraphError::BadControl)
+    );
+    assert!(demux(DemuxMode::Unicast).is_ok());
+}
+
 #[test]
 fn thresholds_must_be_numbers_in_order() {
     let layout = Layout::gamepad();
@@ -1070,6 +1202,11 @@ fn thresholds_must_be_numbers_in_order() {
         (0.1, 0.2),
         (0.1, -0.1),
         (f32::INFINITY, 0.0),
+        // Never reached: activity is at most 1.
+        (1.5, 0.5),
+        // Never gone below: an input would hold a group for good.
+        (0.1, 0.0),
+        (0.0, 0.0),
     ] {
         let mut config = MuxConfig::new(Mode::Priority, &layout);
         config.engage = engage;
@@ -1079,6 +1216,12 @@ fn thresholds_must_be_numbers_in_order() {
             Some(GraphError::BadThreshold),
             "{engage} {release}"
         );
+    }
+    for (engage, release) in [(1.0, 1.0), (1.0, 0.01), (0.1, 0.1)] {
+        let mut config = MuxConfig::new(Mode::Priority, &layout);
+        config.engage = engage;
+        config.release = release;
+        assert!(build_mux(config).is_ok(), "{engage} {release}");
     }
     for deadzone in [f32::NAN, -0.1, f32::INFINITY] {
         let result = Graph::build(GraphSpec {
@@ -1119,6 +1262,27 @@ fn a_graph_has_limits_on_its_size() {
         Some(GraphError::BadArity),
         "a graph takes at most 32 pads"
     );
+    // At most 64 nodes and 32 virtual pads, and exactly that many build.
+    let chain = |nodes: usize, sinks: usize| {
+        Graph::build(GraphSpec {
+            sources: vec![source()],
+            nodes: (0..nodes)
+                .map(|at| NodeSpec::Mux {
+                    inputs: vec![if at == 0 {
+                        Input::Source(SourceId(0))
+                    } else {
+                        Input::Node(NodeId(at - 1), 0)
+                    }],
+                    config: MuxConfig::new(Mode::Priority, &layout),
+                })
+                .collect(),
+            sinks: vec![Input::Source(SourceId(0)); sinks],
+        })
+    };
+    assert_eq!((MAX_NODES, MAX_SINKS), (64, 32));
+    assert!(chain(MAX_NODES, MAX_SINKS).is_ok());
+    assert_eq!(chain(MAX_NODES + 1, 1).err(), Some(GraphError::BadArity));
+    assert_eq!(chain(1, MAX_SINKS + 1).err(), Some(GraphError::BadArity));
     let none = Graph::build(GraphSpec {
         sources: vec![source()],
         nodes: vec![NodeSpec::Demux {

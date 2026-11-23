@@ -18,8 +18,11 @@ mod ids;
 mod mux;
 
 pub use control::{AXES, BUTTONS, Control, Group, Kind, Layout, PadState, gamepad};
-pub use demux::{DemuxConfig, DemuxFeedback, DemuxMode};
+pub use demux::{DemuxConfig, DemuxFeedback, DemuxMode, MAX_OUTPUTS};
 pub use feedback::{EFFECTS, Effect, EffectKey, FeedbackError, Level, Router};
-pub use graph::{Change, Graph, GraphError, GraphSpec, Input, NodeSpec, SourceSpec};
+pub use graph::{
+    Change, Graph, GraphError, GraphSpec, Input, MAX_INPUTS, MAX_NODES, MAX_SINKS, MAX_SOURCES,
+    NodeSpec, SourceSpec,
+};
 pub use ids::{NodeId, SinkId, SourceId, SourceSet};
 pub use mux::{Mode, MuxConfig, MuxFeedback, Rule, Switch};

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::profile::{Hide, Identity, Preset, Rumble};
+use crate::profile::{Hide, Identity, Preset, Rumble, SCHEMA};
 
 /// One choice of a field that offers some.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -299,11 +299,16 @@ pub fn to_toml(fields: &[Field], values: &Values) -> String {
         if !field.applies_to(preset) || (field.key != PRESET && *value == field.default) {
             continue;
         }
-        let written = match field.kind {
-            // Digits and the two words stand bare; anything else that
-            // came in under those kinds is left for the check to refuse.
-            Kind::Number { .. } | Kind::Switch => value.clone(),
-            _ => toml::Value::String(value.clone()).to_string(),
+        // A number and the two words stand bare; anything else, under any
+        // kind, is written as a string, which the check then refuses where
+        // a string doesn't belong. So no value can add to the TOML.
+        let quoted = || toml::Value::String(value.clone()).to_string();
+        let written = match (&field.kind, value.as_str()) {
+            (Kind::Number { .. }, _) => value
+                .parse::<u32>()
+                .map_or_else(|_| quoted(), |number| number.to_string()),
+            (Kind::Switch, "true" | "false") => value.clone(),
+            _ => quoted(),
         };
         text.push_str(&format!("{} = {written}\n", field.key));
     }
@@ -311,8 +316,11 @@ pub fn to_toml(fields: &[Field], values: &Values) -> String {
 }
 
 /// The values a form shows for a profile, or nothing for a profile a
-/// form can't show: one that isn't TOML, isn't a preset, or holds a key
-/// that isn't a field (a profile in the full form does).
+/// form can't show: one that isn't TOML, isn't a preset, holds a key
+/// that isn't a field (a profile in the full form does), or is for a
+/// schema other than this version's. What a form writes carries no
+/// schema, so showing a newer profile's values and writing them back
+/// would quietly make it this version's.
 #[must_use]
 pub fn from_toml(fields: &[Field], toml: &str) -> Option<Values> {
     let table: toml::Table = toml.parse().ok()?;
@@ -320,6 +328,9 @@ pub fn from_toml(fields: &[Field], toml: &str) -> Option<Values> {
     let mut values = Values::new();
     for (key, value) in &table {
         if key == "schema" {
+            if value.as_integer() != Some(i64::from(SCHEMA)) {
+                return None;
+            }
             continue;
         }
         fields.iter().find(|field| field.key == *key)?;

@@ -230,7 +230,30 @@ fn a_pad_is_an_address_a_known_name_or_a_model() {
         PadRef::parse("model:054c:09cc"),
         Some(PadRef::Model(0x054c, 0x09cc))
     );
+    // The vendor and product in capitals are the numbers the device
+    // crate writes in lowercase; the serial, port or name is kept.
+    assert_eq!(
+        PadRef::parse("serial:054C:09CC:7EED821FFB17"),
+        exact("serial:054c:09cc:7EED821FFB17")
+    );
+    assert_eq!(
+        PadRef::parse("port:045E:02DD:usb-0000:00:14.0-3/input0"),
+        exact("port:045e:02dd:usb-0000:00:14.0-3/input0")
+    );
+    assert_eq!(
+        PadRef::parse("model:1A34:5B78:Some Pad: Deluxe"),
+        exact("model:1a34:5b78:Some Pad: Deluxe")
+    );
+    assert_eq!(
+        PadRef::parse("model:054C:09CC"),
+        Some(PadRef::Model(0x054c, 0x09cc))
+    );
+    let written = PadRef::parse("serial:054C:09CC:abc").unwrap();
+    assert!(written.matches("serial:054c:09cc:abc", 0x054c, 0x09cc));
+    assert!(!written.matches("serial:054c:09cc:ABC", 0x054c, 0x09cc));
     for not_a_pad in [
+        "model:+54c:09cc",
+        "serial:054c:-9cc:abc",
         "",
         "dualshock4",
         "model:dualshock4",
@@ -359,18 +382,209 @@ fn what_is_wrong_with_a_profile_is_said_with_where() {
     // What the core refuses is passed on.
     said(
         with(
-            "[node.m]\nmux = \"priority\"\ninputs = [\"a\", \"b\"]\nengage = 0.1\nrelease = 0.5\n[sink.o]\ninput = \"m\"\n",
-        ),
-        "",
-        "the graph can't be built",
-    );
-    said(
-        with(
             "[node.x]\nmux = \"priority\"\ninputs = [\"a\", \"y\"]\n[node.y]\nmux = \"priority\"\ninputs = [\"b\", \"x\"]\n[sink.o]\ninput = \"x\"\n",
         ),
         "",
         "the graph can't be built",
     );
+}
+
+/// What the core would refuse of a node or a source is said with where
+/// it is, even where it is a default the profile didn't write.
+#[test]
+fn a_refusal_the_core_would_make_is_said_with_where() {
+    let base = "[source.a]\npad = \"model:0001:0001\"\n[source.b]\npad = \"model:0002:0002\"\n";
+    let mux = |rest: &str| {
+        format!(
+            "{base}[node.m]\nmux = \"priority\"\ninputs = [\"a\", \"b\"]\n{rest}[sink.o]\ninput = \"m\"\n"
+        )
+    };
+    let demux = |outputs: usize| {
+        format!(
+            "{base}[node.d]\ndemux = \"unicast\"\ninput = \"a\"\noutputs = {outputs}\n[sink.o]\ninput = \"d\"\n"
+        )
+    };
+    for (text, want_at, want) in [
+        // Never reached, so a group never changes hands.
+        (
+            mux("engage = 1.5\nrelease = 0.5\n"),
+            "node.m.engage",
+            "more than 0 and at most 1",
+        ),
+        (mux("engage = nan\n"), "node.m.engage", "at most 1"),
+        // Never gone below, so a group never changes hands back.
+        (mux("release = 0.0\n"), "node.m.release", "never let go"),
+        (
+            mux("engage = 0.1\nrelease = 0.5\n"),
+            "node.m.release",
+            "`release` (0.5) is at most `engage` (0.1)",
+        ),
+        // Only one written: it is that one that is wrong.
+        (
+            mux("release = 0.2\n"),
+            "node.m.release",
+            "`release` (0.2) is at most `engage` (0.1)",
+        ),
+        (
+            mux("engage = 0.03\n"),
+            "node.m.engage",
+            "`release` (0.05) is at most `engage` (0.03)",
+        ),
+        (
+            format!(
+                "{base}[node.m]\nmux = \"priority\"\ninputs = [\"a\", \"b\", \"a\", \"b\", \"a\", \"b\", \"a\", \"b\", \"a\"]\n[sink.o]\ninput = \"m\"\n"
+            ),
+            "node.m.inputs",
+            "at most 8 inputs",
+        ),
+        (demux(0), "node.d.outputs", "between 1 and 16"),
+        (demux(17), "node.d.outputs", "between 1 and 16"),
+        (
+            "[source.a]\npad = \"model:0001:0001\"\ndeadzone = -0.1\n[sink.o]\ninput = \"a\"\n"
+                .to_string(),
+            "source.a.deadzone",
+            "a number from 0",
+        ),
+    ] {
+        let (at, problem) = refusal(&text);
+        assert_eq!(at, want_at, "{problem}\n{text}");
+        assert!(problem.contains(want), "{at}: {problem}");
+    }
+    plan(&mux("engage = 1.0\nrelease = 1.0\n")).unwrap();
+    plan(&demux(16)).unwrap();
+
+    // A toggle of one input switches on that input's button, not on a
+    // second input it doesn't have.
+    let one =
+        format!("{base}[node.m]\nmux = \"toggle\"\ninputs = [\"a\"]\n[sink.o]\ninput = \"m\"\n");
+    match plan(&one).unwrap().graph.nodes.remove(0) {
+        NodeSpec::Mux { config, .. } => assert_eq!(
+            config.switch,
+            Some(Switch {
+                input: Some(0),
+                button: gamepad::MODE
+            })
+        ),
+        NodeSpec::Demux { .. } => unreachable!("the node is a mux"),
+    }
+}
+
+/// A switch is only for a node that selects: on one that doesn't, it
+/// would only keep its button from the game.
+#[test]
+fn a_switch_is_for_a_node_that_selects() {
+    let base = "[source.a]\npad = \"model:0001:0001\"\n[source.b]\npad = \"model:0002:0002\"\n";
+    let mux = |mode: &str, rest: &str| {
+        format!(
+            "{base}[node.m]\nmux = \"{mode}\"\ninputs = [\"a\", \"b\"]\n{rest}[sink.o]\ninput = \"m\"\n"
+        )
+    };
+    let switch_of = |text: &str| match plan(text).unwrap().graph.nodes.remove(0) {
+        NodeSpec::Mux { config, .. } => config.switch,
+        NodeSpec::Demux { config, .. } => config.switch.map(|button| Switch {
+            input: None,
+            button,
+        }),
+    };
+    for (text, at) in [
+        (mux("priority", "switch = \"select\"\n"), "node.m.switch"),
+        (
+            mux(
+                "average",
+                "switch = { button = \"select\", input = \"b\" }\n",
+            ),
+            "node.m.switch",
+        ),
+        // A toggle whose rules leave nothing switched, with a switch.
+        (
+            mux(
+                "toggle",
+                "switch = \"select\"\nrules = { stick = \"owned\", trigger = \"owned\", button = \"owned\", hat = \"owned\" }\n",
+            ),
+            "node.m.switch",
+        ),
+        (
+            format!(
+                "{base}[node.d]\ndemux = \"multicast\"\ninput = \"a\"\noutputs = 2\nswitch = \"select\"\n[sink.o]\ninput = \"d\"\n"
+            ),
+            "node.d.switch",
+        ),
+    ] {
+        let (where_, problem) = refusal(&text);
+        assert_eq!(where_, at, "{problem}\n{text}");
+        assert!(problem.contains("never selects"), "{problem}");
+    }
+    // One switched rule makes a switch useful.
+    assert_eq!(
+        switch_of(&mux(
+            "priority",
+            "switch = \"select\"\nrules = { button = \"switched\" }\n"
+        )),
+        Some(Switch {
+            input: None,
+            button: gamepad::SELECT
+        })
+    );
+    // A toggle whose rules leave nothing switched doesn't take the
+    // toggle's own switch, and a priority mux has none to take.
+    assert_eq!(
+        switch_of(&mux(
+            "toggle",
+            "rules = { stick = \"owned\", trigger = \"owned\", button = \"owned\", hat = \"owned\" }\n"
+        )),
+        None
+    );
+    assert_eq!(switch_of(&mux("priority", "")), None);
+    // A multicast has no switch of its own, and `false` says as much.
+    assert_eq!(
+        switch_of(&format!(
+            "{base}[node.d]\ndemux = \"multicast\"\ninput = \"a\"\noutputs = 2\nswitch = false\n[sink.o]\ninput = \"d\"\n"
+        )),
+        None
+    );
+}
+
+/// A profile of thousands of virtual pads fits in a file the daemon
+/// takes; it is refused, saying how many, before anything is made.
+#[test]
+fn a_profile_has_at_most_32_pads_64_nodes_and_32_virtual_pads() {
+    let sources = |count: usize| -> String {
+        (0..count)
+            .map(|at| format!("[source.p{at}]\npad = \"model:0001:{:04x}\"\n", at + 1))
+            .collect()
+    };
+    let sinks = |count: usize| -> String {
+        (0..count)
+            .map(|at| format!("[sink.v{at}]\ninput = \"p0\"\n"))
+            .collect()
+    };
+    let nodes = |count: usize| -> String {
+        (0..count)
+            .map(|at| format!("[node.n{at}]\nmux = \"priority\"\ninputs = [\"p0\"]\n"))
+            .collect()
+    };
+    plan(&format!("{}{}{}", sources(32), nodes(64), sinks(32))).unwrap();
+    for (text, at, said) in [
+        (
+            format!("{}{}", sources(33), sinks(1)),
+            "source",
+            "at most 32 pads, and this one has 33",
+        ),
+        (
+            format!("{}{}{}", sources(1), nodes(65), sinks(1)),
+            "node",
+            "at most 64 nodes",
+        ),
+        (
+            format!("{}{}", sources(1), sinks(2500)),
+            "sink",
+            "at most 32 virtual pads, and this one has 2500",
+        ),
+    ] {
+        let (where_, problem) = refusal(&text);
+        assert_eq!(where_, at, "{problem}");
+        assert!(problem.contains(said), "{problem}");
+    }
 }
 
 #[test]
@@ -437,20 +651,32 @@ fn text_that_is_not_a_profile_is_refused_with_its_line() {
         "schema: this profile is for schema 2, and this version reads up to 1"
     );
     assert_eq!(refused("schema = 0\n").at, "schema");
+    // A newer schema is said to be one even where the file has keys this
+    // version doesn't know, as a newer file may well have, wherever the
+    // schema is written.
+    for newer in [
+        "schema = 2\nmode = \"priority\"\nfuture = true\n",
+        "mode = \"priority\"\n[node.m]\nnew-key = 1\n",
+    ] {
+        let text = if newer.starts_with("schema") {
+            newer.to_string()
+        } else {
+            format!("schema = 2\n{newer}")
+        };
+        assert_eq!(
+            refused(&text).to_string(),
+            "schema: this profile is for schema 2, and this version reads up to 1",
+            "{text}"
+        );
+    }
 }
 
 #[test]
-fn a_profile_written_out_reads_back_the_same() {
-    for text in [PRESET, FULL] {
-        let profile = Profile::from_toml(text).unwrap();
-        let written = profile.to_toml().unwrap();
-        assert_eq!(Profile::from_toml(&written).unwrap(), profile, "{written}");
-        // The schema version is left out while it is the current one.
-        assert!(!written.contains("schema"), "{written}");
-    }
-    let older =
+fn a_profile_may_say_its_schema_and_is_the_current_one_if_not() {
+    let said =
         Profile::from_toml("schema = 1\nmode = \"unicast\"\npad = \"model:0001:0001\"\n").unwrap();
-    assert_eq!(older.schema, 1);
+    assert_eq!(said.schema, 1);
+    assert_eq!(Profile::from_toml(PRESET).unwrap().schema, 1);
 }
 
 #[test]
@@ -649,6 +875,34 @@ mod form {
         assert_eq!(read.get("outputs"), None);
     }
 
+    /// A value that isn't what its field holds is written as a string,
+    /// so it can add nothing to the profile and the check refuses it.
+    #[test]
+    fn a_value_can_add_nothing_to_what_a_form_writes() {
+        let fields = form::fields();
+        let mut values = Values::new();
+        for (key, value) in [
+            ("mode", "unicast"),
+            ("pad", "model:0001:0001"),
+            ("outputs", "3\n[source.x]\npad = \"model:0002:0002\""),
+            ("managed", "yes\nprimary = \"x\""),
+        ] {
+            values.insert(key.to_string(), value.to_string());
+        }
+        let toml = form::to_toml(&fields, &values);
+        let table: toml::Table = toml.parse().unwrap();
+        let keys: Vec<&str> = table.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["managed", "mode", "outputs", "pad"], "{toml}");
+        assert!(Profile::check(&toml).is_err(), "{toml}");
+        // A number is written as one, however it came.
+        values.insert("outputs".to_string(), "+3".to_string());
+        values.insert("managed".to_string(), "true".to_string());
+        let toml = form::to_toml(&fields, &values);
+        assert!(toml.contains("outputs = 3\n"), "{toml}");
+        assert!(toml.contains("managed = true\n"), "{toml}");
+        Profile::check(&toml).unwrap();
+    }
+
     #[test]
     fn a_profile_a_form_cannot_show_reads_as_nothing() {
         let fields = form::fields();
@@ -664,8 +918,24 @@ mod form {
         ] {
             assert_eq!(form::from_toml(&fields, toml), None, "{toml}");
         }
-        // The file's own schema number is no field, and is passed over.
-        assert!(form::from_toml(&fields, include_str!("fixtures/preset.toml")).is_some());
+        // The file's own schema number is no field, and is passed over
+        // where it is this version's.
+        let preset = include_str!("fixtures/preset.toml");
+        assert!(form::from_toml(&fields, preset).is_some());
+        assert!(form::from_toml(&fields, &format!("schema = 1\n{preset}")).is_some());
+    }
+
+    /// A form shows nothing of a profile for another schema: what it
+    /// writes carries no schema, so writing a newer profile's values
+    /// back would quietly make it this version's.
+    #[test]
+    fn a_form_shows_nothing_of_a_profile_for_another_schema() {
+        let fields = form::fields();
+        let preset = include_str!("fixtures/preset.toml");
+        for schema in ["2", "0", "\"1\""] {
+            let toml = format!("schema = {schema}\n{preset}");
+            assert_eq!(form::from_toml(&fields, &toml), None, "{toml}");
+        }
     }
 
     #[test]

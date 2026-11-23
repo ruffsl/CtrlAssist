@@ -12,8 +12,9 @@
 use std::collections::BTreeMap;
 
 use ctrlassist_core::{
-    Control, DemuxConfig, DemuxFeedback, DemuxMode, Graph, GraphSpec, Input, Kind, Layout, Mode,
-    MuxConfig, MuxFeedback, NodeId, NodeSpec, Rule, SourceId, SourceSpec, Switch, gamepad,
+    Control, DemuxConfig, DemuxFeedback, DemuxMode, Graph, GraphSpec, Input, Kind, Layout,
+    MAX_INPUTS, MAX_NODES, MAX_OUTPUTS, MAX_SINKS, MAX_SOURCES, Mode, MuxConfig, MuxFeedback,
+    NodeId, NodeSpec, Rule, SourceId, SourceSpec, Switch, gamepad,
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,73 +25,57 @@ pub const SCHEMA: u32 = 1;
 const DEADZONE: f32 = 0.1;
 
 /// A profile as written.
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Profile {
     /// The schema version the file was written for.
-    #[serde(default = "schema", skip_serializing_if = "is_current")]
+    #[serde(default = "schema")]
     pub schema: u32,
     /// Whether the daemon manages when this profile runs: it starts a
     /// managed one once the daemon is up and its pads are connected.
     /// One that isn't is started by hand.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub managed: bool,
 
     /// The preset, for a profile in the short form: the mode its pads
     /// and virtual pads are arranged in, which the file writes as `mode`.
-    #[serde(default, rename = "mode", skip_serializing_if = "Option::is_none")]
+    #[serde(default, rename = "mode")]
     pub preset: Option<Preset>,
     /// A mux preset's first pad.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub primary: Option<String>,
     /// A mux preset's second pad, which outranks the first.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub assist: Option<String>,
     /// A demux preset's pad.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub pad: Option<String>,
     /// How many virtual pads a demux preset makes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub outputs: Option<usize>,
     /// What a preset's virtual pads present themselves as.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub identity: Option<Identity>,
     /// Who feels what a game rumbles, for a mux preset.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub rumble: Option<Rumble>,
     /// How the setup's pads are kept from games.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub hide: Option<Hide>,
 
     /// The pads, by name, for a profile in the full form.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub source: BTreeMap<String, Source>,
     /// The nodes, by name.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub node: BTreeMap<String, Node>,
     /// The virtual pads, by name.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub sink: BTreeMap<String, Sink>,
 }
 
 fn schema() -> u32 {
     SCHEMA
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "the signature serde calls"
-)]
-fn is_current(version: &u32) -> bool {
-    *version == SCHEMA
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "the signature serde calls"
-)]
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// Who feels what a game rumbles, in a preset of two pads.
@@ -232,56 +217,56 @@ impl Identity {
 }
 
 /// A pad in the full form.
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Source {
     /// Which pad; see [`PadRef`].
     pub pad: String,
     /// Sticks resting inside this are read as at rest.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub deadzone: Option<f32>,
 }
 
 /// A node in the full form: a mux or a demux, by which key it has.
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Node {
     /// The mode, for a mux.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub mux: Option<MuxMode>,
     /// The mode, for a demux.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub demux: Option<Fanout>,
     /// A mux's inputs. Later inputs outrank earlier ones.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub inputs: Vec<String>,
     /// A demux's input.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub input: Option<String>,
     /// How many outputs a demux has.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub outputs: Option<usize>,
     /// A mux input becomes active on a group at or above this.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub engage: Option<f32>,
     /// An active mux input stops being active on a group below this.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub release: Option<f32>,
     /// A mux's rule for a kind of group, where it differs from its mode's.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub rules: BTreeMap<GroupKind, RuleName>,
     /// Where feedback goes: `"active"`, `"none"`, or for a mux a list of
     /// its inputs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub feedback: Option<Feedback>,
     /// The button that switches the node: a button's name, or `false` for
     /// none. A mux may say whose button it is with a table.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub switch: Option<SwitchSpec>,
 }
 
 /// A mux's modes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MuxMode {
     /// The later input overrides what it touches.
@@ -293,7 +278,7 @@ pub enum MuxMode {
 }
 
 /// A demux's modes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Fanout {
     /// One output at a time.
@@ -303,7 +288,7 @@ pub enum Fanout {
 }
 
 /// The kinds of group a rule can be set for.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GroupKind {
     /// Sticks.
@@ -317,7 +302,7 @@ pub enum GroupKind {
 }
 
 /// How a group's output is chosen from a mux's inputs.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuleName {
     /// The highest active input owns the whole group.
@@ -331,7 +316,7 @@ pub enum RuleName {
 }
 
 /// Where a node's feedback goes.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum Feedback {
     /// `"active"` or `"none"`.
@@ -341,7 +326,7 @@ pub enum Feedback {
 }
 
 /// The named feedback settings.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FeedbackName {
     /// To whatever currently reaches the output.
@@ -351,7 +336,7 @@ pub enum FeedbackName {
 }
 
 /// What switches a node.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum SwitchSpec {
     /// `false`: no button; only a client can switch it.
@@ -368,7 +353,7 @@ pub enum SwitchSpec {
 }
 
 /// A virtual pad in the full form.
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Sink {
     /// The source or node output it follows.
@@ -394,8 +379,9 @@ impl PadRef {
     /// `model:<vendor>:<product>` for any pad of that model.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
+        // Four hex digits; `from_str_radix` alone would take a sign.
         let hex = |text: &str| {
-            (text.len() == 4)
+            (text.len() == 4 && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
                 .then(|| u16::from_str_radix(text, 16).ok())
                 .flatten()
         };
@@ -421,17 +407,22 @@ impl PadRef {
         }
         match kind {
             "address" => is_address(rest).then(|| Self::Exact(text.to_ascii_lowercase())),
-            "model" => match rest.split(':').collect::<Vec<_>>().as_slice() {
-                [vendor, product] => Some(Self::Model(hex(vendor)?, hex(product)?)),
-                [vendor, product, _name, ..] => (hex(vendor).is_some() && hex(product).is_some())
-                    .then(|| Self::Exact(text.to_string())),
-                _ => None,
-            },
-            "serial" | "port" => {
+            "model" | "serial" | "port" => {
                 let mut parts = rest.splitn(3, ':');
-                let numbers = hex(parts.next()?).is_some() && hex(parts.next()?).is_some();
-                (numbers && parts.next().is_some_and(|last| !last.is_empty()))
-                    .then(|| Self::Exact(text.to_string()))
+                let vendor = hex(parts.next()?)?;
+                let product = hex(parts.next()?)?;
+                // The numbers as the device crate writes them, in
+                // lowercase, so that one written in capitals matches; the
+                // serial, port or name after them is the pad's own, kept
+                // as written.
+                let exact =
+                    |last: &str| Self::Exact(format!("{kind}:{vendor:04x}:{product:04x}:{last}"));
+                match (kind, parts.next()) {
+                    ("model", None) => Some(Self::Model(vendor, product)),
+                    ("model", Some(name)) => Some(exact(name)),
+                    (_, Some(last)) if !last.is_empty() => Some(exact(last)),
+                    _ => None,
+                }
             }
             _ => None,
         }
@@ -452,6 +443,7 @@ impl PadRef {
 
 /// What is wrong with a profile, and where.
 #[derive(Clone, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub struct ProfileError {
     /// Where, in the file's own terms, such as `node.second.inputs[1]`.
     /// Empty for a problem with the file as a whole.
@@ -625,6 +617,22 @@ impl Profile {
     /// written for a newer schema. What the profile then means is checked
     /// by [`plan`](Self::plan).
     pub fn from_toml(text: &str) -> Result<Self, ProfileError> {
+        // The schema first: a file for a newer one may well have a key
+        // this version doesn't know, which the strict read below would
+        // name in place of the reason.
+        let newer = text
+            .parse::<toml::Table>()
+            .ok()
+            .and_then(|table| table.get("schema")?.as_integer())
+            .filter(|schema| *schema > i64::from(SCHEMA));
+        if let Some(schema) = newer {
+            return error(
+                "schema",
+                format!(
+                    "this profile is for schema {schema}, and this version reads up to {SCHEMA}"
+                ),
+            );
+        }
         let profile: Self = toml::from_str(text).map_err(|error| {
             // The line, where the parser knows it; its message already
             // names the key.
@@ -641,32 +649,10 @@ impl Profile {
                 problem: error.message().to_string(),
             }
         })?;
-        if profile.schema > SCHEMA {
-            return error(
-                "schema",
-                format!(
-                    "this profile is for schema {}, and this version reads up to {SCHEMA}",
-                    profile.schema
-                ),
-            );
-        }
         if profile.schema == 0 {
             return error("schema", "the schema starts at 1");
         }
         Ok(profile)
-    }
-
-    /// Writes the profile as TOML.
-    ///
-    /// # Errors
-    ///
-    /// Fails if a value has no TOML form, which a number that isn't one
-    /// doesn't.
-    pub fn to_toml(&self) -> Result<String, ProfileError> {
-        toml::to_string(self).map_err(|error| ProfileError {
-            at: String::new(),
-            problem: error.to_string(),
-        })
     }
 
     /// Works the profile out into a graph and what its parts are.
@@ -679,6 +665,18 @@ impl Profile {
     pub fn plan(&self) -> Result<Plan, ProfileError> {
         let full = self.clone().expanded()?;
         let layout = Layout::gamepad();
+        for (at, count, most, what) in [
+            ("source", full.source.len(), MAX_SOURCES, "pads"),
+            ("node", full.node.len(), MAX_NODES, "nodes"),
+            ("sink", full.sink.len(), MAX_SINKS, "virtual pads"),
+        ] {
+            if count > most {
+                return error(
+                    at,
+                    format!("a profile has at most {most} {what}, and this one has {count}"),
+                );
+            }
+        }
 
         let mut sources = Vec::new();
         let mut specs = Vec::new();
@@ -712,12 +710,16 @@ impl Profile {
                     ),
                 );
             }
+            let deadzone = source.deadzone.unwrap_or(DEADZONE);
+            if !(deadzone.is_finite() && deadzone >= 0.0) {
+                return error(format!("{at}.deadzone"), "a deadzone is a number from 0");
+            }
             sources.push(PlannedSource {
                 name: name.clone(),
                 pad,
             });
             specs.push(SourceSpec {
-                deadzone: source.deadzone.unwrap_or(DEADZONE),
+                deadzone,
                 layout: layout.clone(),
             });
         }
@@ -809,7 +811,7 @@ impl Profile {
             nodes,
             sinks: follows,
         };
-        // The core has the last word: thresholds, counts and cycles.
+        // The core has the last word: cycles, and anything missed above.
         if let Err(refused) = Graph::build(graph.clone()) {
             return error("", format!("the graph can't be built: {refused}"));
         }
@@ -957,6 +959,12 @@ fn mux(
     if node.inputs.is_empty() {
         return error(format!("{at}.inputs"), "a mux needs inputs");
     }
+    if node.inputs.len() > MAX_INPUTS {
+        return error(
+            format!("{at}.inputs"),
+            format!("a mux has at most {MAX_INPUTS} inputs"),
+        );
+    }
     let mut inputs = Vec::new();
     for (index, reference) in node.inputs.iter().enumerate() {
         inputs.push(resolve(&format!("{at}.inputs[{index}]"), reference)?);
@@ -1006,6 +1014,7 @@ fn mux(
     if let Some(release) = node.release {
         config.release = release;
     }
+    thresholds(at, node, &config)?;
     config.feedback = match &node.feedback {
         None | Some(Feedback::Named(FeedbackName::Active)) => MuxFeedback::Active,
         Some(Feedback::Named(FeedbackName::None)) => MuxFeedback::None,
@@ -1019,7 +1028,18 @@ fn mux(
             MuxFeedback::Inputs(mask)
         }
     };
+    let selects = config.selects();
     config.switch = match &node.switch {
+        // A toggle whose `rules` leave nothing switched doesn't take
+        // the toggle's own switch: it would only keep the button from
+        // the game.
+        None if !selects => None,
+        // A toggle's own switch is on its second input, and a toggle of
+        // one input has none: its only input's, then.
+        None if inputs.len() == 1 => config.switch.map(|switch| Switch {
+            input: Some(0),
+            ..switch
+        }),
         None => config.switch,
         Some(SwitchSpec::Off(false)) => None,
         Some(SwitchSpec::Off(true)) => {
@@ -1040,7 +1060,48 @@ fn mux(
             button: button(&format!("{at}.switch.button"), name)?,
         }),
     };
+    if config.switch.is_some() && !selects {
+        return error(
+            format!("{at}.switch"),
+            "this mux never selects an input, since none of its rules is `switched`, so a switch would only keep its button from the game: leave `switch` out, or make a rule `switched`",
+        );
+    }
     Ok(NodeSpec::Mux { inputs, config })
+}
+
+/// Checks a mux's thresholds, as given or as defaulted, as the core
+/// would, so that a refusal says which key is wrong.
+fn thresholds(at: &str, node: &Node, config: &MuxConfig) -> Result<(), ProfileError> {
+    let (engage, release) = (config.engage, config.release);
+    // Written so that a value that isn't a number fails.
+    let between = |value: f32| value > 0.0 && value <= 1.0;
+    if !between(engage) {
+        return error(
+            format!("{at}.engage"),
+            "`engage` is more than 0 and at most 1: how far a control moves, from rest to all the way, before an input takes hold of it",
+        );
+    }
+    if !between(release) {
+        return error(
+            format!("{at}.release"),
+            "`release` is more than 0 and at most 1: at 0, an input that took hold of a control would never let go",
+        );
+    }
+    if release > engage {
+        // The one written, where only one is: the other is the default.
+        let key = if node.release.is_some() {
+            "release"
+        } else {
+            "engage"
+        };
+        return error(
+            format!("{at}.{key}"),
+            format!(
+                "`release` ({release}) is at most `engage` ({engage}): an input lets go below where it took hold"
+            ),
+        );
+    }
+    Ok(())
 }
 
 fn demux(
@@ -1068,6 +1129,12 @@ fn demux(
             "a demux needs to know how many outputs it has",
         );
     };
+    if !(1..=MAX_OUTPUTS).contains(&outputs) {
+        return error(
+            format!("{at}.outputs"),
+            format!("a demux has between 1 and {MAX_OUTPUTS} outputs"),
+        );
+    }
     let mode = match mode {
         Fanout::Unicast => DemuxMode::Unicast,
         Fanout::Multicast => DemuxMode::Multicast,
@@ -1090,6 +1157,12 @@ fn demux(
             return error(
                 format!("{at}.switch"),
                 "name the button, or write `false` for none",
+            );
+        }
+        Some(SwitchSpec::Button(_) | SwitchSpec::On { .. }) if mode == DemuxMode::Multicast => {
+            return error(
+                format!("{at}.switch"),
+                "a multicast demux sends to every output and never selects one, so a switch would only keep its button from the games",
             );
         }
         Some(SwitchSpec::Button(name)) => Some(button(&format!("{at}.switch"), name)?),
