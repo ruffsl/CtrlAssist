@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use ctrlassist::form::{self, Field, Kind, Values};
-use ctrlassist::{DaemonClient, Pad, Profile, Setup};
+use ctrlassist::{DaemonClient, Pad, Profile, Setup, SetupSource};
 use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
 use tracing::warn;
 
@@ -262,9 +262,64 @@ fn use_row(
     }
 }
 
+/// A pad a setup has taken, for the header's link, when there is no
+/// profile left to say which pad it names.
+fn taken_row(source: &SetupSource, pads: &[Pad], profile: &str) -> ProfileUseRow {
+    let pad = source
+        .pad
+        .as_deref()
+        .and_then(|id| pads.iter().find(|pad| pad.id == id));
+    let (word, tone) = connection(pad, profile);
+    ProfileUseRow {
+        word: SharedString::from(word),
+        tone: SharedString::from(tone),
+        part: SharedString::from(crate::status::capitalized(&source.name)),
+        pad: SharedString::from(pad.map_or("", |pad| pad.id.as_str())),
+        name: SharedString::from(match (pad, source.pad.as_deref()) {
+            (Some(pad), _) => pad.name.as_str(),
+            (None, Some(id)) => id,
+            (None, None) => "—",
+        }),
+    }
+}
+
+/// A virtual pad of the profile `profile`, by its name there and what
+/// it presents itself as, and where it is while `setup` runs.
+fn output_row(
+    profile: &str,
+    sink: &str,
+    identity: &str,
+    setup: Option<&Setup>,
+) -> ProfileOutputRow {
+    // It exists once its setup has made it.
+    let node = setup
+        .and_then(|setup| setup.sinks.iter().find(|made| made.name == sink))
+        .and_then(|made| made.node.as_deref());
+    let made = node.is_some();
+    ProfileOutputRow {
+        pad: SharedString::from(if made {
+            crate::pads::virtual_id(profile, sink)
+        } else {
+            String::new()
+        }),
+        word: SharedString::from(if made { "Connected" } else { "Disconnected" }),
+        tone: SharedString::from(if made { "success" } else { "neutral" }),
+        name: SharedString::from(crate::status::capitalized(sink)),
+        // A row's own word, so with a capital.
+        identity: SharedString::from(crate::status::capitalized(crate::status::identity(
+            identity,
+        ))),
+        node: SharedString::from(
+            node.map(|node| node.rsplit('/').next().unwrap_or(node))
+                .unwrap_or_default(),
+        ),
+    }
+}
+
 /// The pane's rows, those with a setup first and each group in name
-/// order: every kept profile, and every one the window holds that isn't
-/// kept yet.
+/// order: every kept profile, every one the window holds that isn't
+/// kept yet, and every setup whose profile is gone, so that it can
+/// still be stopped.
 #[must_use]
 pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
     let mut names: Vec<&str> = known
@@ -272,6 +327,7 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
         .iter()
         .map(|profile| profile.name.as_str())
         .chain(held.keys().map(String::as_str))
+        .chain(known.setups.iter().map(|setup| setup.name.as_str()))
         .collect();
     let runs = |name: &str| known.setups.iter().any(|setup| setup.name == name);
     // Those with a setup first, as the list shows them; among each, the
@@ -300,6 +356,9 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 .or_else(|| kept.and_then(|kept| form::from_toml(&known.fields, &kept.toml)));
             let why = held.and_then(|held| unfinished_why(&known.fields, held));
             let setup = known.setups.iter().find(|setup| setup.name == name);
+            // A setup whose profile was deleted, or whose file a reload
+            // found gone: it runs as its profile was when it started.
+            let gone = kept.is_none() && held.is_none() && setup.is_some();
             let (phase_label, tone) =
                 setup.map_or(("", ""), |setup| crate::setups::phase_text(setup.phase));
             let preset = values
@@ -341,16 +400,26 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 .is_empty(),
                 None => kept.is_some_and(|kept| !kept.unset.is_empty()),
             };
-            let (word, word_tone) = if why.is_some() || kept.is_none() {
+            let (word, word_tone) = if why.is_some() || (kept.is_none() && !gone) {
                 ("Unfinished", "warn")
             } else if unset && setup.is_none() {
                 ("Not set up", "neutral")
             } else {
                 crate::status::of(name, plan.as_ref(), &known.setups, &known.pads)
             };
-            let shape = match plan.as_ref() {
-                Some(plan) if plan.sources.len() > 1 => "merge",
-                Some(plan) if plan.sinks.len() > 1 => "split",
+            // How many pads it takes and makes: as the profile says, or
+            // as its setup has them when the profile is gone.
+            let counts = plan
+                .as_ref()
+                .map(|plan| (plan.sources.len(), plan.sinks.len()))
+                .or_else(|| {
+                    setup
+                        .filter(|_| gone)
+                        .map(|setup| (setup.sources.len(), setup.sinks.len()))
+                });
+            let shape = match counts {
+                Some((sources, _)) if sources > 1 => "merge",
+                Some((_, sinks)) if sinks > 1 => "split",
                 _ => match preset.as_str() {
                     "priority" | "average" | "toggle" => "merge",
                     "unicast" | "multicast" => "split",
@@ -367,62 +436,38 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                     "A pad it names is missing, or in a profile that is running.".to_string()
                 }
             };
-            let uses: Vec<ProfileUseRow> = plan
-                .as_ref()
-                .map(|plan| {
-                    plan.sources
-                        .iter()
-                        .map(|source| use_row(source, setup, &known.pads, name))
-                        .collect()
-                })
-                .unwrap_or_default();
-            // Its virtual pads, and where each is while it runs.
-            let outputs: Vec<ProfileOutputRow> = plan
-                .as_ref()
-                .map(|plan| {
-                    plan.sinks
-                        .iter()
-                        .map(|sink| {
-                            // It exists once its setup has made it.
-                            let made = setup
-                                .and_then(|setup| {
-                                    setup.sinks.iter().find(|made| made.name == sink.name)
-                                })
-                                .is_some_and(|made| made.node.is_some());
-                            ProfileOutputRow {
-                                pad: SharedString::from(if made {
-                                    crate::pads::virtual_id(name, &sink.name)
-                                } else {
-                                    String::new()
-                                }),
-                                word: SharedString::from(if made {
-                                    "Connected"
-                                } else {
-                                    "Disconnected"
-                                }),
-                                tone: SharedString::from(if made { "success" } else { "neutral" }),
-                                name: SharedString::from(crate::status::capitalized(&sink.name)),
-                                // A row's own word, so with a capital.
-                                identity: SharedString::from(crate::status::capitalized(
-                                    crate::status::identity(sink.identity.as_str()),
-                                )),
-                                node: SharedString::from(
-                                    setup
-                                        .and_then(|setup| {
-                                            setup.sinks.iter().find(|made| made.name == sink.name)
-                                        })
-                                        .and_then(|made| made.node.as_deref())
-                                        .map(|node| node.rsplit('/').next().unwrap_or(node))
-                                        .unwrap_or_default(),
-                                ),
-                            }
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            // The pads it names and its virtual pads, each with where
+            // it is while it runs; with no profile left, its setup's.
+            let (uses, outputs): (Vec<ProfileUseRow>, Vec<ProfileOutputRow>) =
+                match (plan.as_ref(), setup) {
+                    (Some(plan), _) => (
+                        plan.sources
+                            .iter()
+                            .map(|source| use_row(source, setup, &known.pads, name))
+                            .collect(),
+                        plan.sinks
+                            .iter()
+                            .map(|sink| output_row(name, &sink.name, sink.identity.as_str(), setup))
+                            .collect(),
+                    ),
+                    (None, Some(running)) if gone => (
+                        running
+                            .sources
+                            .iter()
+                            .map(|source| taken_row(source, &known.pads, name))
+                            .collect(),
+                        running
+                            .sinks
+                            .iter()
+                            .map(|sink| output_row(name, &sink.name, &sink.identity, setup))
+                            .collect(),
+                    ),
+                    _ => (Vec::new(), Vec::new()),
+                };
             let no_outputs = outputs.is_empty();
             // The mode as the served field labels it.
             let mode_label = match &values {
+                None if gone => String::new(),
                 None => "Written by hand".to_string(),
                 Some(_) => known
                     .fields
@@ -460,7 +505,11 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 uses: ModelRc::new(VecModel::from(uses)),
                 outputs: ModelRc::new(VecModel::from(outputs)),
                 name: SharedString::from(name),
-                kind: SharedString::from(if values.is_some() { "preset" } else { "full" }),
+                kind: SharedString::from(match (&values, gone) {
+                    (Some(_), _) => "preset",
+                    (None, true) => "gone",
+                    (None, false) => "full",
+                }),
                 unfinished: why.is_some(),
                 unfinished_why: SharedString::from(why.unwrap_or_default()),
                 kept: kept.is_some(),
@@ -520,6 +569,15 @@ fn render(app: &AppWindow) {
                 crate::models::sync(&old.output_fields, row.output_fields.iter().collect(), same);
             row.preset_fields =
                 crate::models::sync(&old.preset_fields, row.preset_fields.iter().collect(), same);
+            // The pads it names and its virtual pads: the first virtual
+            // pad's row holds the Identity dropdown.
+            row.uses = crate::models::sync(&old.uses, row.uses.iter().collect(), |a, b| {
+                a.part == b.part
+            });
+            row.outputs =
+                crate::models::sync(&old.outputs, row.outputs.iter().collect(), |a, b| {
+                    a.name == b.name
+                });
         }
     }
     let index = rows

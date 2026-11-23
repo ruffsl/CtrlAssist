@@ -166,9 +166,10 @@ export component SettingsPane inherits Rectangle {
                     accessible-id: "settings-couch-mode";
                     width: 200px;
                     model: root.couch-modes;
+                    values: ["auto", "on", "off"];
                     current-value: root.couch-modes[root.mode-index];
-                    selected-index(i) => {
-                        Couch.mode-changed(i == 1 ? "on" : i == 2 ? "off" : "auto");
+                    selected(mode) => {
+                        Couch.mode-changed(mode);
                     }
                 }
             }

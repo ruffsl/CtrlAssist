@@ -243,8 +243,18 @@ fn real_rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow
 /// on: rows move as pads come and go, and the pad selected should stay
 /// selected wherever its row lands. One that is gone leaves nothing
 /// selected.
-pub fn show(app: &AppWindow, rows: Vec<PadRow>) {
+pub fn show(app: &AppWindow, mut rows: Vec<PadRow>) {
     let pads = app.global::<Pads>();
+    let current = pads.get_rows();
+    // In place, down to each pad's profiles: see `models`.
+    for row in &mut rows {
+        if let Some(old) = current.iter().find(|old| old.id == row.id) {
+            row.profiles =
+                crate::models::sync(&old.profiles, row.profiles.iter().collect(), |a, b| {
+                    a.name == b.name
+                });
+        }
+    }
     let selected = pads
         .get_rows()
         .row_data(usize::try_from(pads.get_selected_index()).unwrap_or(usize::MAX))
@@ -261,9 +271,7 @@ pub fn show(app: &AppWindow, rows: Vec<PadRow>) {
     pads.set_connected_count(i32::try_from(connected).unwrap_or(i32::MAX));
     pads.set_real_count(i32::try_from(real).unwrap_or(i32::MAX));
     // In place where the pads are the same ones: see `models`.
-    pads.set_rows(crate::models::sync(&pads.get_rows(), rows, |a, b| {
-        a.id == b.id
-    }));
+    pads.set_rows(crate::models::sync(&current, rows, |a, b| a.id == b.id));
     pads.set_selected_index(index);
 }
 

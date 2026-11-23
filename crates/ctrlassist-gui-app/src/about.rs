@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use ctrlassist::DaemonClient;
-use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model as _, SharedString};
 use tracing::warn;
 
 use crate::toast::show_toast;
@@ -307,9 +307,12 @@ pub fn rows(parts: &Parts) -> Vec<AboutComponentRow> {
     .collect()
 }
 
-/// Makes the rows afresh from what the window shows now.
+/// Makes the rows from what the window shows now, in place: see
+/// `models`.
 pub fn refresh(app: &AppWindow) {
-    app.set_about_components(ModelRc::new(VecModel::from(rows(&Parts::of(app)))));
+    let rows = rows(&Parts::of(app));
+    let current = app.get_about_components();
+    app.set_about_components(crate::models::sync(&current, rows, |a, b| a.name == b.name));
 }
 
 /// The release of the `ctrlassist` on PATH, from `ctrlassist --version`

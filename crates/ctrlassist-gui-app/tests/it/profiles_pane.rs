@@ -757,3 +757,174 @@ fn picking_the_other_part_s_pad_changes_the_two_places() {
     profiles::change_places(&known, &mut one, "primary", "address:0c:27:56:4f:bd:14");
     assert!(!one.contains_key("assist"));
 }
+
+/// By keys from the sidebar to the control of that id in the form of
+/// the profile selected; the window shown, as keys need.
+fn focus_by_keys(app: &AppWindow, id: &str) {
+    use slint::platform::Key;
+    app.show().expect("the testing backend shows a window");
+    app.invoke_focus_active_sidebar_item();
+    settle();
+    let nav = app.global::<ctrlassist_gui::Nav>();
+    crate::support::press(app, Key::RightArrow);
+    crate::support::press(app, Key::RightArrow);
+    for _ in 0..16 {
+        if nav.get_focus_id() == id {
+            break;
+        }
+        crate::support::press(app, Key::DownArrow);
+    }
+    assert_eq!(nav.get_focus_id(), id);
+}
+
+/// Whatever the window is asked to set, as `name key value`.
+fn record_set_field(app: &AppWindow) -> Rc<RefCell<Vec<String>>> {
+    let asked: Rc<RefCell<Vec<String>>> = Rc::default();
+    let set = asked.clone();
+    app.global::<Profiles>()
+        .on_set_field(move |name, key, value| {
+            set.borrow_mut().push(format!("{name} {key} {value}"));
+        });
+    asked
+}
+
+/// The Identity dropdown sits in the first virtual pad's row. A change
+/// the daemon reports while it is open, or after a pick, keeps that row
+/// and so the dropdown: the list stays its own, a pick from it lands,
+/// and the keys go on from it.
+#[test]
+fn a_dropdown_in_a_virtual_pad_s_row_lives_through_a_daemon_change() {
+    use ctrlassist_gui::Select;
+    use slint::platform::Key;
+    let app = app();
+    let asked = record_set_field(&app);
+    app.global::<Profiles>().invoke_select("couch".into());
+    settle();
+    let outputs = |app: &AppWindow| {
+        let rows: Vec<ProfileRow> = app.global::<Profiles>().get_rows().iter().collect();
+        row(&rows, "couch").outputs.clone()
+    };
+    let before = outputs(&app);
+    focus_by_keys(&app, "profiles-field-identity");
+    crate::support::press(&app, Key::Return);
+    let select = app.global::<Select>();
+    assert!(select.get_open());
+    // A pad connects, or anything else the daemon says.
+    profiles::show(&app, known());
+    settle();
+    assert!(before == outputs(&app), "the rows are the same ones");
+    crate::support::press(&app, Key::DownArrow);
+    crate::support::press(&app, Key::Return);
+    assert!(!select.get_open());
+    assert_eq!(*asked.borrow(), ["couch identity dualsense"]);
+    // Again after the pick: focus is still on the dropdown.
+    profiles::show(&app, known());
+    settle();
+    crate::support::press(&app, Key::Return);
+    assert!(select.get_open(), "the dropdown kept focus");
+    crate::support::press(&app, Key::Escape);
+}
+
+/// A pad list puts connected pads first, so it may change order while
+/// it is open; the pick is the pad that was picked, not the one now in
+/// its place.
+#[test]
+fn a_pick_is_the_pad_shown_when_the_list_opened() {
+    use ctrlassist_gui::Select;
+    use slint::platform::Key;
+    let app = app();
+    let asked = record_set_field(&app);
+    app.global::<Profiles>().invoke_select("couch".into());
+    settle();
+    focus_by_keys(&app, "profiles-field-primary");
+    crate::support::press(&app, Key::Return);
+    let select = app.global::<Select>();
+    assert!(select.get_open());
+    // The cursor to the Xbox pad, last as it isn't connected.
+    crate::support::press(&app, Key::DownArrow);
+    crate::support::press(&app, Key::DownArrow);
+    assert_eq!(
+        select.get_options().row_data(2).unwrap(),
+        "Xbox pad · FFB17 (not connected)"
+    );
+    // It connects and the DualSense leaves: the two change places.
+    let mut moved = known();
+    moved.pads[0].connected = true;
+    moved.pads[2].connected = false;
+    profiles::show(&app, moved);
+    settle();
+    crate::support::press(&app, Key::Return);
+    assert_eq!(
+        *asked.borrow(),
+        ["couch primary serial:045e:02dd:7EED821FFB17"]
+    );
+}
+
+/// A profile deleted while it runs leaves its setup running: the setup
+/// keeps a row, with its pads and virtual pads as it has them, and its
+/// Stop.
+#[test]
+fn a_running_profile_that_is_deleted_keeps_a_row_to_stop_it() {
+    let mut known_now = known();
+    known_now.profiles.retain(|profile| profile.name != "quick");
+    let rows = profiles::rows(&known_now, &BTreeMap::new());
+    let gone = row(&rows, "quick");
+    assert_eq!(gone.kind, "gone");
+    assert!(!gone.kept && !gone.unfinished && !gone.can_start);
+    assert_eq!(
+        (gone.word.as_str(), gone.word_tone.as_str()),
+        ("Running", "success")
+    );
+    assert_eq!(gone.setup_index, 0);
+    assert_eq!(gone.shape, "merge");
+    let uses: Vec<String> = gone
+        .uses
+        .iter()
+        .map(|used| format!("{} {} {}", used.part, used.name, used.word))
+        .collect();
+    assert_eq!(
+        uses,
+        [
+            "Assist Wireless Controller Connected",
+            "Primary DualSense Connected"
+        ]
+    );
+    let made = gone.outputs.row_data(0).unwrap();
+    assert_eq!(
+        (made.name.as_str(), made.pad.as_str()),
+        ("Virtual", "virtual:quick/virtual")
+    );
+
+    let app = app();
+    let stopped: Rc<RefCell<Vec<String>>> = Rc::default();
+    let log = stopped.clone();
+    app.global::<Setups>()
+        .on_stop(move |name| log.borrow_mut().push(name.to_string()));
+    let kept: Vec<String> = known_now
+        .profiles
+        .iter()
+        .map(|profile| profile.name.clone())
+        .collect();
+    setups::show(
+        &app,
+        setups::rows(&known_now.setups, &known_now.pads, &kept),
+        "",
+    );
+    profiles::show(&app, known_now);
+    app.global::<Profiles>().invoke_select("quick".into());
+    settle();
+    for id in ["profiles-gone", "profiles-stale"] {
+        assert!(find_by_accessible_id(&app, id).is_some(), "{id}");
+    }
+    // Nothing to update to, delete, or say how it starts.
+    for id in [
+        "profiles-update",
+        "profiles-delete",
+        "profiles-managed",
+        "profiles-managed-chip",
+    ] {
+        assert!(find_by_accessible_id(&app, id).is_none(), "{id}");
+    }
+    activate_shown(&app, "profiles-stop");
+    assert_eq!(*stopped.borrow(), ["quick"]);
+}

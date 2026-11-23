@@ -411,3 +411,41 @@ fn an_empty_list_says_why() {
     app.set_daemon_available(false);
     assert_eq!(said(&app), "Daemon offline");
 }
+
+/// By keys from the sidebar into the detail of the pad at `at`, then
+/// down to the control of that id.
+fn focus_by_keys(app: &AppWindow, at: i32, id: &str) {
+    app.show().expect("the testing backend shows a window");
+    app.invoke_focus_active_sidebar_item();
+    settle();
+    let nav = app.global::<Nav>();
+    press(app, Key::RightArrow);
+    for _ in 0..at {
+        press(app, Key::DownArrow);
+    }
+    assert_eq!(app.global::<Pads>().get_selected_index(), at);
+    press(app, Key::RightArrow);
+    for _ in 0..8 {
+        if nav.get_focus_id() == id {
+            break;
+        }
+        press(app, Key::DownArrow);
+    }
+    assert_eq!(nav.get_focus_id(), id);
+}
+
+/// A change the daemon reports keeps the rows of a pad's PROFILES, so
+/// the pencil with keyboard focus keeps it.
+#[test]
+fn a_pad_s_profile_pencil_keeps_focus_through_a_daemon_change() {
+    let app = app();
+    let pads = app.global::<Pads>();
+    let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+    let seen = opened.clone();
+    pads.on_open_profile(move |name| seen.borrow_mut().push(name.to_string()));
+    focus_by_keys(&app, 1, "pads-profile-desk");
+    show(&app, rows(&some_pads(), &[quick()], &profiles(), &[]));
+    settle();
+    press(&app, Key::Return);
+    assert_eq!(*opened.borrow(), ["desk"]);
+}

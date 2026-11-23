@@ -74,7 +74,9 @@ export struct ProfileUseRow {
 export struct ProfileRow {
     name: string,
     // "preset": the form shows it. "full": it is written by hand, and
-    // the window shows none of it.
+    // the window shows none of it. "gone": only its setup is left, the
+    // profile deleted or its file removed, and the row is there so the
+    // setup can be stopped.
     kind: string,
     // Its arrangement's shape, for its tile: "merge", "split", or
     // empty for neither.
