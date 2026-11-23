@@ -904,7 +904,8 @@ pub enum SendError {
     /// The input thread has more commands waiting than it holds; the
     /// command is handed back.
     Full(Command),
-    /// The input thread has stopped; the command is handed back.
+    /// The input thread has stopped, or can no longer tell the control
+    /// side anything; the command is handed back.
     Stopped(Command),
     /// The wake descriptor refused a write.
     Wake(io::Error),
@@ -930,6 +931,7 @@ pub struct InputThread {
     wake: Arc<OwnedFd>,
     stop: Arc<AtomicBool>,
     tap: Arc<AtomicBool>,
+    owed: Arc<Owed>,
     realtime: bool,
     /// The kernel's number for the thread.
     task: Option<i32>,
@@ -944,6 +946,9 @@ pub struct InputThread {
 struct Owed {
     waiting: AtomicUsize,
     short: AtomicBool,
+    /// Set once `deliver` has panicked: the control side hears nothing
+    /// more, and is sent nothing more.
+    unheard: AtomicBool,
 }
 
 /// Passes the input thread's reports on to the control side through
@@ -952,6 +957,13 @@ struct Owed {
 /// control side's own queue has no bound, and whatever it no longer
 /// takes is dropped in `deliver`, off the input thread. Ends when the
 /// input thread does.
+///
+/// A `deliver` that panics has its panic caught here, and is called no
+/// more: whatever it was handed went as it unwound, and every report
+/// after it, having nowhere to go, is dropped here, still counted as
+/// read, so the input thread neither waits for room that never comes
+/// nor drops anything itself. Its commands are refused from then on, as
+/// a thread's that has stopped; its setups run on until it is dropped.
 fn forward(
     queued: queue::Receiver<Report>,
     owed: &Owed,
@@ -960,7 +972,11 @@ fn forward(
 ) {
     while let Some(report) = queued.recv() {
         owed.read(wake);
-        deliver(report);
+        if owed.unheard.load(Ordering::Relaxed) {
+            drop(report);
+        } else if catch_unwind(AssertUnwindSafe(|| deliver(report))).is_err() {
+            owed.unheard.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -1037,7 +1053,7 @@ impl InputThread {
             timer,
             inbox,
             outbox,
-            owed,
+            Arc::clone(&owed),
             Arc::clone(&stop),
             Arc::clone(&tap),
         );
@@ -1056,6 +1072,7 @@ impl InputThread {
             wake,
             stop,
             tap,
+            owed,
             realtime,
             task,
             thread: Some(thread),
@@ -1095,11 +1112,15 @@ impl InputThread {
     /// # Errors
     ///
     /// Fails, handing the command back, if the thread has stopped or has
-    /// too many commands waiting.
+    /// too many commands waiting; and as stopped once `deliver` has
+    /// panicked, since nothing a command causes could be told.
     pub fn send(&self, command: Command) -> Result<(), SendError> {
         let Some(commands) = &self.commands else {
             return Err(SendError::Stopped(command));
         };
+        if self.owed.unheard.load(Ordering::Acquire) {
+            return Err(SendError::Stopped(command));
+        }
         match commands.try_send(command) {
             Ok(()) => self.wake().map_err(SendError::Wake),
             Err(TrySendError::Full(command)) => Err(SendError::Full(command)),
@@ -1229,8 +1250,9 @@ impl State {
         // what waits.
         self.owed.waiting.fetch_add(1, Ordering::SeqCst);
         if self.outbox.send(report).is_err() {
-            // Only if the count is wrong, or the thread passing reports
-            // on has gone: what the report carried is dropped here.
+            // Only if the count is wrong: the thread passing reports on
+            // goes only once this thread has, a `deliver` that panics
+            // being caught there. What the report carried is dropped here.
             self.owed.waiting.fetch_sub(1, Ordering::SeqCst);
         }
     }
@@ -1696,6 +1718,50 @@ mod tests {
                 .any(|report| matches!(report, Report::GraphTaken { setup: FIRST, .. }))
         );
         assert!(matches!(read.last(), Some(Report::Stopped(FIRST, _))));
+    }
+
+    /// A `deliver` that panics is called no more: the reports after it
+    /// are dropped where it ran, still counted as read so that the input
+    /// thread never waits for room that can't come, and the thread that
+    /// passes them on ends with the input thread, as before. Commands are
+    /// refused from then on.
+    #[test]
+    fn a_deliver_that_panics_leaves_nothing_owed_and_commands_refused() {
+        let (unbound, queued) = queue::queue(REPORTS);
+        let owed = Arc::new(Owed::default());
+        let wake = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK).unwrap());
+        let called = Arc::new(AtomicUsize::new(0));
+        let forwarder = {
+            let (owed, wake, called) = (Arc::clone(&owed), Arc::clone(&wake), Arc::clone(&called));
+            std::thread::spawn(move || {
+                forward(queued, &owed, &wake, |_| {
+                    called.fetch_add(1, Ordering::SeqCst);
+                    panic!("a deliver that panics");
+                });
+            })
+        };
+        let outbox = unbound.to(forwarder.thread().clone());
+        for index in 0..3 {
+            owed.waiting.fetch_add(1, Ordering::SeqCst);
+            let report = Report::Selected {
+                setup: FIRST,
+                node: NodeId(0),
+                index,
+            };
+            assert!(outbox.send(report).is_ok());
+        }
+        drop(outbox);
+        assert!(forwarder.join().is_ok(), "the panic was caught");
+        assert_eq!(called.load(Ordering::SeqCst), 1, "called no more");
+        assert_eq!(owed.waiting.load(Ordering::SeqCst), 0, "nothing owed");
+        assert!(owed.unheard.load(Ordering::SeqCst));
+
+        let thread = InputThread::spawn_with(|_| {}).unwrap();
+        thread.owed.unheard.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            thread.send(Command::Stop(FIRST)),
+            Err(SendError::Stopped(Command::Stop(FIRST)))
+        ));
     }
 
     /// A setup with more nodes that select than one handling tells has
