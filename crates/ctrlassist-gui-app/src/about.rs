@@ -137,7 +137,8 @@ fn release_tip(health: ServiceHealth, theirs: &str) -> String {
         ServiceHealth::Skew => format!(
             "Runs {theirs}, this window {GUI_VERSION}: compatible, only the patch release differs"
         ),
-        _ => format!(
+        ServiceHealth::Looking => "Being looked for".to_string(),
+        ServiceHealth::Incompatible => format!(
             "Runs {theirs}, this window {GUI_VERSION}: the two can't talk. Restart it or upgrade so they match"
         ),
     }
@@ -165,33 +166,37 @@ pub fn rows(parts: &Parts) -> Vec<AboutComponentRow> {
     };
     // The hiding service is the daemon's to report, being its only
     // client, and has no files of the user's.
+    let (chip, tip) = match (
+        online(parts.daemon),
+        parts.hider,
+        parts.hider_version.as_str(),
+    ) {
+        (false, _, _) => (
+            "unknown".to_string(),
+            "Only the daemon can say, and it isn't running".to_string(),
+        ),
+        (true, ServiceHealth::Offline, _) => (
+            "offline".to_string(),
+            "A setup's pads are only grabbed: a program that reads a pad some other way, as Steam reads a PlayStation pad, still sees it".to_string(),
+        ),
+        (true, ServiceHealth::Looking, _) => (
+            "looking…".to_string(),
+            "The daemon has just started and is still looking for the hiding service".to_string(),
+        ),
+        (true, ServiceHealth::Ok | ServiceHealth::Skew | ServiceHealth::Incompatible, "") => (
+            "—".to_string(),
+            "Hiding pads, but from a release too old to say which: restart it after an upgrade"
+                .to_string(),
+        ),
+        (true, ServiceHealth::Ok | ServiceHealth::Skew | ServiceHealth::Incompatible, version) => {
+            (format!("v{version}"), release_tip(parts.hider, version))
+        }
+    };
     let hider = Cells {
         version: parts.hider_version.clone(),
         health: parts.hider,
-        chip: match (
-            online(parts.daemon),
-            online(parts.hider),
-            parts.hider_version.as_str(),
-        ) {
-            (false, _, _) => "unknown".to_string(),
-            (true, false, _) => "offline".to_string(),
-            (true, true, "") => "—".to_string(),
-            (true, true, version) => format!("v{version}"),
-        },
-        tip: match (
-            online(parts.daemon),
-            online(parts.hider),
-            parts.hider_version.as_str(),
-        ) {
-            (false, _, _) => "Only the daemon can say, and it isn't running".to_string(),
-            (true, false, _) => {
-                "A setup's pads are only grabbed: a program that reads a pad some other way, as Steam reads a PlayStation pad, still sees it".to_string()
-            }
-            (true, true, "") => {
-                "Hiding pads, but from a release too old to say which: restart it after an upgrade".to_string()
-            }
-            (true, true, version) => release_tip(parts.hider, version),
-        },
+        chip,
+        tip,
         config_path: String::new(),
     };
     // The tray is the daemon's to report: one client can't see another.

@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use ctrlassist::form::{self, Field, Kind, PRESET, Values};
-use ctrlassist::{Pad, Phase, Profile, Setup};
+use ctrlassist::{Hiding, Pad, Phase, Profile, Setup};
 use ctrlassist_protocol::profile::{DEFAULT, PadRef};
 use ctrlassist_protocol::rpc;
 
@@ -789,7 +789,7 @@ pub fn menu(view: &View) -> Vec<Entry> {
                 icon::STATUS,
                 format!(
                     "Hiding: {} · Real-time: {}",
-                    daemon.hiding.as_str(),
+                    hiding_text(daemon.hiding),
                     if daemon.realtime { "yes" } else { "no" }
                 ),
             ));
@@ -801,6 +801,20 @@ pub fn menu(view: &View) -> Vec<Entry> {
     entries.push(action(icon::SETTINGS, "Settings", Command::Settings));
     entries.push(action(icon::QUIT, "Quit tray", Command::Quit));
     entries
+}
+
+/// How the menu says the daemon hides a setup's pads: by the mechanism's
+/// name, or, while the daemon has just started and hasn't heard from the
+/// hiding service yet, that it is looking for it.
+#[must_use]
+pub fn hiding_text(hiding: Hiding) -> &'static str {
+    match hiding {
+        Hiding::Service | Hiding::Grab => hiding.as_str(),
+        Hiding::Looking => "looking for the service…",
+        // A mechanism from a later release, by its name. The protocol
+        // marks the enum non-exhaustive, so this arm can't be left out.
+        _ => hiding.as_str(),
+    }
 }
 
 /// What the menu and the tooltip say of a daemon on release `theirs`,
@@ -849,7 +863,6 @@ pub fn outline(entries: &[Entry]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use ctrlassist::Hiding;
 
     use super::*;
     use crate::state::tests::{profile, view};
@@ -1228,6 +1241,26 @@ default ✓ (Not set up) >
         assert!(menu.contains("- No pads are known"), "{menu}");
         // A pad a profile names that isn't known goes by what it wrote.
         assert!(menu.contains("Primary: address:dualsense >"), "{menu}");
+    }
+
+    /// The status line says how pads are hidden, and while the daemon
+    /// has just started and hasn't heard from the hiding service yet,
+    /// that it is looking for it.
+    #[test]
+    fn the_status_line_says_how_pads_are_hidden_or_that_the_daemon_is_looking() {
+        let line = |hiding| {
+            let menu = outline(&menu(&view(None, hiding)));
+            menu.lines()
+                .find(|line| line.contains("Hiding:"))
+                .map(str::to_string)
+                .unwrap_or_else(|| unreachable!("no hiding line in\n{menu}"))
+        };
+        assert_eq!(line(Hiding::Service), "- Hiding: service · Real-time: yes");
+        assert_eq!(line(Hiding::Grab), "- Hiding: grab · Real-time: yes");
+        assert_eq!(
+            line(Hiding::Looking),
+            "- Hiding: looking for the service… · Real-time: yes"
+        );
     }
 
     #[test]

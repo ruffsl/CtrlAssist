@@ -1,6 +1,7 @@
 //! The About pane: its rows from what the window shows, and the pane
 //! itself in the window.
 
+use ctrlassist::Hiding;
 use ctrlassist_gui::about::{Parts, refresh, rows};
 use ctrlassist_gui::state::Snapshot;
 use ctrlassist_gui::{AboutComponentRow, AppWindow, Pane, ServiceHealth};
@@ -82,6 +83,19 @@ fn a_running_daemon_says_its_release_its_files_and_how_pads_are_hidden() {
     assert_eq!(row(&unread, "daemon").chip, "—");
     assert!(row(&unread, "daemon").online);
 
+    // The daemon just started and still looking for the hiding service:
+    // said so plainly, in the neutral health, and not as absent.
+    let looking = rows(&Parts {
+        hider: ServiceHealth::Looking,
+        hider_version: String::new(),
+        ..parts.clone()
+    });
+    let hider = row(&looking, "hider");
+    assert_eq!(hider.health, ServiceHealth::Looking);
+    assert_eq!(hider.chip, "looking…");
+    assert!(hider.tip.contains("still looking for the hiding service"));
+    assert!(!hider.tip.contains("only grabbed"));
+
     // Pads only grabbed, no real-time scheduling, another install's
     // command on PATH, and a daemon this window can't talk to.
     let worse = rows(&Parts {
@@ -130,7 +144,7 @@ fn the_pane_shows_the_rows_the_window_holds() {
         available: true,
         hydrated: true,
         version: Some(VERSION.to_string()),
-        hidden: Some(true),
+        hiding: Some(Hiding::Service),
         hider: Some(VERSION.to_string()),
         config: "/somewhere".to_string(),
         realtime: true,

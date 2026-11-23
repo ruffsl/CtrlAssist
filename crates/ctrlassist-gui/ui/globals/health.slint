@@ -8,6 +8,8 @@ import { Theme } from "../theme.slint";
 // The encoding is shape for presence and color for usability: a filled
 // dot is a running service, a hollow one an absent service; green is
 // usable, amber usable with a patch-release difference, red unusable.
+// A dotted circle in the faint text color is a service whose presence
+// isn't known yet.
 export enum ServiceHealth {
     // Not running (the CLI: not found on PATH).
     offline,
@@ -19,6 +21,9 @@ export enum ServiceHealth {
     // Running on this GUI's release, or running with its release not
     // read yet (no evidence against it).
     ok,
+    // Being looked for: the hiding service, while the daemon has just
+    // started and hasn't heard from it yet. Neither there nor absent.
+    looking,
 }
 
 export global Health {
@@ -29,6 +34,9 @@ export global Health {
         }
         if health == ServiceHealth.skew {
             return Theme.warn;
+        }
+        if health == ServiceHealth.looking {
+            return Theme.text-dim;
         }
         return Theme.danger;
     }
@@ -41,6 +49,9 @@ export global Health {
         if health == ServiceHealth.skew {
             return Theme.warn-soft;
         }
+        if health == ServiceHealth.looking {
+            return Theme.chip;
+        }
         return Theme.danger-soft;
     }
 
@@ -51,6 +62,9 @@ export global Health {
         }
         if health == ServiceHealth.skew {
             return Theme.warn-text;
+        }
+        if health == ServiceHealth.looking {
+            return Theme.chip-text;
         }
         return Theme.danger-text;
     }
@@ -63,11 +77,18 @@ export global Health {
         if health == ServiceHealth.skew {
             return "warn";
         }
+        if health == ServiceHealth.looking {
+            return "neutral";
+        }
         return "danger";
     }
 
-    // Sidebar dot glyph: filled while the service runs.
+    // Sidebar dot glyph: filled while the service runs, dotted while
+    // it is looked for.
     public pure function dot(health: ServiceHealth) -> string {
+        if health == ServiceHealth.looking {
+            return "◌";
+        }
         return health == ServiceHealth.offline ? "○" : "●";
     }
 
@@ -78,6 +99,9 @@ export global Health {
         }
         if health == ServiceHealth.offline {
             return "✗";
+        }
+        if health == ServiceHealth.looking {
+            return "…";
         }
         return "!";
     }

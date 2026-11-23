@@ -1,7 +1,7 @@
 //! The daemon's state in the window: what a snapshot of the mirror
 //! says, and what the window shows of it.
 
-use ctrlassist::{DaemonClient, Problem, Profile, Reloaded};
+use ctrlassist::{DaemonClient, Hiding, Problem, Profile, Reloaded};
 use ctrlassist_daemon::{Daemon, Paths};
 use ctrlassist_gui::state::{Snapshot, health, reload_banner, reload_summary};
 use ctrlassist_gui::{AppWindow, Errors, ServiceHealth};
@@ -40,7 +40,7 @@ fn the_window_shows_a_snapshot_and_the_banner_for_another_release() {
         available: true,
         hydrated: false,
         version: None,
-        hidden: None,
+        hiding: None,
         ..Snapshot::default()
     };
     loading.show(&app);
@@ -57,7 +57,7 @@ fn the_window_shows_a_snapshot_and_the_banner_for_another_release() {
         available: true,
         hydrated: true,
         version: Some(VERSION.to_string()),
-        hidden: Some(true),
+        hiding: Some(Hiding::Service),
         ..Snapshot::default()
     };
     running.show(&app);
@@ -67,11 +67,20 @@ fn the_window_shows_a_snapshot_and_the_banner_for_another_release() {
 
     // Pads only grabbed: the hiding service isn't there.
     Snapshot {
-        hidden: Some(false),
+        hiding: Some(Hiding::Grab),
         ..running.clone()
     }
     .show(&app);
     assert_eq!(app.get_hider_health(), ServiceHealth::Offline);
+
+    // The daemon just started and still looking for the service: being
+    // looked for, not absent.
+    Snapshot {
+        hiding: Some(Hiding::Looking),
+        ..running.clone()
+    }
+    .show(&app);
+    assert_eq!(app.get_hider_health(), ServiceHealth::Looking);
 
     Snapshot {
         version: Some("99.0.0".to_string()),
@@ -139,7 +148,12 @@ async fn a_snapshot_reads_a_live_daemon_and_its_going() {
     let mut snapshot = Snapshot::default();
     for _ in 0..500 {
         snapshot = Snapshot::read(&client, None);
-        if snapshot.hydrated && snapshot.version.is_some() {
+        // Until the daemon has looked for the hiding service, it says
+        // it is looking.
+        if snapshot.hydrated
+            && snapshot.version.is_some()
+            && snapshot.hiding != Some(Hiding::Looking)
+        {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -151,7 +165,7 @@ async fn a_snapshot_reads_a_live_daemon_and_its_going() {
             hydrated: true,
             version: Some(VERSION.to_string()),
             // No hiding service at that socket: pads would be grabbed.
-            hidden: Some(false),
+            hiding: Some(Hiding::Grab),
             hider: None,
             config: socket.with_file_name("config").display().to_string(),
             // Granted or not is the machine's to say.
@@ -181,5 +195,5 @@ async fn a_snapshot_reads_a_live_daemon_and_its_going() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert_eq!(snapshot.daemon_health(), ServiceHealth::Offline);
-    assert_eq!(snapshot.hidden, None);
+    assert_eq!(snapshot.hiding, None);
 }
