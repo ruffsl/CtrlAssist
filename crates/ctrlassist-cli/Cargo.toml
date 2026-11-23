@@ -79,6 +79,13 @@ postupgrade = "packaging/scripts/postinstall.sh"
 # on Wayland. Names follow Debian and Ubuntu (deb), Fedora (rpm) and
 # Arch; check them against the target distribution before each release.
 #
+# And systemd and udev themselves, 248 or newer, each under the name its
+# format gives it (Arch's systemd carries udev): the scripts run
+# systemd-sysusers, systemctl and udevadm, the hiding service is a system
+# unit whose rule udev runs, and 248 is the oldest systemd with all that
+# its unit and rule use, worked out from when each arrived and tried on
+# 262 alone. Each format writes a version bound its own way.
+#
 # These must live under `overrides.<packager>`, mirroring nfpm's own
 # schema: cargo-nfpm's per-format tables have no `depends` field, so keys
 # placed there are silently dropped.
@@ -93,6 +100,8 @@ depends = [
     "libwayland-client0",
     "libwayland-egl1",
     "libxkbcommon0",
+    "systemd (>= 248)",
+    "udev (>= 248)",
 ]
 # Weak: the bash-completion loader, so the shipped registration autoloads.
 recommends = ["bash-completion"]
@@ -111,6 +120,8 @@ depends = [
     "libwayland-client",
     "libwayland-egl",
     "libxkbcommon",
+    "systemd >= 248",
+    "systemd-udev >= 248",
 ]
 recommends = ["bash-completion"]
 suggests = ["gnome-shell-extension-appindicator"]
@@ -125,6 +136,7 @@ depends = [
     "libglvnd",
     "wayland",
     "libxkbcommon",
+    "systemd>=248",
 ]
 
 [[bin]]
