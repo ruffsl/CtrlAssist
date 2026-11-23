@@ -116,6 +116,9 @@ pub struct Graph {
     /// Node indices in dependency order.
     order: Vec<usize>,
     outputs: Vec<PadState>,
+    /// The pads each node output's feedback goes to, beside `outputs`,
+    /// worked out as each node steps.
+    reach: Vec<SourceSet>,
     sinks: Vec<Input>,
     sink_states: Vec<PadState>,
 }
@@ -142,6 +145,14 @@ fn resolve(
         Input::Source(SourceId(source)) if present[source] => (states[source], true),
         Input::Source(_) => (PadState::NEUTRAL, false),
         Input::Node(NodeId(node), output) => (outputs[offsets[node] + output], true),
+    }
+}
+
+/// The pads an input's feedback goes to, from the nodes already stepped.
+fn reach_of(input: Input, offsets: &[usize], reach: &[SourceSet]) -> SourceSet {
+    match input {
+        Input::Source(source) => source.into(),
+        Input::Node(NodeId(node), output) => reach[offsets[node] + output],
     }
 }
 
@@ -247,6 +258,7 @@ impl Graph {
             offsets,
             order,
             outputs: vec![PadState::NEUTRAL; total],
+            reach: vec![SourceSet::EMPTY; total],
             sink_states: vec![PadState::NEUTRAL; spec.sinks.len()],
             sinks: spec.sinks,
         };
@@ -340,34 +352,13 @@ impl Graph {
     }
 
     /// The pads a virtual pad's feedback goes to; none for a sink that
-    /// doesn't exist.
+    /// doesn't exist. Each step works this out for every node's outputs,
+    /// so asking costs nothing however the graph is wired.
     #[must_use]
     pub fn feedback_targets(&self, sink: SinkId) -> SourceSet {
-        self.sinks
-            .get(sink.0)
-            .map_or(SourceSet::EMPTY, |input| self.targets_of(*input))
-    }
-
-    fn targets_of(&self, input: Input) -> SourceSet {
-        match input {
-            Input::Source(source) => source.into(),
-            Input::Node(NodeId(node), output) => match &self.nodes[node] {
-                Node::Mux(mux) => {
-                    let ports = mux.feedback_inputs();
-                    let mut targets = SourceSet::EMPTY;
-                    for (port, input) in self.inputs[node].iter().enumerate() {
-                        if ports & (1 << port) != 0 {
-                            targets |= self.targets_of(*input);
-                        }
-                    }
-                    targets
-                }
-                Node::Demux(demux) if demux.feedback_from(output) => {
-                    self.targets_of(self.inputs[node][0])
-                }
-                Node::Demux(_) => SourceSet::EMPTY,
-            },
-        }
+        self.sinks.get(sink.0).map_or(SourceSet::EMPTY, |input| {
+            reach_of(*input, &self.offsets, &self.reach)
+        })
     }
 
     fn evaluate(&mut self, emit: &mut impl FnMut(Change)) {
@@ -379,6 +370,7 @@ impl Graph {
             offsets,
             order,
             outputs,
+            reach,
             sinks,
             sink_states,
             ..
@@ -401,6 +393,34 @@ impl Graph {
                 Node::Demux(demux) => {
                     let end = offsets.get(node + 1).copied().unwrap_or(outputs.len());
                     demux.step(gathered[0], &mut outputs[offsets[node]..end]);
+                }
+            }
+            // Where this node's feedback goes, from where its inputs'
+            // goes. The order steps every input first, so each node
+            // output is worked out once, and this is linear in the
+            // graph's size however many ways a pad reaches a sink.
+            let start = offsets[node];
+            match &nodes[node] {
+                Node::Mux(mux) => {
+                    let ports = mux.feedback_inputs();
+                    let mut targets = SourceSet::EMPTY;
+                    for (port, input) in inputs[node].iter().enumerate() {
+                        if ports & (1 << port) != 0 {
+                            targets |= reach_of(*input, offsets, reach);
+                        }
+                    }
+                    reach[start] = targets;
+                }
+                Node::Demux(demux) => {
+                    let end = offsets.get(node + 1).copied().unwrap_or(reach.len());
+                    let from = reach_of(inputs[node][0], offsets, reach);
+                    for (output, slot) in reach[start..end].iter_mut().enumerate() {
+                        *slot = if demux.feedback_from(output) {
+                            from
+                        } else {
+                            SourceSet::EMPTY
+                        };
+                    }
                 }
             }
         }

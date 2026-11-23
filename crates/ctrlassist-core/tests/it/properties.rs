@@ -569,3 +569,78 @@ fn nothing_a_profile_or_a_pad_says_can_panic_a_step() {
         built.get()
     );
 }
+
+/// Where a virtual pad's feedback goes, found the slow way: walking back
+/// from it along every path, as the architecture describes it.
+fn walk_back(spec: &GraphSpec, graph: &Graph, input: Input) -> SourceSet {
+    match input {
+        Input::Source(source) => source.into(),
+        Input::Node(node, output) => match &spec.nodes[node.0] {
+            NodeSpec::Mux { inputs, config } => {
+                let all = (1u32 << inputs.len()) - 1;
+                let ports = match config.feedback {
+                    MuxFeedback::None => 0,
+                    MuxFeedback::Inputs(mask) => mask & all,
+                    MuxFeedback::Active => {
+                        graph.selected(node).map_or(all, |selected| 1 << selected)
+                    }
+                };
+                let mut targets = SourceSet::EMPTY;
+                for (port, input) in inputs.iter().enumerate() {
+                    if ports & (1 << port) != 0 {
+                        targets |= walk_back(spec, graph, *input);
+                    }
+                }
+                targets
+            }
+            NodeSpec::Demux { input, config } => {
+                let reached = config.feedback == DemuxFeedback::Active
+                    && graph
+                        .selected(node)
+                        .is_none_or(|selected| selected == output);
+                if reached {
+                    walk_back(spec, graph, *input)
+                } else {
+                    SourceSet::EMPTY
+                }
+            }
+        },
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2000))]
+
+    /// The feedback each step works out, node by node, is where a walk
+    /// back from the virtual pad along every path would end, after any
+    /// sequence of events.
+    #[test]
+    fn feedback_goes_where_a_walk_back_from_the_virtual_pad_ends(
+        sources in prop::collection::vec(any_source(), 3..5),
+        nodes in prop::collection::vec(any_node(), 0..4),
+        sinks in prop::collection::vec(any_input(), 0..4),
+        pokes in prop::collection::vec(any_poke(), 0..40),
+    ) {
+        let spec = GraphSpec { sources, nodes, sinks };
+        let Ok(mut graph) = Graph::build(spec.clone()) else {
+            return Ok(());
+        };
+        for poke in pokes {
+            match poke {
+                Poke::Update(source, state) => graph.update(SourceId(source), state, &mut |_| {}),
+                Poke::Present(source, present) => {
+                    graph.set_present(SourceId(source), present, &mut |_| {});
+                }
+                Poke::Switch(node) => graph.switch(NodeId(node), &mut |_| {}),
+                Poke::Select(node, index) => graph.select(NodeId(node), index, &mut |_| {}),
+            }
+            for (sink, input) in spec.sinks.iter().enumerate() {
+                prop_assert_eq!(
+                    graph.feedback_targets(SinkId(sink)),
+                    walk_back(&spec, &graph, *input),
+                    "virtual pad {}", sink
+                );
+            }
+        }
+    }
+}

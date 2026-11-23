@@ -644,6 +644,78 @@ fn feedback_follows_one_helper_between_two_players() {
     );
 }
 
+/// Where feedback goes is found at once however many ways a pad reaches
+/// a virtual pad: here by 8^20 and 2^32 paths, more than could ever be
+/// walked one by one on the input thread.
+#[test]
+fn feedback_is_found_however_many_ways_a_pad_reaches_a_virtual_pad() {
+    let layout = Layout::gamepad();
+    let node = |inputs: Vec<Input>| NodeSpec::Mux {
+        inputs,
+        config: MuxConfig::new(Mode::Priority, &layout),
+    };
+    // A chain of muxes, each taking the one before eight times over.
+    let chain = GraphSpec {
+        sources: vec![source()],
+        nodes: (0..20)
+            .map(|at| {
+                node(vec![
+                    if at == 0 {
+                        Input::Source(SourceId(0))
+                    } else {
+                        Input::Node(NodeId(at - 1), 0)
+                    };
+                    8
+                ])
+            })
+            .collect(),
+        sinks: vec![Input::Node(NodeId(19), 0)],
+    };
+    // A lattice two wide: each layer's two muxes take both of the layer
+    // before, in either order.
+    let layers = 32;
+    let lattice = GraphSpec {
+        sources: vec![source(), source()],
+        nodes: (0..layers * 2)
+            .map(|at| {
+                let (layer, side) = (at / 2, at % 2);
+                let before = |side: usize| {
+                    if layer == 0 {
+                        Input::Source(SourceId(side))
+                    } else {
+                        Input::Node(NodeId((layer - 1) * 2 + side), 0)
+                    }
+                };
+                node(vec![before(side), before(1 - side)])
+            })
+            .collect(),
+        sinks: vec![
+            Input::Node(NodeId(layers * 2 - 2), 0),
+            Input::Node(NodeId(layers * 2 - 1), 0),
+        ],
+    };
+
+    let started = std::time::Instant::now();
+    let mut chain = Graph::build(chain).unwrap();
+    let mut lattice = Graph::build(lattice).unwrap();
+    for at in 0..100 {
+        let state = pad().with(SOUTH, (at % 2) as f32);
+        step(&mut chain, SourceId(0), state);
+        step(&mut lattice, SourceId(at % 2), state);
+        assert_eq!(chain.feedback_targets(SinkId(0)), bit(SourceId(0)));
+        for sink in [SinkId(0), SinkId(1)] {
+            assert_eq!(
+                lattice.feedback_targets(sink),
+                bit(SourceId(0)) | bit(SourceId(1))
+            );
+        }
+    }
+    // Generous for a debug build on a busy machine; a walk path by path
+    // would take years.
+    let took = started.elapsed();
+    assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+}
+
 // --- feedback: how hard ------------------------------------------------------
 
 const KEY: EffectKey = EffectKey {
