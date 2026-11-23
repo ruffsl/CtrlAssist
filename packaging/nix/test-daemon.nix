@@ -140,6 +140,18 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl is-active ctrlassist-hider.socket")
         machine.succeed("su -l alice -c 'test -w /dev/uinput -a -w /dev/uhid'")
 
+    with subtest("the module applies its rules to a pad already connected, as the packages' install script does"):
+        # The uevent file of the pad's HID device as the kernel made it,
+        # as for a pad connected before the rules were there; the unit a
+        # switch to new rules restarts gives it to the service's group again.
+        sysname = nodes()[HID]["event"][0].split("/")[-1]
+        uevent = f"/sys/class/input/{sysname}/device/device/uevent"
+        assert machine.succeed(f"stat -c '%G %a' {uevent}").strip() == "ctrlassist-hider 664"
+        machine.succeed(f"chgrp root {uevent} && chmod g-w {uevent}")
+        machine.succeed("systemctl restart ctrlassist-udev-trigger.service")
+        machine.succeed("udevadm settle")
+        assert machine.succeed(f"stat -c '%G %a' {uevent}").strip() == "ctrlassist-hider 664"
+
     with subtest("the daemon is the user's service, started with the session, and its input thread is real-time"):
         daemon_is_up()
         machine.succeed(as_alice("systemctl --user is-active ctrlassist-daemon.service"))
