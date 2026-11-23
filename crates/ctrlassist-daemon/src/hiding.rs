@@ -24,10 +24,12 @@
 //! - **What nothing waits on is read off to one side.** A pad is shown
 //!   again, and what a hide given up came to is read, each as a
 //!   [`Reading`]: made at once, with no round trip, and read by a task
-//!   of its own that waits only on its own connection. A stop is answered
-//!   without one. Until a pad's reading ends, a hide of that pad waits for
-//!   it, within the hide's own work, as the service would refuse it as
-//!   busy meanwhile. A reading is hung up on when another of the same pad
+//!   of its own that waits only on its own connection, and, to show a
+//!   pad written whole reports, first on the pad's writer having left it
+//!   at rest. A stop is answered without one. Until a pad's reading ends,
+//!   a hide of that pad waits for it, within the hide's own work, as the
+//!   service would refuse it as busy meanwhile: so a pad hidden again
+//!   follows its last report too. A reading is hung up on when another of the same pad
 //!   is made, and the oldest when more than [`MOST_READINGS`] are under
 //!   way, so a service that never answers holds that many tasks at most;
 //!   hanging up has the service show the pad all the same.

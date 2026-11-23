@@ -153,6 +153,8 @@ pub struct FakeHider {
     asked: Arc<Mutex<Vec<Asked>>>,
     /// Set for a scripted stand-in.
     hold: Option<Arc<Hold>>,
+    /// Run as an unscripted stand-in is asked to restore a pad.
+    before_restore: BeforeRestore,
     /// The connections being served, each on a thread of its own as the
     /// real service serves them, to hang up on as the stand-in goes.
     clients: Arc<Mutex<Vec<OwnedFd>>>,
@@ -353,8 +355,12 @@ fn serve_scripted(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>, hold: &Hold) 
     }
 }
 
+/// What a stand-in runs as it is asked to restore a pad, before it
+/// notes or answers that: for a test to look at what is so then.
+type BeforeRestore = Arc<Mutex<Option<Box<dyn Fn() + Send>>>>;
+
 /// Serves one connection until it closes.
-fn serve(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>) {
+fn serve(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>, before_restore: &BeforeRestore) {
     let note = |what: Asked| {
         asked
             .lock()
@@ -411,6 +417,13 @@ fn serve(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>) {
             },
             Some(Request::Restore(token)) => match hidden.remove(&token.0) {
                 Some(id) => {
+                    if let Some(hook) = before_restore
+                        .lock()
+                        .expect("nothing panics while the hook is held")
+                        .as_ref()
+                    {
+                        hook();
+                    }
                     note(Asked::Restore(id.to_string()));
                     done(token)
                 }
@@ -526,6 +539,20 @@ impl FakeHider {
             .wait(|state| state.held > 0);
     }
 
+    /// Has an unscripted stand-in run `hook` each time it is asked to
+    /// restore a pad, before it notes or answers that, in place of any
+    /// hook it had.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a serving thread panicked while running a hook.
+    pub fn before_restore(&self, hook: impl Fn() + Send + 'static) {
+        *self
+            .before_restore
+            .lock()
+            .expect("nothing panics while the hook is held") = Some(Box::new(hook));
+    }
+
     /// Lets what it holds go, now or once it comes.
     pub fn let_go(&self) {
         if let Some(hold) = &self.hold {
@@ -540,6 +567,7 @@ impl FakeHider {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let clients = Arc::new(Mutex::new(Vec::new()));
         let stopping = Arc::new(AtomicBool::new(false));
+        let before_restore = BeforeRestore::default();
         let serving = std::thread::Builder::new()
             .name("fake-hider".into())
             .spawn({
@@ -547,6 +575,7 @@ impl FakeHider {
                 let clients = Arc::clone(&clients);
                 let stopping = Arc::clone(&stopping);
                 let hold = hold.clone();
+                let before_restore = Arc::clone(&before_restore);
                 move || {
                     while let Ok(connection) = accept(&listener) {
                         // Woken by the stand-in itself, to stop.
@@ -560,11 +589,12 @@ impl FakeHider {
                         }
                         let asked = Arc::clone(&asked);
                         let hold = hold.clone();
+                        let before_restore = Arc::clone(&before_restore);
                         let served = std::thread::Builder::new()
                             .name("fake-hider-client".into())
                             .spawn(move || match hold {
                                 Some(hold) => serve_scripted(&connection, &asked, &hold),
-                                None => serve(&connection, &asked),
+                                None => serve(&connection, &asked, &before_restore),
                             });
                         drop(served);
                     }
@@ -574,6 +604,7 @@ impl FakeHider {
             path: path.to_path_buf(),
             asked,
             hold,
+            before_restore,
             clients,
             stopping,
             serving: Some(serving),

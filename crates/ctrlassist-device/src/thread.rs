@@ -142,6 +142,15 @@ impl NewGraph {
             reported: vec![None; sources],
         }
     }
+
+    /// The pads it holds: those it brings, by its source number, until
+    /// the input thread takes it, and as it comes back refused; and once
+    /// it comes back taken, those the graph it replaced had that it has
+    /// no place for, by that graph's source number.
+    #[must_use]
+    pub fn pads(&self) -> &[Option<Box<Pad>>] {
+        &self.pads
+    }
 }
 
 /// Something that passed through a setup's feedback, for whoever is

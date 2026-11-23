@@ -1382,6 +1382,97 @@ async fn a_game_s_lights_reach_a_dualsense_behind_a_virtual_one() {
     daemon.stop().await;
 }
 
+/// A DualSense behind a virtual one is left at rest before the hiding
+/// service is asked to show it again: the report that turns a game's
+/// trigger effects off is written, and the pad's raw node closed, before
+/// the service would re-bind its driver, which cuts off a write not yet
+/// made and leaves the triggers as they were.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dualsense_is_left_at_rest_before_it_is_shown_again() {
+    use std::io::Write as _;
+    use std::sync::{Arc, Mutex};
+    const TEST: &str = "a_dualsense_is_left_at_rest_before_it_is_shown_again";
+    if !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    let real = ctrlassist_test::FakeDualSense::new(0x03).unwrap();
+    let raw = ctrlassist_test::raw_node_of(real.event_node());
+    let Some(raw) = raw.filter(|raw| ctrlassist_test::can_open(raw, true)) else {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED {TEST}: a DualSense's raw node isn't this user's to open here"
+        );
+        return;
+    };
+    let (_dir, socket) = socket();
+    let hider = ctrlassist_test::FakeHider::listen(&socket.with_file_name("hider.sock")).unwrap();
+    // Whether anything in this process, where the daemon runs, still had
+    // the pad's raw node open as each restore was asked: the daemon's
+    // writer closes it once it has written its last report.
+    let open_at_restore = Arc::new(Mutex::new(Vec::new()));
+    let noted = Arc::clone(&open_at_restore);
+    hider.before_restore(move || {
+        let open = std::fs::read_dir("/proc/self/fd")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|fd| std::fs::read_link(fd.path()).is_ok_and(|node| node == raw));
+        noted.lock().unwrap().push(open);
+    });
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    client
+        .put_profile(
+            "solo",
+            "mode = \"multicast\"\npad = \"02:ca:7e:00:51:03\"\noutputs = 1\nidentity = \"dualsense\"\n",
+        )
+        .await
+        .unwrap();
+    client.start_setup("solo").await.unwrap();
+    let setup = in_phase(&client, "solo", Phase::Running).await;
+
+    // A game stiffens the right trigger, through the virtual pad's raw
+    // node, as SDL does: a resistance from the start of its travel.
+    let node = setup.sinks[0].node.as_deref().unwrap();
+    let virtual_raw = ctrlassist_test::raw_node_of(Path::new(node)).unwrap();
+    let mut game = std::fs::OpenOptions::new()
+        .write(true)
+        .open(virtual_raw)
+        .unwrap();
+    let mut report = [0u8; 48];
+    (report[0], report[1]) = (0x02, 0x04);
+    (report[11], report[12], report[13]) = (0x01, 0x00, 0xff);
+    game.write_all(&report).unwrap();
+    eventually("the real pad's trigger was never stiffened", async || {
+        real.outputs()
+            .last()
+            .is_some_and(|sent| sent[1] & 0x04 != 0 && sent[11] == 0x01)
+    })
+    .await;
+
+    client.stop_setup("solo").await.unwrap();
+    let id = "address:02:ca:7e:00:51:03".to_string();
+    eventually("the pad was never shown again", async || {
+        hider
+            .asked()
+            .contains(&ctrlassist_test::Asked::Restore(id.clone()))
+    })
+    .await;
+    assert_eq!(
+        *open_at_restore.lock().unwrap(),
+        [false],
+        "the writer was through before the pad was shown again"
+    );
+    // Its last report turned both triggers' effects off.
+    eventually("the real pad was never left at rest", async || {
+        real.outputs()
+            .last()
+            .is_some_and(|sent| sent[1] & 0x0c == 0x0c && sent[11] == 0x05 && sent[22] == 0x05)
+    })
+    .await;
+    daemon.stop().await;
+}
+
 /// A reload brings a running setup up to its profile as it is on disk:
 /// as it runs where the virtual pads stay, and by a restart where one
 /// must be made anew.
