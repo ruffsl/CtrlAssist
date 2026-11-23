@@ -1208,8 +1208,22 @@ impl State {
         now: u64,
         work: impl FnOnce(&mut Setup, &OwnedFd) -> Option<(SourceId, Box<Pad>)>,
     ) {
+        if self.handle(slot, now, work) {
+            self.retire(slot, Report::Failed);
+        }
+    }
+
+    /// As [`guarded`](Self::guarded), but a setup that failed or panicked
+    /// is left for the caller to retire, which this says, so that what
+    /// the handling did can be reported first.
+    fn handle(
+        &mut self,
+        slot: usize,
+        now: u64,
+        work: impl FnOnce(&mut Setup, &OwnedFd) -> Option<(SourceId, Box<Pad>)>,
+    ) -> bool {
         let Some(running) = self.slots.get_mut(slot).and_then(Option::as_mut) else {
-            return;
+            return false;
         };
         let id = running.id;
         let epoll = &self.epoll;
@@ -1230,8 +1244,7 @@ impl State {
             }
         }
         let Ok(gone) = outcome else {
-            self.retire(slot, Report::Failed);
-            return;
+            return true;
         };
         // Told before a pad that has gone, whose report is in hand.
         self.tell_selections(slot);
@@ -1242,14 +1255,10 @@ impl State {
                 pad,
             });
         }
-        if self
-            .slots
+        self.slots
             .get(slot)
             .and_then(Option::as_ref)
             .is_some_and(|running| running.setup.failed)
-        {
-            self.retire(slot, Report::Failed);
-        }
     }
 
     /// Tells what a setup's nodes now select, where it isn't what was
@@ -1387,19 +1396,31 @@ impl State {
             }
             Command::NewGraph { setup, mut graph } => {
                 let mut taken = false;
+                let mut failed = None;
                 if let Some(slot) = self.slot_of(setup) {
-                    self.guarded(slot, now, |running, epoll| {
+                    let failing = self.handle(slot, now, |running, epoll| {
                         taken = running.take_graph(&mut graph, epoll, slot);
                         None
                     });
+                    failed = failing.then_some(slot);
                 }
                 if !taken {
+                    // Its own report says first what became of a setup
+                    // that failed taking it.
+                    if let Some(slot) = failed {
+                        self.retire(slot, Report::Failed);
+                    }
                     self.report(Report::GraphRefused { setup, graph });
                     return;
                 }
-                // Told of the graph first, then of what its nodes
-                // select: the control side numbers them by it.
+                // Told of the graph first, then of the setup failing on
+                // it or of what its nodes select: the control side
+                // numbers them by it.
                 self.report(Report::GraphTaken { setup, old: graph });
+                if let Some(slot) = failed {
+                    self.retire(slot, Report::Failed);
+                    return;
+                }
                 if let Some(slot) = self.slot_of(setup) {
                     if let Some(running) = self.slots.get_mut(slot).and_then(Option::as_mut) {
                         running.setup.forget_reported();
@@ -1629,5 +1650,40 @@ mod tests {
             .count();
         assert_eq!(failed, sent, "every refused setup came back");
         assert!(rig.state.slot_of(FIRST).is_some(), "the first still runs");
+    }
+
+    /// A setup that fails as it takes a new graph says it took the graph
+    /// first, so that what follows is numbered by it.
+    #[test]
+    fn a_setup_failing_on_a_new_graph_says_it_took_it_first() {
+        let mut rig = rig();
+        rig.send(Command::Start(FIRST, setup()));
+        rig.read();
+        // As when a pad it keeps can't be listened to again.
+        let slot = rig.state.slot_of(FIRST).unwrap();
+        if let Some(running) = rig.state.slots[slot].as_mut() {
+            running.setup.failed = true;
+        }
+        let graph = NewGraph::new(
+            toggle(),
+            vec![None],
+            vec![Place::Keep(SourceId(0)), Place::Keep(SourceId(1))],
+        );
+        rig.send(Command::NewGraph {
+            setup: FIRST,
+            graph: Box::new(graph),
+        });
+        let read = rig.read();
+        assert!(
+            matches!(
+                read[..],
+                [
+                    Report::GraphTaken { setup: FIRST, .. },
+                    Report::Failed(FIRST, _)
+                ]
+            ),
+            "{read:?}"
+        );
+        assert!(rig.state.slot_of(FIRST).is_none());
     }
 }
