@@ -50,14 +50,17 @@ GOTO="ctrlassist_hide_end"
 # file's group and mode for as long as the device exists, which a
 # re-bind of its driver doesn't end. Whether another of the device's
 # inputs is a keyboard can't be seen from here: the service refuses such
-# a device itself.
+# a device itself. A joystick that is also a keyboard or a pointer is
+# never hidden at all, as the service would refuse to hide it, and
+# nothing would show it again.
 LABEL="ctrlassist_hide_pad"
+ENV{ID_INPUT_KEYBOARD}=="1", GOTO="ctrlassist_hide_end"
+ENV{ID_INPUT_MOUSE}=="1", GOTO="ctrlassist_hide_end"
+ENV{ID_INPUT_TABLET}=="1", GOTO="ctrlassist_hide_end"
+ENV{ID_INPUT_POINTINGSTICK}=="1", GOTO="ctrlassist_hide_end"
 KERNEL!="event*", GOTO="ctrlassist_hide_markers"
-ENV{ID_INPUT_KEYBOARD}=="1", GOTO="ctrlassist_hide_markers"
 ENV{ID_INPUT_KEY}=="1", GOTO="ctrlassist_hide_markers"
-ENV{ID_INPUT_MOUSE}=="1", GOTO="ctrlassist_hide_markers"
 ENV{ID_INPUT_TOUCHPAD}=="1", GOTO="ctrlassist_hide_markers"
-ENV{ID_INPUT_TABLET}=="1", GOTO="ctrlassist_hide_markers"
 SUBSYSTEMS=="hid", DRIVERS=="?*", \
   RUN+="/usr/bin/chgrp ctrlassist-hider /sys/bus/hid/devices/%b/uevent", \
   RUN+="/usr/bin/chmod g+w /sys/bus/hid/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
