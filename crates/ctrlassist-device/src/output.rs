@@ -200,7 +200,9 @@ pub enum Writes {
     /// DualShock 4 given its raw node. Its last report turns off what a
     /// game set beyond rumble, a DualSense's trigger effects among them,
     /// which a re-bind of the pad's driver doesn't: so this is the write
-    /// that someone about to have the driver re-bound waits for.
+    /// that someone about to have the driver re-bound waits for. On USB,
+    /// that write done is the pad at rest; over Bluetooth, only the rest
+    /// on its way (see [`Rested`]).
     Reports,
     /// Levels to the pad's one kernel effect. Its last act erases the
     /// effect, which the kernel stops first.
@@ -216,8 +218,16 @@ pub enum Writes {
 /// - For [`Writes::Reports`], the writer has written what was left and
 ///   then the report that leaves the pad at rest, each written or refused
 ///   as by a pad that has gone, and has closed the raw node: nothing is
-///   written to the pad after. Each write to a pad on USB can take the
-///   kernel's five seconds, for a pad that stalls.
+///   written to the pad after. Written means what the kernel's write
+///   means on the pad's transport. On USB the write waits until the pad
+///   has taken the report, up to the kernel's five seconds for a pad
+///   that stalls, so the pad is at rest. Over Bluetooth it doesn't wait:
+///   through the kernel's own Bluetooth HID the report is queued for the
+///   session's thread to send, and through BlueZ's uhid it is handed to
+///   BlueZ, so the pad is at rest once that is sent. A re-bind of the
+///   driver straight after may drop what the kernel has queued, which is
+///   suspected and not yet seen (the project's concern,
+///   `docs/concerns/rest-over-bluetooth.md`).
 /// - For [`Writes::Effect`], the writer has sent the level left and
 ///   erased the effect. For a pad another program makes through uinput,
 ///   which has stopped answering, the update under way and the erase can
