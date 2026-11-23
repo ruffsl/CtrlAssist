@@ -1402,7 +1402,7 @@ async fn a_reload_brings_a_running_setup_up_to_its_profile() {
     );
 
     // A profile that is wrong now leaves what runs as it was.
-    std::fs::write(&file, "mode = \"priority\"\n").unwrap();
+    std::fs::write(&file, "mode = \"priority\"\npad = \"model:1209:8601\"\n").unwrap();
     let reloaded = client.reload().await.unwrap();
     assert_eq!(reloaded.wrong.len(), 1);
     tokio::time::sleep(Duration::from_millis(100)).await;

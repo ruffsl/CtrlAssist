@@ -743,14 +743,24 @@ async fn reload_says_what_the_daemon_found_changed_in_its_files() {
         "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n",
     )
     .unwrap();
-    std::fs::write(profiles.join("den.toml"), "mode = \"priority\"\n").unwrap();
+    std::fs::write(
+        profiles.join("den.toml"),
+        "mode = \"priority\"\npad = \"model:054c:09cc\"\n",
+    )
+    .unwrap();
     let found = ctrlassist(&socket, &["reload"]);
     assert!(found.status.success(), "{}", text(&found.stderr));
     let said = text(&found.stdout);
     let lines: Vec<&str> = said.lines().collect();
-    assert_eq!(lines[..2], ["couch: read again", "den: read again"]);
+    assert_eq!(
+        lines[..2],
+        ["couch: read again", "den: read again"],
+        "{said}"
+    );
     assert!(
-        lines[2].starts_with("den: wrong, so it can't be run: preset: "),
+        lines
+            .get(2)
+            .is_some_and(|line| line.starts_with("den: wrong, so it can't be run: pad: ")),
         "{said}"
     );
     let listed = ctrlassist(&socket, &["profile", "list"]);
