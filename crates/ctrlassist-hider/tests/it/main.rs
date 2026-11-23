@@ -385,3 +385,47 @@ fn a_hide_s_reply_says_how_many_times_the_pad_was_re_bound() {
     assert_eq!(client.restore(Token(2)).unwrap(), Some(1));
     service.join().unwrap();
 }
+
+/// A refusal that says no count, as one at the service's gate doesn't,
+/// re-bound nothing: a hide's, and a hide's and a cancel's given up. And
+/// the reply to a request given up waiting for is read past, to the
+/// reply to the one asked after it.
+#[test]
+fn a_refusal_that_says_no_count_re_bound_nothing() {
+    let (path, service) = stand_in(|connection| {
+        let refused = Reply::refused(Refusal::NotPermitted).encode();
+        for _ in 0..3 {
+            let _ = next(&connection);
+            send(connection.as_fd(), &refused, &[]).unwrap();
+        }
+        // A reopen given up, then a restore asked after it.
+        let (request, _) = next(&connection);
+        assert_eq!(request, Request::Reopen(Token(3)));
+        let event = readable("hidden");
+        send(
+            connection.as_fd(),
+            &counted(ok(3, true), 0).encode(),
+            &[event.as_fd()],
+        )
+        .unwrap();
+        let (request, _) = next(&connection);
+        assert_eq!(request, Request::Restore(Token(3)));
+        send(connection.as_fd(), &counted(ok(3, false), 1).encode(), &[]).unwrap();
+    });
+    let client = Client::connect(&path).unwrap();
+    let pad = readable("the pad");
+    client.send_hide(pad.as_fd()).unwrap();
+    let hid = client.hid().unwrap();
+    assert_eq!(
+        (hid.outcome.unwrap_err(), hid.rebinds),
+        (Refusal::NotPermitted, Some(0))
+    );
+    client.send_hide(pad.as_fd()).unwrap();
+    client.cancel().unwrap();
+    assert_eq!(client.cancelled().unwrap(), 0);
+
+    client.send_reopen(Token(3)).unwrap();
+    client.skip().unwrap();
+    assert_eq!(client.restore(Token(3)).unwrap(), Some(1));
+    service.join().unwrap();
+}
