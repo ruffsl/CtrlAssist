@@ -40,21 +40,28 @@ pub(crate) async fn reload(socket: &Path) -> Result<()> {
     if reloaded == Default::default() {
         writeln!(out, "nothing changed")?;
     }
+    // A problem quotes the profile's own text, which a terminal would
+    // obey; names are filtered too, as they come from files' names.
     for name in &reloaded.changed {
-        writeln!(out, "{name}: read again")?;
+        writeln!(out, "{}: read again", printable(name))?;
     }
     for name in &reloaded.removed {
-        writeln!(out, "{name}: gone")?;
+        writeln!(out, "{}: gone", printable(name))?;
     }
     for name in &reloaded.updating {
-        writeln!(out, "{name}: its running setup is taking it up")?;
+        writeln!(
+            out,
+            "{}: its running setup is taking it up",
+            printable(name)
+        )?;
     }
     for profile in &reloaded.wrong {
         if let Some(problem) = &profile.problem {
             writeln!(
                 out,
-                "{}: wrong, so it can't be run: {problem}",
-                profile.name
+                "{}: wrong, so it can't be run: {}",
+                printable(&profile.name),
+                printable(&problem.to_string())
             )?;
         }
     }

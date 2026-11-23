@@ -349,10 +349,12 @@ async fn a_draining_daemon_s_release_is_not_kept_for_the_next() {
         matches!(e, StateEvent::VersionMismatch { .. })
     })
     .await;
+    assert!(client.token_present());
 
     // The token goes, and the daemon answers on as it drains.
     token.undeclare().await.unwrap();
     next_matching(&mut watcher, |e| *e == StateEvent::DaemonDisappeared).await;
+    assert!(!client.token_present());
     assert!(matches!(
         client.check_release().await,
         Err(Error::VersionMismatch { .. })

@@ -24,6 +24,7 @@
 //! between the reply and the history.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,7 +35,6 @@ use tokio::sync::{Notify, broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 use zenoh::Session;
-use zenoh::handlers::FifoChannelHandler;
 use zenoh::key_expr::KeyExpr;
 use zenoh::pubsub::Subscriber;
 use zenoh::sample::{Sample, SampleKind};
@@ -96,6 +96,9 @@ pub(crate) struct LifetimeMirror<M> {
     handshake: Arc<Handshake>,
     /// Woken whenever a sample arrives, for the hydration wait.
     arrived: Arc<Notify>,
+    /// Whether the service's liveliness token is present, as last
+    /// delivered: set as it arrives, before the follow task takes it up.
+    token: Arc<AtomicBool>,
     /// The client copies' hold on the follow task, which ends it once the
     /// last copy drops and so releases the session it holds. The task's
     /// own copies have none, or it would keep itself alive.
@@ -119,6 +122,7 @@ impl<M> Clone for LifetimeMirror<M> {
             events: self.events.clone(),
             handshake: Arc::clone(&self.handshake),
             arrived: Arc::clone(&self.arrived),
+            token: Arc::clone(&self.token),
             owner: self.owner.clone(),
         }
     }
@@ -200,9 +204,20 @@ impl<M: Mirror> LifetimeMirror<M> {
     /// Follow `M`'s service on `session`: its liveliness from history on,
     /// then a lifetime per token.
     pub(crate) async fn start(session: &Session, caller: &Arc<Caller>) -> Result<Self> {
-        let liveliness = session
+        let token = Arc::new(AtomicBool::new(false));
+        // Liveliness edges are few: one each way per lifetime.
+        let (edges, liveliness) = mpsc::unbounded_channel();
+        let subscriber = session
             .liveliness()
             .declare_subscriber(alive_key(M::SERVICE))
+            .callback({
+                let token = Arc::clone(&token);
+                move |sample: Sample| {
+                    token.store(sample.kind() == SampleKind::Put, Ordering::SeqCst);
+                    // Nobody is reading once the follow task has gone.
+                    let _ = edges.send(sample);
+                }
+            })
             .history(true)
             .await
             .map_err(|e| Error::transport("subscribe to the service's liveliness", e))?;
@@ -212,9 +227,11 @@ impl<M: Mirror> LifetimeMirror<M> {
             events,
             handshake: Arc::new(Handshake::new(M::SERVICE)),
             arrived: Arc::new(Notify::new()),
+            token,
             owner: None,
         };
         let follow = tokio::spawn(this.clone().follow(
+            subscriber,
             liveliness,
             session.clone(),
             Arc::clone(caller),
@@ -239,6 +256,12 @@ impl<M: Mirror> LifetimeMirror<M> {
         self.lock().hydrated
     }
 
+    /// Whether the service's token is present, as last delivered, whether
+    /// or not its keys are subscribed yet.
+    pub(crate) fn token_present(&self) -> bool {
+        self.token.load(Ordering::SeqCst)
+    }
+
     /// Where the mirror's events, and the release check's, go out.
     pub(crate) fn events(&self) -> &broadcast::Sender<StateEvent> {
         &self.events
@@ -257,12 +280,14 @@ impl<M: Mirror> LifetimeMirror<M> {
 
     async fn follow(
         self,
-        liveliness: Subscriber<FifoChannelHandler<Sample>>,
+        subscriber: Subscriber<()>,
+        mut liveliness: mpsc::UnboundedReceiver<Sample>,
         session: Session,
         caller: Arc<Caller>,
     ) {
+        let _subscriber = subscriber;
         let mut lifetime: Option<Lifetime> = None;
-        while let Ok(sample) = liveliness.recv_async().await {
+        while let Some(sample) = liveliness.recv().await {
             if sample.kind() == SampleKind::Put {
                 if lifetime.is_none() {
                     lifetime = Some(self.begin(&session, &caller));

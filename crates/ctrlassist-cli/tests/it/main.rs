@@ -2,8 +2,13 @@
 
 #![expect(clippy::unwrap_used, reason = "tests fail loudly")]
 
+mod fake;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::time::Instant;
+
+use fake::{FakeDaemon, HOSTILE};
 
 use ctrlassist_daemon::{Daemon, Paths};
 use ctrlassist_device::InputThread;
@@ -44,6 +49,29 @@ fn ctrlassist(socket: &Path, arguments: &[&str]) -> Output {
 
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Runs the built `ctrlassist` binary as [`ctrlassist`] does, failing the
+/// test rather than hanging it if the command doesn't end.
+fn ctrlassist_ending(socket: &Path, arguments: &[&str]) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ctrlassist"))
+        .arg("--socket")
+        .arg(socket)
+        .args(arguments)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + std::time::Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        let late = Instant::now() > deadline;
+        if late {
+            let _ = child.kill();
+        }
+        assert!(!late, "`ctrlassist {}` never ended", arguments.join(" "));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    child.wait_with_output().unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -101,7 +129,7 @@ fn the_daemon_as_a_service_verb_runs_until_told_to_stop_and_stops_cleanly() {
         .arg(&socket)
         .args(["service", "daemon", "--state-dir"])
         .arg(socket.with_file_name("state"))
-        .stderr(std::process::Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     // It is up once `status` finds it; each try is a whole connection.
@@ -274,6 +302,109 @@ fn a_command_that_needs_the_daemon_says_when_there_is_none() {
         );
         assert!(output.stdout.is_empty());
     }
+}
+
+/// A daemon that has withdrawn its token, as one that is stopping has,
+/// may still answer: a command takes it for no daemon at once, rather
+/// than waiting for state that never comes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_that_is_stopping_is_no_daemon_to_a_command() {
+    let (_dir, socket) = socket();
+    let daemon = FakeDaemon::start(&socket, true, false).await;
+    for arguments in [
+        &["pads"][..],
+        &["identities"],
+        &["setups"],
+        &["profile", "list"],
+        &["profile", "show", "x"],
+        &["identify", "x"],
+        &["start", "x"],
+    ] {
+        let output = ctrlassist_ending(&socket, arguments);
+        assert_eq!(output.status.code(), Some(1), "{arguments:?}");
+        assert!(
+            text(&output.stderr).contains(&format!("no daemon is running on {}", socket.display())),
+            "{arguments:?}: {}",
+            text(&output.stderr)
+        );
+        assert!(output.stdout.is_empty(), "{arguments:?}");
+    }
+    daemon.stop().await;
+}
+
+/// A daemon whose token is up but that doesn't say its release isn't
+/// healthy, and `status --json` says so in its one object.
+#[tokio::test(flavor = "multi_thread")]
+async fn status_reports_a_daemon_that_does_not_answer_as_a_failure() {
+    let (_dir, socket) = socket();
+    let daemon = FakeDaemon::start(&socket, false, true).await;
+
+    let plain = ctrlassist_ending(&socket, &["status"]);
+    assert_eq!(plain.status.code(), Some(1));
+    assert!(
+        text(&plain.stdout).contains(&format!("daemon alive at {}", socket.display())),
+        "{}",
+        text(&plain.stdout)
+    );
+    assert!(
+        text(&plain.stderr).contains("the daemon didn't say its release"),
+        "{}",
+        text(&plain.stderr)
+    );
+
+    let json = ctrlassist_ending(&socket, &["status", "--json"]);
+    assert_eq!(json.status.code(), Some(1));
+    let found: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(found["alive"], true);
+    assert!(found["release"].is_null() && found["compatible"].is_null());
+    assert!(
+        found["error"]
+            .as_str()
+            .unwrap()
+            .contains("didn't say its release"),
+        "{found}"
+    );
+    assert!(json.stderr.is_empty(), "{}", text(&json.stderr));
+    daemon.stop().await;
+}
+
+/// What the daemon says of a profile quotes the profile's own text,
+/// which reaches the terminal with its control characters made
+/// printable, whether as output or as an error.
+#[tokio::test(flavor = "multi_thread")]
+async fn text_from_a_profile_cannot_drive_the_terminal() {
+    let (dir, socket) = socket();
+    let daemon = FakeDaemon::start(&socket, true, true).await;
+    let file = dir.path().join("couch.toml");
+    std::fs::write(&file, "mode = \"priority\"\n").unwrap();
+    let file = file.to_str().unwrap();
+    let printable = HOSTILE.replace('\u{1b}', "?");
+
+    let reloaded = ctrlassist_ending(&socket, &["reload"]);
+    assert!(reloaded.status.success(), "{}", text(&reloaded.stderr));
+    let said = text(&reloaded.stdout);
+    assert!(
+        said.contains(&format!(
+            "odd{printable}: wrong, so it can't be run: node.mux.inputs[0]: no source or node is called \"{printable}\""
+        )),
+        "{said:?}"
+    );
+    assert!(!said.contains('\u{1b}'), "{said:?}");
+
+    for arguments in [
+        &["profile", "validate", file][..],
+        &["profile", "put", file],
+    ] {
+        let refused = ctrlassist_ending(&socket, arguments);
+        assert_eq!(refused.status.code(), Some(1), "{arguments:?}");
+        let said = text(&refused.stderr);
+        assert!(
+            said.contains(&format!("no source or node is called \"{printable}\"")),
+            "{arguments:?}: {said:?}"
+        );
+        assert!(!said.contains('\u{1b}'), "{arguments:?}: {said:?}");
+    }
+    daemon.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
