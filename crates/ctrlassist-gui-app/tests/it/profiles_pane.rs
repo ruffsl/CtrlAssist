@@ -67,6 +67,7 @@ fn known() -> Known {
         ],
         setups: vec![Setup {
             name: "quick".to_string(),
+            start: 1,
             phase: Phase::Running,
             reason: None,
             sources: vec![

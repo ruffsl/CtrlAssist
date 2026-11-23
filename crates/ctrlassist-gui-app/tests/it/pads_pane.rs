@@ -29,6 +29,7 @@ fn pad(id: &str, name: &str, connected: bool, setup: Option<&str>) -> Pad {
 fn quick() -> Setup {
     Setup {
         name: "quick".to_string(),
+        start: 1,
         phase: Phase::Running,
         reason: None,
         sources: vec![

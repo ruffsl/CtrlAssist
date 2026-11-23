@@ -9,6 +9,7 @@ use slint::Model as _;
 fn setup(name: &str, phase: Phase) -> Setup {
     Setup {
         name: name.to_string(),
+        start: 1,
         phase,
         reason: (phase == Phase::Failed).then(|| "a virtual pad refused a write".to_string()),
         sources: vec![

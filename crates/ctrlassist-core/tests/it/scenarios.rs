@@ -1223,16 +1223,23 @@ fn thresholds_must_be_numbers_in_order() {
         config.release = release;
         assert!(build_mux(config).is_ok(), "{engage} {release}");
     }
-    for deadzone in [f32::NAN, -0.1, f32::INFINITY] {
-        let result = Graph::build(GraphSpec {
+    let with_deadzone = |deadzone| {
+        Graph::build(GraphSpec {
             sources: vec![SourceSpec {
                 deadzone,
                 layout: Layout::gamepad(),
             }],
             nodes: vec![],
             sinks: vec![Input::Source(SourceId(0))],
-        });
+        })
+    };
+    // At 1 or more, a stick short of all the way would read as at rest.
+    for deadzone in [f32::NAN, -0.1, f32::INFINITY, 1.0, 1.5] {
+        let result = with_deadzone(deadzone);
         assert_eq!(result.err(), Some(GraphError::BadThreshold), "{deadzone}");
+    }
+    for deadzone in [0.0, 0.1, 0.99] {
+        assert!(with_deadzone(deadzone).is_ok(), "{deadzone}");
     }
 }
 

@@ -134,6 +134,14 @@ impl std::fmt::Display for Problem {
 pub struct Setup {
     /// The setup's name: the profile it runs.
     pub name: String,
+    /// Which of the daemon's starts this is: a number the daemon gives
+    /// each setup it starts afresh, never twice while it runs, and that
+    /// stays the same through a change the setup takes as it runs. A
+    /// setup seen with another number than the last seen under its name
+    /// was stopped and started again since, and has new virtual pads. 0
+    /// from a daemon too old to say.
+    #[serde(default)]
+    pub start: u32,
     /// Where it is in its life.
     pub phase: Phase,
     /// Why it failed, for a person to read; absent in any other phase.
@@ -256,6 +264,17 @@ mod tests {
         for phase in [Phase::Starting, Phase::Running, Phase::Held, Phase::Failed] {
             assert_eq!(serde_json::to_value(phase).unwrap(), phase.as_str());
         }
+    }
+
+    #[test]
+    fn a_setup_from_a_daemon_that_does_not_number_its_starts_reads_as_start_0() {
+        let older = r#"{"name":"couch","phase":"running","sources":[],"sinks":[]}"#;
+        let setup: Setup = serde_json::from_str(older).unwrap();
+        assert_eq!(setup.start, 0);
+        let numbered = Setup { start: 7, ..setup };
+        let text = serde_json::to_string(&numbered).unwrap();
+        assert!(text.contains(r#""start":7"#), "{text}");
+        assert_eq!(serde_json::from_str::<Setup>(&text).unwrap(), numbered);
     }
 
     #[test]

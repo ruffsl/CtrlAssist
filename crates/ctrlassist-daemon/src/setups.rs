@@ -361,6 +361,7 @@ impl Setups {
         let entry = self.entries.get(name)?;
         Some(payload::Setup {
             name: name.to_string(),
+            start: entry.id.0,
             phase: entry.phase,
             reason: entry.reason.clone(),
             sources: entry
@@ -2927,6 +2928,7 @@ mod tests {
         assert!(updating.await.unwrap().unwrap().disruptive);
         let started = rig.reactor.setups.setup("couch").unwrap();
         assert_eq!(started.phase, Phase::Held);
+        assert_ne!(started.start, 7, "started afresh, it is another start");
         assert!(
             started.sinks[0]
                 .node
@@ -3035,6 +3037,10 @@ mod tests {
             .await;
         let taken = rig.reactor.setups.setup("couch").unwrap();
         assert_eq!(taken.phase, Phase::Held, "it never stopped");
+        assert_eq!(
+            taken.start, 7,
+            "a change taken as it runs is the same start"
+        );
         assert_eq!(
             taken.sources[1].pad.as_deref(),
             Some("address:0c:27:56:4f:bd:15")

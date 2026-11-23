@@ -136,7 +136,7 @@ input = "second"
 identity = "xbox"
 ```
 
-- A **source** is a controller. `deadzone` treats a stick resting inside it as untouched.
+- A **source** is a controller. `deadzone` treats a stick resting inside it as untouched: a number from 0 to less than 1, the whole of a stick's travel, and 0.1 if it isn't written.
 - A **node** combines. A `mux` takes several `inputs` to one output, by `priority`, `average` or `toggle`. A `demux` takes one `input` to several `outputs`, `unicast` or `multicast`; its outputs are called `name.0`, `name.1` and so on.
 - A **sink** is a virtual controller, following a source or a node.
 - `engage` and `release` are how far a stick or trigger must move for a mux to count an input as touching it, and how far back before it lets go.

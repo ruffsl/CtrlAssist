@@ -32,7 +32,9 @@ pub enum Input {
 #[derive(Clone, PartialEq, Debug)]
 pub struct SourceSpec {
     /// Stick-like groups resting inside this are zeroed before any node
-    /// sees them.
+    /// sees them. At least 0 and less than 1, a stick's or a trigger's
+    /// whole travel: at 1, one moved short of all the way would read as
+    /// at rest.
     pub deadzone: f32,
     /// The pad's groups.
     pub layout: Layout,
@@ -76,7 +78,7 @@ pub enum GraphError {
     /// button on one of the node's inputs, or a switch on a node that
     /// never selects: a mux with no switched group, or a multicast demux.
     BadControl,
-    /// A deadzone that isn't a number or is negative, or thresholds that
+    /// A deadzone that isn't `0 <= deadzone < 1`, or thresholds that
     /// aren't `0 < release <= engage <= 1`.
     BadThreshold,
 }
@@ -93,7 +95,7 @@ impl std::fmt::Display for GraphError {
                 "a control is out of range, or a switch is not a button on one of its node's inputs or is on a node that never selects"
             }
             Self::BadThreshold => {
-                "a deadzone is not a number or is negative, or thresholds are not 0 < release <= engage <= 1"
+                "a deadzone is not 0 <= deadzone < 1, or thresholds are not 0 < release <= engage <= 1"
             }
         })
     }
@@ -220,7 +222,7 @@ impl Graph {
         if spec
             .sources
             .iter()
-            .any(|source| !(source.deadzone.is_finite() && source.deadzone >= 0.0))
+            .any(|source| !(0.0..1.0).contains(&source.deadzone))
         {
             return Err(GraphError::BadThreshold);
         }

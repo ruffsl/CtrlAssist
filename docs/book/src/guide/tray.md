@@ -30,7 +30,7 @@ The line after it, just above **Settings**, says how controllers are being hidde
 CtrlAssist tells you when:
 
 - an arrangement **started** or **stopped** without your asking for it from the tray: a managed one starting by itself, or one started or stopped from the window or the command line. What you start or stop from the tray you can already see there;
-- a change you picked needed a new virtual controller, so the arrangement **restarted**;
+- an arrangement **restarted** with a new virtual controller: because a change you picked needed one, or because it was restarted from the window or the command line;
 - an arrangement is **held** because a controller disconnected, and when it is **running again**;
 - an arrangement **failed**;
 - the **daemon stopped**, which removes every virtual controller, or came back;
