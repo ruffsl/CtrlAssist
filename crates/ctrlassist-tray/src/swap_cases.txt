@@ -16,10 +16,12 @@
 # is the picked pad keeps its model when a start would then give it
 # another pad of the model; otherwise it takes the pad the picked part
 # had, and with none it keeps its model: a part named by model is never
-# left to choose by a pick. A start takes pads as the daemon does: parts
-# in the order of their names, each named by model taking the first pad of
-# the model that is connected, in no other setup, and not taken by a part
-# before it.
+# left to choose by a pick. A start takes pads as the daemon does, in two
+# passes: first each part named by id takes that pad; then each part named
+# by model, in the order of the parts' names, takes the first pad of the
+# model that is connected, in no other setup, named by id by no part, and
+# not taken by a part before it. A running setup's part named by model
+# never keeps a pad another part names by id.
 
 case: two pads named by id change places
 pads: address:aa=054c:0ce6 address:bb=054c:0ce6
@@ -63,8 +65,14 @@ before: primary=model:054c:0ce6 assist=address:cc
 pick: assist=address:bb
 after: primary=address:cc assist=address:bb
 
-case: a model part before the picked one in order takes the first free pad, the picked one among them
+case: a model part before the picked one in order takes no pad a part names by id, so keeps its model
 pads: address:aa=054c:0ce6 address:bb=054c:0ce6 address:cc=2dc8:6003
+before: primary=address:cc assist=model:054c:0ce6
+pick: primary=address:aa
+after: primary=address:aa assist=model:054c:0ce6
+
+case: a model part before the picked one in order takes the picked part's pad when the picked pad was the only one of the model
+pads: address:aa=054c:0ce6 address:cc=2dc8:6003
 before: primary=address:cc assist=model:054c:0ce6
 pick: primary=address:aa
 after: primary=address:aa assist=address:cc
@@ -81,3 +89,10 @@ running: assist=address:aa primary=address:bb
 before: assist=address:aa primary=model:054c:0ce6
 pick: assist=address:bb
 after: assist=address:bb primary=model:054c:0ce6
+
+case: running, a part named by model gives up its setup's pad to a part that names it by id
+pads: address:aa=054c:0ce6@couch address:bb=054c:0ce6@couch
+running: assist=address:aa primary=address:bb
+before: assist=model:054c:0ce6 primary=address:bb
+pick: primary=address:aa
+after: assist=model:054c:0ce6 primary=address:aa

@@ -93,10 +93,23 @@ pub(crate) fn names(wanted: &PadRef, pad: &Pad) -> bool {
     }
 }
 
+/// The pads named exactly among `wanted`: each is its part's, and no
+/// part named by model takes it.
+pub(crate) fn named_exactly<'a>(wanted: &[&'a PadRef]) -> Vec<&'a str> {
+    wanted
+        .iter()
+        .filter_map(|wanted| match wanted {
+            PadRef::Exact(id) => Some(id.as_str()),
+            PadRef::Model(..) => None,
+        })
+        .collect()
+}
+
 /// The pads that `wanted`, a profile's pads in the order of their
-/// names, would have if it started now, as the daemon binds them: one
-/// named by its id is that pad, if it is known; one named by model is
-/// the first connected pad of the model that no setup has and none
+/// names, would have if it started now, as the daemon binds them, in two
+/// passes: first each part named by its id has that pad, if it is known;
+/// then each part named by model, in order, has the first connected pad
+/// of the model that no setup has, no part names by its id, and none
 /// before it took. None where no pad would be. The daemon takes the
 /// first of a model to have connected, which it doesn't publish: the
 /// order here is the one it publishes the pads in, by id. A pad of the
@@ -106,18 +119,25 @@ pub(crate) fn bind<'a>(
     wanted: &[&PadRef],
     own: Option<&str>,
 ) -> Vec<Option<&'a Pad>> {
-    let mut bound: Vec<Option<&Pad>> = Vec::with_capacity(wanted.len());
-    for wanted in wanted {
-        let pad = match wanted {
+    let named = named_exactly(wanted);
+    let mut bound: Vec<Option<&Pad>> = wanted
+        .iter()
+        .map(|wanted| match wanted {
             PadRef::Exact(id) => view.pad(id),
-            PadRef::Model(..) => view.pads.iter().find(|pad| {
-                names(wanted, pad)
-                    && pad.connected
-                    && (pad.setup.is_none() || pad.setup.as_deref() == own)
-                    && !bound.iter().flatten().any(|taken| taken.id == pad.id)
-            }),
-        };
-        bound.push(pad);
+            PadRef::Model(..) => None,
+        })
+        .collect();
+    for (at, wanted) in wanted.iter().enumerate() {
+        if matches!(wanted, PadRef::Exact(_)) {
+            continue;
+        }
+        bound[at] = view.pads.iter().find(|pad| {
+            names(wanted, pad)
+                && pad.connected
+                && (pad.setup.is_none() || pad.setup.as_deref() == own)
+                && !named.contains(&pad.id.as_str())
+                && !bound.iter().flatten().any(|taken| taken.id == pad.id)
+        });
     }
     bound
 }
@@ -327,6 +347,41 @@ mod tests {
         // Not while one of them is in a setup.
         two.pads[1].setup = Some("other".to_string());
         assert_eq!(ready(&two), ["couch"]);
+    }
+
+    /// A part named by model takes no pad another part names by its id,
+    /// though it comes first in order: the daemon binds the parts named
+    /// by id first.
+    #[test]
+    fn a_part_named_by_model_leaves_the_pads_named_by_id() {
+        const MIXED: &str = "mode = \"toggle\"\nassist = \"model:054c:0ce6\"\nprimary = \"serial:054c:0ce6:xbox\"\n";
+        let mut view = view(None, Hiding::Service);
+        // The pad named by id is the first of the model.
+        view.pads.rotate_right(1);
+        view.pads[0].id = "serial:054c:0ce6:xbox".to_string();
+        for pad in &mut view.pads {
+            (pad.vendor, pad.product) = (0x054c, 0x0ce6);
+        }
+        view.profiles[0].toml = MIXED.to_string();
+        view.profiles.truncate(1);
+        let wanted = [
+            &PadRef::Model(0x054c, 0x0ce6),
+            &PadRef::Exact("serial:054c:0ce6:xbox".to_string()),
+        ];
+        let bound: Vec<Option<&str>> = bind(&view, &wanted, None)
+            .into_iter()
+            .map(|pad| pad.map(|pad| pad.id.as_str()))
+            .collect();
+        assert_eq!(
+            bound,
+            [Some("address:dualsense"), Some("serial:054c:0ce6:xbox")]
+        );
+        assert_eq!(ready(&view), ["couch"]);
+        // With no other pad of the model, the part named by model has
+        // none, and the profile isn't ready.
+        view.pads[1].connected = false;
+        view.pads[2].connected = false;
+        assert!(ready(&view).is_empty());
     }
 
     #[test]

@@ -306,11 +306,11 @@ fn wanted(view: &View, value: &str) -> Option<PadRef> {
 
 /// The known pad each pad field of the profile `name` takes, by its key:
 /// one named by its id that pad; one named by model, while a setup runs
-/// the profile, the pad that setup has for it, and otherwise the pad a
-/// start would take now, as [`crate::tip::bind`] has the daemon bind
-/// them. With `fresh`, as a start would take them whether or not a setup
-/// runs the profile, its own pads counting as free. A part with no pad
-/// to take isn't there.
+/// the profile, the pad that setup has for it unless another part names
+/// that pad by its id, and otherwise the pad a start would take now, as
+/// [`crate::tip::bind`] has the daemon bind them. With `fresh`, as a
+/// start would take them whether or not a setup runs the profile, its
+/// own pads counting as free. A part with no pad to take isn't there.
 fn pads_taken<'a>(
     view: &'a View,
     name: &str,
@@ -328,6 +328,7 @@ fn pads_taken<'a>(
     parts.sort_by_key(|(key, _)| *key);
     let refs: Vec<&PadRef> = parts.iter().map(|(_, wanted)| wanted).collect();
     let bound = crate::tip::bind(view, &refs, fresh.then_some(name));
+    let named = crate::tip::named_exactly(&refs);
     let setup = view.setup(name).filter(|_| !fresh);
     parts
         .iter()
@@ -340,7 +341,9 @@ fn pads_taken<'a>(
                         let source = setup.sources.iter().find(|source| source.name == *key)?;
                         view.pad(source.pad.as_deref()?)
                     })
-                    .filter(|pad| crate::tip::names(wanted, pad))
+                    .filter(|pad| {
+                        crate::tip::names(wanted, pad) && !named.contains(&pad.id.as_str())
+                    })
                     .or(bound),
             };
             Some((*key, pad?))
@@ -927,7 +930,7 @@ mod tests {
             }
             ran += 1;
         }
-        assert_eq!(ran, 10, "every case was read");
+        assert_eq!(ran, 12, "every case was read");
     }
 
     /// The fixture's daemon with the default profile as a daemon makes
