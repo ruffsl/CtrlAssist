@@ -652,6 +652,8 @@ Each area is fixed on a branch of its own and merged here as it comes back; a fi
 
 - **The fifth review, of the whole after the simplification, is done:** one finding high, 5M-1, the rule by anchor being wrong for a pad on a wireless receiver, a regression the simplification brought; four medium; the rest low. Ids beginning with 5. Not yet acted on.
 
+- **The maintainer's choice on the fifth review, 2026-11-23:** fix the high and the mediums, and stop; the lows, a review of the receiver's fix, and the checks on hardware are for another day. A re-bind is to be known by the service's own marked request on the pad's anchor: a node that goes after it is away, and any other going is a pad that left.
+
 
 ## Deviations
 

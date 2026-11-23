@@ -30,6 +30,8 @@ This holds whoever re-bound the pad and however many times: the service for a hi
 
 **The findings of the fourth review that this doesn't remove are fixed with it:** 4H-1, 4H-3, 4M-2, 4M-3's two that aren't of the count, and the device crate's 4D-1, 4D-2 and 4D-4. 4D-3 waits on hardware.
 
+**A re-bind is known by its request** (decided after the fifth review, which found the rule above wrong for a pad on a wireless receiver, whose input goes when the pad is switched off while the receiver, its anchor, stays). The hiding service asks a re-bind by a change event on the anchor that it marks as its own, and udev sends that event on before the removals it causes. The hotplug watch hears it. So the first line of the rule becomes: a pad's node goes after its anchor was so marked, and the anchor is still there: the pad is away. A node that goes with no such mark has left, and is published, whatever became of its anchor. The mark is cleared when the pad's nodes are back. A re-bind by anyone but the service is then published as a pad leaving and one connecting, which is what it is.
+
 ## What is lost and what is not known
 
 - **A re-bind no driver comes back from** leaves the pad away, and so published as connected, until its anchor goes. The count had the same gap, recorded as accepted.
