@@ -17,7 +17,9 @@ path = "src/main.rs"
 # trusts with their pads. No async runtime, no control-plane crates.
 [dependencies]
 libc = { workspace = true }
-rustix = { workspace = true, features = ["event", "fs", "net", "process", "rand"] }
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "rand", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 udev = { workspace = true }
 
 [[test]]
