@@ -573,7 +573,7 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
         sinks: vec![Input::Source(PRIMARY)],
     })
     .unwrap();
-    let (thread, _reports) = InputThread::spawn().unwrap();
+    let (thread, reports) = InputThread::spawn().unwrap();
     thread
         .send(Command::Start(
             ID,
@@ -619,6 +619,37 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
     }
     game.thread().unpark();
     game.join().unwrap();
+
+    // Stopped, the setup is handed back, and dropping it drops the pad,
+    // which erases the effect it kept. The stand-in answers that as a
+    // pad's driver does: unanswered, the kernel waits 30 seconds for it,
+    // holding the pad, and again as the pad's node is closed.
+    thread.send(Command::Stop(ID)).unwrap();
+    let setup = match reports.recv().unwrap() {
+        Report::Stopped(_, setup) => setup,
+        other => unreachable!("expected the setup back, got {other:?}"),
+    };
+    let dropping = std::thread::spawn(move || drop(setup));
+    let mut erased = false;
+    for _ in 0..400 {
+        let mut fds = [PollFd::new(&motors, PollFlags::IN)];
+        let wait = Timespec {
+            tv_sec: 0,
+            tv_nsec: 10_000_000,
+        };
+        let _ = poll(&mut fds, Some(&wait));
+        motors
+            .serve(|request| {
+                erased |= request == Request::Erase { id: 0 };
+                Ok(())
+            })
+            .unwrap();
+        if erased {
+            break;
+        }
+    }
+    dropping.join().unwrap();
+    assert!(erased, "the pad's effect is erased as the pad is dropped");
 
     let level = Effect {
         strong: 0x6000,
