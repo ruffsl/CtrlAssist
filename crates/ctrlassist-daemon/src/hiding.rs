@@ -198,8 +198,8 @@ enum Unasked {
     /// A hide whose errand ended as it was asked, given up with a
     /// `cancel`.
     Cut(Cut),
-    /// The service refused.
-    Refused,
+    /// The service refused, as this says.
+    Refused(Refusal),
     /// The service isn't there, or its connection broke.
     NotThere,
 }
@@ -332,7 +332,9 @@ impl Hiding {
         drop(self.connect(&own));
         let mut state = self.state();
         if state.found == Found::Looking {
-            // The daemon stopped first.
+            // The daemon stopped first, or the service wouldn't say, as
+            // to a user not in front of a seat: pads are grabbed until a
+            // later connection finds it.
             state.found = Found::Absent;
         }
         drop(state);
@@ -482,11 +484,11 @@ impl Hiding {
             // usual case of a pad leaving a setup, and nothing wrong.
             Some(Err(Error::Refused(Refusal::Absent))) => {
                 debug!("the hiding service has nothing to open: the pad isn't connected");
-                Err(Unasked::Refused)
+                Err(Unasked::Refused(Refusal::Absent))
             }
             Some(Err(Error::Refused(refusal))) => {
                 warn!(%refusal, "the hiding service didn't do as asked");
-                Err(Unasked::Refused)
+                Err(Unasked::Refused(refusal))
             }
             Some(Err(error)) => {
                 // A connection that broke is given up: the service shows
@@ -550,8 +552,11 @@ impl Hiding {
             .unwrap_or_default()
     }
 
-    /// A new connection to the service, for `errand`. One not known to
-    /// be there says its release first, and whether it counts.
+    /// A new connection to the service, for `errand`, which says its
+    /// release first, and whether it counts. Every connection asks, a
+    /// round trip the service answers at once: a service upgraded or
+    /// restarted since the last is known as it is now, with no connection
+    /// having had to break for it.
     fn connect(&self, errand: &Arc<Errand>) -> Result<Arc<Connection>, Unasked> {
         let socket = self.socket.as_deref().ok_or(Unasked::NotThere)?;
         if self.state().closed || errand.has_ended() {
@@ -565,29 +570,26 @@ impl Hiding {
                 return Err(Unasked::NotThere);
             }
         };
-        let found = self.state().found.clone();
-        let counts = match found {
-            Found::There { counts, .. } => counts,
-            Found::Looking | Found::Absent => {
-                match self.ask(errand, &connection, Client::release) {
-                    Ok((release, counts)) => {
-                        self.found(Found::There {
-                            release: Some(release),
-                            counts,
-                        });
-                        counts
-                    }
-                    // From before it could be asked.
-                    Err(Unasked::Refused) => {
-                        self.found(Found::There {
-                            release: None,
-                            counts: false,
-                        });
-                        false
-                    }
-                    Err(unasked) => return Err(unasked),
-                }
+        let counts = match self.ask(errand, &connection, Client::release) {
+            Ok((release, counts)) => {
+                self.found(Found::There {
+                    release: Some(release),
+                    counts,
+                });
+                counts
             }
+            // Not understood: a service from before it could be asked.
+            Err(Unasked::Refused(Refusal::BadRequest)) => {
+                self.found(Found::There {
+                    release: None,
+                    counts: false,
+                });
+                false
+            }
+            // Any other refusal, as of a caller not in front of a seat,
+            // says nothing of what the service is: what is known of it
+            // stays as it was, and the next connection asks again.
+            Err(unasked) => return Err(unasked),
         };
         connection.counts.store(counts, Ordering::Relaxed);
         Ok(connection)
@@ -642,7 +644,7 @@ impl Hiding {
             },
             Err(Unasked::Ended) => return Err(Unhidden::Ended),
             Err(Unasked::Cut(cut)) => return Err(Unhidden::Cut(cut)),
-            Err(Unasked::Refused | Unasked::NotThere) => return Err(Unhidden::Not(0)),
+            Err(Unasked::Refused(_) | Unasked::NotThere) => return Err(Unhidden::Not(0)),
         };
         let mut state = self.state();
         // Hidden by re-binding its driver, it is shown again the same way.
@@ -711,7 +713,7 @@ impl Hiding {
         let own = Arc::clone(&self.own);
         match self.ask(&own, &held.connection, |client| client.restore(held.token)) {
             Ok(rebinds) => (true, rebinds),
-            Err(Unasked::Refused) => (false, None),
+            Err(Unasked::Refused(_)) => (false, None),
             Err(_) => (true, None),
         }
     }
@@ -891,12 +893,16 @@ mod tests {
     /// daemon stopping ends, with nothing counted.
     #[test]
     fn a_hide_given_up_on_a_service_that_never_answers_holds_only_its_settling() {
-        let (_dir, _listener, path) = silent();
+        let dir = tempfile::Builder::new()
+            .prefix("ca")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let path = dir.path().join("hider.sock");
+        // Never let go: what the hide came to is never said.
+        let hider =
+            ctrlassist_test::FakeHider::holding(&path, ctrlassist_test::Cancelled::Undone).unwrap();
         let hiding = Arc::new(Hiding::new(&path));
-        hiding.found(Found::There {
-            release: Some("0.5.0".to_string()),
-            counts: true,
-        });
+        hiding.look();
         let errand = Arc::new(Errand::default());
         let hiding_it = aside({
             let (hiding, errand) = (Arc::clone(&hiding), Arc::clone(&errand));
@@ -905,7 +911,7 @@ mod tests {
                 hiding.hide(&errand, "pad", fd.as_fd())
             }
         });
-        assert!(hiding_it.recv_timeout(SETTLE).is_err(), "it waits");
+        hider.wait_held();
         assert_eq!(hiding.end(&errand), ["pad".to_string()]);
         let Err(Unhidden::Cut(cut)) = hiding_it.recv().unwrap() else {
             unreachable!("a hide under way is given up")
@@ -919,5 +925,45 @@ mod tests {
         assert!(settling.recv_timeout(SETTLE).is_err(), "it waits");
         hiding.close();
         assert_eq!(settling.recv().unwrap(), 0);
+    }
+
+    /// A first look the service refuses, as it refuses a user who isn't
+    /// in front of a seat, says nothing of what the service is: the pads
+    /// are grabbed meanwhile, and the next connection asks again. Once it
+    /// is answered, the release is known and a hide is given up with a
+    /// `cancel`, as to any service that counts.
+    #[test]
+    fn a_first_look_refused_is_asked_again() {
+        let dir = tempfile::Builder::new()
+            .prefix("ca")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let path = dir.path().join("hider.sock");
+        let script = ctrlassist_test::Script {
+            refuse: 1,
+            hold_hides: Some(ctrlassist_test::Cancelled::Untouched),
+            ..ctrlassist_test::Script::default()
+        };
+        let hider = ctrlassist_test::FakeHider::scripted(&path, script).unwrap();
+        let hiding = Arc::new(Hiding::new(&path));
+        hiding.look();
+        assert_eq!(hiding.mechanism(), payload::Hiding::Grab);
+        assert_eq!(hiding.service_release(), None);
+
+        let errand = Arc::new(Errand::default());
+        let hiding_it = aside({
+            let (hiding, errand) = (Arc::clone(&hiding), Arc::clone(&errand));
+            move || {
+                let fd = a_descriptor();
+                hiding.hide(&errand, "pad", fd.as_fd()).map(|_| ())
+            }
+        });
+        hider.wait_held();
+        assert_eq!(hiding.mechanism(), payload::Hiding::Service);
+        assert!(hiding.service_release().is_some(), "published once known");
+        assert_eq!(hiding.end(&errand), ["pad".to_string()], "given up");
+        assert!(matches!(hiding_it.recv().unwrap(), Err(Unhidden::Cut(_))));
+        assert!(hider.asked().contains(&ctrlassist_test::Asked::Cancel));
+        hider.let_go();
     }
 }
