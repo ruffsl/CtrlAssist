@@ -9,7 +9,7 @@
 #
 # Version bumps and CHANGELOGs come from `release-plz update`, run locally
 # (`just release-bump`) or by release-plz.yml's pull request, and merged
-# before tagging. Nothing is published to crates.io. After CtrlAssist's
+# before tagging. Nothing is published to crates.io. After TisVlay's
 # release workflow, without its crates.io and Nix cache phases.
 name: Release
 

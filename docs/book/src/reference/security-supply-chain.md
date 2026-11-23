@@ -16,7 +16,7 @@ The hiding service is kept small so it can be read in one sitting, and is closed
 - One user's programs can't stop it serving another: each connection is served on its own, and one user may hold only a few.
 - Whatever it hid is restored when its client goes away, however that happens, and when the service itself stops.
 
-What this protects is the rest of the system and other users from a program running as you. It does not protect you from your own programs: a game running as you could already read your controllers. If the hiding service itself were taken over, the most it could do is what its user's group may: read game controllers, reset them and hide them. That would disrupt play, not hand over the machine.
+What this protects is the rest of the system and other users from a program running as you. It does not protect you from your own programs: a game running as you could already read your controllers. If the hiding service itself were taken over, the most it could do is what its user's group may: read the game controllers it hid; read and write the raw interface of any PlayStation controller, which takes the output and feature reports that set its lights, its rumble and its settings; reset any game controller's driver, or send any game controller's device a made-up event, which the system's own rules then act on as on a real one; and hide game controllers. That would disrupt play, not hand over the machine.
 
 
 ## Checking a download

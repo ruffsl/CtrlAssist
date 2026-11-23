@@ -1,5 +1,7 @@
 # Slint notes — what I learned while building ctrlassist-gui
 
+Kept hard-wrapped, as TisVlay's is, so the two can be diffed.
+
 Self-notes for future me. Copied from TisVlay's `.claude/slint.md` with
 the window, whose Slint code is TisVlay's: what was found there holds
 here, and the names are this workspace's. The upstream Slint skill at
