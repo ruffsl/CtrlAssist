@@ -374,8 +374,9 @@ fn crc32(seed: u8, data: &[u8]) -> u32 {
 /// The output report that sets a DualShock 4's rumble, and its lightbar
 /// if a color is given, with the report's length. The pad takes what a
 /// report marks and leaves the rest as it was. Over Bluetooth the
-/// report says how often the pad reports, which is kept at the kernel
-/// driver's own choice, and ends in a checksum.
+/// report ends in a checksum, and says nothing of how often the pad
+/// reports: the kernel's driver sets that once as it binds the pad, and
+/// leaves it out of every report after, as this does.
 fn dualshock4_report(
     level: Level,
     color: Option<[u8; 3]>,
@@ -401,8 +402,9 @@ fn dualshock4_report(
         return (report, 32);
     }
     report[0] = 0x11;
-    // A HID report with a checksum, at one report every 4 ms.
-    report[1] = 0x80 | 0x40 | 4;
+    // A HID report with a checksum. The low six bits, the interval,
+    // stay clear, as in the driver's own reports after the first.
+    report[1] = 0x80 | 0x40;
     report[3..11].copy_from_slice(&common);
     let checksum = crc32(0xa2, &report[..DS4_BLUETOOTH_SIZE - 4]);
     report[DS4_BLUETOOTH_SIZE - 4..].copy_from_slice(&checksum.to_le_bytes());
@@ -1091,7 +1093,7 @@ mod tests {
         assert_eq!(usb[..9], [0x05, 0x03, 0, 0, 0x40, 0x80, 1, 2, 3]);
         let (bluetooth, length) = dualshock4_report(Level::default(), Some([9, 8, 7]), true);
         assert_eq!(length, 78);
-        assert_eq!(bluetooth[..11], [0x11, 0xc4, 0, 0x03, 0, 0, 0, 0, 9, 8, 7]);
+        assert_eq!(bluetooth[..11], [0x11, 0xc0, 0, 0x03, 0, 0, 0, 0, 9, 8, 7]);
         let checksum = u32::from_le_bytes(bluetooth[74..].try_into().unwrap());
         assert_eq!(checksum, crc32(0xa2, &bluetooth[..74]));
         assert!(Kind::takes(BUS_USB, VENDOR, PRODUCT));
