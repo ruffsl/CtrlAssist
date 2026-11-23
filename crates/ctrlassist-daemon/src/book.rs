@@ -431,7 +431,7 @@ mod tests {
         }
     }
 
-    const ADDRESS: &str = "0c:27:56:4f:bd:14";
+    const ADDRESS: &str = "0a:1b:2c:3d:4e:14";
 
     fn dualsense(node: &str) -> Found {
         found(node, "DualSense", Some(ADDRESS), Some("usb-1/input0"))

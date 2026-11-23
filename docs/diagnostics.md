@@ -55,7 +55,7 @@ The renderer is [`crates/ctrlassist-gui-app/src/diagnostic.rs`](../crates/ctrlas
 
 ## What is masked or left out
 
-- **Pad addresses are masked everywhere in the text,** after rendering: `0c:27:56:4f:bd:14` becomes `0c:27:56:xx:xx:xx#1`. The vendor half stays, which tells a maker's pad from a clone; the number is the address's place among those met, so the same address reads the same everywhere and two pads of one maker don't read alike.
+- **Pad addresses are masked everywhere in the text,** after rendering: `0a:1b:2c:3d:4e:14` becomes `0a:1b:2c:xx:xx:xx#1`. The vendor half stays, which tells a maker's pad from a clone; the number is the address's place among those met, so the same address reads the same everywhere and two pads of one maker don't read alike.
 - **No file paths.** The directory the daemon keeps the user's files in names the home directory, and so usually the user: `daemon.config` says only whether the daemon named one, as TisVlay's bundle does. The path stays in the window, for About's buttons that open the folders. Nor does the bundle carry the tray's or the window's settings file, the daemon's state directory, or a socket under `/run/user/<uid>`. What it does carry that is a path is a virtual pad's event node, `/dev/input/event…`, in `setups`, and in a failed setup's reason the node of the pad it couldn't open: those name no user.
 - **No host identity.** Hostname and user name are not collected.
 - **The profiles' text is the user's own,** comments included, and goes in as written, addresses masked. The issue form's logs field reminds them the report is public.

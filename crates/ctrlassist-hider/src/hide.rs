@@ -229,13 +229,13 @@ mod tests {
 
     #[test]
     fn only_kernel_shaped_names_name_a_marker() {
-        assert!(pad::is_address("0c:27:56:4f:bd:14"));
+        assert!(pad::is_address("0a:1b:2c:3d:4e:14"));
         for hostile in [
             "",
-            "0C:27:56:4F:BD:14",
-            "0c:27:56:4f:bd:1",
-            "0c:27:56:4f:bd:14 ",
-            "0c:27:56:4f:bd\",R",
+            "0A:1B:2C:3D:4E:14",
+            "0a:1b:2c:3d:4e:1",
+            "0a:1b:2c:3d:4e:14 ",
+            "0a:1b:2c:3d:4e\",R",
             "0c-27-56-4f-bd-14",
             "../../../etc/passwd",
         ] {
@@ -245,7 +245,7 @@ mod tests {
         for hostile in ["", "a b", "a\"", "a\nb", "a,b", "a/b", "é", &"x".repeat(65)] {
             assert!(!pad::is_serial(hostile), "{hostile:?}");
         }
-        assert!(pad::is_uniq("0c:27:56:4f:bd:14") && pad::is_uniq("7EED821FFB17"));
+        assert!(pad::is_uniq("0a:1b:2c:3d:4e:14") && pad::is_uniq("7EED821FFB17"));
         for hostile in ["", "a/b", "..", "a b"] {
             assert!(!pad::is_uniq(hostile), "{hostile:?}");
         }

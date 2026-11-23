@@ -173,7 +173,7 @@ async fn the_daemon_serves_a_preset_s_fields_and_keeps_what_they_write() {
     let mut values = form::Values::new();
     for (key, value) in [
         ("mode", "average"),
-        ("primary", "0c:27:56:4f:bd:14"),
+        ("primary", "0a:1b:2c:3d:4e:14"),
         ("assist", "model:054c:09cc"),
         ("rumble", "assist"),
         ("managed", "true"),

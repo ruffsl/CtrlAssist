@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn a_state_key_parses_back_to_its_id() {
-        let id = pad_id("address:0c:27:56:4f:bd:14");
+        let id = pad_id("address:0a:1b:2c:3d:4e:14");
         assert_eq!(parse_pad(&pad(&id)), Some(id.as_str()));
         assert_eq!(parse_pad("ctrlassist/pad/"), None);
         assert_eq!(parse_pad("ctrlassist/pad/a/b"), None);

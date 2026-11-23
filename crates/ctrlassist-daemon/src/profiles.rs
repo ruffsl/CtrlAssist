@@ -210,7 +210,7 @@ mod tests {
     use super::*;
 
     const RIGHT: &str =
-        "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
+        "mode = \"priority\"\nprimary = \"0a:1b:2c:3d:4e:14\"\nassist = \"model:054c:09cc\"\n";
 
     #[test]
     fn a_profile_put_is_kept_across_a_restart_until_deleted() {

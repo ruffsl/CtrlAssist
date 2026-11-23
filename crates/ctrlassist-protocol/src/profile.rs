@@ -368,7 +368,7 @@ pub struct Sink {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum PadRef {
     /// One pad, by the name it is known by across reconnects, such as
-    /// `address:0c:27:56:4f:bd:14`.
+    /// `address:0a:1b:2c:3d:4e:14`.
     Exact(String),
     /// Any pad of a model, by vendor and product.
     Model(u16, u16),

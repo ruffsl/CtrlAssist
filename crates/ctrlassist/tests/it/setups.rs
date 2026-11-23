@@ -270,7 +270,7 @@ async fn a_setup_that_cannot_start_says_why_and_leaves_nothing() {
     let refused = client
         .put_profile(
             "twice",
-            "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"address:0c:27:56:4f:bd:14\"\n",
+            "mode = \"priority\"\nprimary = \"0a:1b:2c:3d:4e:14\"\nassist = \"address:0a:1b:2c:3d:4e:14\"\n",
         )
         .await
         .unwrap_err();

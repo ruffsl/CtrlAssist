@@ -15,12 +15,12 @@ fn setup(name: &str, phase: Phase) -> Setup {
         sources: vec![
             SetupSource {
                 name: "assist".to_string(),
-                pad: Some("address:1c:96:5a:a1:35:da".to_string()),
+                pad: Some("address:1a:2b:3c:4d:5e:da".to_string()),
                 present: phase != Phase::Held,
             },
             SetupSource {
                 name: "primary".to_string(),
-                pad: Some("address:0c:27:56:4f:bd:14".to_string()),
+                pad: Some("address:0a:1b:2c:3d:4e:14".to_string()),
                 present: true,
             },
         ],

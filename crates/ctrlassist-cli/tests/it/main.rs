@@ -411,7 +411,7 @@ async fn a_profile_file_is_checked_put_shown_listed_and_deleted() {
     let (dir, socket) = socket();
     let daemon = start(&socket).await;
     let right =
-        "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
+        "mode = \"priority\"\nprimary = \"0a:1b:2c:3d:4e:14\"\nassist = \"model:054c:09cc\"\n";
     let file = dir.path().join("couch.toml");
     std::fs::write(&file, right).unwrap();
     let wrong = dir.path().join("wrong.toml");
@@ -739,7 +739,7 @@ async fn reload_says_what_the_daemon_found_changed_in_its_files() {
     std::fs::create_dir_all(&profiles).unwrap();
     std::fs::write(
         profiles.join("couch.toml"),
-        "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n",
+        "mode = \"priority\"\nprimary = \"0a:1b:2c:3d:4e:14\"\nassist = \"model:054c:09cc\"\n",
     )
     .unwrap();
     std::fs::write(

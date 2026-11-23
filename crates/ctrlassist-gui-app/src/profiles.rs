@@ -1110,7 +1110,7 @@ mod tests {
         values.insert(form::PRESET.to_string(), "unicast".to_string());
         let short = change(&fields, "den", &values).expect("kept as not set up");
         assert!(!short.update);
-        values.insert("pad".to_string(), "address:0c:27:56:4f:bd:14".to_string());
+        values.insert("pad".to_string(), "address:0a:1b:2c:3d:4e:14".to_string());
         assert!(change(&fields, "den", &values).expect("a profile").update);
         // Not a profile, whatever its pads.
         values.insert(form::PRESET.to_string(), "sideways".to_string());

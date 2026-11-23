@@ -35,7 +35,7 @@ fn quick() -> Setup {
         sources: vec![
             SetupSource {
                 name: "primary".to_string(),
-                pad: Some("address:0c:27:56:4f:bd:14".to_string()),
+                pad: Some("address:0a:1b:2c:3d:4e:14".to_string()),
                 present: true,
             },
             SetupSource {
@@ -61,11 +61,11 @@ fn profiles() -> Vec<Profile> {
     vec![
         kept(
             "desk",
-            "mode = \"unicast\"\npad = \"address:0c:27:56:4f:bd:14\"\n",
+            "mode = \"unicast\"\npad = \"address:0a:1b:2c:3d:4e:14\"\n",
         ),
         kept(
             "quick",
-            "mode = \"priority\"\nprimary = \"address:0c:27:56:4f:bd:14\"\nassist = \"address:1c:96:5a:a1:35:da\"\n",
+            "mode = \"priority\"\nprimary = \"address:0a:1b:2c:3d:4e:14\"\nassist = \"address:1a:2b:3c:4d:5e:da\"\n",
         ),
         // One the daemon finds wrong names no pad that can be told.
         kept("broken", "mode = \"priority\"\n"),
@@ -76,13 +76,13 @@ fn some_pads() -> Vec<Pad> {
     vec![
         pad("serial:045e:02dd:7EED821FFB17", "Xbox pad", false, None),
         pad(
-            "address:1c:96:5a:a1:35:da",
+            "address:1a:2b:3c:4d:5e:da",
             "Wireless Controller",
             true,
             None,
         ),
         pad(
-            "address:0c:27:56:4f:bd:14",
+            "address:0a:1b:2c:3d:4e:14",
             "DualSense",
             true,
             Some("quick"),
@@ -113,7 +113,7 @@ fn rows_put_connected_pads_first_and_say_what_each_is() {
         ("quick", "primary")
     );
     assert!(dualsense.hidden);
-    assert_eq!(dualsense.address, "0c:27:56:4f:bd:14");
+    assert_eq!(dualsense.address, "0a:1b:2c:3d:4e:14");
     assert_eq!(dualsense.tag, "bd:14");
     assert_eq!(dualsense.key, "address-0c-27-56-4f-bd-14");
     // What it is doing, its maker's tile, and whether games see it.
@@ -226,7 +226,7 @@ fn identify_needs_the_pad_there_and_forget_needs_it_gone_and_asks_first() {
     assert!(enabled("pads-identify"));
     assert!(!enabled("pads-forget"));
     crate::support::activate_shown(&app, "pads-identify");
-    assert_eq!(*asked.borrow(), ["identify address:0c:27:56:4f:bd:14"]);
+    assert_eq!(*asked.borrow(), ["identify address:0a:1b:2c:3d:4e:14"]);
 
     // A remembered pad: the other way about, and Forget asks first.
     pads.set_selected_index(3);
@@ -450,7 +450,7 @@ fn focus_by_keys(app: &AppWindow, at: i32, id: &str) {
 fn a_profile_not_set_up_is_listed_on_the_pads_it_names() {
     let den = Profile {
         name: "den".to_string(),
-        toml: "mode = \"priority\"\nprimary = \"address:0c:27:56:4f:bd:14\"\n".to_string(),
+        toml: "mode = \"priority\"\nprimary = \"address:0a:1b:2c:3d:4e:14\"\n".to_string(),
         unset: vec!["assist".to_string()],
         problem: None,
     };

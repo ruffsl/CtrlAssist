@@ -2472,7 +2472,7 @@ mod tests {
     use crate::store::Store;
 
     const PROFILE: &str =
-        "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
+        "mode = \"priority\"\nprimary = \"0a:1b:2c:3d:4e:14\"\nassist = \"model:054c:09cc\"\n";
 
     struct Rig {
         _dir: TempDir,
@@ -2626,7 +2626,7 @@ mod tests {
         assert!(failed.reason.unwrap().contains("gave it up"));
         assert_eq!(failed.sinks[0].node, None, "its virtual pads are gone");
         assert!(failed.sources.iter().all(|source| !source.present));
-        assert_eq!(rig.reactor.book.user("address:0c:27:56:4f:bd:14"), None);
+        assert_eq!(rig.reactor.book.user("address:0a:1b:2c:3d:4e:14"), None);
         finish(&mut rig.reactor).await;
 
         // It can't be started over until it is stopped, which only
@@ -2716,7 +2716,7 @@ mod tests {
         let mut rig = rig().await;
         follow(&mut rig.reactor, 7, Phase::Starting);
         assert_eq!(
-            rig.reactor.book.user("address:0c:27:56:4f:bd:14"),
+            rig.reactor.book.user("address:0a:1b:2c:3d:4e:14"),
             None,
             "a pad never seen has nothing to note"
         );
@@ -2758,7 +2758,7 @@ mod tests {
             .done(Done::Returned {
                 name: "couch".to_string(),
                 setup: SetupId(7),
-                id: "address:0c:27:56:4f:bd:14".to_string(),
+                id: "address:0a:1b:2c:3d:4e:14".to_string(),
                 pad: None,
                 token: None,
             })
@@ -2770,7 +2770,7 @@ mod tests {
             .done(Done::Returned {
                 name: "gone".to_string(),
                 setup: SetupId(7),
-                id: "address:0c:27:56:4f:bd:14".to_string(),
+                id: "address:0a:1b:2c:3d:4e:14".to_string(),
                 pad: None,
                 token: None,
             })
@@ -2910,7 +2910,7 @@ mod tests {
         drop(updating);
 
         // A buzz reaches a pad its setup holds, and no other.
-        let pad = "address:0c:27:56:4f:bd:14";
+        let pad = "address:0a:1b:2c:3d:4e:14";
         let level = Level { strong: 1, weak: 1 };
         let absent = rig.reactor.buzz("couch", pad, level, 100).unwrap_err();
         assert_eq!(absent.code, ErrorCode::PadDisconnected);
@@ -2969,7 +2969,7 @@ mod tests {
     /// A profile of the same pads and virtual pad as [`PROFILE`], as a
     /// toggle.
     const TOGGLE: &str =
-        "mode = \"toggle\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n";
+        "mode = \"toggle\"\nprimary = \"0a:1b:2c:3d:4e:14\"\nassist = \"model:054c:09cc\"\n";
 
     /// A graph as the input thread hands one back.
     fn graph_of(profile: &str) -> Box<NewGraph> {
@@ -3000,7 +3000,7 @@ mod tests {
         let mut rig = rig().await;
         follow(&mut rig.reactor, 7, Phase::Held);
         // Another mode, and another pad as the primary.
-        let other = TOGGLE.replace("0c:27:56:4f:bd:14", "0c:27:56:4f:bd:15");
+        let other = TOGGLE.replace("0a:1b:2c:3d:4e:14", "0a:1b:2c:3d:4e:15");
         rig.reactor.profiles.put("couch", &other).unwrap();
         let cost = ask_update(&mut rig, false).await.await.unwrap().unwrap();
         assert!(!cost.disruptive, "its virtual pad is the same");
@@ -3017,7 +3017,7 @@ mod tests {
         let before = rig.reactor.setups.setup("couch").unwrap();
         assert_eq!(
             before.sources[1].pad.as_deref(),
-            Some("address:0c:27:56:4f:bd:14")
+            Some("address:0a:1b:2c:3d:4e:14")
         );
         let second = ask_update(&mut rig, true).await.await.unwrap();
         assert!(matches!(
@@ -3032,7 +3032,7 @@ mod tests {
         let busy = rig.reactor.select(&request).unwrap_err();
         assert!(busy.message.contains("taking a change"), "{busy:?}");
         let level = Level { strong: 1, weak: 1 };
-        let pad = "address:0c:27:56:4f:bd:14";
+        let pad = "address:0a:1b:2c:3d:4e:14";
         rig.reactor.setups.entries.get_mut("couch").unwrap().slots[1].present = true;
         assert!(rig.reactor.buzz("couch", pad, level, 100).is_err());
         rig.reactor.bring_back("couch", 0);
@@ -3074,7 +3074,7 @@ mod tests {
         );
         assert_eq!(
             taken.sources[1].pad.as_deref(),
-            Some("address:0c:27:56:4f:bd:15")
+            Some("address:0a:1b:2c:3d:4e:15")
         );
         assert_eq!(taken.nodes[0].choices, ["primary", "assist"]);
         assert_eq!(taken.nodes[0].selected, 0);
@@ -3196,8 +3196,8 @@ mod tests {
                 pad.map(str::to_string),
             )
         };
-        let a = "address:0c:27:56:4f:bd:14";
-        let b = "address:0c:27:56:4f:bd:15";
+        let a = "address:0a:1b:2c:3d:4e:14";
+        let b = "address:0a:1b:2c:3d:4e:15";
         let has = [slot("primary", a, Some(a)), slot("assist", b, Some(b))];
         let book = Book::new(Vec::new());
         let plan = |primary: &str, assist: &str| {
@@ -3219,7 +3219,7 @@ mod tests {
         assert_eq!(swapped.0, [Some(a.to_string()), Some(b.to_string())]);
         // Another pad as the assist: the primary's is kept, the assist's
         // given up, and the new one named though it was never seen.
-        let c = "address:0c:27:56:4f:bd:16";
+        let c = "address:0a:1b:2c:3d:4e:16";
         let other = bound(&plan(a, c));
         assert_eq!(other.1, [None, Some(0)]);
         assert_eq!(other.0, [Some(c.to_string()), Some(a.to_string())]);
@@ -3249,9 +3249,9 @@ mod tests {
     }
 
     /// [`PROFILE`]'s primary.
-    const PRIMARY: &str = "address:0c:27:56:4f:bd:14";
+    const PRIMARY: &str = "address:0a:1b:2c:3d:4e:14";
     /// A pad of the model [`PROFILE`]'s assist wants.
-    const ASSIST: &str = "address:0c:27:56:4f:bd:20";
+    const ASSIST: &str = "address:0a:1b:2c:3d:4e:20";
 
     /// One of those two connecting on `node`, which nothing can open:
     /// none of these tests makes a pad.

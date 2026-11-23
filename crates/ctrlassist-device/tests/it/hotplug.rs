@@ -40,7 +40,7 @@ fn identifiers() -> Identifiers {
         vendor: 0x054c,
         product: 0x0ce6,
         version: 0x8111,
-        address: Some("0c:27:56:4f:bd:14".to_string()),
+        address: Some("0a:1b:2c:3d:4e:14".to_string()),
         serial: Some("7EED821FFB17".to_string()),
         port: Some("usb-0000:00:14.0-3/input0".to_string()),
     }
@@ -49,7 +49,7 @@ fn identifiers() -> Identifiers {
 #[test]
 fn a_pad_is_named_by_the_most_specific_thing_it_reports() {
     let all = identifiers();
-    assert_eq!(all.id().to_string(), "address:0c:27:56:4f:bd:14");
+    assert_eq!(all.id().to_string(), "address:0a:1b:2c:3d:4e:14");
     let no_address = Identifiers {
         address: None,
         ..all

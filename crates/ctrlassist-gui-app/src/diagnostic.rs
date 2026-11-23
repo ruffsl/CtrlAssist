@@ -210,8 +210,8 @@ fn follows_a_pair(before: &[u8]) -> bool {
             .is_none_or(|lead| !lead.is_ascii_alphanumeric())
 }
 
-/// Masks every address in `text`: `0c:27:56:4f:bd:14` becomes
-/// `0c:27:56:xx:xx:xx#1`, the number being the address's place among
+/// Masks every address in `text`: `0a:1b:2c:3d:4e:14` becomes
+/// `0a:1b:2c:xx:xx:xx#1`, the number being the address's place among
 /// those met, so the same address reads the same everywhere and two of
 /// one maker's don't read alike.
 #[must_use]
@@ -261,10 +261,10 @@ mod tests {
 
     #[test]
     fn an_address_keeps_its_vendor_half_and_a_number_tells_units_apart() {
-        let text = "primary = \"0c:27:56:4f:bd:14\", assist = \"0C:27:56:AA:BB:CC\", again address:0c:27:56:4f:bd:14.";
+        let text = "primary = \"0a:1b:2c:3d:4e:14\", assist = \"0A:1B:2C:AA:BB:CC\", again address:0a:1b:2c:3d:4e:14.";
         assert_eq!(
             mask_addresses(text),
-            "primary = \"0c:27:56:xx:xx:xx#1\", assist = \"0c:27:56:xx:xx:xx#2\", again address:0c:27:56:xx:xx:xx#1."
+            "primary = \"0a:1b:2c:xx:xx:xx#1\", assist = \"0a:1b:2c:xx:xx:xx#2\", again address:0a:1b:2c:xx:xx:xx#1."
         );
     }
 
@@ -276,7 +276,7 @@ mod tests {
             // Seven pairs is something else.
             "00:11:22:33:44:55:66",
             "at 12:34:56 on the day",
-            "naïve — 0c:27:56",
+            "naïve — 0a:1b:2c",
             "0123456789ab:cd:ef:01:23:45",
             "",
         ] {
@@ -334,7 +334,7 @@ mod tests {
             }],
             profiles: vec![Profile {
                 name: "couch".into(),
-                toml: "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\n".into(),
+                toml: "mode = \"priority\"\nprimary = \"0a:1b:2c:3d:4e:14\"\n".into(),
                 unset: Vec::new(),
                 problem: None,
             }],
@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(value["machine"]["os_id"], Value::Null);
         assert!(value["pads"].as_array().unwrap().is_empty());
         let toml = value["profiles"][0]["toml"].as_str().unwrap();
-        assert!(toml.contains("0c:27:56:xx:xx:xx#1"), "{toml}");
-        assert!(!text.contains("4f:bd:14"));
+        assert!(toml.contains("0a:1b:2c:xx:xx:xx#1"), "{toml}");
+        assert!(!text.contains("3d:4e:14"));
     }
 }

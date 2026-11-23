@@ -25,7 +25,7 @@ A preset is a whole arrangement in a few lines: `mode` names one of five arrange
 
 ```toml
 mode = "priority"
-primary = "0c:27:56:4f:bd:14"
+primary = "0a:1b:2c:3d:4e:14"
 assist = "model:054c:09cc"
 identity = "xbox"       # optional
 rumble = "primary"      # optional
@@ -59,7 +59,7 @@ managed = true       # optional
 
 | Written as | Means |
 |---|---|
-| `0c:27:56:4f:bd:14` | That controller, by its own address. |
+| `0a:1b:2c:3d:4e:14` | That controller, by its own address. |
 | the full id from `ctrlassist pads`, such as `serial:045e:0b12:3039…` | That exact controller. |
 | `model:054c:0ce6` | Any controller of that vendor and product. |
 
@@ -101,13 +101,13 @@ A preset is shorthand. The full form names every part, for arrangements a preset
 
 ```toml
 [source.one]
-pad = "0c:27:56:4f:bd:14"
+pad = "0a:1b:2c:3d:4e:14"
 
 [source.two]
 pad = "a4:5e:60:c1:22:07"
 
 [source.helper]
-pad = "1c:96:5a:a1:35:da"
+pad = "1a:2b:3c:4d:5e:da"
 deadzone = 0.15                    # this one's stick is worn
 
 [node.share]

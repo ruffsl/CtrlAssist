@@ -45,7 +45,7 @@ fn a_preset_is_two_pads_a_mux_and_a_virtual_pad() {
     assert_eq!(plan.sources[0].pad, PadRef::Model(0x054c, 0x09cc));
     assert_eq!(
         plan.sources[1].pad,
-        PadRef::Exact("address:0c:27:56:4f:bd:14".to_string())
+        PadRef::Exact("address:0a:1b:2c:3d:4e:14".to_string())
     );
     assert_eq!(plan.nodes, ["mux"]);
     assert_eq!(plan.sinks.len(), 1);
@@ -207,12 +207,12 @@ fn a_switch_is_a_button_by_name_on_any_input_or_one_or_none() {
 fn a_pad_is_an_address_a_known_name_or_a_model() {
     let exact = |text: &str| Some(PadRef::Exact(text.to_string()));
     assert_eq!(
-        PadRef::parse("0C:27:56:4F:BD:14"),
-        exact("address:0c:27:56:4f:bd:14")
+        PadRef::parse("0A:1B:2C:3D:4E:14"),
+        exact("address:0a:1b:2c:3d:4e:14")
     );
     assert_eq!(
-        PadRef::parse("address:0c:27:56:4f:bd:14"),
-        exact("address:0c:27:56:4f:bd:14")
+        PadRef::parse("address:0a:1b:2c:3d:4e:14"),
+        exact("address:0a:1b:2c:3d:4e:14")
     );
     assert_eq!(
         PadRef::parse("serial:045e:02dd:7EED821FFB17"),
@@ -262,7 +262,7 @@ fn a_pad_is_an_address_a_known_name_or_a_model() {
         "serial:045e:02dd:",
         "serial:045e",
         "port:",
-        "0c:27:56:4f:bd",
+        "0a:1b:2c:3d:4e",
     ] {
         assert_eq!(PadRef::parse(not_a_pad), None, "{not_a_pad:?}");
     }
@@ -270,9 +270,9 @@ fn a_pad_is_an_address_a_known_name_or_a_model() {
     let model = PadRef::Model(0x054c, 0x09cc);
     assert!(model.matches("address:aa:bb:cc:dd:ee:ff", 0x054c, 0x09cc));
     assert!(!model.matches("address:aa:bb:cc:dd:ee:ff", 0x054c, 0x0ce6));
-    let one = PadRef::parse("0c:27:56:4f:bd:14").unwrap();
-    assert!(one.matches("address:0c:27:56:4f:bd:14", 0, 0));
-    assert!(!one.matches("address:0c:27:56:4f:bd:15", 0, 0));
+    let one = PadRef::parse("0a:1b:2c:3d:4e:14").unwrap();
+    assert!(one.matches("address:0a:1b:2c:3d:4e:14", 0, 0));
+    assert!(!one.matches("address:0a:1b:2c:3d:4e:15", 0, 0));
 }
 
 #[test]
@@ -884,7 +884,7 @@ mod form {
         let mut values = Values::new();
         for (key, value) in [
             ("mode", "toggle"),
-            ("primary", "0c:27:56:4f:bd:14"),
+            ("primary", "0a:1b:2c:3d:4e:14"),
             ("assist", "model:054c:09cc"),
             ("identity", "generic"),
             ("rumble", "both"),
@@ -897,7 +897,7 @@ mod form {
         let toml = form::to_toml(&fields, &values);
         assert_eq!(
             toml,
-            "mode = \"toggle\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\n"
+            "mode = \"toggle\"\nprimary = \"0a:1b:2c:3d:4e:14\"\nassist = \"model:054c:09cc\"\n"
         );
         let read = form::from_toml(&fields, &toml).unwrap();
         assert_eq!(read["identity"], "generic");

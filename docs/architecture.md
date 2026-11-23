@@ -397,7 +397,7 @@ A profile is a TOML file the daemon owns, kept under a name of lowercase letters
 
 ```toml
 mode = "priority"          # two pads, one mux, one virtual pad
-primary = "0c:27:56:4f:bd:14"
+primary = "0a:1b:2c:3d:4e:14"
 assist  = "model:054c:09cc"  # any pad of this model
 managed = true            # once the daemon is up and both are connected
 ```
@@ -410,13 +410,13 @@ The full form names sources, nodes and sinks, here one helper assisting two play
 
 ```toml
 [source.one]
-pad = "0c:27:56:4f:bd:14"
+pad = "0a:1b:2c:3d:4e:14"
 
 [source.two]
 pad = "a4:5e:60:c1:22:07"
 
 [source.helper]
-pad = "1c:96:5a:a1:35:da"
+pad = "1a:2b:3c:4d:5e:da"
 deadzone = 0.15                    # this one's stick is worn
 
 [node.share]

@@ -16,7 +16,7 @@ use slint::{ComponentHandle, Model as _, SharedString};
 
 use crate::support::{activate_shown, find_by_accessible_id, settle};
 
-const COUCH: &str = "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"model:054c:09cc\"\nidentity = \"xbox\"\nhide = \"grab\"\n";
+const COUCH: &str = "mode = \"priority\"\nprimary = \"0a:1b:2c:3d:4e:14\"\nassist = \"model:054c:09cc\"\nidentity = \"xbox\"\nhide = \"grab\"\n";
 const FULL: &str = include_str!("../../../ctrlassist-protocol/tests/it/fixtures/full.toml");
 
 fn pad(id: &str, name: &str, connected: bool) -> Pad {
@@ -47,7 +47,7 @@ fn known() -> Known {
         profiles: vec![
             profile(
                 "quick",
-                "mode = \"toggle\"\nprimary = \"address:0c:27:56:4f:bd:14\"\nassist = \"address:1c:96:5a:a1:35:da\"\n",
+                "mode = \"toggle\"\nprimary = \"address:0a:1b:2c:3d:4e:14\"\nassist = \"address:1a:2b:3c:4d:5e:da\"\n",
             ),
             profile("couch", COUCH),
             profile("attic", FULL),
@@ -73,12 +73,12 @@ fn known() -> Known {
             sources: vec![
                 SetupSource {
                     name: "assist".to_string(),
-                    pad: Some("address:1c:96:5a:a1:35:da".to_string()),
+                    pad: Some("address:1a:2b:3c:4d:5e:da".to_string()),
                     present: true,
                 },
                 SetupSource {
                     name: "primary".to_string(),
-                    pad: Some("address:0c:27:56:4f:bd:14".to_string()),
+                    pad: Some("address:0a:1b:2c:3d:4e:14".to_string()),
                     present: true,
                 },
             ],
@@ -97,8 +97,8 @@ fn known() -> Known {
         }],
         pads: vec![
             pad("serial:045e:02dd:7EED821FFB17", "Xbox pad", false),
-            pad("address:1c:96:5a:a1:35:da", "Wireless Controller", true),
-            pad("address:0c:27:56:4f:bd:14", "DualSense", true),
+            pad("address:1a:2b:3c:4d:5e:da", "Wireless Controller", true),
+            pad("address:0a:1b:2c:3d:4e:14", "DualSense", true),
         ],
         fields: form::fields(),
     }
@@ -199,7 +199,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     // that was forgotten.
     let mut gone = known();
     gone.pads
-        .retain(|pad| pad.id != "address:0c:27:56:4f:bd:14");
+        .retain(|pad| pad.id != "address:0a:1b:2c:3d:4e:14");
     let rows_gone = profiles::rows(&gone, &BTreeMap::new());
     let primary = field(row(&rows_gone, "couch"), "primary");
     assert!(!primary.read_only);
@@ -223,7 +223,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
         ["preset", "inputs", "outputs", "preset"]
     );
     let primary = field(couch, "primary");
-    assert_eq!(primary.pad, "address:0c:27:56:4f:bd:14");
+    assert_eq!(primary.pad, "address:0a:1b:2c:3d:4e:14");
     assert_eq!(
         (primary.status_word.as_str(), primary.status_tone.as_str()),
         ("Connected", "success")
@@ -308,8 +308,8 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     assert_eq!(
         uses,
         [
-            "Assist Wireless Controller address:1c:96:5a:a1:35:da",
-            "Primary DualSense address:0c:27:56:4f:bd:14"
+            "Assist Wireless Controller address:1a:2b:3c:4d:5e:da",
+            "Primary DualSense address:0a:1b:2c:3d:4e:14"
         ]
     );
     // Any pad of a model the daemon knows none of goes by what the
@@ -323,7 +323,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
         couch_uses,
         [
             "Assist model:054c:09cc []",
-            "Primary DualSense [address:0c:27:56:4f:bd:14]"
+            "Primary DualSense [address:0a:1b:2c:3d:4e:14]"
         ]
     );
     let attic = row(&rows, "attic");
@@ -361,7 +361,7 @@ fn what_the_window_holds_shows_as_unfinished_until_it_is_a_profile() {
     assert_eq!(field(den, "pad").value_label, "");
 
     // With its pad picked it is a profile, and no longer unfinished.
-    new.insert("pad".into(), "address:0c:27:56:4f:bd:14".into());
+    new.insert("pad".into(), "address:0a:1b:2c:3d:4e:14".into());
     held.insert("den".to_string(), new.clone());
     let rows = profiles::rows(&known(), &held);
     assert!(!row(&rows, "den").unfinished);
@@ -524,8 +524,8 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
         [
             "stop quick",
             "ask-update quick",
-            "pad address:1c:96:5a:a1:35:da",
-            "pad address:0c:27:56:4f:bd:14"
+            "pad address:1a:2b:3c:4d:5e:da",
+            "pad address:0a:1b:2c:3d:4e:14"
         ]
     );
     asked.borrow_mut().clear();
@@ -621,7 +621,7 @@ fn a_dropdown_opens_on_its_current_choice_every_time() {
     let mut known_now = known();
     known_now.profiles.push(profile(
         "den",
-        "mode = \"priority\"\nprimary = \"address:0c:27:56:4f:bd:14\"\nassist = \"address:1c:96:5a:a1:35:da\"\nrumble = \"assist\"\n",
+        "mode = \"priority\"\nprimary = \"address:0a:1b:2c:3d:4e:14\"\nassist = \"address:1a:2b:3c:4d:5e:da\"\nrumble = \"assist\"\n",
     ));
     profiles::show(&app, known_now);
     app.global::<Profiles>().invoke_select("den".into());
@@ -732,7 +732,7 @@ fn a_profile_s_pad_and_a_pad_s_profile_are_a_click_apart_and_back_returns() {
 #[test]
 fn picking_the_other_part_s_pad_changes_the_two_places() {
     let known = known();
-    let two = "mode = \"toggle\"\nprimary = \"address:0c:27:56:4f:bd:14\"\nassist = \"address:1c:96:5a:a1:35:da\"\n";
+    let two = "mode = \"toggle\"\nprimary = \"address:0a:1b:2c:3d:4e:14\"\nassist = \"address:1a:2b:3c:4d:5e:da\"\n";
     let mut values = form::from_toml(&known.fields, two).unwrap();
     let (primary, assist) = (values["primary"].clone(), values["assist"].clone());
     profiles::change_places(&known, &mut values, "primary", &assist);
@@ -752,10 +752,10 @@ fn picking_the_other_part_s_pad_changes_the_two_places() {
     // A part with no pad yet takes the other's, which is left to choose.
     let mut one = form::from_toml(
         &known.fields,
-        "mode = \"priority\"\nassist = \"address:0c:27:56:4f:bd:14\"\n",
+        "mode = \"priority\"\nassist = \"address:0a:1b:2c:3d:4e:14\"\n",
     )
     .unwrap();
-    profiles::change_places(&known, &mut one, "primary", "address:0c:27:56:4f:bd:14");
+    profiles::change_places(&known, &mut one, "primary", "address:0a:1b:2c:3d:4e:14");
     assert!(!one.contains_key("assist"));
 }
 
