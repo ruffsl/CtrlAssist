@@ -76,6 +76,38 @@ in
       "hid-playstation"
     ];
     services.udev.packages = [ cfg.package ];
+    # udev applies a rule to a device at the device's next event. A switch
+    # to a configuration with new rules restarts udevd on them (nixpkgs'
+    # udev module gives systemd-udevd that restart trigger) but sends no
+    # device an event, so pads, uinput and uhid already there when the
+    # module is enabled or its rules change would go without them until
+    # plugged in again or the next boot: the hiding service couldn't ask
+    # for a connected pad's re-bind. This asks for the events the
+    # packages' install script asks for, once udevd has the new rules and
+    # the modules are loaded, at each switch that changes the package.
+    systemd.services.ctrlassist-udev-trigger = {
+      description = "Apply CtrlAssist's udev rules to devices already connected";
+      wantedBy = [ "multi-user.target" ];
+      after = [
+        "systemd-udevd.service"
+        "systemd-udev-trigger.service"
+        "systemd-modules-load.service"
+      ];
+      restartTriggers = [ cfg.package ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart =
+          let
+            udevadm = "${config.systemd.package}/bin/udevadm";
+          in
+          [
+            "${udevadm} trigger --subsystem-match=misc --sysname-match=uinput --sysname-match=uhid"
+            "${udevadm} trigger --action=change --subsystem-match=input --property-match=ID_INPUT_JOYSTICK=1"
+            "${udevadm} trigger --action=change --subsystem-match=hidraw"
+          ];
+      };
+    };
 
     # Units as packaged. NixOS doesn't act on a packaged unit's [Install]
     # section, so what each is wanted by is said again here.

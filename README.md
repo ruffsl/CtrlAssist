@@ -30,7 +30,7 @@
 | `ctrlassist service tray` | you | The system tray. |
 | `ctrlassist-gui` | you | The settings window. |
 | `ctrlassist …` | you | The command line. |
-| `ctrlassist-hider` | root, started on demand | Hides a running arrangement's real controllers from games, and nothing else. |
+| `ctrlassist-hider` | its own system user, with no special capabilities, started on demand | Hides a running arrangement's real controllers from games, and nothing else. |
 
 The tray, the window and the command only show what the daemon reports and pass on what you ask, so closing any of them changes nothing that runs. The design is in [docs/architecture.md](docs/architecture.md).
 

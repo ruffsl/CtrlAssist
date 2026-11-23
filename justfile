@@ -110,9 +110,9 @@ check: deny shear typos actionlint zizmor licenses-html fmt build clippy doc tes
 cov_baseline_lines := "95"
 
 # Kept out of the coverage figure: test infrastructure; the hiding
-# service's own files, which need root and real device nodes, and are
-# exercised by the virtual machine checks, its client and wire format
-# being counted; and the two files of the tray that need a desktop's
+# service's own files, which need its user, its udev rule and real device
+# nodes, and are exercised by the virtual machine checks, its client and
+# wire format being counted; and the two files of the tray that need a desktop's
 # session bus, which hold only what puts the rest on a desktop.
 cov_exclude := "--ignore-filename-regex 'ctrlassist-test/|ctrlassist-hider/src/(main|activation|seat|pad|hide)\\.rs|ctrlassist-tray/src/(desktop|service)\\.rs'"
 
@@ -690,18 +690,38 @@ hider_dev_socket := hider_dev_dir / "hider.sock"
 # The service runs as its own user, ctrlassist-hider, as installed, and
 # hides pads through the installed udev rule, which names its marker
 # directory: so the machine needs this tree's rule and user installed (on
-# NixOS, the module from this tree), and the installed service must not
-# be running at the same time, the two sharing that directory. The binary
-# is copied out of the build tree, which the service's user may not be
-# able to read. Asks for sudo. Leave it running and use `just hide-pad`
-# in another terminal; Ctrl-C stops it, and whatever it hid is then shown
-# again, as the unit's ExecStopPost does.
+# NixOS, the module from this tree; docs/testing.md says how to check).
+# The installed service shares that directory and empties it as it starts
+# and as it stops, so the recipe refuses while its socket or service is
+# active, and says how to stop it. It doesn't stop it itself: that would
+# show again whatever the installed service has hidden for a running
+# daemon, and starting it again would rest on the recipe ending cleanly,
+# where a closed terminal would leave the machine without its service and
+# nothing to say so. The binary is copied out of the build tree, which the
+# service's user may not be able to read. Asks for sudo. Leave it running
+# and use `just hide-pad` in another terminal; Ctrl-C stops it, and
+# whatever it hid is then shown again, as the unit's ExecStopPost does.
 #
 # Run the hiding service from the build tree, as its own user
 [group('hardware')]
 hider-dev:
     #!/usr/bin/env bash
     set -euo pipefail
+    rule=72-ctrlassist-hide.rules
+    if ! getent passwd ctrlassist-hider >/dev/null || ! getent group ctrlassist-hider >/dev/null \
+        || ! [[ -e /etc/udev/rules.d/$rule || -e /usr/lib/udev/rules.d/$rule ]]; then
+        echo "The ctrlassist-hider user and group and the udev rule $rule must be installed" >&2
+        echo "from this tree first: its package, or on NixOS its module. docs/testing.md has how." >&2
+        exit 1
+    fi
+    if systemctl is-active --quiet ctrlassist-hider.socket ctrlassist-hider.service; then
+        echo "The installed hiding service is active. It shares /run/ctrlassist/hide with this one" >&2
+        echo "and empties it as it starts and as it stops. Stop it first, which shows again" >&2
+        echo "whatever it has hidden, and start its socket again when done:" >&2
+        echo "  sudo systemctl stop ctrlassist-hider.socket ctrlassist-hider.service" >&2
+        echo "  sudo systemctl start ctrlassist-hider.socket" >&2
+        exit 1
+    fi
     cargo build --quiet --package ctrlassist-hider
     sudo install -d -o ctrlassist-hider -g ctrlassist-hider -m 0755 {{ hider_dev_dir }}
     sudo install -d -o ctrlassist-hider -g ctrlassist-hider -m 0700 /run/ctrlassist/hide

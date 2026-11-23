@@ -25,7 +25,7 @@ Every command is a short request to the daemon, except `service daemon` and `ser
 ctrlassist setups --json | jq -r '.[] | "\(.name) \(.phase)"'
 ```
 
-`ctrlassist status --json` exits with status 1 when the daemon is missing or runs a release this command can't talk to, after printing its JSON, with nothing on standard error.
+`ctrlassist status --json` exits with status 1 when the daemon is missing, doesn't say its release, or runs a release this command can't talk to, after printing its JSON, with nothing on standard error.
 
 A request the daemon refuses ends with a code in brackets that a script can match on, such as `(unknown-pad)`, `(pad-in-use)`, `(invalid-profile)` or `(setup-exists)`.
 

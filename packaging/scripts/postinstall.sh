@@ -14,8 +14,16 @@ set -e
 systemctl daemon-reload || true
 
 # The hiding service's user and group, before anything names them: the
-# hiding rule gives the group pads' files.
-systemd-sysusers /usr/lib/sysusers.d/ctrlassist.conf 2>/dev/null || true
+# hiding rule gives the group pads' files, and udev drops an assignment
+# that names a group that doesn't exist. Without them the service can't
+# run and the rule hides nothing, so a failure here fails the install,
+# as TisVlay's does when it can't make its user.
+if ! systemd-sysusers /usr/lib/sysusers.d/ctrlassist.conf; then
+    echo "ctrlassist: systemd-sysusers couldn't make the user and group ctrlassist-hider." >&2
+    echo "The hiding service can't run without them. Once the cause is fixed, reinstall" >&2
+    echo "the package, or on Debian and Ubuntu run: dpkg --configure ctrlassist" >&2
+    exit 1
+fi
 
 # The modules now, as modules-load.d will at each boot; then the rules:
 # the one that gives their nodes to the user at the seat, and the hiding

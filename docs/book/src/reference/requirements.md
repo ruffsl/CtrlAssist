@@ -2,15 +2,15 @@
 
 | | |
 |---|---|
-| System | Linux with systemd, x86_64 or arm64. |
+| System | Linux with systemd and its udev, systemd 248 or newer, x86_64 or arm64. |
 | C library | glibc 2.34 or newer for the packages: Debian 12, Ubuntu 22.04, current Fedora and Arch. NixOS builds its own. |
-| Kernel | The `uinput` module, which every mainstream kernel ships; the packages load it. |
+| Kernel | Linux 4.13 or newer, with the `uinput` module, for virtual controllers, and `uhid` and `hid-playstation`, for a virtual DualSense. Mainstream kernels ship all three, and the packages and the NixOS module load them. |
 | Desktop | Any, for the daemon and the command. The tray icon needs a StatusNotifier host: KDE Plasma has one; GNOME needs the AppIndicator extension. The settings window needs a Wayland session: it is built for Wayland only, and doesn't open in an X11 session. |
 | Controllers | Anything the kernel presents as a gamepad. Xbox and PlayStation controllers are read through their own drivers; others through the community controller database. |
 
 ## What has been tried
 
-CtrlAssist is developed and tested on NixOS with KDE Plasma. The packages for Debian, Ubuntu, Fedora and Arch are installed and tried in clean containers of each, which shows they install and run there, but not that every desktop on each behaves the same. Reports from other setups are welcome.
+CtrlAssist is developed and tested on NixOS with KDE Plasma. The least versions of systemd and Linux above were worked out from when each feature CtrlAssist uses arrived; it has been tested on systemd 262 only. The packages for Debian, Ubuntu, Fedora and Arch are installed and tried in clean containers of each, which shows they install and run there, but not that every desktop on each behaves the same. Reports from other setups are welcome.
 
 ## Compatibility between releases
 

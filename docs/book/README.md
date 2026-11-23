@@ -22,7 +22,7 @@ The user guide is this mdBook. It isn't published anywhere yet. Everything else 
 | What the packages and the NixOS module install, and removing them | Installation |
 | The pieces, hiding, latency, layouts, and where things are kept | How It Works |
 | What it runs on, what has been tried, and compatibility between releases | Requirements |
-| What runs as root, and checking a release (signatures, checksums, SBOMs) | Security & Supply Chain |
+| What runs with privilege, and checking a release (signatures, checksums, SBOMs) | Security & Supply Chain |
 
 ## Tooling
 
