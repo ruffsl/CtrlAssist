@@ -359,6 +359,15 @@ Each is a commit or a few, with the gates run and the TisVlay commit named. Orde
   - **The package tests in containers pass** on Debian 12, Ubuntu 22.04, Fedora and Arch with the window in each package: its binary says its release and its two files are in place. Arch's container needed its package database fetched first, now that the package depends on libraries its image doesn't carry; the recipe does that. The window isn't opened there: the containers have no compositor.
   - While trying the hand-off, the packaged window was once started when no window owned the name, and so opened on the maintainer's desktop for the 20 seconds the trial allowed it.
 - **`just gui-start` names the package,** `-p ctrlassist-gui-app`, where TisVlay's doesn't: the window isn't in `default-members` until the packaging step puts it in the package.
+- **The window's review findings, fixed** (2026-11-22, G-1 to G-17 and V-6 of [the review](review.md)). What behaves differently, each for the maintainer to say otherwise:
+  - **A switch only asks.** `ThemedSwitch` no longer sets its own `checked`; it fires `toggled` with the state asked for and shows what it is bound to. Managed moves with the change the window holds and goes back if the daemon refuses it; a notification switch moves when the tray publishes, not when pressed. TisVlay's switch has the same defect (B-11).
+  - **A dropdown's pick goes by value,** copied with the labels as the list opens; `ThemedSelect` takes `values` beside `model` and has no `selected-index`. TisVlay's select routes by index and would need the same change wherever its lists re-sort.
+  - **A setup whose profile is gone keeps a row** in the Profiles list, its kind `gone`: its pads and virtual pads as the setup has them, its phase, Stop, and a line saying the profile was deleted or its file removed. No Update, Delete or Managed.
+  - **A profile's changes are put one at a time, in order,** and of a run that piled up only the last of each profile; only the last change's outcome is said. A profile still short of pads is put without updating its setup, and an update that fails after the put says the change was kept.
+  - **A launch that finds the name held by a window that doesn't answer ends with an error,** where it opened a second window.
+  - **A pad's detail lists profiles that are Not set up,** and a pad named by its model is said by the pad a start would take.
+  - **A profile's name cut short in its header shows whole on hover;** the header wasn't rendered at the minimum width to see how often that is.
+  - **The monospace face is set,** looked up through fontique as TisVlay's window does.
 
 ## Deviations
 
