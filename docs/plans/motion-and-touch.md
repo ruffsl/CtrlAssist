@@ -109,6 +109,41 @@ Three surveys were made on 2026-11-23, by agents reading public sources. What a 
 - **Blending tilt angles and making a gravity vector of the result** is sound, and for pads near level it is the same as blending the unit vectors, which has no singularity at a pad held on end and no wrap at 180°, so the vectors are the better thing to blend. What it loses: linear acceleration, unless carried apart; exact agreement with the gyro, which holds only near level; and it mixes two people's resting poses, since nobody holds a pad level. Blending each one's departure from their own rest, and adding the result to the active player's rest, avoids the last.
 - **The signal a game is least likely to notice,** by this survey: gravity's direction as a weighted mean of the pads' directions, made 1 g long; linear acceleration carried apart if shakes matter; and any change of weights ramped, a step in them being a jump of gravity in small.
 
+### What others do
+
+**Nobody blends two motion sensors.** Every system found picks one, or shows both side by side for the game to choose.
+
+- **PlayStation's assist controller.** Sony's accessibility page: "Some of the DualSense features, such as motion sensor, haptic feedback and adaptive triggers, will be automatically turned off when the controller is being used as an assist controller." So motion is the main controller's, the primary player's, alone. The support page lists haptics, adaptive triggers, the microphone and custom buttons as not available on the assist controller, and says nothing of the touch pad, the speaker, the light bar, or how two inputs at once combine ([support](https://www.playstation.com/en-us/support/hardware/second-controller-assistance/), [accessibility](https://www.playstation.com/en-us/accessibility/)). An Access controller, which has neither sensor nor touch pad, joined with a DualSense takes its "motion sensor, and touch pad swipe" from the DualSense.
+- **Xbox's Controller Assist** links two controllers "as if they were a single controller"; its pads have no motion sensor or touchpad. How analog values combine isn't in what could be read of Microsoft's page; a paper of 2026 describes it as summed, two opposite steerings going straight.
+- **Two Joy-Cons as one pad**, the nearest thing to two sensors merged: Nintendo's system gives a game both, apart; games mostly ignore the left; SDL and Steam take the right and SDL also offers each by name; JoyShockMapper defaults to ignoring the left and offers ignore-left, ignore-right, ignore-both and use-both.
+- **Tools that group controllers.** reWASD gives its virtual gyro to the first controller of a group. Cemu takes motion from the first attached controller marked to use it, binds buttons controller by controller, and rumbles them all. Emulators generally let the device that gives motion be chosen apart from the one that gives buttons.
+- **InputPlumber** makes a composite of several source devices, each with a group (gamepad, IMU, touchscreen and so on) and its own included and excluded events, a source that is blocked, or one kept for output only. Motion has a place of origin in its vocabulary, `Gyroscope:Left`, `:Right` or `:Center`, and touchpads likewise. Its virtual DualSense carries one stream of motion and one touchpad of two contacts, and advances the sensor timestamp itself because SDL takes differences of it.
+
+**How people share a controller.** Interviews with fourteen people who do ([Ahmetovic et al.](https://arxiv.org/html/2509.02132v1)): keeping each one's controls strictly apart is more usual than overlapping them; the camera is the control most often handed to the helper; roles are mostly agreed before play, and some hand over everything for a hard part; and not knowing who has which control "can lead to confusion and frustration". A study of shared control ([Mascetti et al.](https://arxiv.org/html/2601.11218v1)) tells combining two commands from selecting one of them, and asks that a system show, as it happens, what the helper is doing.
+
+**Tremor, measured.** Essential tremor at the hand, by gyroscope: 0.5°/s RMS where mild, 15.2°/s where severe, at about 6 Hz ([Technology and Health Care, 2020](https://pmc.ncbi.nlm.nih.gov/articles/PMC7369080)). Physiological tremor is at 6 to 12 Hz, a Parkinsonian rest tremor at 4 to 6. No tool was found that offers a filter as one for tremor; what there is are a speed below which output stops, a speed below which it is reduced or smoothed, and the 1€ filter, a low-pass whose cutoff rises with speed, which Steam and DS4Windows both use.
+
+**A vocabulary of settings**, as it recurs across Steam Input, JoyShockMapper, DS4Windows, reWASD, InputPlumber and the emulators:
+
+- *Source.* Which device gives motion; which of several sensors (left, right, both, neither); the first that can; motion off on a second device; which touchpad, and several onto one; a source blocked or kept for output alone.
+- *Engagement.* Always on; on while a button is held, off while held, toggled; by a button, a touch of a stick or a pad, a grip; released to move the hands back ("ratcheting"); a command to recenter.
+- *Space and axes.* Yaw, roll or a blend of them for the horizontal; local, player or world space; inversion; a scale for each axis; a region of a touchpad.
+- *Filtering.* A speed below which nothing passes; a speed below which it is reduced or smoothed; the 1€ filter; calibration when still.
+- *Conversion.* Passed through as it is, to a virtual pad that has sensors; or turned into a mouse, a stick's deflection by rate (a camera) or by angle (a tilt), buttons or swipes.
+
+**Not found.** Microsoft's own account of how two controllers' values combine; Sony's on the touch pad, speaker and light bar under assist; how JoyShockMapper's use-both combines; anything from the accessibility organizations on a helper and motion controls.
+
+## Where the research leaves the first position
+
+To be talked through with the maintainer before any decision above is changed.
+
+- **The gyro's rate by a deadzone doesn't stand as written.** A rate can't tell a held hand from one aiming finely, and for a player with a tremor, whom this is for, the idle rate is higher still. What the tools use is engagement by a control: the assist's turning counts while they hold a button or touch something. That is the modes' promise kept by other means, an intervention begun and ended by the assist's own act, and it is what everyone who has built gyro aiming advises.
+- **"The primary's accelerometer always" doesn't stand either.** A pad's two sensors want keeping together, or the game's own estimate of gravity and its calibration are misled. The candidates are now: the whole pair from whoever supplies motion at the moment, with the change ramped; or gravity's direction as a weighted mean of the two pads', made 1 g long, which is what gives a game that steers by gravity a true blend.
+- **Two things are needed whichever way it goes:** each pad's bias taken out here, by its own stillness, before anything is mixed; and the virtual pad's own clock for its sensor timestamps.
+- **The settled practice elsewhere is one source, selected.** Sony's own feature is motion from the primary's pad and none from the assist's. That is the least surprising default for every mode, with the assist's part something a profile opts into.
+- **Who has the motion wants showing.** Both studies ask for it, and the tray and the window already say who has control.
+- **A profile would need new words for it,** which is the maintainer's thought of widening presets: at least where motion comes from, what engages the assist's, and how gravity is made. The vocabulary above is what such words have been elsewhere. Converting motion into a stick or a mouse is a remapper's work and stays out.
+
 ## Steps
 
 To be written once the open questions are answered. The first will be a spike: one real DualSense's sensors and touchpad carried to a virtual one, tried in a game that aims by gyro and one that steers by tilt.
