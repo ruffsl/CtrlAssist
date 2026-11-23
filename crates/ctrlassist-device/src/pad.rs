@@ -402,6 +402,12 @@ impl Pad {
             let events = match device.fetch_events() {
                 Ok(events) => events,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                // A signal cut the read short, or a resync's fetch, which
+                // waits on the node's lock while a writer of the pad's
+                // holds it: the pad is still there, the resync still owed,
+                // and nothing of a half fetch taken in. Read again, for as
+                // long as the signal keeps coming and no longer.
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error.into()),
             };
             for event in events {

@@ -32,6 +32,8 @@ pub struct Device {
     raw: RawDevice,
     prev_state: DeviceState,
     state: DeviceState,
+    // Where a resync fetches the state, taken in only once whole.
+    fetched: DeviceState,
     block_dropped: bool,
 }
 
@@ -59,11 +61,13 @@ impl Device {
     pub(crate) fn from_raw_device(raw: RawDevice) -> Device {
         let state = DeviceState::new(&raw);
         let prev_state = state.clone();
+        let fetched = state.clone();
 
         Device {
             raw,
             prev_state,
             state,
+            fetched,
             block_dropped: false,
         }
     }
@@ -305,23 +309,6 @@ impl Device {
         self.raw.get_led_state()
     }
 
-    fn sync_state(&mut self, now: SystemTime) -> io::Result<()> {
-        if let Some(ref mut key_vals) = self.state.key_vals {
-            self.raw.update_key_state(key_vals)?;
-        }
-        if let Some(ref mut abs_vals) = self.state.abs_vals {
-            self.raw.update_abs_state(abs_vals)?;
-        }
-        if let Some(ref mut switch_vals) = self.state.switch_vals {
-            self.raw.update_switch_state(switch_vals)?;
-        }
-        if let Some(ref mut led_vals) = self.state.led_vals {
-            self.raw.update_led_state(led_vals)?;
-        }
-        self.state.timestamp = now;
-        Ok(())
-    }
-
     fn fetch_events_inner(&mut self) -> io::Result<Option<SyncState>> {
         let block_dropped = std::mem::take(&mut self.block_dropped);
         let sync = if block_dropped {
@@ -332,9 +319,15 @@ impl Device {
             // would undo it, with nothing later to put it right. So they go
             // first, as libevdev's `sync_state` drains its queue.
             self.raw.event_buf.clear();
-            self.prev_state.clone_from(&self.state);
             let now = SystemTime::now();
-            if let Err(error) = self.sync_state(now) {
+            let raw = &self.raw;
+            let fetched = resync(
+                &mut self.state,
+                &mut self.prev_state,
+                &mut self.fetched,
+                |into| fetch_state(raw, into, now),
+            );
+            if let Err(error) = fetched {
                 // Still owed: the next fetch tries again.
                 self.block_dropped = true;
                 return Err(error);
@@ -431,6 +424,44 @@ impl Device {
     pub fn set_ff_autocenter(&mut self, value: u16) -> io::Result<()> {
         self.raw.set_ff_autocenter(value)
     }
+}
+
+/// Fetches the device's whole state into `into`, as of `now`.
+fn fetch_state(raw: &RawDevice, into: &mut DeviceState, now: SystemTime) -> io::Result<()> {
+    if let Some(ref mut key_vals) = into.key_vals {
+        raw.update_key_state(key_vals)?;
+    }
+    if let Some(ref mut abs_vals) = into.abs_vals {
+        raw.update_abs_state(abs_vals)?;
+    }
+    if let Some(ref mut switch_vals) = into.switch_vals {
+        raw.update_switch_state(switch_vals)?;
+    }
+    if let Some(ref mut led_vals) = into.led_vals {
+        raw.update_led_state(led_vals)?;
+    }
+    into.timestamp = now;
+    Ok(())
+}
+
+/// A resync's fetch, by `fetch`, of the state into `scratch`, taken in as
+/// `state` only once it is whole, with what was handed over kept in
+/// `prev` to diff it against. A fetch that fails part way, as one cut
+/// short by a signal, changes neither: the retry diffs against what was
+/// handed over, not against keys a half fetch already wrote, which would
+/// never then be handed over. Nothing is allocated, the three states
+/// having the same shape.
+fn resync(
+    state: &mut DeviceState,
+    prev: &mut DeviceState,
+    scratch: &mut DeviceState,
+    fetch: impl FnOnce(&mut DeviceState) -> io::Result<()>,
+) -> io::Result<()> {
+    scratch.clone_from(state);
+    fetch(scratch)?;
+    prev.clone_from(state);
+    std::mem::swap(state, scratch);
+    Ok(())
 }
 
 impl Drop for Device {
@@ -958,12 +989,12 @@ mod tests {
 
     #[test]
     fn test_sync_impl() {
-        itertools::assert_equal(events_iter(&[]), vec![]);
-        itertools::assert_equal(events_iter(&[KEY4]), vec![]);
-        itertools::assert_equal(events_iter(&[KEY4, REPORT]), vec![KEY4, REPORT]);
-        itertools::assert_equal(events_iter(&[KEY4, REPORT, KEY4]), vec![KEY4, REPORT]);
-        itertools::assert_equal(
-            result_events_iter(&[KEY4, REPORT, KEY4, DROPPED, REPORT]),
+        assert_eq!(events_iter(&[]).collect::<Vec<_>>(), vec![] as Vec<input_event>);
+        assert_eq!(events_iter(&[KEY4]).collect::<Vec<_>>(), vec![] as Vec<input_event>);
+        assert_eq!(events_iter(&[KEY4, REPORT]).collect::<Vec<_>>(), vec![KEY4, REPORT] as Vec<input_event>);
+        assert_eq!(events_iter(&[KEY4, REPORT, KEY4]).collect::<Vec<_>>(), vec![KEY4, REPORT] as Vec<input_event>);
+        assert_eq!(
+            result_events_iter(&[KEY4, REPORT, KEY4, DROPPED, REPORT]).collect::<Vec<_>>(),
             vec![Ok(KEY4), Ok(REPORT), Err(())],
         );
     }
@@ -981,5 +1012,46 @@ mod tests {
         assert_eq!(next(), (Err(false), None));
         assert_eq!(next(), (Err(false), None));
         assert_eq!(next(), (Err(false), None));
+    }
+
+    fn pad_state() -> DeviceState {
+        DeviceState {
+            timestamp: std::time::UNIX_EPOCH,
+            key_vals: Some(AttributeSet::new()),
+            abs_vals: Some(Box::new(crate::raw_stream::ABS_VALS_INIT)),
+            switch_vals: None,
+            led_vals: None,
+        }
+    }
+
+    // A resync's fetch that fails after the keys, as one whose second
+    // request a signal cuts short, takes nothing in; the retry then hands
+    // the press over, diffing against what was handed over before.
+    #[test]
+    fn a_resync_that_fails_part_way_takes_nothing_in() {
+        let (mut state, mut prev, mut scratch) = (pad_state(), pad_state(), pad_state());
+        let failed = resync(&mut state, &mut prev, &mut scratch, |into| {
+            into.key_vals.as_mut().unwrap().insert(KeyCode::BTN_SOUTH);
+            Err(io::Error::from_raw_os_error(libc::EINTR))
+        });
+        assert!(failed.is_err());
+        assert!(!state.key_vals().unwrap().contains(KeyCode::BTN_SOUTH));
+        assert!(!prev.key_vals().unwrap().contains(KeyCode::BTN_SOUTH));
+
+        resync(&mut state, &mut prev, &mut scratch, |into| {
+            into.key_vals.as_mut().unwrap().insert(KeyCode::BTN_SOUTH);
+            into.abs_vals.as_mut().unwrap()[0].value = 7;
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            !prev.key_vals().unwrap().contains(KeyCode::BTN_SOUTH),
+            "what was handed over"
+        );
+        assert!(
+            state.key_vals().unwrap().contains(KeyCode::BTN_SOUTH),
+            "the press, to hand over"
+        );
+        assert_eq!(state.abs_vals().unwrap()[0].value, 7);
     }
 }
