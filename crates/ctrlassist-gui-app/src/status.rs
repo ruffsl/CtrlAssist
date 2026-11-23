@@ -27,6 +27,12 @@ pub enum Status {
     Waiting,
     /// A change the window holds isn't a profile yet.
     Unfinished,
+    /// Something asked of it from the window is still on its way: a
+    /// change, a start, a copy or a delete.
+    Saving,
+    /// A change to it was kept, and the setup running it is taking it
+    /// up, which may be a restart.
+    Applying,
 }
 
 impl Status {
@@ -43,6 +49,8 @@ impl Status {
             Self::Ready => "Ready",
             Self::Waiting => "Waiting",
             Self::Unfinished => "Unfinished",
+            Self::Saving => "Saving…",
+            Self::Applying => "Applying…",
         }
     }
 
@@ -55,7 +63,7 @@ impl Status {
             Self::Held | Self::Unfinished => "warn",
             Self::Failed | Self::Wrong => "danger",
             Self::Starting | Self::Ready => "info",
-            Self::NotSetUp | Self::Waiting => "neutral",
+            Self::NotSetUp | Self::Waiting | Self::Saving | Self::Applying => "neutral",
         }
     }
 }

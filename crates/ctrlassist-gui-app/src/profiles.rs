@@ -11,13 +11,19 @@
 //! holds is dropped once the kept profile says the same, or on Discard.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use ctrlassist::form::{self, Field, Kind, Values};
 use ctrlassist::{DaemonClient, Pad, Profile, Setup, SetupSource};
 use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinSet;
 use tracing::warn;
 
+use crate::lanes::Lanes;
 use crate::nav::NavHandles;
 use crate::status::Status;
 use crate::{
@@ -531,6 +537,21 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
 /// on the window, the selection staying on its profile.
 fn render(app: &AppWindow) {
     let mut rows = KNOWN.with_borrow(|known| HELD.with_borrow(|held| rows(known, held)));
+    // A profile with something on its way says so, in place of how it
+    // is, until that has landed.
+    PENDING.with_borrow(|pending| {
+        for row in &mut rows {
+            if let Some(progress) = pending.get(row.name.as_str()) {
+                let status = if progress.applying {
+                    Status::Applying
+                } else {
+                    Status::Saving
+                };
+                row.word = SharedString::from(status.word());
+                row.word_tone = SharedString::from(status.tone());
+            }
+        }
+    });
     let profiles = app.global::<Profiles>();
     let was = selected(app);
     // In place, down to each form's fields: see `models`.
@@ -637,11 +658,12 @@ fn values_of(name: &str) -> Option<Values> {
         })
 }
 
-/// The pane's banner for something the daemon refused.
-fn refused(what: &str, error: &ctrlassist::Error) -> ErrorState {
+/// The pane's banner for something the daemon refused, of the `kind`
+/// that raised it: a later outcome of that kind clears it, and no other.
+fn refused(kind: &str, what: &str, error: &dyn std::fmt::Display) -> ErrorState {
     warn!(%error, "{what}");
     ErrorState {
-        kind: SharedString::from("profiles"),
+        kind: SharedString::from(kind),
         tone: SharedString::from("error"),
         title: SharedString::from(what),
         message: SharedString::from(error.to_string()),
@@ -652,31 +674,84 @@ fn refused(what: &str, error: &ctrlassist::Error) -> ErrorState {
 /// A change to put: a profile's whole text as the form makes it, and
 /// whether a setup running it takes it up.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Change {
-    name: String,
+pub struct Change {
+    /// The profile.
+    pub name: String,
     /// The number the window gave it, counting up; the latest asked of
     /// a profile is the one whose outcome is shown.
-    number: u64,
-    toml: String,
+    pub number: u64,
+    /// The profile's whole text.
+    pub toml: String,
     /// A profile still short of pads is kept as not set up, and a setup
     /// running it can't take that up, so it isn't asked to.
-    update: bool,
+    pub update: bool,
 }
 
-/// Why a change didn't come to be.
+/// What the window asks of the daemon about a profile. Each is taken up
+/// on the lane of the profile it is asked of, after what was asked of
+/// that profile before, and beside what is asked of the others: a change
+/// queued can't land after the profile's delete and bring it back, nor
+/// after a rename and leave two.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Op {
+    /// Keep a change, and have a setup running the profile take it up.
+    Put(Change),
+    /// Start the profile.
+    Start(String),
+    /// Keep `toml`, the profile `from` as the window shows it, as the
+    /// new profile `to`; with `rename`, delete `from` once that is kept,
+    /// on `from`'s own lane after what waits there.
+    Copy {
+        /// The profile copied.
+        from: String,
+        /// The new profile.
+        to: String,
+        /// Its text.
+        toml: String,
+        /// Whether `from` goes once `to` is kept.
+        rename: bool,
+    },
+    /// Delete the profile.
+    Delete(String),
+}
+
+impl Op {
+    /// The profile whose lane it waits on.
+    #[must_use]
+    pub fn lane(&self) -> &str {
+        match self {
+            Self::Put(change) => &change.name,
+            Self::Copy { to, .. } => to,
+            Self::Start(name) | Self::Delete(name) => name,
+        }
+    }
+
+    /// Whether the change `self` is carried whole by `next`, asked of the
+    /// same profile after it: both are changes, each the profile's whole
+    /// text, so only the later need be put.
+    fn carried_by(&self, next: &Self) -> bool {
+        matches!((self, next), (Self::Put(_), Self::Put(_)))
+    }
+}
+
+/// Why a request didn't come to all it asked.
 #[derive(Debug)]
 enum Failed {
-    /// The daemon didn't keep it.
+    /// The daemon didn't do it: a change, a copy, a start or a delete.
     Put(ctrlassist::Error),
-    /// It was kept, and the setup running it didn't take it up.
+    /// A change was kept, and the setup running it didn't take it up.
     Update(ctrlassist::Error),
 }
 
-/// Where changes go to be put, one at a time and in the order they were
-/// asked: each is its own task otherwise, and a quick run of them (an
-/// arrow held on the virtual-pad count) could land out of order.
-#[derive(Clone)]
-struct Writer(tokio::sync::mpsc::UnboundedSender<Change>);
+/// What is on its way for one profile.
+#[derive(Clone, Copy, Debug, Default)]
+struct Progress {
+    /// Requests asked of it and not settled.
+    ops: usize,
+    /// Whether the one under way is a change kept, that the setup
+    /// running it is taking up.
+    applying: bool,
+}
 
 thread_local! {
     /// The number of the last change asked of each profile whose
@@ -684,22 +759,195 @@ thread_local! {
     static ASKED: RefCell<BTreeMap<String, u64>> = const { RefCell::new(BTreeMap::new()) };
     /// How many changes have been asked.
     static COUNTED: Cell<u64> = const { Cell::new(0) };
+    /// What is on its way for each profile, by name.
+    static PENDING: RefCell<BTreeMap<String, Progress>> = const { RefCell::new(BTreeMap::new()) };
+    /// The profiles asked to go, by a delete or a rename, that haven't
+    /// gone yet: nothing more is asked of them.
+    static GOING: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
 }
 
-/// Of a run of changes, those still to put: each carries its profile's
-/// whole text, so one a later change of the same profile follows is
-/// left out. The rest keep their order.
-fn latest(batch: Vec<Change>) -> Vec<Change> {
-    let mut kept: Vec<Change> = Vec::new();
-    for change in batch {
-        kept.retain(|earlier| earlier.name != change.name);
-        kept.push(change);
+/// Where the window's requests about profiles go: one lane for each
+/// profile, so that what is asked of one is done in the order asked, and
+/// what is asked of another doesn't wait for it.
+#[derive(Clone, Debug)]
+pub struct Writer {
+    ops: mpsc::UnboundedSender<Op>,
+    /// How many requests were sent, those a request sent after it
+    /// among them.
+    sent: Arc<AtomicU64>,
+    /// How many have been settled: done, or passed over for a later one
+    /// that carries them.
+    settled: watch::Receiver<u64>,
+}
+
+impl Writer {
+    /// A writer whose requests are only handed to the receiver: for
+    /// tests, which play the daemon's part.
+    #[must_use]
+    pub fn detached() -> (Self, mpsc::UnboundedReceiver<Op>) {
+        let (ops, asked) = mpsc::unbounded_channel();
+        let (_settle, settled) = watch::channel(0);
+        let writer = Self {
+            ops,
+            sent: Arc::default(),
+            settled,
+        };
+        (writer, asked)
     }
-    kept
+
+    /// A writer that does each request by `perform`, on the current
+    /// runtime, and has the window take what came of it. `perform`
+    /// answers what came of it, and a request it sends after it.
+    fn spawn<P, F>(app: slint::Weak<AppWindow>, perform: P) -> Self
+    where
+        P: Fn(Op) -> F + Send + Sync + 'static,
+        F: Future<Output = (Result<(), Failed>, Option<Op>)> + Send + 'static,
+    {
+        let (ops, asked) = mpsc::unbounded_channel();
+        let (settle, settled) = watch::channel(0);
+        let sent: Arc<AtomicU64> = Arc::default();
+        tokio::spawn(write(asked, app, perform, Arc::clone(&sent), settle));
+        Self { ops, sent, settled }
+    }
+
+    /// Sends a request; false when nothing writes them any more.
+    fn send(&self, op: Op) -> bool {
+        self.sent.fetch_add(1, Ordering::SeqCst);
+        if self.ops.send(op).is_ok() {
+            return true;
+        }
+        self.sent.fetch_sub(1, Ordering::SeqCst);
+        false
+    }
+
+    /// Waits until every request sent so far has been settled, at most
+    /// `timeout`; `false` when they hadn't been by then. The couch
+    /// preferences' writer is flushed the same way.
+    pub async fn flush(&self, timeout: Duration) -> bool {
+        let sent = Arc::clone(&self.sent);
+        let mut settled = self.settled.clone();
+        let drained = async move {
+            while *settled.borrow_and_update() < sent.load(Ordering::SeqCst) {
+                if settled.changed().await.is_err() {
+                    break;
+                }
+            }
+        };
+        tokio::time::timeout(timeout, drained).await.is_ok()
+    }
+}
+
+/// Does the requests as they come, each on its profile's lane: in turn
+/// there, and beside the others. Ends once nothing sends requests any
+/// more and every one sent is done.
+async fn write<P, F>(
+    mut asked: mpsc::UnboundedReceiver<Op>,
+    app: slint::Weak<AppWindow>,
+    perform: P,
+    sent: Arc<AtomicU64>,
+    settle: watch::Sender<u64>,
+) where
+    P: Fn(Op) -> F + Sync,
+    F: Future<Output = (Result<(), Failed>, Option<Op>)> + Send + 'static,
+{
+    let mut lanes: Lanes<Op> = Lanes::default();
+    let mut running: JoinSet<Option<Op>> = JoinSet::new();
+    let mut on: BTreeMap<tokio::task::Id, String> = BTreeMap::new();
+    let mut settled = 0;
+    let mut open = true;
+    let start = |op: Op, running: &mut JoinSet<Option<Op>>, on: &mut BTreeMap<_, _>| {
+        let lane = op.lane().to_string();
+        let doing = perform(op.clone());
+        let app = app.clone();
+        let id = running
+            .spawn(async move {
+                let (outcome, then) = doing.await;
+                on_ui(&app, move |app| finished(&app, &op, outcome));
+                then
+            })
+            .id();
+        on.insert(id, lane);
+    };
+    loop {
+        tokio::select! {
+            op = asked.recv(), if open => match op {
+                Some(op) => {
+                    let lane = op.lane().to_string();
+                    if let Some(op) = lanes.take(&lane, op) {
+                        start(op, &mut running, &mut on);
+                    }
+                }
+                None => open = false,
+            },
+            Some(ended) = running.join_next_with_id() => {
+                let (id, then) = match ended {
+                    Ok(ended) => ended,
+                    Err(error) => {
+                        warn!(%error, "a request about a profile ended early");
+                        (error.id(), None)
+                    }
+                };
+                // Sent before this one is settled, so that a flush
+                // never sees all settled with it still to come.
+                if let Some(then) = then {
+                    sent.fetch_add(1, Ordering::SeqCst);
+                    let lane = then.lane().to_string();
+                    if let Some(then) = lanes.take(&lane, then) {
+                        start(then, &mut running, &mut on);
+                    }
+                }
+                let mut settled_now = 1;
+                if let Some(lane) = on.remove(&id) {
+                    let (passed, next) = lanes.done(&lane, Op::carried_by);
+                    for op in passed {
+                        on_ui(&app, move |app| finished(&app, &op, Ok(())));
+                        settled_now += 1;
+                    }
+                    if let Some(next) = next {
+                        start(next, &mut running, &mut on);
+                    }
+                }
+                settled += settled_now;
+                let _ = settle.send(settled);
+            }
+            else => return,
+        }
+    }
+}
+
+/// Does one request of the daemon: what came of it, and a request to
+/// send after it.
+async fn perform(
+    daemon: DaemonClient,
+    app: slint::Weak<AppWindow>,
+    op: Op,
+) -> (Result<(), Failed>, Option<Op>) {
+    match op {
+        Op::Put(change) => (apply(&daemon, &app, &change).await, None),
+        Op::Start(name) => (daemon.start_setup(&name).await.map_err(Failed::Put), None),
+        Op::Delete(name) => (
+            daemon.delete_profile(&name).await.map_err(Failed::Put),
+            None,
+        ),
+        // The new one first, so a failure leaves the old.
+        Op::Copy {
+            from,
+            to,
+            toml,
+            rename,
+        } => match daemon.put_profile(&to, &toml).await {
+            Ok(()) => (Ok(()), rename.then_some(Op::Delete(from))),
+            Err(error) => (Err(Failed::Put(error)), None),
+        },
+    }
 }
 
 /// Puts a change, and has a setup running it take it up.
-async fn apply(daemon: &DaemonClient, change: &Change) -> Result<(), Failed> {
+async fn apply(
+    daemon: &DaemonClient,
+    app: &slint::Weak<AppWindow>,
+    change: &Change,
+) -> Result<(), Failed> {
     daemon
         .put_profile(&change.name, &change.toml)
         .await
@@ -711,6 +959,8 @@ async fn apply(daemon: &DaemonClient, change: &Change) -> Result<(), Failed> {
             .map_err(Failed::Update)?
             .is_some()
     {
+        let name = change.name.clone();
+        on_ui(app, move |app| applying(&app, &name));
         daemon
             .update_setup(&change.name, true)
             .await
@@ -719,24 +969,119 @@ async fn apply(daemon: &DaemonClient, change: &Change) -> Result<(), Failed> {
     Ok(())
 }
 
-/// Puts the changes as they come, one after another.
-async fn write(
-    mut changes: tokio::sync::mpsc::UnboundedReceiver<Change>,
-    daemon: DaemonClient,
-    app: slint::Weak<AppWindow>,
-) {
-    while let Some(first) = changes.recv().await {
-        let mut batch = vec![first];
-        while let Ok(next) = changes.try_recv() {
-            batch.push(next);
+/// The change to `name` under way was kept, and the setup running it is
+/// taking it up.
+fn applying(app: &AppWindow, name: &str) {
+    PENDING.with_borrow_mut(|pending| {
+        if let Some(progress) = pending.get_mut(name) {
+            progress.applying = true;
         }
-        for change in latest(batch) {
-            let outcome = apply(&daemon, &change).await;
-            on_ui(&app, move |app| {
-                done(&app, &change.name, change.number, outcome);
-            });
+    });
+    render(app);
+}
+
+/// One more request is on its way for `name`, or one fewer.
+fn pending(name: &str, more: bool) {
+    PENDING.with_borrow_mut(|pending| {
+        if more {
+            pending.entry(name.to_string()).or_default().ops += 1;
+            return;
+        }
+        if let Some(progress) = pending.get_mut(name) {
+            progress.ops = progress.ops.saturating_sub(1);
+            progress.applying = false;
+            if progress.ops == 0 {
+                pending.remove(name);
+            }
+        }
+    });
+}
+
+/// Sends `op`, with the profiles it is about shown as having it on its
+/// way. A rename's delete, sent after it, is counted now.
+fn request(app: &AppWindow, writer: &Writer, op: Op) {
+    let mut about = vec![op.lane().to_string()];
+    if let Op::Copy {
+        from, rename: true, ..
+    } = &op
+    {
+        about.push(from.clone());
+    }
+    for name in &about {
+        pending(name, true);
+    }
+    if !writer.send(op) {
+        warn!("not asked: nothing writes the window's requests any more");
+        for name in &about {
+            pending(name, false);
         }
     }
+    render(app);
+}
+
+/// What came of a request, on the window's thread: it is no longer on
+/// its way, and what it came to is said. A banner says a failure, and an
+/// outcome of the same kind clears it, and no other kind: a start that
+/// succeeds leaves another profile's warning standing.
+fn finished(app: &AppWindow, op: &Op, outcome: Result<(), Failed>) {
+    pending(op.lane(), false);
+    let outcome = match op {
+        Op::Put(change) => {
+            done(app, &change.name, change.number, outcome);
+            render(app);
+            return;
+        }
+        Op::Start(name) => (
+            format!("start:{name}"),
+            "The profile couldn't be started".to_string(),
+            outcome,
+        ),
+        Op::Delete(name) => {
+            GOING.with_borrow_mut(|going| going.remove(name));
+            (
+                format!("delete:{name}"),
+                format!("'{name}' couldn't be deleted"),
+                outcome,
+            )
+        }
+        Op::Copy {
+            from, to, rename, ..
+        } => {
+            if outcome.is_err() {
+                // Nothing was made: what the window held for the new one
+                // is the old one's again, and the old one stays.
+                HELD.with_borrow_mut(|held| {
+                    let carried = held.remove(to);
+                    if *rename && let Some(values) = carried {
+                        held.entry(from.clone()).or_insert(values);
+                    }
+                });
+                if *rename {
+                    GOING.with_borrow_mut(|going| going.remove(from));
+                    pending(from, false);
+                }
+            }
+            let what = if *rename { "renamed" } else { "duplicated" };
+            (
+                format!("copy:{to}"),
+                format!("The profile couldn't be {what}"),
+                outcome,
+            )
+        }
+    };
+    let (kind, title, outcome) = outcome;
+    let errors = app.global::<Errors>();
+    match outcome {
+        Ok(()) => {
+            if errors.get_profiles().kind == kind {
+                errors.set_profiles(ErrorState::default());
+            }
+        }
+        Err(Failed::Put(error) | Failed::Update(error)) => {
+            errors.set_profiles(refused(&kind, &title, &error));
+        }
+    }
+    render(app);
 }
 
 /// What a change came to. Only the latest asked of a profile is said: an
@@ -763,11 +1108,16 @@ fn done(app: &AppWindow, name: &str, number: u64, outcome: Result<(), Failed>) {
         Err(Failed::Put(error)) => {
             HELD.with_borrow_mut(|held| held.remove(name));
             render(app);
-            refused(&format!("The change to '{name}' couldn't be kept"), &error)
+            refused(
+                &kind,
+                &format!("The change to '{name}' couldn't be kept"),
+                &error,
+            )
         }
         Err(Failed::Update(error)) => ErrorState {
             tone: SharedString::from("warn"),
             ..refused(
+                &kind,
                 &format!(
                     "The change to '{name}' was kept, but the running profile couldn't take it up"
                 ),
@@ -775,17 +1125,18 @@ fn done(app: &AppWindow, name: &str, number: u64, outcome: Result<(), Failed>) {
             )
         },
     };
-    errors.set_profiles(ErrorState {
-        kind: SharedString::from(kind),
-        ..banner
-    });
+    errors.set_profiles(banner);
 }
 
 /// A field was set. The window holds the change and shows it; if it
 /// makes a profile, the profile is put and a setup running it updated.
 /// The held change goes once the kept profile says the same, or is
-/// dropped with a banner if the daemon refuses it.
+/// dropped with a banner if the daemon refuses it. Nothing is asked of a
+/// profile that is going.
 fn set_field(app: &AppWindow, writer: &Writer, name: &str, key: &str, value: &str) {
+    if GOING.with_borrow(|going| going.contains(name)) {
+        return;
+    }
     let Some(mut values) = values_of(name) else {
         return;
     };
@@ -822,12 +1173,7 @@ fn set_field(app: &AppWindow, writer: &Writer, name: &str, key: &str, value: &st
     change.number = COUNTED.get() + 1;
     COUNTED.set(change.number);
     ASKED.with_borrow_mut(|asked| asked.insert(name.to_string(), change.number));
-    if writer.0.send(change).is_err() {
-        warn!(
-            profile = name,
-            "the change wasn't put: nothing writes changes any more"
-        );
-    }
+    request(app, writer, Op::Put(change));
 }
 
 /// The change to put for `values`, if they are something the daemon
@@ -846,6 +1192,59 @@ fn change(fields: &[Field], name: &str, values: &Values) -> Option<Change> {
         toml,
         update: unchosen.is_empty(),
     })
+}
+
+/// The text a copy of `name` is made of: the profile as the window shows
+/// it, what it holds and hasn't kept yet among it, where that is
+/// something the daemon keeps; the text as kept otherwise.
+fn text_of(name: &str) -> Option<String> {
+    values_of(name)
+        .and_then(|values| KNOWN.with_borrow(|known| change(&known.fields, name, &values)))
+        .map(|change| change.toml)
+        .or_else(|| {
+            KNOWN.with_borrow(|known| {
+                known
+                    .profiles
+                    .iter()
+                    .find(|kept| kept.name == name)
+                    .map(|kept| kept.toml.clone())
+            })
+        })
+}
+
+/// Copies the profile `from` to the new profile `to`, as the window
+/// shows it; with `rename`, `from` goes once the copy is kept. What the
+/// window holds of `from` is held of `to`: moved, for a rename.
+fn copy(app: &AppWindow, writer: &Writer, from: &str, to: &str, rename: bool) {
+    if GOING.with_borrow(|going| going.contains(from)) {
+        return;
+    }
+    let Some(toml) = text_of(from) else {
+        return;
+    };
+    HELD.with_borrow_mut(|held| {
+        let carried = if rename {
+            held.remove(from)
+        } else {
+            held.get(from).cloned()
+        };
+        if let Some(values) = carried {
+            held.insert(to.to_string(), values);
+        }
+    });
+    if rename {
+        GOING.with_borrow_mut(|going| going.insert(from.to_string()));
+    }
+    request(
+        app,
+        writer,
+        Op::Copy {
+            from: from.to_string(),
+            to: to.to_string(),
+            toml,
+            rename,
+        },
+    );
 }
 
 /// Before `key` takes the pad `value`: if another part of the profile
@@ -875,23 +1274,6 @@ pub fn change_places(known: &Known, values: &mut Values, key: &str, value: &str)
             None => values.remove(&other),
         };
     }
-}
-
-/// Runs `ask` and shows its refusal, if it is refused.
-fn ask<F>(app: &AppWindow, what: &'static str, ask: F)
-where
-    F: Future<Output = ctrlassist::Result<()>> + Send + 'static,
-{
-    let weak = app.as_weak();
-    tokio::spawn(async move {
-        let banner = match ask.await {
-            Ok(()) => ErrorState::default(),
-            Err(error) => refused(what, &error),
-        };
-        on_ui(&weak, move |app| {
-            app.global::<Errors>().set_profiles(banner);
-        });
-    });
 }
 
 /// Binds what needs no daemon: making a new profile's draft, dropping
@@ -960,14 +1342,10 @@ pub fn bind_local(app: &AppWindow, nav: &NavHandles) {
     });
 }
 
-/// Binds the pane's actions.
-pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient, nav: &NavHandles) {
-    bind_local(app, nav);
+/// Binds what the pane asks of the daemon to `writer`: a field set, a
+/// start, a delete, a copy and a rename, each on its profile's lane.
+pub fn bind_edits(app: &AppWindow, writer: &Writer) {
     let profiles = app.global::<Profiles>();
-    let (changes, to_write) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(write(to_write, daemon.clone(), app.as_weak()));
-    let writer = Writer(changes);
-
     let (weak, client) = (app.as_weak(), writer.clone());
     profiles.on_set_field(move |name, key, value| {
         if let Some(app) = weak.upgrade() {
@@ -988,65 +1366,59 @@ pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient, nav: &NavHandles) {
             set_field(&app, &client, &name, &key, &default);
         }
     });
-    let (weak, client) = (app.as_weak(), writer);
+    let (weak, client) = (app.as_weak(), writer.clone());
     profiles.on_set_number(move |name, key, number| {
         if let Some(app) = weak.upgrade() {
             set_field(&app, &client, &name, &key, &number.to_string());
         }
     });
 
-    let (weak, client) = (app.as_weak(), daemon.clone());
+    let (weak, client) = (app.as_weak(), writer.clone());
     profiles.on_start(move |name| {
-        let Some(app) = weak.upgrade() else { return };
-        let (client, name) = (client.clone(), name.to_string());
-        ask(&app, "The profile couldn't be started", async move {
-            client.start_setup(&name).await
-        });
+        if let Some(app) = weak.upgrade()
+            && !GOING.with_borrow(|going| going.contains(name.as_str()))
+        {
+            request(&app, &client, Op::Start(name.to_string()));
+        }
     });
 
-    let (weak, client) = (app.as_weak(), daemon.clone());
+    let (weak, client) = (app.as_weak(), writer.clone());
     profiles.on_delete(move |name| {
         let Some(app) = weak.upgrade() else { return };
         HELD.with_borrow_mut(|held| held.remove(name.as_str()));
-        let (client, name) = (client.clone(), name.to_string());
-        ask(&app, "The profile couldn't be deleted", async move {
-            client.delete_profile(&name).await
-        });
+        // Nothing more is asked of it: a change queued before lands
+        // first, on its lane, and none can come after.
+        if !GOING.with_borrow_mut(|going| going.insert(name.to_string())) {
+            return;
+        }
+        request(&app, &client, Op::Delete(name.to_string()));
     });
 
-    // A copy, and a rename, are made of the text as kept.
-    let kept_text = |name: &str| {
-        KNOWN.with_borrow(|known| {
-            known
-                .profiles
-                .iter()
-                .find(|kept| kept.name == name)
-                .map(|kept| kept.toml.clone())
-        })
-    };
-    let (weak, client) = (app.as_weak(), daemon.clone());
+    let (weak, client) = (app.as_weak(), writer.clone());
     profiles.on_duplicate(move |source, name| {
-        let (Some(app), Some(toml)) = (weak.upgrade(), kept_text(&source)) else {
-            return;
-        };
-        let (client, name) = (client.clone(), name.to_string());
-        ask(&app, "The profile couldn't be duplicated", async move {
-            client.put_profile(&name, &toml).await
-        });
+        if let Some(app) = weak.upgrade() {
+            copy(&app, &client, &source, &name, false);
+        }
     });
-    let (weak, client) = (app.as_weak(), daemon.clone());
+    let (weak, client) = (app.as_weak(), writer.clone());
     profiles.on_rename(move |source, name| {
-        let (Some(app), Some(toml)) = (weak.upgrade(), kept_text(&source)) else {
-            return;
-        };
-        let (client, source, name) = (client.clone(), source.to_string(), name.to_string());
-        ask(&app, "The profile couldn't be renamed", async move {
-            // The new one first, so a failure leaves the old.
-            client.put_profile(&name, &toml).await?;
-            client.delete_profile(&source).await
-        });
+        if let Some(app) = weak.upgrade() {
+            copy(&app, &client, &source, &name, true);
+        }
     });
+}
 
+/// Binds the pane's actions. What it asks of the daemon goes through the
+/// writer handed back, which the window flushes as it closes.
+pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient, nav: &NavHandles) -> Writer {
+    bind_local(app, nav);
+    let (client, weak) = (daemon.clone(), app.as_weak());
+    let writer = Writer::spawn(app.as_weak(), move |op| {
+        perform(client.clone(), weak.clone(), op)
+    });
+    bind_edits(app, &writer);
+
+    let profiles = app.global::<Profiles>();
     let weak = app.as_weak();
     profiles.on_reveal(move |name| {
         let Some(app) = weak.upgrade() else { return };
@@ -1067,6 +1439,7 @@ pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient, nav: &NavHandles) {
             }
         });
     });
+    writer
 }
 
 /// Forgets what the window holds; for tests, which share a thread's
@@ -1074,6 +1447,8 @@ pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient, nav: &NavHandles) {
 pub fn forget_held() {
     HELD.with_borrow_mut(BTreeMap::clear);
     ASKED.with_borrow_mut(BTreeMap::clear);
+    PENDING.with_borrow_mut(BTreeMap::clear);
+    GOING.with_borrow_mut(BTreeSet::clear);
     KNOWN.set(Known::default());
 }
 
@@ -1081,26 +1456,278 @@ pub fn forget_held() {
 mod tests {
     use super::*;
 
-    fn numbered(name: &str, number: u64) -> Change {
-        Change {
+    const DEN: &str = "mode = \"toggle\"\nprimary = \"address:0a:1b:2c:3d:4e:14\"\nassist = \"address:1a:2b:3c:4d:5e:da\"\n";
+
+    fn pad(id: &str, name: &str) -> Pad {
+        Pad {
+            id: id.to_string(),
             name: name.to_string(),
-            number,
-            toml: format!("# {number}\n"),
-            update: true,
+            vendor: 0x054c,
+            product: 0x0ce6,
+            connected: true,
+            hidden: false,
+            setup: None,
+            rumble: Some(true),
+            bus: None,
         }
     }
 
+    /// A window that knows two profiles alike, `den` and `loft`, whose
+    /// requests go to the receiver handed back.
+    fn window() -> (AppWindow, mpsc::UnboundedReceiver<Op>) {
+        i_slint_backend_testing::init_no_event_loop();
+        forget_held();
+        let app = AppWindow::new().expect("the window builds on the testing backend");
+        let (writer, asked) = Writer::detached();
+        bind_edits(&app, &writer);
+        let kept = |name: &str| Profile {
+            name: name.to_string(),
+            toml: DEN.to_string(),
+            unset: Vec::new(),
+            problem: None,
+        };
+        show(
+            &app,
+            Known {
+                profiles: vec![kept("den"), kept("loft")],
+                setups: Vec::new(),
+                pads: vec![
+                    pad("address:0a:1b:2c:3d:4e:14", "DualSense"),
+                    pad("address:1a:2b:3c:4d:5e:da", "Other DualSense"),
+                ],
+                fields: form::fields(),
+            },
+        );
+        (app, asked)
+    }
+
+    fn sent(asked: &mut mpsc::UnboundedReceiver<Op>) -> Vec<Op> {
+        let mut ops = Vec::new();
+        while let Ok(op) = asked.try_recv() {
+            ops.push(op);
+        }
+        ops
+    }
+
+    /// The word a profile's row shows.
+    fn word(app: &AppWindow, name: &str) -> String {
+        app.global::<Profiles>()
+            .get_rows()
+            .iter()
+            .find(|row| row.name == name)
+            .map(|row| row.word.to_string())
+            .unwrap_or_default()
+    }
+
+    /// A field set, then a delete: both on the profile's lane, the
+    /// change first, and nothing asked of the profile after; a queued
+    /// change can't bring it back.
     #[test]
-    fn of_a_run_of_changes_the_last_of_each_profile_is_put_in_order() {
-        let put = latest(vec![
-            numbered("a", 1),
-            numbered("b", 2),
-            numbered("a", 3),
-            numbered("c", 4),
-            numbered("b", 5),
-        ]);
-        let numbers: Vec<u64> = put.iter().map(|change| change.number).collect();
-        assert_eq!(numbers, [3, 4, 5]);
+    fn a_delete_waits_for_the_changes_before_it_and_nothing_comes_after() {
+        let (app, mut asked) = window();
+        let profiles = app.global::<Profiles>();
+        profiles.invoke_set_field("den".into(), "rumble".into(), "assist".into());
+        assert_eq!(word(&app, "den"), "Saving…");
+        profiles.invoke_delete("den".into());
+        profiles.invoke_set_field("den".into(), "rumble".into(), "primary".into());
+        profiles.invoke_start("den".into());
+        let ops = sent(&mut asked);
+        assert!(
+            matches!(&ops[..], [Op::Put(change), Op::Delete(name)]
+                if change.name == "den" && change.toml.contains("rumble = \"assist\"") && name == "den"),
+            "{ops:?}"
+        );
+        // On the lane, the delete waits for the change, and another
+        // profile's start for neither.
+        let mut lanes = Lanes::default();
+        let mut started = Vec::new();
+        for op in ops.iter().cloned().chain([Op::Start("loft".into())]) {
+            let lane = op.lane().to_string();
+            started.extend(lanes.take(&lane, op));
+        }
+        assert_eq!(started.len(), 2, "{started:?}");
+        assert!(matches!(&started[1], Op::Start(name) if name == "loft"));
+        assert_eq!(
+            lanes.done("den", Op::carried_by),
+            (Vec::new(), Some(ops[1].clone()))
+        );
+        // Settled, the profile has nothing on its way and can be asked
+        // again once the daemon says it is there.
+        finished(&app, &ops[0], Ok(()));
+        assert_eq!(word(&app, "den"), "Saving…", "the delete is on its way");
+        finished(&app, &ops[1], Ok(()));
+        assert_ne!(word(&app, "den"), "Saving…");
+        profiles.invoke_set_field("den".into(), "rumble".into(), "primary".into());
+        assert_eq!(sent(&mut asked).len(), 1);
+        forget_held();
+    }
+
+    /// A rename and a duplicate carry what the window holds and hasn't
+    /// kept yet; the rename's old profile takes nothing more, and goes
+    /// only once the new one is kept, after what waits on its lane.
+    #[test]
+    fn a_rename_and_a_duplicate_carry_what_is_held() {
+        let (app, mut asked) = window();
+        let profiles = app.global::<Profiles>();
+        profiles.invoke_set_field("loft".into(), "rumble".into(), "assist".into());
+        profiles.invoke_rename("loft".into(), "attic".into());
+        profiles.invoke_set_field("loft".into(), "rumble".into(), "primary".into());
+        profiles.invoke_duplicate("den".into(), "den-two".into());
+        let ops = sent(&mut asked);
+        assert_eq!(ops.len(), 3, "{ops:?}");
+        assert!(
+            matches!(&ops[1], Op::Copy { from, to, toml, rename: true }
+                if from == "loft" && to == "attic" && toml.contains("rumble = \"assist\"")),
+            "{ops:?}"
+        );
+        assert!(
+            matches!(&ops[2], Op::Copy { from, to, rename: false, .. } if from == "den" && to == "den-two"),
+            "{ops:?}"
+        );
+        // What was held of the old one is held of the new.
+        HELD.with_borrow(|held| {
+            assert!(!held.contains_key("loft"));
+            assert_eq!(
+                held.get("attic").and_then(|values| values.get("rumble")),
+                Some(&"assist".to_string())
+            );
+        });
+        assert_eq!(word(&app, "attic"), "Saving…");
+        // Kept: the old one has its delete still to come.
+        finished(&app, &ops[1], Ok(()));
+        assert_eq!(word(&app, "loft"), "Saving…");
+        assert_ne!(word(&app, "attic"), "Saving…");
+        finished(&app, &ops[0], Ok(()));
+        finished(&app, &Op::Delete("loft".into()), Ok(()));
+        assert_ne!(word(&app, "loft"), "Saving…");
+        assert!(GOING.with_borrow(BTreeSet::is_empty));
+
+        // A rename the daemon refuses leaves the old one, holding what
+        // it held.
+        profiles.invoke_set_field("den".into(), "rumble".into(), "assist".into());
+        profiles.invoke_rename("den".into(), "study".into());
+        let ops = sent(&mut asked);
+        finished(&app, &ops[1], Err(Failed::Put(refused_error())));
+        HELD.with_borrow(|held| {
+            assert!(held.contains_key("den"));
+            assert!(!held.contains_key("study"));
+        });
+        assert!(GOING.with_borrow(BTreeSet::is_empty));
+        finished(&app, &ops[0], Ok(()));
+        assert_ne!(word(&app, "den"), "Saving…");
+        forget_held();
+    }
+
+    fn refused_error() -> ctrlassist::Error {
+        ctrlassist::Error::Rpc {
+            code: ctrlassist::ErrorCode::BadRequest,
+            message: "no".to_string(),
+        }
+    }
+
+    /// A change on its way says so: as saving, then as applying while
+    /// the setup running the profile takes it up, until it lands.
+    #[test]
+    fn a_change_on_its_way_says_so_until_it_lands() {
+        let (app, mut asked) = window();
+        let before = word(&app, "den");
+        app.global::<Profiles>()
+            .invoke_set_field("den".into(), "rumble".into(), "assist".into());
+        assert_eq!(word(&app, "den"), "Saving…");
+        assert_eq!(
+            word(&app, "loft"),
+            before,
+            "another profile has nothing on its way"
+        );
+        applying(&app, "den");
+        assert_eq!(word(&app, "den"), "Applying…");
+        let ops = sent(&mut asked);
+        finished(&app, &ops[0], Ok(()));
+        assert_eq!(word(&app, "den"), before);
+        forget_held();
+    }
+
+    /// A start, a delete or a copy that lands clears only the banner of
+    /// its own kind: not a warning another profile's change raised.
+    #[test]
+    fn an_outcome_clears_only_the_banner_of_its_own_kind() {
+        let (app, _asked) = window();
+        let errors = app.global::<Errors>();
+        ASKED.with_borrow_mut(|asked| asked.insert("den".to_string(), 1));
+        let change = Change {
+            name: "den".to_string(),
+            number: 1,
+            toml: DEN.to_string(),
+            update: true,
+        };
+        finished(&app, &Op::Put(change), Err(Failed::Update(refused_error())));
+        let warning = errors.get_profiles();
+        assert_eq!(warning.kind, "change:den");
+        for op in [
+            Op::Start("loft".into()),
+            Op::Delete("loft".into()),
+            Op::Copy {
+                from: "loft".into(),
+                to: "attic".into(),
+                toml: DEN.to_string(),
+                rename: false,
+            },
+        ] {
+            finished(&app, &op, Ok(()));
+            assert_eq!(errors.get_profiles(), warning, "{op:?}");
+        }
+        // Its own kind it clears.
+        finished(
+            &app,
+            &Op::Start("loft".into()),
+            Err(Failed::Put(refused_error())),
+        );
+        assert_eq!(errors.get_profiles().kind, "start:loft");
+        finished(&app, &Op::Start("loft".into()), Ok(()));
+        assert_eq!(errors.get_profiles(), ErrorState::default());
+        forget_held();
+    }
+
+    /// The writer's flush waits for every request sent, a rename's
+    /// delete sent after it among them, and says when they aren't all
+    /// done.
+    #[tokio::test]
+    async fn the_flush_waits_for_every_request_and_what_one_sends_after_it() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let done: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let writer = Writer::spawn(slint::Weak::default(), {
+            let (gate, done) = (Arc::clone(&gate), Arc::clone(&done));
+            move |op: Op| {
+                let (gate, done) = (Arc::clone(&gate), Arc::clone(&done));
+                async move {
+                    if matches!(op, Op::Copy { .. }) {
+                        gate.notified().await;
+                    }
+                    done.lock().unwrap().push(format!("{op:?}"));
+                    let then = match op {
+                        Op::Copy {
+                            from, rename: true, ..
+                        } => Some(Op::Delete(from)),
+                        _ => None,
+                    };
+                    (Ok(()), then)
+                }
+            }
+        });
+        assert!(writer.flush(Duration::from_secs(5)).await, "nothing sent");
+        assert!(writer.send(Op::Copy {
+            from: "loft".into(),
+            to: "attic".into(),
+            toml: DEN.to_string(),
+            rename: true,
+        }));
+        assert!(writer.send(Op::Start("den".into())));
+        assert!(!writer.flush(Duration::from_millis(50)).await);
+        gate.notify_one();
+        assert!(writer.flush(Duration::from_secs(5)).await);
+        let done = done.lock().unwrap();
+        assert_eq!(done.len(), 3, "{done:?}");
+        assert_eq!(done[2], "Delete(\"loft\")");
     }
 
     #[test]
