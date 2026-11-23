@@ -16,12 +16,13 @@
 //! reason, they are shown again.
 
 mod activation;
+mod connections;
 mod descriptor;
 mod hide;
 mod pad;
 mod seat;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
@@ -35,11 +36,11 @@ use rustix::net::sockopt::socket_peercred;
 use rustix::net::{
     AddressFamily, SocketAddrUnix, SocketFlags, SocketType, accept_with, bind, listen, socket,
 };
+use tracing::{debug, error, info, warn};
 
+use crate::connections::Connections;
+use crate::hide::Leave;
 use crate::pad::Pad;
-
-/// The most connections one user may hold at once. The daemon holds one.
-const CONNECTIONS_PER_USER: usize = 8;
 
 /// Where a hidden pad is in its life.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -67,8 +68,7 @@ struct State {
     entries: Vec<Entry>,
     next_token: u32,
     next_connection: u64,
-    /// Open connections, by user; `u32::MAX` for one whose user isn't known.
-    connections: BTreeMap<u32, usize>,
+    connections: Connections,
     /// Whether anyone has connected since the service started.
     served_anyone: bool,
 }
@@ -101,17 +101,13 @@ impl State {
             .map(|entry| entry.pad.parent.clone())
             .collect()
     }
-
-    fn open(&self) -> usize {
-        self.connections.values().sum()
-    }
 }
 
 #[derive(Debug)]
 struct Shared {
     state: Mutex<State>,
     /// Written when a connection closes, which may let the service stop,
-    /// or let it accept again after running out of descriptors.
+    /// or let it accept again after running out of room to.
     closed: OwnedFd,
 }
 
@@ -123,12 +119,6 @@ impl Shared {
     }
 }
 
-/// Writes a line to the journal. A failed write is ignored: there is
-/// nowhere else to report it.
-fn log(line: &str) {
-    let _ = writeln!(io::stderr(), "{line}");
-}
-
 /// The group the rule gives hidden nodes to, which the service runs as.
 fn group() -> u32 {
     rustix::process::getegid().as_raw()
@@ -138,7 +128,9 @@ fn reply(socket: BorrowedFd<'_>, reply: Reply, fd: Option<&OwnedFd>) {
     let fds: Vec<_> = fd.iter().map(|fd| fd.as_fd()).collect();
     // A client that has gone is found out by its next receive. One that
     // doesn't read blocks this send, and so its own thread alone.
-    let _ = send(socket, &reply.encode(), &fds);
+    if let Err(error) = send(socket, &reply.encode(), &fds) {
+        debug!(%error, "couldn't reply to a client, which has likely gone");
+    }
 }
 
 fn refuse(socket: BorrowedFd<'_>, refusal: Refusal) {
@@ -156,8 +148,10 @@ fn ok(token: u32, dislodged: bool) -> Reply {
 /// Shows a pad again: the markers no other pad has go, its driver is
 /// re-bound if it is there, and then any pad the rule hides that nothing
 /// should is shown again too. The entry stays, as showing, until the
-/// re-bind is done, so the pad can't be hidden again meanwhile.
-fn show(shared: &Shared, token: u32) {
+/// re-bind is done, so the pad can't be hidden again meanwhile; the wait
+/// for it ends when udev is done, the pad is unplugged, or `client`, the
+/// one that asked, hangs up.
+fn show(shared: &Shared, token: u32, client: Option<BorrowedFd<'_>>) {
     let parent = {
         let mut state = shared.state();
         let Some(entry) = state.entries.iter_mut().find(|entry| entry.token == token) else {
@@ -172,8 +166,15 @@ fn show(shared: &Shared, token: u32) {
         }
         parent
     };
-    if let Some(parent) = parent {
-        let _ = hide::rebind(&parent, None);
+    if let Some(parent) = parent
+        && let Err(refusal) = hide::rebind(&parent, Leave::AsTheRuleSays, client)
+    {
+        warn!(
+            token,
+            device = %parent.display(),
+            %refusal,
+            "the pad's driver wasn't re-bound to show it again; it is shown at its next event"
+        );
     }
     let mut state = shared.state();
     state.entries.retain(|entry| entry.token != token);
@@ -182,14 +183,18 @@ fn show(shared: &Shared, token: u32) {
     hide::sweep(group(), &held, &state.markers());
 }
 
+/// The seats `user` is in front on now, as a person at the machine.
+fn seats_in_front(user: Option<u32>) -> Vec<String> {
+    user.map(seat::seats_in_front).unwrap_or_default()
+}
+
 /// The pad a descriptor names, if the caller may have it hidden or its
 /// raw node opened: the descriptor was opened for reading on a pad the
 /// seat user could open, and the caller is in front, now, on the seat the
 /// pad is on. A caller who has left the foreground takes nothing new.
 fn presented(user: Option<u32>, fd: BorrowedFd<'_>) -> Result<Pad, Refusal> {
     let pad = pad::identify(fd)?;
-    let seats = user.map(seat::seats_in_front).unwrap_or_default();
-    if !seats.contains(&pad.identity.seat) {
+    if !seats_in_front(user).contains(&pad.identity.seat) {
         return Err(Refusal::NotPermitted);
     }
     Ok(pad)
@@ -204,6 +209,9 @@ fn hide_pad(
     fd: OwnedFd,
 ) -> Result<(u32, OwnedFd), Refusal> {
     let pad = presented(user, fd.as_fd())?;
+    // Before any marker is made: without the rule, the request can't be
+    // made, and the pad is left as it was for the caller to grab.
+    hide::may_request(&pad.parent)?;
     let token = {
         let mut state = shared.state();
         if state
@@ -218,7 +226,8 @@ fn hide_pad(
         // crash leaves enough to undo.
         let others = state.markers();
         for marker in &pad.markers {
-            if hide::create(marker).is_err() {
+            if let Err(error) = hide::create(marker) {
+                error!(marker, %error, "couldn't make a marker; the pad isn't hidden");
                 for made in pad.markers.difference(&others) {
                     hide::delete(made);
                 }
@@ -236,7 +245,7 @@ fn hide_pad(
     // The caller's own descriptor is closed before the driver is re-bound,
     // so the service isn't holding the pad open itself.
     drop(fd);
-    match hide::cut_off(&pad, socket) {
+    match hide::cut_off(&pad, group(), socket) {
         Ok(event) => {
             let mut state = shared.state();
             if let Some(entry) = state.entries.iter_mut().find(|entry| entry.token == token) {
@@ -245,35 +254,52 @@ fn hide_pad(
             Ok((token, event))
         }
         Err(refusal) => {
-            show(shared, token);
+            show(shared, token, None);
             Err(refusal)
         }
     }
 }
 
 /// Opens a hidden pad's event node again, finding the pad first if it
-/// reconnected: only once the device it was checked as is gone.
-fn reopen(shared: &Shared, owner: u64, token: u32) -> Result<OwnedFd, Refusal> {
-    let mut state = shared.state();
-    let held = state.held();
-    let entry = state
-        .entries
-        .iter_mut()
-        .find(|entry| entry.token == token && entry.owner == owner && entry.phase == Phase::Hidden)
-        .ok_or(Refusal::UnknownToken)?;
-    if !pad::is_there(&entry.pad) {
-        let taken: Vec<&Path> = held.iter().map(PathBuf::as_path).collect();
-        let found = pad::returned(&entry.pad, group(), &taken).ok_or(Refusal::Absent)?;
-        for marker in found.markers.difference(&entry.pad.markers) {
-            let _ = hide::create(marker);
+/// reconnected: only once the device it was checked as is gone, and only
+/// for a caller in front, now, on the pad's seat, since the pad found may
+/// be another the rule hides.
+fn reopen(shared: &Shared, owner: u64, user: Option<u32>, token: u32) -> Result<OwnedFd, Refusal> {
+    let seats = seats_in_front(user);
+    let (parent, ordinal) = {
+        let mut state = shared.state();
+        let held = state.held();
+        let entry = state
+            .entries
+            .iter_mut()
+            .find(|entry| {
+                entry.token == token && entry.owner == owner && entry.phase == Phase::Hidden
+            })
+            .ok_or(Refusal::UnknownToken)?;
+        if !pad::is_there(&entry.pad) {
+            if !seats.contains(&entry.pad.identity.seat) {
+                return Err(Refusal::NotPermitted);
+            }
+            let taken: Vec<&Path> = held.iter().map(PathBuf::as_path).collect();
+            let found = pad::returned(&entry.pad, group(), &taken).ok_or(Refusal::Absent)?;
+            for marker in found.markers.difference(&entry.pad.markers) {
+                if let Err(error) = hide::create(marker) {
+                    warn!(
+                        token,
+                        marker,
+                        %error,
+                        "couldn't mark the pad that came back by all it is named by; it is hidden by the markers it had"
+                    );
+                }
+            }
+            entry.pad.parent = found.parent;
+            entry.pad.ordinal = found.ordinal;
+            entry.pad.markers.extend(found.markers);
         }
-        entry.pad.parent = found.parent;
-        entry.pad.ordinal = found.ordinal;
-        entry.pad.markers.extend(found.markers);
-    }
-    let node = pad::event_node(&entry.pad.parent, entry.pad.ordinal).ok_or(Refusal::Absent)?;
-    drop(state);
-    hide::open(&node)
+        (entry.pad.parent.clone(), entry.pad.ordinal)
+    };
+    let node = pad::event_node(&parent, ordinal).ok_or(Refusal::Absent)?;
+    hide::open_under(&node, &parent, Some(group()))
 }
 
 /// The device of a pad connection `owner` has hidden.
@@ -287,6 +313,12 @@ fn hidden_parent(shared: &Shared, owner: u64, token: u32) -> Result<PathBuf, Ref
         .ok_or(Refusal::UnknownToken)
 }
 
+/// Opens the raw node of the pad whose device is at `parent`.
+fn raw_of(parent: &Path) -> Result<OwnedFd, Refusal> {
+    let node = pad::raw_node(parent)?;
+    hide::open_under(&node, parent, None)
+}
+
 /// Serves one client until it closes, then shows again what it hid.
 fn serve(shared: &Shared, socket: &OwnedFd, owner: u64, user: Option<u32>) {
     let socket = socket.as_fd();
@@ -295,8 +327,12 @@ fn serve(shared: &Shared, socket: &OwnedFd, owner: u64, user: Option<u32>) {
     let mut permitted = user.is_some_and(seat::is_in_front);
     loop {
         let mut buffer = [0u8; Request::SIZE];
-        let Ok((length, mut fds)) = receive(socket, &mut buffer) else {
-            break;
+        let (length, mut fds) = match receive(socket, &mut buffer) {
+            Ok(received) => received,
+            Err(error) => {
+                debug!(%error, "a client's connection broke");
+                break;
+            }
         };
         if length == 0 {
             break;
@@ -328,7 +364,7 @@ fn serve(shared: &Shared, socket: &OwnedFd, owner: u64, user: Option<u32>) {
                 };
                 match hide_pad(shared, socket, owner, user, fd) {
                     Ok((token, event)) => {
-                        log(&format!("hid pad {token}"));
+                        info!(token, "hid a pad");
                         // Every pad hidden is cut off by a re-bind, and
                         // shown again by another.
                         reply(socket, ok(token, true), Some(&event));
@@ -336,14 +372,14 @@ fn serve(shared: &Shared, socket: &OwnedFd, owner: u64, user: Option<u32>) {
                     Err(refusal) => refuse(socket, refusal),
                 }
             }
-            Some(Request::Reopen(Token(token))) => match reopen(shared, owner, token) {
+            Some(Request::Reopen(Token(token))) => match reopen(shared, owner, user, token) {
                 Ok(event) => reply(socket, ok(token, true), Some(&event)),
                 Err(refusal) => refuse(socket, refusal),
             },
             Some(Request::Restore(Token(token))) => {
                 if hidden_parent(shared, owner, token).is_ok() {
-                    show(shared, token);
-                    log(&format!("showed pad {token} again"));
+                    show(shared, token, Some(socket));
+                    info!(token, "showed a pad again");
                     reply(socket, ok(token, false), None);
                 } else {
                     refuse(socket, Refusal::UnknownToken);
@@ -354,19 +390,13 @@ fn serve(shared: &Shared, socket: &OwnedFd, owner: u64, user: Option<u32>) {
                     refuse(socket, Refusal::BadRequest);
                     continue;
                 };
-                let raw = presented(user, fd.as_fd())
-                    .and_then(|pad| pad::raw_node(&pad.parent))
-                    .and_then(|node| hide::open(&node));
-                match raw {
+                match presented(user, fd.as_fd()).and_then(|pad| raw_of(&pad.parent)) {
                     Ok(raw) => reply(socket, ok(0, false), Some(&raw)),
                     Err(refusal) => refuse(socket, refusal),
                 }
             }
             Some(Request::RawOf(Token(token))) => {
-                let raw = hidden_parent(shared, owner, token)
-                    .and_then(|parent| pad::raw_node(&parent))
-                    .and_then(|node| hide::open(&node));
-                match raw {
+                match hidden_parent(shared, owner, token).and_then(|parent| raw_of(&parent)) {
                     Ok(raw) => reply(socket, ok(token, false), Some(&raw)),
                     Err(refusal) => refuse(socket, refusal),
                 }
@@ -382,8 +412,46 @@ fn serve(shared: &Shared, socket: &OwnedFd, owner: u64, user: Option<u32>) {
         .map(|entry| entry.token)
         .collect();
     for token in mine {
-        log(&format!("client gone; showing pad {token} again"));
-        show(shared, token);
+        info!(token, "a client has gone; showing the pad it hid again");
+        show(shared, token, None);
+    }
+}
+
+/// What woke the main thread.
+struct Woken {
+    /// A connection closed.
+    closed: bool,
+    /// A client is waiting to be accepted.
+    waiting: bool,
+}
+
+/// Waits for a connection to close, or, unless there is no room to accept
+/// another, for a client to connect.
+fn wait(shared: &Shared, listener: &OwnedFd, exhausted: bool) -> Woken {
+    let mut fds = vec![PollFd::new(&shared.closed, PollFlags::IN)];
+    if !exhausted {
+        fds.push(PollFd::new(listener, PollFlags::IN));
+    }
+    match poll(&mut fds, None) {
+        Ok(_) => Woken {
+            closed: !fds[0].revents().is_empty(),
+            waiting: fds.get(1).is_some_and(|fd| !fd.revents().is_empty()),
+        },
+        Err(Errno::INTR) => Woken {
+            closed: false,
+            waiting: false,
+        },
+        Err(error) => {
+            // Ending the service would show every hidden pad, and trying
+            // again at once would spin. Instead it waits on the one thing
+            // that matters now, blocking on it alone: a connection closing
+            // when there's no room to accept, else a client to accept.
+            warn!(%error, "couldn't wait on the listener and the connections together; waiting on one alone");
+            Woken {
+                closed: exhausted,
+                waiting: !exhausted,
+            }
+        }
     }
 }
 
@@ -395,30 +463,25 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
 
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
-        closed: eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?,
+        // Blocking: it is read only once a connection has closed, or when
+        // waiting on that alone.
+        closed: eventfd(0, EventfdFlags::CLOEXEC)?,
     });
-    // Out of descriptors, accepting is left until a connection closes.
+    // Out of descriptors or memory, accepting is left until a connection
+    // closes, which frees both.
     let mut exhausted = false;
     loop {
-        let mut fds = vec![PollFd::new(&shared.closed, PollFlags::IN)];
-        if !exhausted {
-            fds.push(PollFd::new(listener, PollFlags::IN));
-        }
-        match poll(&mut fds, None) {
-            Ok(_) | Err(Errno::INTR) => {}
-            Err(error) => return Err(error.into()),
-        }
-        let closed = !fds[0].revents().is_empty();
-        let waiting = fds.get(1).is_some_and(|fd| !fd.revents().is_empty());
-        drop(fds);
-        if closed {
+        let woken = wait(&shared, listener, exhausted);
+        if woken.closed {
             let mut count = [0u8; 8];
-            let _ = rustix::io::read(&shared.closed, &mut count);
+            if let Err(error) = rustix::io::read(&shared.closed, &mut count) {
+                warn!(%error, "couldn't read how many connections closed");
+            }
             exhausted = false;
         }
-        if !waiting {
+        if !woken.waiting {
             let state = shared.state();
-            if state.open() == 0 && state.served_anyone && !stay {
+            if state.connections.open() == 0 && state.served_anyone && !stay {
                 // Started on demand, and nobody needs it now. A client
                 // that connects from here on waits on the socket systemd
                 // holds, which starts the service again.
@@ -428,30 +491,44 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
         }
         let socket = match accept_with(listener, SocketFlags::CLOEXEC) {
             Ok(socket) => socket,
-            Err(Errno::MFILE | Errno::NFILE | Errno::NOBUFS | Errno::NOMEM) => {
-                exhausted = true;
-                continue;
-            }
+            // The client gave up, or a signal came: nothing is left over.
+            Err(Errno::INTR | Errno::CONNABORTED | Errno::AGAIN) => continue,
             Err(error) => {
-                log(&format!("couldn't accept a connection: {error}"));
-                continue;
+                // The client stays queued: whatever ran out (descriptors,
+                // memory) is what a connection closing gives back, and
+                // that is the one event there is to wait for.
+                if shared.state().connections.open() > 0 {
+                    warn!(%error, "couldn't accept a connection; accepting again once one closes");
+                    exhausted = true;
+                    continue;
+                }
+                // With nothing connected nothing is hidden, so stopping
+                // shows nothing: systemd starts the service afresh for
+                // the client still queued.
+                return Err(io::Error::other(format!(
+                    "couldn't accept a connection with none open, so nothing will free what it needs: {error}"
+                )));
             }
         };
-        let user = socket_peercred(&socket).ok().map(|peer| peer.uid.as_raw());
-        let owner = {
+        let user = match socket_peercred(&socket) {
+            Ok(peer) => Some(peer.uid.as_raw()),
+            Err(error) => {
+                warn!(%error, "couldn't tell who connected; they are served as nobody");
+                None
+            }
+        };
+        let seated = user.is_some_and(seat::has_seat);
+        let (owner, holder) = {
             let mut state = shared.state();
             state.served_anyone = true;
-            let count = state
-                .connections
-                .entry(user.unwrap_or(u32::MAX))
-                .or_default();
-            if *count >= CONNECTIONS_PER_USER {
-                // Closed at once: one user can't take every descriptor.
+            let Some(holder) = state.connections.admit(user, seated) else {
+                // Closed at once: neither one user nor every user with no
+                // seat can take every descriptor.
+                debug!(user, seated, "closed a connection over the cap");
                 continue;
-            }
-            *count += 1;
+            };
             state.next_connection += 1;
-            state.next_connection
+            (state.next_connection, holder)
         };
         let client = Arc::clone(&shared);
         let spawned = std::thread::Builder::new()
@@ -459,30 +536,27 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
             .spawn(move || {
                 serve(&client, &socket, owner, user);
                 drop(socket);
-                let mut state = client.state();
-                let key = user.unwrap_or(u32::MAX);
-                if let Some(count) = state.connections.get_mut(&key) {
-                    *count -= 1;
-                    if *count == 0 {
-                        state.connections.remove(&key);
-                    }
+                client.state().connections.release(holder);
+                if let Err(error) = rustix::io::write(&client.closed, &1u64.to_ne_bytes()) {
+                    warn!(%error, "couldn't say a connection closed");
                 }
-                drop(state);
-                let _ = rustix::io::write(&client.closed, &1u64.to_ne_bytes());
             });
-        if spawned.is_err() {
-            let mut state = shared.state();
-            if let Some(count) = state.connections.get_mut(&user.unwrap_or(u32::MAX)) {
-                *count -= 1;
-            }
-            log("couldn't start a thread for a connection");
+        if let Err(error) = spawned {
+            shared.state().connections.release(holder);
+            warn!(%error, "couldn't start a thread for a connection; it is closed");
         }
     }
 }
 
 /// A listening socket at `path`, for running outside systemd.
 fn listen_at(path: &Path) -> io::Result<OwnedFd> {
-    let _ = std::fs::remove_file(path);
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            warn!(path = %path.display(), %error, "couldn't remove what was at the socket's path");
+        }
+    }
     let socket = socket(AddressFamily::UNIX, SocketType::SEQPACKET, None)?;
     // Anyone may connect, as with the installed socket; who is served is
     // decided per connection. The mode is given as the socket is made,
@@ -507,7 +581,20 @@ fn unprivileged() -> io::Result<()> {
     Ok(())
 }
 
+/// Logs to stderr, which systemd gives the journal: as lines with each
+/// field as `name=value`, with no time, which the journal adds. A failed
+/// write is dropped, not a panic.
+fn logging() {
+    let _ = tracing_subscriber::fmt()
+        .with_writer(io::stderr)
+        .with_ansi(false)
+        .without_time()
+        .with_target(false)
+        .try_init();
+}
+
 fn main() -> ExitCode {
+    logging();
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let outcome = match arguments.as_slice() {
@@ -540,7 +627,7 @@ fn main() -> ExitCode {
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            log(&format!("ctrlassist-hider: {error}"));
+            error!(%error, "ctrlassist-hider");
             ExitCode::FAILURE
         }
     }

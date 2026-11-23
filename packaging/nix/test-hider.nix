@@ -8,22 +8,73 @@
   hider,
 }:
 let
-  # A wired Xbox 360 pad on the USB bus, for the xpad driver: a USB gadget
-  # made through configfs and FunctionFS, plugged into the dummy host
-  # controller. It enumerates and holds; it sends no input.
-  xpad = pkgs.writers.writePython3Bin "xpad-gadget" { doCheck = false; } ''
+  # A pad on the USB bus, as a USB gadget made through configfs and
+  # plugged into one of the dummy host controller's ports, `dummy_udc.<n>`.
+  # It enumerates and holds; it sends no input.
+  #
+  #   usb-gadget xpad <name> <serial> <n>
+  #       a wired Xbox 360 pad, for the xpad driver, through FunctionFS
+  #   usb-gadget hid <name> <serial> <n> <product> <product string>
+  #       a HID game pad, for usbhid and the generic HID driver
+  #
+  # A serial of "-" gives the pad none.
+  gadget = pkgs.writers.writePython3Bin "usb-gadget" { doCheck = false; } ''
     import os
     import struct
     import subprocess
     import sys
+    import time
 
-    GADGET = "/sys/kernel/config/usb_gadget/xpad"
-    FFS = "/dev/ffs-xpad"
+    # A generic HID game pad: eight buttons, then X and Y as signed bytes,
+    # as the test crate's uhid pad has.
+    GAME_PAD = bytes([
+        0x05, 0x01, 0x09, 0x05, 0xA1, 0x01, 0xA1, 0x00, 0x05, 0x09,
+        0x19, 0x01, 0x29, 0x08, 0x15, 0x00, 0x25, 0x01, 0x95, 0x08,
+        0x75, 0x01, 0x81, 0x02, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31,
+        0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x02, 0x81, 0x02,
+        0xC0, 0xC0,
+    ])
 
 
     def write(path, value):
-        with open(path, "w") as file:
+        with open(path, "wb" if isinstance(value, bytes) else "w") as file:
             file.write(value)
+
+
+    def made(name, serial, vendor, product, device_class, product_string, function):
+        """The gadget's configfs directory, with one configuration holding `function`."""
+        for module in ["dummy_hcd", "libcomposite", "usb_f_fs", "usb_f_hid", "xpad"]:
+            subprocess.run(["${pkgs.kmod}/bin/modprobe", module], check=True)
+        gadget = f"/sys/kernel/config/usb_gadget/{name}"
+        os.makedirs(gadget, exist_ok=True)
+        for attribute, value in [
+            ("idVendor", vendor),
+            ("idProduct", product),
+            ("bcdDevice", "0x0114"),
+            ("bcdUSB", "0x0200"),
+            ("bDeviceClass", device_class),
+            ("bDeviceSubClass", device_class),
+            ("bDeviceProtocol", device_class),
+        ]:
+            write(f"{gadget}/{attribute}", value)
+        os.makedirs(f"{gadget}/strings/0x409", exist_ok=True)
+        if serial != "-":
+            write(f"{gadget}/strings/0x409/serialnumber", serial)
+        write(f"{gadget}/strings/0x409/manufacturer", "Fixture")
+        write(f"{gadget}/strings/0x409/product", product_string)
+        os.makedirs(f"{gadget}/configs/c.1/strings/0x409", exist_ok=True)
+        write(f"{gadget}/configs/c.1/strings/0x409/configuration", name)
+        os.makedirs(f"{gadget}/functions/{function}", exist_ok=True)
+        return gadget
+
+
+    def link(gadget, function, udc):
+        """Puts the function in the configuration and plugs the gadget in."""
+        configured = f"{gadget}/configs/c.1/{function}"
+        if not os.path.exists(configured):
+            os.symlink(f"{gadget}/functions/{function}", configured)
+        write(f"{gadget}/UDC", f"dummy_udc.{udc}")
+        print("bound", flush=True)
 
 
     def descriptors():
@@ -47,37 +98,16 @@ let
         return struct.pack("<II", 2, 8 + len(body)) + body
 
 
-    def main(serial):
-        for module in ["dummy_hcd", "libcomposite", "usb_f_fs", "xpad"]:
-            subprocess.run(["${pkgs.kmod}/bin/modprobe", module], check=True)
-        os.makedirs(GADGET, exist_ok=True)
-        for name, value in [
-            ("idVendor", "0x045e"),
-            ("idProduct", "0x028e"),
-            ("bcdDevice", "0x0114"),
-            ("bcdUSB", "0x0200"),
-            ("bDeviceClass", "0xff"),
-            ("bDeviceSubClass", "0xff"),
-            ("bDeviceProtocol", "0xff"),
-        ]:
-            write(f"{GADGET}/{name}", value)
-        os.makedirs(f"{GADGET}/strings/0x409", exist_ok=True)
-        write(f"{GADGET}/strings/0x409/serialnumber", serial)
-        write(f"{GADGET}/strings/0x409/manufacturer", "Fixture")
-        write(f"{GADGET}/strings/0x409/product", "Controller")
-        os.makedirs(f"{GADGET}/configs/c.1/strings/0x409", exist_ok=True)
-        write(f"{GADGET}/configs/c.1/strings/0x409/configuration", "xpad")
-        os.makedirs(f"{GADGET}/functions/ffs.xpad", exist_ok=True)
-        link = f"{GADGET}/configs/c.1/ffs.xpad"
-        if not os.path.exists(link):
-            os.symlink(f"{GADGET}/functions/ffs.xpad", link)
-        os.makedirs(FFS, exist_ok=True)
-        subprocess.run(["${pkgs.util-linux}/bin/mount", "-t", "functionfs", "xpad", FFS], check=True)
-        ep0 = os.open(f"{FFS}/ep0", os.O_RDWR)
+    def xpad(name, serial, udc):
+        function = f"ffs.{name}"
+        gadget = made(name, serial, "0x045e", "0x028e", "0xff", "Controller", function)
+        ffs = f"/dev/ffs-{name}"
+        os.makedirs(ffs, exist_ok=True)
+        subprocess.run(["${pkgs.util-linux}/bin/mount", "-t", "functionfs", name, ffs], check=True)
+        ep0 = os.open(f"{ffs}/ep0", os.O_RDWR)
         os.write(ep0, descriptors())
         os.write(ep0, strings())
-        write(f"{GADGET}/UDC", sorted(os.listdir("/sys/class/udc"))[0])
-        print("bound", flush=True)
+        link(gadget, function, udc)
         # Answer the host: an event is twelve bytes, a setup request then
         # its type. A request this function doesn't know is answered empty.
         while True:
@@ -90,7 +120,28 @@ let
                     os.read(ep0, length)
 
 
-    main(sys.argv[1])
+    def hid(name, serial, udc, product, product_string):
+        function = f"hid.{name}"
+        gadget = made(name, serial, "0x1209", product, "0x00", product_string, function)
+        for attribute, value in [
+            ("protocol", "0"),
+            ("subclass", "0"),
+            ("report_length", "3"),
+            ("report_desc", GAME_PAD),
+        ]:
+            write(f"{gadget}/functions/{function}/{attribute}", value)
+        link(gadget, function, udc)
+        while True:
+            time.sleep(3600)
+
+
+    match sys.argv[1:]:
+        case ["xpad", name, serial, udc]:
+            xpad(name, serial, udc)
+        case ["hid", name, serial, udc, product, product_string]:
+            hid(name, serial, udc, product, product_string)
+        case _:
+            sys.exit("usage: usb-gadget xpad|hid <name> <serial> <udc> ...")
   '';
 
   # A client of the service that does what the fixture's well-behaved one
@@ -108,6 +159,14 @@ let
   #       sends up to <count> requests and never reads a reply; holds
   #   hider-probe idle <socket> <count>
   #       opens up to <count> connections and sends nothing; holds
+  #   hider-probe uids <socket> <first> <count> <each> [hold]
+  #       as each of <count> user IDs from <first>, as a user's
+  #       subordinate IDs would, opens <each> connections and asks each
+  #       the release; says how many were answered and how many closed at
+  #       once; with hold, holds them
+  #   hider-probe uhid <name> <phys>
+  #       makes a HID game pad through uhid with that phys and no address;
+  #       holds
   probe = pkgs.writers.writePython3Bin "hider-probe" { doCheck = false; } ''
     import array
     import os
@@ -186,8 +245,61 @@ let
                     break
             print(f"connected={len(peers)}", flush=True)
             time.sleep(3600)
+        case ["uids", path, first, count, each, *hold]:
+            reader, writer = os.pipe()
+            for uid in range(int(first), int(first) + int(count)):
+                if os.fork() == 0:
+                    os.close(reader)
+                    os.setgroups([])
+                    os.setgid(uid)
+                    os.setuid(uid)
+                    peers, closed = [], 0
+                    for _ in range(int(each)):
+                        try:
+                            peer = connect(path)
+                            peer.send(struct.pack("<BI", 6, 0))
+                            if peer.recv(6):
+                                peers.append(peer)
+                            else:
+                                closed += 1
+                        except OSError:
+                            closed += 1
+                    os.write(writer, f"{len(peers)} {closed}\n".encode())
+                    if hold:
+                        time.sleep(3600)
+                    os._exit(0)
+            os.close(writer)
+            answered = closed = 0
+            with os.fdopen(reader) as lines:
+                for _ in range(int(count)):
+                    one, other = lines.readline().split()
+                    answered += int(one)
+                    closed += int(other)
+            print(f"answered={answered} closed={closed}", flush=True)
+            if hold:
+                time.sleep(3600)
+        case ["uhid", name, phys]:
+            # The test crate's uhid pad's descriptor: a game pad.
+            descriptor = bytes([
+                0x05, 0x01, 0x09, 0x05, 0xA1, 0x01, 0xA1, 0x00, 0x05, 0x09,
+                0x19, 0x01, 0x29, 0x08, 0x15, 0x00, 0x25, 0x01, 0x95, 0x08,
+                0x75, 0x01, 0x81, 0x02, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31,
+                0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x02, 0x81, 0x02,
+                0xC0, 0xC0,
+            ])
+            uhid = os.open("/dev/uhid", os.O_RDWR)
+            # UHID_CREATE2: name, phys, uniq, the descriptor's size, the
+            # bus (USB), vendor, product, version, country, the descriptor.
+            os.write(uhid, struct.pack(
+                "<I128s64s64sHHIIII4096s",
+                11, name.encode(), phys.encode(), b"", len(descriptor),
+                3, 0x1209, 0x0bae, 1, 0, descriptor,
+            ))
+            print("created", flush=True)
+            while True:
+                os.read(uhid, 4380)
         case _:
-            sys.exit("usage: hider-probe opath|hide|silent|idle ...")
+            sys.exit("usage: hider-probe opath|hide|long|silent|idle|uids|uhid ...")
   '';
 in
 pkgs.testers.runNixOSTest {
@@ -247,13 +359,25 @@ pkgs.testers.runNixOSTest {
       (pkgs.writeTextDir "lib/udev/rules.d/61-test-seat.rules" ''
         SUBSYSTEM=="input", ATTRS{name}=="Seat One Pad", ENV{ID_SEAT}="seat1"
       '')
+      # The HID pads made as USB gadgets have their raw nodes opened to
+      # the seat user the same way, so that hiding them shows.
+      (pkgs.writeTextDir "lib/udev/rules.d/60-test-hidraw.rules" ''
+        KERNEL=="hidraw*", KERNELS=="*1209:5EF?.*", MODE="0660", TAG+="uaccess"
+      '')
+      # A later rule that gives seat access back to the pad of that name,
+      # which the shipped rule's final assignments can't stop.
+      (pkgs.writeTextDir "lib/udev/rules.d/99-test-retag.rules" ''
+        SUBSYSTEM=="input", ATTRS{name}=="Retagged Pad", TAG+="uaccess"
+      '')
     ];
+    # Three ports, for three pads made as USB gadgets.
+    boot.extraModprobeConfig = "options dummy_hcd num=3";
 
     environment.systemPackages = [
       fixture
+      gadget
       hider
       probe
-      xpad
     ];
   };
 
@@ -326,6 +450,31 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_fails(f"systemctl is-active {unit}")
         return "cut_off=true" in machine.succeed(f"journalctl -u {unit} -o cat")
 
+    def alice_opens(node):
+        """Whether alice can open a node for reading, by whatever grants it."""
+        return machine.execute(f"su -l alice -c 'exec 3< {node}'")[0] == 0
+
+    def other_nodes(event):
+        """Every event, js and mouse node under the device a pad's event node hangs from, but those of the pad's own input."""
+        name = event.split("/")[-1]
+        own = machine.succeed(f"basename $(readlink -f /sys/class/input/{name}/device)").strip()
+        device = machine.succeed(f"readlink -f /sys/class/input/{name}/device/device").strip()
+        found = machine.succeed(f"cd {device}/input && ls -d */event* */js* */mouse* 2>/dev/null || true").split()
+        return sorted("/dev/input/" + path.split("/")[1] for path in found if path.split("/")[0] != own)
+
+    def sysfs(node, path):
+        """A path under the sysfs directory of a node's input device, resolved."""
+        name = node.split("/")[-1]
+        return machine.succeed(f"readlink -f /sys/class/input/{name}/device/{path}").strip()
+
+    def replug(gadget, udc, gone):
+        """Unplugs a USB gadget from its port of the dummy host controller and plugs it in again, as a pad taken out and put back in the same port."""
+        machine.succeed(f"echo > /sys/kernel/config/usb_gadget/{gadget}/UDC")
+        machine.wait_until_fails(f"ctrlassist-fixture pads | grep -F {shlex.quote(gone)}")
+        machine.succeed(f"echo dummy_udc.{udc} > /sys/kernel/config/usb_gadget/{gadget}/UDC")
+        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -F {shlex.quote(gone)}", timeout=60)
+        machine.succeed("udevadm settle")
+
     A, B = "02:00:00:00:00:01", "02:00:00:00:00:02"
 
     machine.wait_for_file("/run/user/1000/wayland-0.lock")
@@ -387,6 +536,11 @@ pkgs.testers.runNixOSTest {
         raw = f"ctrlassist-fixture raw {dualsense['event'][0]} --socket {SOCKET}"
         assert "raw: ok" in machine.succeed(f"su -l alice -c '{raw}'")
         assert "isn't the user in front" in machine.succeed(raw)
+        # Its touchpad and motion sensors, and the touchpad's mouse node,
+        # are open to her through the input group.
+        others = other_nodes(dualsense["event"][0])
+        assert len(others) >= 2, f"a DualSense has a touchpad and motion sensors: {others}"
+        assert all(alice_opens(node) for node in others), others
         # Hidden, its raw node is closed to the seat user, though another
         # rule opens it, and still to be had by whoever hid it; a hidden
         # pad of another driver's isn't.
@@ -396,10 +550,17 @@ pkgs.testers.runNixOSTest {
         assert not alice_can_open(DS, "event"), "a hidden DualSense's event node"
         assert not alice_can_open(DS, "hidraw"), "a hidden DualSense's raw node, which a 60- rule opens"
         print("hidden DualSense: " + machine.succeed(f"stat -c '%n %a %U:%G' {pads()[DS]['event'][0]} {pads()[DS]['hidraw'][0]}"))
+        # And every other node of it, as every node of a hidden pad is.
+        others = other_nodes(pads()[DS]["event"][0])
+        for node in others:
+            print("hidden DualSense's other node: " + machine.succeed(f"stat -c '%n %a %U:%G' {node}").strip() + " " + machine.succeed(f"udevadm info -q property -n {node} | grep -E '^ID_INPUT_[A-Z]+=1' | tr -s '\\n' ' '"))
+        assert len(others) >= 2 and not any(alice_opens(node) for node in others), f"a hidden DualSense's touchpad and motion sensors: {others}"
         assert order(control, "raw") == "ok", "the raw node of a hidden pad of the PlayStation driver"
         assert order(control, "restore") == "ok"
         machine.succeed("udevadm settle")
         assert alice_can_open(DS, "event") and alice_can_open(DS, "hidraw"), "a restored DualSense"
+        others = other_nodes(pads()[DS]["event"][0])
+        assert len(others) >= 2 and all(alice_opens(node) for node in others), f"a restored DualSense's touchpad and motion sensors: {others}"
         machine.succeed("systemctl stop hide-ds")
         control, told = hide("hide-plain", pads()[A]["event"][0])
         assert told.startswith("ok"), told
@@ -611,7 +772,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl stop pad-plain")
 
     with subtest("an Xbox 360 pad on USB under xpad is hidden and shown again by re-binding its USB interface"):
-        machine.succeed("systemd-run --unit xpad-gadget xpad-gadget XPADFIXTURE1")
+        machine.succeed("systemd-run --unit xpad-gadget usb-gadget xpad xpad XPADFIXTURE1 0")
         machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c X-Box", timeout=60)
         machine.succeed("udevadm settle")
         key = [key for key in pads() if "X-Box" in key][0]
@@ -627,10 +788,194 @@ pkgs.testers.runNixOSTest {
         assert cut_off("early-xpad"), "the early reader kept reading"
         assert not alice_can_open(key, "event") and not alice_can_open(key, "js")
         assert "./serial-045e-028e-XPADFIXTURE1" in markers(), markers()
+        # Taken out and put back in the same port while hidden: hidden by
+        # its serial number as it comes back, and opened again.
+        replug("xpad", 0, "X-Box")
+        assert not alice_can_open(key, "event") and not alice_can_open(key, "js"), "an xpad pad that came back"
+        assert order(control, "reopen").startswith("ok")
         assert order(control, "restore").startswith("ok")
         machine.succeed("udevadm settle")
         assert alice_can_open(key, "event") and alice_can_open(key, "js")
         machine.succeed("systemctl stop xpad")
         wait_restored()
+
+    def by_name(name, as_user=None):
+        """The nodes of the one pad of that name."""
+        return [nodes for named, _, nodes in listing(as_user) if named == name][0]
+
+    def all_are(nodes, access):
+        return all(state == access for _, state in nodes.values())
+
+    with subtest("a HID pad on USB is found again by its serial number after reconnecting, its raw node hidden throughout"):
+        name = "Fixture Serial Pad"
+        machine.succeed("systemd-run --unit gadget-serial usb-gadget hid serial HIDFIXTURE1 1 0x5ef0 'Serial Pad'")
+        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -c '{name}'", timeout=60)
+        machine.succeed("udevadm settle")
+        nodes = by_name(name, "alice")
+        assert {"event", "js", "hidraw"} <= nodes.keys() and all_are(nodes, "open"), nodes
+        interface = sysfs(nodes["event"][0], "device/..").split("/")[-1]
+        control, told = hide("hide-serial", nodes["event"][0])
+        assert told.startswith("ok"), told
+        found = markers()
+        print(f"a HID pad on USB with a serial number, on {interface}: " + " ".join(found))
+        assert "./serial-1209-5ef0-HIDFIXTURE1" in found and f"./raw-{interface}" in found, found
+        assert f"./port-{interface}" not in found, "a pad with a serial number isn't hidden by its port"
+        assert all_are(by_name(name, "alice"), "denied")
+        replug("serial", 1, name)
+        nodes = by_name(name, "alice")
+        assert all_are(nodes, "denied"), f"a pad that came back on another HID device: {nodes}"
+        assert order(control, "reopen").startswith("ok")
+        assert order(control, "restore").startswith("ok")
+        machine.succeed("udevadm settle")
+        assert all_are(by_name(name, "alice"), "open")
+        machine.succeed("systemctl stop hide-serial")
+        wait_restored()
+
+    with subtest("a HID pad on USB with no address or serial number is hidden by its port and found again by it, and a phys that climbs out of the marker directory leads nowhere"):
+        name = "Fixture Port Pad"
+        machine.succeed("systemd-run --unit gadget-port usb-gadget hid port - 2 0x5ef1 'Port Pad'")
+        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -c '{name}'", timeout=60)
+        machine.succeed("udevadm settle")
+        nodes = by_name(name, "alice")
+        assert all_are(nodes, "open"), nodes
+        interface = sysfs(nodes["event"][0], "device/..").split("/")[-1]
+        phys = machine.succeed(f"cat {sysfs(nodes['event'][0], '.')}/phys").strip()
+        control, told = hide("hide-port", nodes["event"][0])
+        assert told.startswith("ok"), told
+        found = markers()
+        print(f"a HID pad on USB with neither, on {interface}, phys {phys}: " + " ".join(found))
+        assert f"./port-{interface}" in found and f"./raw-{interface}" in found, found
+        assert all("/" not in marker[2:] for marker in found), "every marker is a file in the marker directory"
+        assert all_are(by_name(name, "alice"), "denied")
+        # A port marker as a directory named after the port's phys, as
+        # the service once made, and a file outside the marker directory
+        # that a phys with ../ in it reaches from there: a pad with that
+        # phys isn't hidden. Under the rule that tested the phys, it was.
+        port = phys.split("/")[0]
+        machine.succeed(f"mkdir {MARKERS}/port-{port} && touch /run/canary")
+        machine.succeed(f"systemd-run --unit pad-climbing hider-probe uhid 'Climbing Pad' '{port}/../../../canary'")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 'Climbing Pad'")
+        machine.succeed("udevadm settle")
+        climbing = by_name("Climbing Pad", "alice")
+        climbing_phys = machine.succeed(f"cat {sysfs(climbing['event'][0], '.')}/phys").strip()
+        print(f"a pad whose phys is {climbing_phys}: {climbing}")
+        assert climbing["event"][1] == "open", "a pad whose phys climbs out of the marker directory"
+        machine.succeed(f"systemctl stop pad-climbing; rmdir {MARKERS}/port-{port}; rm /run/canary")
+        # Taken out and put back in the same port while hidden.
+        replug("port", 2, name)
+        nodes = by_name(name, "alice")
+        assert all_are(nodes, "denied"), f"a pad that came back to the same port: {nodes}"
+        assert order(control, "reopen").startswith("ok")
+        assert order(control, "restore").startswith("ok")
+        machine.succeed("udevadm settle")
+        assert all_are(by_name(name, "alice"), "open")
+        machine.succeed("systemctl stop hide-port")
+        wait_restored()
+
+    with subtest("a user who has switched away can't have a pad found again for her"):
+        control, told = hide("switched", pads()[A]["event"][0])
+        assert told.startswith("ok"), told
+        machine.succeed("chvt 3")
+        machine.wait_until_succeeds("[ -z \"$(loginctl show-seat seat0 -p ActiveSession --value)\" ]")
+        machine.succeed("systemctl restart pad-a")
+        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -cF {A}")
+        machine.succeed("udevadm settle")
+        assert not alice_can_open(A)
+        told = order(control, "reopen")
+        assert "isn't the user in front" in told, told
+        machine.succeed("chvt 1")
+        machine.wait_until_succeeds("[ \"$(loginctl show-session $(loginctl show-seat seat0 -p ActiveSession --value) -p Name --value)\" = alice ]")
+        assert order(control, "reopen").startswith("ok")
+        assert order(control, "restore").startswith("ok")
+        machine.succeed("systemctl stop switched")
+        wait_restored()
+        assert alice_can_open(A)
+
+    with subtest("users with no seat share one cap however many user IDs they connect as, and leave room for the user at the seat"):
+        control, told = hide("keeper-again", pads()[B]["event"][0])
+        assert told.startswith("ok"), told
+        pid = machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip()
+        # As one user's subordinate IDs would: forty of them, with eight
+        # connections each.
+        machine.succeed(f"systemd-run --unit many-uids hider-probe uids {SOCKET} 200000 40 8 hold")
+        machine.wait_until_succeeds("journalctl -u many-uids -o cat | grep -q answered=")
+        told = machine.succeed("journalctl -u many-uids -o cat | grep answered=").strip()
+        print(f"forty user IDs with no seat, eight connections each: {told}")
+        assert told == "answered=32 closed=288", told
+        # Another user with no seat finds no room; the user at the seat
+        # does: her release told, a pad hidden and shown again.
+        told = machine.succeed(f"hider-probe uids {SOCKET} 1001 1 1").strip()
+        assert told == "answered=0 closed=1", told
+        told = machine.succeed(f"su -l alice -c 'ctrlassist-fixture version --socket {SOCKET}'").strip()
+        assert told == "version: ${hider.version}", told
+        other, told = hide("served-again", pads()[A]["event"][0])
+        assert told.startswith("ok"), told
+        assert order(other, "restore").startswith("ok")
+        machine.succeed("systemctl stop served-again")
+        # She has room for what a daemon with sixteen pads holds, two for
+        # each pad and two more, beside the one that holds pad B.
+        machine.succeed(f"systemd-run --unit alice-many hider-probe uids {SOCKET} 1000 1 34 hold")
+        machine.wait_until_succeeds("journalctl -u alice-many -o cat | grep -q answered=")
+        told = machine.succeed("journalctl -u alice-many -o cat | grep answered=").strip()
+        assert told == "answered=34 closed=0", told
+        descriptors = int(machine.succeed(f"ls /proc/{pid}/fd | wc -l"))
+        print(f"the service holds {descriptors} descriptors, with its limit at " + machine.succeed(f"grep 'Max open files' /proc/{pid}/limits").strip())
+        assert descriptors < 200
+        machine.succeed("systemctl stop alice-many")
+        # Once they have gone there is room again.
+        machine.succeed("systemctl stop many-uids")
+        machine.wait_until_succeeds(f"hider-probe uids {SOCKET} 1001 1 1 | grep -x answered=1.closed=0")
+        assert machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip() == pid, "the service didn't restart"
+        assert order(control, "restore").startswith("ok")
+        machine.succeed("systemctl stop keeper-again")
+        wait_restored()
+
+    def refused_at_once(unit, name, uniq):
+        """Makes a pad, has alice hide it, and says what she was told."""
+        fake(f"pad-{unit}", "fake-hid", "--name", name, "--uniq", uniq, "--pulse", "20")
+        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -c '{name}'")
+        machine.succeed("udevadm settle")
+        _, told = hide(unit, pads()[uniq]["event"][0])
+        machine.wait_until_fails(f"systemctl is-active {unit}")
+        return told
+
+    with subtest("a hide the shipped rule doesn't carry out fails at once, and leaves the pad as it was"):
+        # Its device's uevent file isn't the group's to write, as where
+        # the rule isn't installed: refused before anything is marked.
+        uniq = "02:00:00:00:02:01"
+        fake("pad-unwritable", "fake-hid", "--name", "Unwritable Pad", "--uniq", uniq, "--pulse", "20")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 'Unwritable Pad'")
+        machine.succeed("udevadm settle")
+        uevent = sysfs(pads()[uniq]["event"][0], "device") + "/uevent"
+        machine.succeed(f"chmod g-w {uevent}")
+        _, told = hide("unwritable", pads()[uniq]["event"][0])
+        assert "couldn't carry the request out" in told, told
+        assert markers() == [] and alice_can_open(uniq)
+        machine.succeed(f"chmod g+w {uevent}; systemctl stop pad-unwritable")
+        # A rule installed that isn't the one shipped: it hides, but takes
+        # no request to re-bind, so udev takes the request in and nothing
+        # comes of it. In place for this pad alone: a copy of the rules
+        # mounted over them, since a runtime rule can't override /etc's.
+        uniq = "02:00:00:00:02:02"
+        machine.succeed(
+            "cp -rL /etc/udev/rules.d /run/test-rules && "
+            "sed -i '/SYNTH_ARG_CTRLASSIST/,+1d' /run/test-rules/72-ctrlassist-hide.rules && "
+            "! grep -q SYNTH_ARG /run/test-rules/72-ctrlassist-hide.rules && "
+            "mount --bind /run/test-rules /etc/udev/rules.d && udevadm control --reload"
+        )
+        told = refused_at_once("unheeding", "Unheeding Pad", uniq)
+        machine.succeed("umount /etc/udev/rules.d && rm -r /run/test-rules && udevadm control --reload")
+        assert "couldn't carry the request out" in told, told
+        wait_restored()
+        assert alice_can_open(uniq)
+        machine.succeed("systemctl stop pad-unheeding")
+        # A later rule gives the made-again nodes seat access back.
+        uniq = "02:00:00:00:02:03"
+        told = refused_at_once("retagged", "Retagged Pad", uniq)
+        assert "couldn't carry the request out" in told, told
+        wait_restored()
+        assert alice_can_open(uniq)
+        machine.succeed("systemctl stop pad-retagged")
+        print("the service on each: " + machine.succeed("journalctl -u ctrlassist-hider.service -o cat | grep -E 'uevent file|without re-binding|wasn.t hidden'").replace("\n", " | "))
   '';
 }

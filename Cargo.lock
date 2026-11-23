@@ -1222,6 +1222,8 @@ version = "0.5.0"
 dependencies = [
  "libc",
  "rustix 1.1.6",
+ "tracing",
+ "tracing-subscriber",
  "udev",
 ]
 

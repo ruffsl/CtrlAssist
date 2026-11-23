@@ -27,7 +27,7 @@ SUBSYSTEM=="hid|usb", ACTION=="change", ENV{SYNTH_ARG_CTRLASSIST}=="rebind", \
 
 The `uevent` file is given to the group by the rule only for devices already known to be pads: the event node of a joystick that is no keyboard or mouse has its HID device's (or USB interface's) file `chgrp`ed and made group-writable. Tried in the spike on the uhid DualSense: the reader was cut off and udev settled in 0.09 s, with no deadlock, since the unbind only queues the children's remove events behind the parent's change. Synthetic uevent arguments need Linux 4.13 or later.
 
-**Chosen** because it reaches pads only and needs no list: any driver a pad has can be re-bound, and nothing that isn't a pad can. Its cost: the group can send any synthetic event (add, change, remove) to any pad's HID device or USB interface, which udev processes as root through the stock rules; and the rule has to find the pad's parent from the event node.
+**Chosen** because it reaches pads only and needs no list: any driver a pad has can be re-bound, and nothing that isn't a pad can, but for a keyboard or a pointer that shares a HID device or USB interface with one, which the rule can't see from the pad's node and the service refuses to hide. Its cost: the group can send any synthetic event (add, change, remove) to any pad's HID device or USB interface, which udev processes as root through the stock rules; and the rule has to find the pad's parent from the event node.
 
 ## What would bring the other back
 

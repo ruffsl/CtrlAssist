@@ -11,7 +11,9 @@
 #   seat access, at the pad's next event.
 #
 # This file never changes and udev is never asked to reload it: the
-# markers are tested at each event.
+# markers are tested at each event. Every test is of a file directly in
+# the marker directory: a value that carries "/" is never tested, and
+# the other parts of a marker's name are kernel names, which can't.
 #
 # It must sort after 70-uaccess.rules, which tags pads for seat access,
 # and after any 60-*.rules that opens hidraw, as Steam's does; and before
@@ -27,14 +29,29 @@ SUBSYSTEM=="hid|usb", ACTION=="change", ENV{SYNTH_ARG_CTRLASSIST}=="rebind", \
 
 SUBSYSTEM=="hidraw", GOTO="ctrlassist_hide_hidraw"
 SUBSYSTEM!="input", GOTO="ctrlassist_hide_end"
-KERNEL!="event*|js*", GOTO="ctrlassist_hide_end"
-ENV{ID_INPUT_JOYSTICK}!="1", GOTO="ctrlassist_hide_end"
+KERNEL!="event*|js*|mouse*", GOTO="ctrlassist_hide_end"
+ENV{ID_INPUT_JOYSTICK}=="1", GOTO="ctrlassist_hide_pad"
+
+# A pad's other nodes: its touchpad, its motion sensors, the mouse node a
+# touchpad has. Never a keyboard's or a pointer's; and only under a
+# device known for a pad's, whose uevent file the lines below have given
+# the group, which shows as the file's group-write bit.
+ENV{ID_INPUT_KEYBOARD}=="1", GOTO="ctrlassist_hide_end"
+ENV{ID_INPUT_MOUSE}=="1", GOTO="ctrlassist_hide_end"
+ENV{ID_INPUT_TABLET}=="1", GOTO="ctrlassist_hide_end"
+ENV{ID_INPUT_POINTINGSTICK}=="1", GOTO="ctrlassist_hide_end"
+SUBSYSTEMS=="hid", TEST{0020}=="/sys/bus/hid/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
+SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST{0020}=="/sys/bus/usb/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
+GOTO="ctrlassist_hide_end"
 
 # Which devices the service may ask to re-bind: the HID device, or with
-# none the USB interface, of a joystick that nothing a keystroke or a
-# pointer could come from shares, as the service itself checks. sysfs
-# keeps the file's group and mode for as long as the device exists,
-# which a re-bind of its driver doesn't end.
+# none the USB interface, of a joystick that is nothing a keystroke or a
+# pointer could come from, as the service itself checks. sysfs keeps the
+# file's group and mode for as long as the device exists, which a
+# re-bind of its driver doesn't end. Whether another of the device's
+# inputs is a keyboard can't be seen from here: the service refuses such
+# a device itself.
+LABEL="ctrlassist_hide_pad"
 KERNEL!="event*", GOTO="ctrlassist_hide_markers"
 ENV{ID_INPUT_KEYBOARD}=="1", GOTO="ctrlassist_hide_markers"
 ENV{ID_INPUT_KEY}=="1", GOTO="ctrlassist_hide_markers"
@@ -48,16 +65,16 @@ SUBSYSTEMS=="usb", DRIVERS=="?*", \
   RUN+="/usr/bin/chgrp ctrlassist-hider /sys/bus/usb/devices/%b/uevent", \
   RUN+="/usr/bin/chmod g+w /sys/bus/usb/devices/%b/uevent"
 
-# Event and js nodes: by the pad's address, by its USB serial number, by
-# its HID device, or by its USB port. The attributes are the input
-# device's, the parent each line's ATTRS match selected. A marker's name
-# has a prefix, so a value that is empty, or carries "/" or "..", names a
-# file that doesn't exist.
+# Event, js and mouse nodes: by the pad's address, by its USB serial
+# number, by its HID device, or by its USB port, named by the kernel's
+# name for the USB interface (such as 1-2:1.0), which a device made
+# through uhid doesn't have. The attributes are the input device's, the
+# parent each line's ATTRS match selected.
 LABEL="ctrlassist_hide_markers"
-ATTRS{uniq}=="?*", TEST=="/run/ctrlassist/hide/addr-%s{uniq}", GOTO="ctrlassist_hide"
-ENV{ID_SERIAL_SHORT}=="?*", ATTRS{id/vendor}=="?*", TEST=="/run/ctrlassist/hide/serial-%s{id/vendor}-%s{id/product}-$env{ID_SERIAL_SHORT}", GOTO="ctrlassist_hide"
+ATTRS{uniq}=="?*", ATTRS{uniq}!="*/*", TEST=="/run/ctrlassist/hide/addr-%s{uniq}", GOTO="ctrlassist_hide"
+ENV{ID_SERIAL_SHORT}=="?*", ENV{ID_SERIAL_SHORT}!="*/*", ATTRS{id/vendor}=="?*", TEST=="/run/ctrlassist/hide/serial-%s{id/vendor}-%s{id/product}-$env{ID_SERIAL_SHORT}", GOTO="ctrlassist_hide"
 SUBSYSTEMS=="hid", TEST=="/run/ctrlassist/hide/hid-%b", GOTO="ctrlassist_hide"
-ATTRS{phys}=="usb-?*", TEST=="/run/ctrlassist/hide/port-%s{phys}", GOTO="ctrlassist_hide"
+SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST=="/run/ctrlassist/hide/port-%b", GOTO="ctrlassist_hide"
 GOTO="ctrlassist_hide_end"
 
 # Hidraw nodes: by their HID device, by its own unique string (an
@@ -72,9 +89,8 @@ DRIVERS=="playstation", GROUP="ctrlassist-hider", MODE="0660"
 SUBSYSTEMS=="hid", TEST=="/run/ctrlassist/hide/hid-%b", GOTO="ctrlassist_hide"
 IMPORT{parent}="HID_UNIQ"
 IMPORT{parent}="HID_ID"
-IMPORT{parent}="HID_PHYS"
-ENV{HID_UNIQ}=="?*", ENV{HID_ID}=="?*", TEST=="/run/ctrlassist/hide/uniq-$env{HID_ID}-$env{HID_UNIQ}", GOTO="ctrlassist_hide"
-ENV{HID_PHYS}=="usb-?*", TEST=="/run/ctrlassist/hide/port-$env{HID_PHYS}", GOTO="ctrlassist_hide"
+ENV{HID_UNIQ}=="?*", ENV{HID_UNIQ}!="*/*", ENV{HID_ID}=="?*", ENV{HID_ID}!="*/*", TEST=="/run/ctrlassist/hide/uniq-$env{HID_ID}-$env{HID_UNIQ}", GOTO="ctrlassist_hide"
+SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST=="/run/ctrlassist/hide/raw-%b", GOTO="ctrlassist_hide"
 GOTO="ctrlassist_hide_end"
 
 # Hidden: the group's alone, with no seat access. Final, so that a later

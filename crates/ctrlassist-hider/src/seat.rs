@@ -27,6 +27,11 @@ unsafe extern "C" {
     fn sd_session_get_class(session: *const c_char, class: *mut *mut c_char) -> c_int;
     fn sd_session_get_type(session: *const c_char, kind: *mut *mut c_char) -> c_int;
     fn sd_session_is_remote(session: *const c_char) -> c_int;
+    fn sd_uid_get_seats(
+        uid: libc::uid_t,
+        require_active: c_int,
+        seats: *mut *mut *mut c_char,
+    ) -> c_int;
 }
 
 /// A string the login library allocated, freed when dropped.
@@ -110,4 +115,15 @@ pub(crate) fn seats_in_front(uid: u32) -> Vec<String> {
 /// is a person at the machine.
 pub(crate) fn is_in_front(uid: u32) -> bool {
     !seats_in_front(uid).is_empty()
+}
+
+/// Whether `uid` has a session logged in on some seat, in front or not:
+/// someone at the machine. A user can run processes as many user IDs
+/// (the subordinate ones a user namespace maps), but logs in at a seat
+/// only as their own.
+pub(crate) fn has_seat(uid: u32) -> bool {
+    // SAFETY: a null list asks only for the count, which the function
+    // returns; it writes nothing through it. Zero asks for seats with a
+    // session online, not one that is closing.
+    unsafe { sd_uid_get_seats(uid, 0, std::ptr::null_mut()) > 0 }
 }
