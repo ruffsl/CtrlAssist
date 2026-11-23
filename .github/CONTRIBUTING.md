@@ -56,7 +56,7 @@ Small fixes go straight to a PR. Anything that changes what the daemon and its c
 - Run `prek run -a`. CI also checks the minimum Rust version, coverage and the book. For a docs-only change, `prek run -a --skip build --skip clippy --skip test --skip doc` is enough, plus `just docs-links` if you touched the book.
 - If you changed the command line, run `just docs-gen` and commit what it regenerates; CI fails on a stale reference.
 - Add tests for what you changed, where it applies. [docs/testing.md](/docs/testing.md) covers the layers, the fake pads and where new tests go.
-- Code that runs as root, the hiding service, is tested only in the virtual machine checks: `just vm hider` and `just vm daemon`.
+- The hiding service, which needs its own user and udev rule installed, is tested only in the virtual machine checks: `just vm hider` and `just vm daemon`.
 
 ## Commits and PRs
 

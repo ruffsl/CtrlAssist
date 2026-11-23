@@ -57,3 +57,33 @@ pub(crate) fn event_node(fd: BorrowedFd<'_>) -> Result<libc::dev_t, Refusal> {
     unsafe { ioctl(fd, version) }.map_err(|_| Refusal::NotAPad)?;
     Ok(libc::makedev(stat.stx_rdev_major, stat.stx_rdev_minor))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::os::fd::AsFd;
+
+    use rustix::fs::{Mode, open};
+
+    use super::*;
+
+    #[test]
+    fn what_isnt_an_input_node_opened_for_reading_is_refused() {
+        let null = std::fs::File::open("/dev/null").expect("/dev/null opens");
+        assert_eq!(event_node(null.as_fd()), Err(Refusal::NotAPad));
+        let file = std::fs::File::open(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+            .expect("the crate's manifest opens");
+        assert_eq!(event_node(file.as_fd()), Err(Refusal::NotAPad));
+        // A path descriptor on an input node names it without opening it,
+        // which needs only search permission on /dev/input.
+        let named = std::fs::read_dir("/dev/input")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .find(|entry| entry.file_name().to_string_lossy().starts_with("event"));
+        if let Some(node) = named {
+            let path = open(node.path(), OFlags::PATH | OFlags::CLOEXEC, Mode::empty())
+                .expect("a path descriptor needs no access to the node");
+            assert_eq!(event_node(path.as_fd()), Err(Refusal::NotAPad));
+        }
+    }
+}
