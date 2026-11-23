@@ -57,6 +57,9 @@ zenoh-ext = { version = "~1.10", default-features = false, features = ["unstable
 # Logging
 tracing = "0.1"
 tracing-journald = "0.3"
+# Carries the `log` records of dependencies that don't use tracing over
+# to it; TisVlay's.
+tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "fmt", "registry"] }
 
 # The tray: a StatusNotifierItem, and desktop notifications (z-with-tokio

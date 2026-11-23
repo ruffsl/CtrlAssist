@@ -1,9 +1,11 @@
 //! Logging for the daemon: the journal when it runs as a service, the
 //! terminal when a person runs it.
 
+use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt};
 
-/// Initialize tracing.
+/// Initialize tracing, with the `log` records of dependencies that don't
+/// use tracing carried over to it.
 ///
 /// `identifier` is the journal's `SYSLOG_IDENTIFIER`: the daemon shares
 /// the `ctrlassist` binary with the clients, so the process name can't
@@ -18,10 +20,21 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt};
 /// - not a terminal, no journal: stderr without timestamps;
 /// - a terminal: stderr with timestamps, and the journal too if there.
 ///
+/// # Install order (load-bearing)
+///
+/// `LogTracer` is installed *before* `set_global_default` because
+/// `tracing-subscriber`'s `SubscriberInitExt::init()` / `set_default()`
+/// auto-install a `LogTracer` of their own when the `tracing-log`
+/// feature is enabled, and only one `LogTracer` can win globally. We use
+/// `tracing::subscriber::set_global_default` instead, which doesn't
+/// touch `LogTracer`, leaving ours intact.
+///
 /// # Errors
 ///
 /// Fails if a directive doesn't parse or a logger is already installed.
 pub fn init(identifier: &str, directives: &[&str]) -> anyhow::Result<()> {
+    LogTracer::init()?;
+
     let env_filter = if std::env::var_os("RUST_LOG").is_some() {
         EnvFilter::from_default_env()
     } else {
