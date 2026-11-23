@@ -446,6 +446,81 @@ fn a_refusal_the_core_would_make_is_said_with_where() {
     }
 }
 
+/// A switch is only for a node that selects: on one that doesn't, it
+/// would only keep its button from the game.
+#[test]
+fn a_switch_is_for_a_node_that_selects() {
+    let base = "[source.a]\npad = \"model:0001:0001\"\n[source.b]\npad = \"model:0002:0002\"\n";
+    let mux = |mode: &str, rest: &str| {
+        format!(
+            "{base}[node.m]\nmux = \"{mode}\"\ninputs = [\"a\", \"b\"]\n{rest}[sink.o]\ninput = \"m\"\n"
+        )
+    };
+    let switch_of = |text: &str| match plan(text).unwrap().graph.nodes.remove(0) {
+        NodeSpec::Mux { config, .. } => config.switch,
+        NodeSpec::Demux { config, .. } => config.switch.map(|button| Switch {
+            input: None,
+            button,
+        }),
+    };
+    for (text, at) in [
+        (mux("priority", "switch = \"select\"\n"), "node.m.switch"),
+        (
+            mux(
+                "average",
+                "switch = { button = \"select\", input = \"b\" }\n",
+            ),
+            "node.m.switch",
+        ),
+        // A toggle whose rules leave nothing switched, with a switch.
+        (
+            mux(
+                "toggle",
+                "switch = \"select\"\nrules = { stick = \"owned\", trigger = \"owned\", button = \"owned\", hat = \"owned\" }\n",
+            ),
+            "node.m.switch",
+        ),
+        (
+            format!(
+                "{base}[node.d]\ndemux = \"multicast\"\ninput = \"a\"\noutputs = 2\nswitch = \"select\"\n[sink.o]\ninput = \"d\"\n"
+            ),
+            "node.d.switch",
+        ),
+    ] {
+        let (where_, problem) = refusal(&text);
+        assert_eq!(where_, at, "{problem}\n{text}");
+        assert!(problem.contains("never selects"), "{problem}");
+    }
+    // One switched rule makes a switch useful.
+    assert_eq!(
+        switch_of(&mux(
+            "priority",
+            "switch = \"select\"\nrules = { button = \"switched\" }\n"
+        )),
+        Some(Switch {
+            input: None,
+            button: gamepad::SELECT
+        })
+    );
+    // A toggle whose rules leave nothing switched doesn't take the
+    // toggle's own switch, and a priority mux has none to take.
+    assert_eq!(
+        switch_of(&mux(
+            "toggle",
+            "rules = { stick = \"owned\", trigger = \"owned\", button = \"owned\", hat = \"owned\" }\n"
+        )),
+        None
+    );
+    assert_eq!(switch_of(&mux("priority", "")), None);
+    // A multicast has no switch of its own, and `false` says as much.
+    assert_eq!(
+        switch_of(&format!(
+            "{base}[node.d]\ndemux = \"multicast\"\ninput = \"a\"\noutputs = 2\nswitch = false\n[sink.o]\ninput = \"d\"\n"
+        )),
+        None
+    );
+}
+
 /// A profile of thousands of virtual pads fits in a file the daemon
 /// takes; it is refused, saying how many, before anything is made.
 #[test]

@@ -1043,7 +1043,12 @@ fn mux(
             MuxFeedback::Inputs(mask)
         }
     };
+    let selects = config.selects();
     config.switch = match &node.switch {
+        // A toggle whose `rules` leave nothing switched doesn't take
+        // the toggle's own switch: it would only keep the button from
+        // the game.
+        None if !selects => None,
         // A toggle's own switch is on its second input, and a toggle of
         // one input has none: its only input's, then.
         None if inputs.len() == 1 => config.switch.map(|switch| Switch {
@@ -1070,6 +1075,12 @@ fn mux(
             button: button(&format!("{at}.switch.button"), name)?,
         }),
     };
+    if config.switch.is_some() && !selects {
+        return error(
+            format!("{at}.switch"),
+            "this mux never selects an input, since none of its rules is `switched`, so a switch would only keep its button from the game: leave `switch` out, or make a rule `switched`",
+        );
+    }
     Ok(NodeSpec::Mux { inputs, config })
 }
 
@@ -1161,6 +1172,12 @@ fn demux(
             return error(
                 format!("{at}.switch"),
                 "name the button, or write `false` for none",
+            );
+        }
+        Some(SwitchSpec::Button(_) | SwitchSpec::On { .. }) if mode == DemuxMode::Multicast => {
+            return error(
+                format!("{at}.switch"),
+                "a multicast demux sends to every output and never selects one, so a switch would only keep its button from the games",
             );
         }
         Some(SwitchSpec::Button(name)) => Some(button(&format!("{at}.switch"), name)?),

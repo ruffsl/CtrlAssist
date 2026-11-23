@@ -72,8 +72,9 @@ pub enum GraphError {
     /// Too many sources, nodes or sinks, or a node with no inputs or
     /// outputs or too many.
     BadArity,
-    /// A control beyond a pad state's capacity, or a switch that isn't a
-    /// button on one of the node's inputs.
+    /// A control beyond a pad state's capacity, a switch that isn't a
+    /// button on one of the node's inputs, or a switch on a node that
+    /// never selects: a mux with no switched group, or a multicast demux.
     BadControl,
     /// A deadzone that isn't a number or is negative, or thresholds that
     /// aren't `0 < release <= engage <= 1`.
@@ -89,7 +90,7 @@ impl std::fmt::Display for GraphError {
                 "too many sources, nodes or sinks, or a node has no or too many inputs or outputs"
             }
             Self::BadControl => {
-                "a control is out of range, or a switch is not a button on one of its node's inputs"
+                "a control is out of range, or a switch is not a button on one of its node's inputs or is on a node that never selects"
             }
             Self::BadThreshold => {
                 "a deadzone is not a number or is negative, or thresholds are not 0 < release <= engage <= 1"

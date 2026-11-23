@@ -6,8 +6,8 @@
 use ctrlassist_core::gamepad::*;
 use ctrlassist_core::{
     Control, DemuxConfig, DemuxFeedback, DemuxMode, EFFECTS, Effect, EffectKey, FeedbackError,
-    Graph, GraphError, GraphSpec, Input, Kind, Layout, Level, MAX_NODES, MAX_SINKS, Mode,
-    MuxConfig, MuxFeedback, NodeId, NodeSpec, PadState, Router, SinkId, SourceId, SourceSet,
+    Graph, GraphError, GraphSpec, Group, Input, Kind, Layout, Level, MAX_NODES, MAX_SINKS, Mode,
+    MuxConfig, MuxFeedback, NodeId, NodeSpec, PadState, Router, Rule, SinkId, SourceId, SourceSet,
     SourceSpec, Switch,
 };
 
@@ -1132,6 +1132,65 @@ fn a_switch_must_be_a_button_on_one_of_the_inputs() {
         sinks: vec![Input::Node(NodeId(0), 0)],
     });
     assert_eq!(result.err(), Some(GraphError::BadControl));
+}
+
+/// A switch is taken out of the input whatever it does, so one on a node
+/// that never selects would only keep a button from the game.
+#[test]
+fn a_switch_is_refused_on_a_node_that_never_selects() {
+    let layout = Layout::gamepad();
+    let switch = Some(Switch {
+        input: None,
+        button: SELECT,
+    });
+    for mode in [Mode::Priority, Mode::Average] {
+        let mut config = MuxConfig::new(mode, &layout);
+        assert!(!config.selects(), "{mode:?}");
+        config.switch = switch;
+        assert_eq!(
+            build_mux(config).err(),
+            Some(GraphError::BadControl),
+            "{mode:?}"
+        );
+    }
+    // One switched group is enough: that group follows the selection.
+    let mut config = MuxConfig::new(Mode::Priority, &layout);
+    for (_, rule) in config.rules.iter_mut().take(1) {
+        *rule = Rule::Switched;
+    }
+    config.switch = switch;
+    assert!(config.selects());
+    let mut graph = build_mux(config).unwrap();
+    assert_eq!(graph.selected(NodeId(0)), Some(0));
+    step(&mut graph, PRIMARY, pad().with(SELECT, 1.0));
+    assert_eq!(graph.selected(NodeId(0)), Some(1));
+    // So is a control in no group, where there is one.
+    let mut config = MuxConfig::new(Mode::Priority, &layout);
+    config.ungrouped_axes = Rule::Switched;
+    assert!(config.selects(), "the gamepad leaves axes in no group");
+    config.rules = vec![(
+        Group::of(&(0..16).map(Control::Axis).collect::<Vec<_>>()).unwrap(),
+        Rule::Owned,
+    )];
+    assert!(!config.selects(), "every axis is in a group");
+
+    let demux = |mode: DemuxMode| {
+        let mut config = DemuxConfig::new(mode, 2);
+        config.switch = Some(SELECT);
+        Graph::build(GraphSpec {
+            sources: vec![source()],
+            nodes: vec![NodeSpec::Demux {
+                input: Input::Source(SourceId(0)),
+                config,
+            }],
+            sinks: vec![Input::Node(NodeId(0), 0)],
+        })
+    };
+    assert_eq!(
+        demux(DemuxMode::Multicast).err(),
+        Some(GraphError::BadControl)
+    );
+    assert!(demux(DemuxMode::Unicast).is_ok());
 }
 
 #[test]

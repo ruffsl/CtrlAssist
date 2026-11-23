@@ -107,6 +107,24 @@ impl MuxConfig {
             feedback: MuxFeedback::Active,
         }
     }
+
+    /// Whether anything the mux outputs follows the input selected, by
+    /// a switch or a client: whether any group it has is `Switched`. One
+    /// that doesn't has no use for a switch.
+    #[must_use]
+    pub fn selects(&self) -> bool {
+        let mut buttons: ButtonBits = 0;
+        let mut axes: AxisBits = 0;
+        for (group, _) in &self.rules {
+            buttons |= group.buttons;
+            axes |= group.axes;
+        }
+        // Controls in no group are groups of one under the ungrouped
+        // rules, where there are any.
+        self.rules.iter().any(|(_, rule)| *rule == Rule::Switched)
+            || (self.ungrouped_buttons == Rule::Switched && buttons != ButtonBits::MAX)
+            || (self.ungrouped_axes == Rule::Switched && axes != AxisBits::MAX)
+    }
 }
 
 pub(crate) struct Mux {
@@ -117,6 +135,8 @@ pub(crate) struct Mux {
     /// Buttons in no group. As groups of one they need no activity state:
     /// every rule but `Switched` comes to "down if any input holds it".
     loose_buttons: ButtonBits,
+    /// Whether any group follows the selection.
+    selects: bool,
     /// Per group, which inputs are active on it, as a mask.
     active: Vec<u32>,
     selected: usize,
@@ -149,7 +169,11 @@ impl Mux {
         }
         if let Some(switch) = config.switch {
             let is_button = matches!(switch.button, Control::Button(_)) && switch.button.is_valid();
-            if !is_button || switch.input.is_some_and(|input| input >= inputs) {
+            // A switch is taken out of the input whatever it does, so on
+            // a mux that never selects it would only keep a button from
+            // the game.
+            let selects = config.selects();
+            if !is_button || switch.input.is_some_and(|input| input >= inputs) || !selects {
                 return Err(GraphError::BadControl);
             }
         }
@@ -177,6 +201,7 @@ impl Mux {
             active: vec![0; rules.len()],
             rules,
             loose_buttons: !buttons,
+            selects: config.selects(),
             config,
             inputs,
             selected: 0,
@@ -207,12 +232,7 @@ impl Mux {
     /// The input the switch last selected, if anything here follows the
     /// switch.
     pub(crate) fn selected(&self) -> Option<usize> {
-        self.uses_selection().then_some(self.selected)
-    }
-
-    fn uses_selection(&self) -> bool {
-        self.config.ungrouped_buttons == Rule::Switched
-            || self.rules.iter().any(|(_, rule)| *rule == Rule::Switched)
+        self.selects.then_some(self.selected)
     }
 
     /// The inputs feedback goes to, as a mask.
@@ -221,7 +241,7 @@ impl Mux {
         match self.config.feedback {
             MuxFeedback::None => 0,
             MuxFeedback::Inputs(mask) => mask & all,
-            MuxFeedback::Active if self.uses_selection() => 1 << self.selected,
+            MuxFeedback::Active if self.selects => 1 << self.selected,
             MuxFeedback::Active => all,
         }
     }

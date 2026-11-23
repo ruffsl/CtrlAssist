@@ -67,6 +67,9 @@ impl Demux {
             Some(control) if !(matches!(control, Control::Button(_)) && control.is_valid()) => {
                 Err(GraphError::BadControl)
             }
+            // A multicast sends to every output, so a switch would only
+            // keep a button from the games.
+            Some(_) if config.mode == DemuxMode::Multicast => Err(GraphError::BadControl),
             _ => Ok(()),
         }
     }
