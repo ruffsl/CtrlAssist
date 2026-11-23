@@ -432,9 +432,9 @@ pkgs.testers.runNixOSTest {
         ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="Held Pad", RUN+="${pkgs.coreutils}/bin/cat /run/hold"
       '')
     ];
-    # Five ports, each its own bus, for the pads made as USB gadgets and
+    # Four ports, each its own bus, for the pads made as USB gadgets and
     # what is plugged in after them.
-    boot.extraModprobeConfig = "options dummy_hcd num=5";
+    boot.extraModprobeConfig = "options dummy_hcd num=4";
 
     environment.systemPackages = [
       fixture
@@ -999,17 +999,16 @@ pkgs.testers.runNixOSTest {
         print(f"a reopen while switched away, a pad back in the port {interface}: {told.strip()}")
         assert "isn't the user in front" in told, told
         switch_back()
-        # Another model in that port: hidden by the port's marker, and not
-        # taken for hers.
+        # Another model in that port, the HID pad from before moved there:
+        # hidden by the port's marker, and not taken for hers.
         unplug("xpadport", "X-Box")
-        machine.succeed("systemd-run --unit gadget-port-other usb-gadget hid portother - 3 0x5ef3 'Other Pad'")
-        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -F 'Fixture Other Pad'", timeout=60)
-        machine.succeed("udevadm settle")
+        unplug("port", "Fixture Port Pad")
+        plug("port", 3, "Fixture Port Pad")
         told = order(control, "reopen")
         print(f"a reopen in front, another model in the port: {told.strip()}")
         assert "isn't connected" in told, told
         # Her pad back in its port: found again, and shown again.
-        unplug("portother", "Fixture Other Pad")
+        unplug("port", "Fixture Port Pad")
         plug("xpadport", 3, "X-Box")
         assert order(control, "reopen").startswith("ok")
         assert order(control, "restore").startswith("ok")
@@ -1023,21 +1022,21 @@ pkgs.testers.runNixOSTest {
         return "/dev/" + machine.succeed(f"basename /sys/bus/usb/devices/{interface}/*/hidraw/hidraw*").strip()
 
     with subtest("a raw node is hidden by its port only with its model, and one left hidden is shown again once nothing names it"):
-        name = "Fixture Model Pad"
-        machine.succeed("systemd-run --unit gadget-model usb-gadget hid model MODELPAD1 4 0x5ef4 'Model Pad'")
-        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -F '{name}'", timeout=60)
-        machine.succeed("udevadm settle")
+        # The HID pad with a serial number from before, still in its port.
+        # The gadget driver has room for four HID functions, so the pads
+        # made as gadgets are used again where they can be.
+        name = "Fixture Serial Pad"
         nodes = by_name(name, "alice")
         assert all_are(nodes, "open"), nodes
         interface = sysfs(nodes["event"][0], "device/..").split("/")[-1]
         control, told = hide("hide-model", nodes["event"][0])
         assert told.startswith("ok"), told
         raw = [marker for marker in markers() if marker.startswith("./raw-")]
-        assert raw == [f"./raw-{interface}-0003:00001209:00005EF4"], markers()
+        assert raw == [f"./raw-{interface}-0003:00001209:00005EF0"], markers()
         # Taken out, and a keyboard plugged into its port: no node of the
         # keyboard is hidden, its raw node included, which a 60- rule opens.
-        unplug("model", name)
-        machine.succeed("systemd-run --unit gadget-keyboard usb-gadget kbd keyboard 4 0x5efa")
+        unplug("serial", name)
+        machine.succeed("systemd-run --unit gadget-keyboard usb-gadget kbd keyboard 1 0x5efa")
         machine.wait_until_succeeds(f"ls /sys/bus/usb/devices/{interface}/*/hidraw", timeout=60)
         machine.succeed("udevadm settle")
         keyboard = raw_under(interface)
@@ -1047,7 +1046,7 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_fails(f"ls /sys/bus/usb/devices/{interface}")
         # Another pad of the model, with another serial number: its raw node
         # is hidden, as one of the model in that port, its event node not.
-        machine.succeed("systemd-run --unit gadget-model-other usb-gadget hid modelother MODELPAD2 4 0x5ef4 'Model Pad'")
+        machine.succeed("systemd-run --unit gadget-serial-other usb-gadget hid serialother HIDFIXTURE2 1 0x5ef0 'Serial Pad'")
         machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -F '{name}'", timeout=60)
         machine.succeed("udevadm settle")
         other = by_name(name, "alice")
@@ -1063,7 +1062,7 @@ pkgs.testers.runNixOSTest {
         print(f"once nothing names it: {by_name(name, 'alice')}")
         assert all_are(by_name(name, "alice"), "open")
         machine.succeed("systemctl stop hide-model")
-        unplug("modelother", name)
+        unplug("serialother", name)
         wait_restored()
 
     with subtest("users with no seat share one cap however many user IDs they connect as, and leave room for the user at the seat"):
