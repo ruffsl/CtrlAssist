@@ -6,7 +6,7 @@ use std::os::fd::OwnedFd;
 use std::path::Path;
 
 use ctrlassist_core::{Effect, FeedbackError, Level, PadState, gamepad};
-use ctrlassist_device::{Identity, Pad, Request, VirtualPad};
+use ctrlassist_device::{Identity, Pad, Request, VirtualPad, Writes};
 use evdev::{Device, FFEffectData, FFEffectKind, FFReplay, FFTrigger};
 use rustix::event::{PollFd, PollFlags, poll};
 
@@ -712,7 +712,12 @@ fn a_dualsense_let_go_is_left_as_its_driver_keeps_it() {
     (game[2], game[44], game[45]) = (0x14, !players & 0x1f, 0xee);
     pad.pass(&game).unwrap();
     assert!(arrived(&|sent| sent[11] == 0x01 && sent[45] == 0xee));
-    drop(pad);
+    // Let go, the pad's last report is written once its writer says so,
+    // which whoever re-binds the pad's driver waits for.
+    let rested = pad.let_go();
+    assert_eq!(rested.writes(), Writes::Reports);
+    rested.wait();
+    assert!(rested.is_done());
     let rest = |sent: &[u8]| sent[1] == 0x0c && sent[11] == 0x05 && sent[22] == 0x05;
     assert!(arrived(&rest), "{:?}", real.outputs());
     let outputs = real.outputs();

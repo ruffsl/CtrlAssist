@@ -1,7 +1,7 @@
 //! A pad, read from an open descriptor on its event node.
 
 use crate::dualsense::Kind;
-use crate::output::{Output, endless};
+use crate::output::{Output, Rested, endless};
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
@@ -402,6 +402,12 @@ impl Pad {
             let events = match device.fetch_events() {
                 Ok(events) => events,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                // A signal cut the read short, or a resync's fetch, which
+                // waits on the node's lock while a writer of the pad's
+                // holds it: the pad is still there, the resync still owed,
+                // and nothing of a half fetch taken in. Read again, for as
+                // long as the signal keeps coming and no longer.
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error.into()),
             };
             for event in events {
@@ -520,6 +526,29 @@ impl Pad {
             Err(_) => {}
         }
         Ok(())
+    }
+
+    /// Says when the thread that writes to this pad has left it at rest,
+    /// once the pad is dropped: for whoever is about to have the pad's
+    /// driver re-bound, which would cut off a last report not yet
+    /// written. Got before the drop, from the writer the pad has then:
+    /// one replaced since by [`set_raw`](Self::set_raw) is said for as
+    /// it stops. A pad that is sent nothing is done already. See
+    /// [`Rested`] for what waiting covers; waiting is optional.
+    #[must_use]
+    pub fn rested(&self) -> Rested {
+        match &self.output {
+            Ok(output) => output.rested(),
+            Err(_) => Rested::already(),
+        }
+    }
+
+    /// Drops the pad, and says when its writer has left it at rest, as
+    /// [`rested`](Self::rested) does.
+    pub fn let_go(self) -> Rested {
+        let rested = self.rested();
+        drop(self);
+        rested
     }
 }
 

@@ -22,9 +22,10 @@
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsFd, OwnedFd};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering, fence};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{JoinHandle, Thread};
 
 use ctrlassist_core::Level;
@@ -35,6 +36,9 @@ use crate::dualsense::{Composer, GAME_SIZE, Kind, Once};
 /// The mailbox's size in words: a game's report, then one for the level
 /// and the count of game reports.
 const WORDS: usize = GAME_SIZE / 8 + 1;
+/// How many times the mailbox's reader spins on a put under way before
+/// it yields between looks.
+const SPINS: u32 = 8;
 
 /// What a pad should be sent.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -109,8 +113,18 @@ impl Mailbox {
         self.sequence.store(at.wrapping_add(2), Ordering::Release);
     }
 
+    /// The sequence now: odd while a put is under way.
+    fn sequence(&self) -> u64 {
+        self.sequence.load(Ordering::Acquire)
+    }
+
     /// The words last put, whole, and the sequence they were put under.
+    ///
+    /// A put takes a few dozen instructions, so a look that finds one
+    /// under way spins a few times, then gives the processor up between
+    /// looks: the one putting may have been put aside on this processor.
     fn get(&self) -> (u64, [u64; WORDS]) {
+        let mut spins = 0u32;
         loop {
             let before = self.sequence.load(Ordering::Acquire);
             if before.is_multiple_of(2) {
@@ -124,7 +138,12 @@ impl Mailbox {
                     return (before, words);
                 }
             }
-            std::hint::spin_loop();
+            if spins < SPINS {
+                spins += 1;
+                std::hint::spin_loop();
+            } else {
+                std::thread::yield_now();
+            }
         }
     }
 }
@@ -137,14 +156,125 @@ struct Shared {
     stop: AtomicBool,
     /// The error number of a write the pad refused, until it is said.
     refused: AtomicI32,
-    /// What was asked once and not yet written, as [`Once`]'s bits: put
-    /// after the settings it came with, and taken by the writer before
-    /// it looks in the mailbox, so it goes with those settings or later
-    /// ones, never earlier.
+    /// Set once the writer has panicked: it writes nothing more, and
+    /// every later thing the pad is told fails.
+    broken: AtomicBool,
+    /// What was asked once and not yet taken, as [`Once`]'s bits: added
+    /// after the settings it came with are put, and taken by the writer
+    /// between two looks at the mailbox (see [`write_out`]).
     once: AtomicU32,
     /// Something handed over to go after the pad's last write: dropped
     /// by the writer as it ends, and never by whoever let the pad go.
     after: Mutex<Option<Box<dyn Send>>>,
+    /// Said once the writer has left the pad at rest.
+    rested: Arc<Done>,
+}
+
+/// Whether a writer has left its pad at rest, and a way to wait for it.
+#[derive(Debug, Default)]
+struct Done {
+    rested: Mutex<bool>,
+    said: Condvar,
+}
+
+/// Says the writer has left the pad at rest as it is dropped: after the
+/// rest is written, or as a panic unwinds past it, so that nobody waits
+/// for a writer that has gone.
+struct Finish(Arc<Done>);
+
+impl Drop for Finish {
+    fn drop(&mut self) {
+        *self.0.rested.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.0.said.notify_all();
+    }
+}
+
+/// What a pad's writer writes, and so what [`Rested::wait`] waits for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum Writes {
+    /// Nothing: the pad is sent nothing, or its writer couldn't be
+    /// started. There is nothing to wait for.
+    Nothing,
+    /// Whole output reports to the pad's raw node: a DualSense or a
+    /// DualShock 4 given its raw node. Its last report turns off what a
+    /// game set beyond rumble, a DualSense's trigger effects among them,
+    /// which a re-bind of the pad's driver doesn't: so this is the write
+    /// that someone about to have the driver re-bound waits for.
+    Reports,
+    /// Levels to the pad's one kernel effect. Its last act erases the
+    /// effect, which the kernel stops first.
+    Effect,
+}
+
+/// Says when the writer of a pad that has been let go has left the pad
+/// at rest, and waits for it. Got from [`Pad::rested`](crate::Pad::rested)
+/// or [`Pad::let_go`](crate::Pad::let_go).
+///
+/// What waiting covers is by what the writer [writes](Self::writes):
+///
+/// - For [`Writes::Reports`], the writer has written what was left and
+///   then the report that leaves the pad at rest, each written or refused
+///   as by a pad that has gone, and has closed the raw node: nothing is
+///   written to the pad after. Each write to a pad on USB can take the
+///   kernel's five seconds, for a pad that stalls.
+/// - For [`Writes::Effect`], the writer has sent the level left and
+///   erased the effect. For a pad another program makes through uinput,
+///   which has stopped answering, the update under way and the erase can
+///   take 30 seconds each. Not covered: the pad's grab let go and its
+///   event node closed, which come after on the same thread and can take
+///   30 seconds more.
+/// - For [`Writes::Nothing`], it is done at once.
+///
+/// The writer starts on what is left once the pad is dropped, so a wait
+/// for a pad that is never dropped never ends. Waiting is a choice:
+/// dropping this changes nothing, and never waits. It is bounded by
+/// nothing but what the writer is doing, as above; a writer that panics
+/// is done once it has tried the rest.
+#[derive(Clone, Debug)]
+pub struct Rested {
+    done: Option<Arc<Done>>,
+    writes: Writes,
+}
+
+impl Rested {
+    /// For a pad with no writer: done already.
+    pub(crate) fn already() -> Self {
+        Self {
+            done: None,
+            writes: Writes::Nothing,
+        }
+    }
+
+    /// What the writer writes, which says what [`wait`](Self::wait)
+    /// waits for.
+    #[must_use]
+    pub fn writes(&self) -> Writes {
+        self.writes
+    }
+
+    /// Whether the writer has left the pad at rest.
+    #[must_use]
+    pub fn is_done(&self) -> bool {
+        self.done
+            .as_ref()
+            .is_none_or(|done| *done.rested.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Waits until the writer has left the pad at rest. Blocks the
+    /// calling thread, for as long as the writer takes; see [`Rested`].
+    pub fn wait(&self) {
+        let Some(done) = &self.done else {
+            return;
+        };
+        let mut rested = done.rested.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*rested {
+            rested = done
+                .said
+                .wait(rested)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
 }
 
 /// Where a writer writes: what it does with what the pad should be sent,
@@ -263,7 +393,8 @@ impl Target for KernelEffect {
 /// The writes are made by a thread of the pad's own, at ordinary
 /// priority. Dropping this has it write what is left, then leave the pad
 /// as no game had it (see [`Target::rest`]), and then end; whoever drops
-/// this doesn't wait for any of it.
+/// this doesn't wait for any of it. A writer that panics leaves the pad
+/// at rest at once, and everything the pad is told after fails.
 pub(crate) struct Output {
     shared: Arc<Shared>,
     writer: Thread,
@@ -310,25 +441,60 @@ impl Output {
     /// Starts a writer, named `name`, on `target`: a raw node of a pad of
     /// `kind`, or an effect.
     fn start<T: Target>(
+        target: T,
+        kind: Option<Kind>,
+        name: &str,
+    ) -> io::Result<(Self, JoinHandle<()>)> {
+        Self::start_with(target, kind, name, || {})
+    }
+
+    /// As [`start`](Self::start), with `between` called by the writer between
+    /// its look in the mailbox and its taking what was asked once: for a
+    /// test to hold it there.
+    fn start_with<T: Target>(
         mut target: T,
         kind: Option<Kind>,
         name: &str,
+        between: impl Fn() + Send + 'static,
     ) -> io::Result<(Self, JoinHandle<()>)> {
         let shared = Arc::new(Shared {
             mailbox: Mailbox::new(),
             stop: AtomicBool::new(false),
             refused: AtomicI32::new(0),
+            broken: AtomicBool::new(false),
             once: AtomicU32::new(0),
             after: Mutex::new(None),
+            rested: Arc::new(Done::default()),
         });
         let writer = {
             let shared = Arc::clone(&shared);
             std::thread::Builder::new()
                 .name(name.to_string())
                 .spawn(move || {
-                    write_out(&shared, &mut target);
-                    // What the pad is left with, after whatever was left.
-                    target.rest();
+                    // Said however this thread goes from here.
+                    let finish = Finish(Arc::clone(&shared.rested));
+                    // A writer that panics writes nothing more, and says
+                    // so at everything the pad is told after.
+                    let wrote = catch_unwind(AssertUnwindSafe(|| {
+                        write_out(&shared, &mut target, &between);
+                    }));
+                    if wrote.is_err() {
+                        shared.broken.store(true, Ordering::Release);
+                    }
+                    // What the pad is left with, after whatever was left:
+                    // at once, if the writer broke off.
+                    if catch_unwind(AssertUnwindSafe(move || target.rest())).is_err() {
+                        shared.broken.store(true, Ordering::Release);
+                    }
+                    // The pad's last write is made, and its raw node, if
+                    // that is what was written, closed.
+                    drop(finish);
+                    // What was handed over goes here, once it has been:
+                    // as the pad is let go, which a writer that broke off
+                    // waits for.
+                    while !shared.stop.load(Ordering::Acquire) {
+                        std::thread::park();
+                    }
                     let after = shared
                         .after
                         .lock()
@@ -356,6 +522,19 @@ impl Output {
     /// Whether this writes whole output reports to a raw node.
     pub(crate) fn is_raw(&self) -> bool {
         self.kind.is_some()
+    }
+
+    /// Says when the writer has left the pad at rest, after this is
+    /// dropped.
+    pub(crate) fn rested(&self) -> Rested {
+        Rested {
+            done: Some(Arc::clone(&self.shared.rested)),
+            writes: if self.is_raw() {
+                Writes::Reports
+            } else {
+                Writes::Effect
+            },
+        }
     }
 
     /// Makes the pad's motors run at `level`, with nothing else changed.
@@ -463,6 +642,9 @@ impl Output {
 
     fn refusal(&self) -> io::Result<()> {
         match self.shared.refused.swap(0, Ordering::Relaxed) {
+            0 if self.shared.broken.load(Ordering::Acquire) => {
+                Err(io::Error::other("the thread writing to the pad failed"))
+            }
             0 => Ok(()),
             errno => Err(io::Error::from_raw_os_error(errno)),
         }
@@ -482,22 +664,42 @@ impl Drop for Output {
 /// The writer: sends what is wanted each time it changes, and sleeps
 /// between. Ends once the input thread's side is gone and what it left
 /// is sent.
-fn write_out<T: Target>(shared: &Shared, target: &mut T) {
+///
+/// What is asked once goes in the first report written whose settings
+/// came with it or after it, and never in a later one: no settings put
+/// after it are written before it. The input thread puts the settings,
+/// then adds what they ask once; this looks in the mailbox, then takes
+/// what was asked once, then looks at the mailbox's sequence again, and
+/// writes only if it hasn't moved. Taken by the swap, anything asked once
+/// was added after its own settings were put, and the swap's acquiring
+/// it makes that put's sequence seen by the look after: unmoved, it is
+/// the one read, so those settings or later ones are what is written
+/// with it. Moved, what was taken is kept and the mailbox looked in
+/// again. And settings put after something asked once were put after it
+/// was added, so a look that reads them is followed by a swap that sees
+/// it, if it isn't already kept: it goes with them.
+fn write_out<T: Target>(shared: &Shared, target: &mut T, between: &impl Fn()) {
     let (mut written, mut games) = (0u64, 0u32);
+    // What was asked once, taken and not yet written.
+    let mut once = Once::default();
     loop {
         // Before the mailbox is looked in, so that what was put before
         // the stop is written.
         let stopping = shared.stop.load(Ordering::Acquire);
-        // And what was asked once, which is put after the settings it
-        // came with: those are in the mailbox by now.
-        let once = Once::from_bits(shared.once.swap(0, Ordering::AcqRel));
         let (sequence, words) = shared.mailbox.get();
+        between();
+        once = once.then(Once::from_bits(shared.once.swap(0, Ordering::AcqRel)));
+        if shared.mailbox.sequence() != sequence {
+            // Put since the look: what was just taken may have come with
+            // what was put, which is to be read first.
+            continue;
+        }
         if sequence != written || !once.is_empty() {
             written = sequence;
             let wanted = Wanted::from_words(words);
             let game = (wanted.games != games).then_some(&wanted.game);
             games = wanted.games;
-            if let Err(error) = target.send(game, wanted.level, once) {
+            if let Err(error) = target.send(game, wanted.level, std::mem::take(&mut once)) {
                 let errno = error
                     .raw_os_error()
                     .unwrap_or(rustix::io::Errno::IO.raw_os_error());
@@ -727,8 +929,9 @@ mod tests {
     }
 
     /// Settings that replace others not yet written lose nothing, being
-    /// everything the games set; what each asked once is gathered until
-    /// a write carries it; and the same settings again write nothing.
+    /// everything the games set; what two asked once, one each, is
+    /// gathered until a write carries both; and the same settings again
+    /// write nothing.
     #[test]
     fn what_is_asked_once_is_gathered_until_it_is_written() {
         let (mut output, writer, reports, open) = recorded(true, None);
@@ -736,16 +939,21 @@ mod tests {
         let first = reports.recv().unwrap();
         assert_eq!(first[45], 0x11);
         // The writer is held in its first write. The LEDs are given back,
-        // and the newer settings, which no longer set them, come after.
+        // then the lightbar set up, and the newer settings, which ask
+        // neither, come after.
         let mut release = [0u8; GAME_SIZE];
         (release[0], release[2]) = (0x02, 0x08);
         output.pass(&release).unwrap();
+        let mut setup = [0u8; GAME_SIZE];
+        (setup[0], setup[39], setup[42]) = (0x02, 0x02, 0x02);
+        output.pass(&setup).unwrap();
         let mut trigger = release;
         (trigger[1], trigger[2], trigger[11]) = (0x04, 0, 0x01);
         output.pass(&trigger).unwrap();
         open.send(()).unwrap();
         let second = reports.recv().unwrap();
         assert_eq!((second[1], second[2], second[11]), (0x04, 0x08, 0x01));
+        assert_eq!((second[39] & 0x02, second[42]), (0x02, 0x02), "both");
         open.send(()).unwrap();
         // The same settings again are nothing new.
         output.pass(&trigger).unwrap();
@@ -760,6 +968,99 @@ mod tests {
         drop(output);
         open.send(()).unwrap();
         writer.join().unwrap();
+    }
+
+    /// What is asked once is never written after settings that followed
+    /// it. The writer is held between its two looks, at the mailbox and
+    /// at what was asked once, while the lights are let go and then a
+    /// color set: the first report with the color lets the lights go too,
+    /// and nothing after lets them go again.
+    #[test]
+    fn what_is_asked_once_never_follows_the_settings_after_it() {
+        let (written, reports) = mpsc::channel();
+        let recorder = Recorder {
+            written,
+            gate: None,
+            refuse: None,
+        };
+        let (arrived, held) = mpsc::channel();
+        let (go, gate) = mpsc::channel::<()>();
+        let gate = Mutex::new(gate);
+        let armed = AtomicBool::new(true);
+        let between = move || {
+            if armed.swap(false, Ordering::SeqCst) {
+                arrived.send(()).unwrap();
+                gate.lock().unwrap().recv().unwrap();
+            }
+        };
+        let target = RawNode::new(recorder, USB, None);
+        let (mut output, writer) =
+            Output::start_with(target, Some(USB), "pad-output", between).unwrap();
+        // The writer's first look, held between its two reads.
+        held.recv().unwrap();
+        let mut release = [0u8; GAME_SIZE];
+        (release[0], release[2]) = (0x02, 0x08);
+        output.pass(&release).unwrap();
+        output.pass(&lights(0xbb)).unwrap();
+        go.send(()).unwrap();
+        drop(output);
+        writer.join().unwrap();
+        let written: Vec<Vec<u8>> = reports.try_iter().collect();
+        let lets_go = |report: &Vec<u8>| report[2] & 0x08 != 0;
+        let colored = written
+            .iter()
+            .position(|report| report[45] == 0xbb)
+            .expect("the color is written");
+        assert!(lets_go(&written[colored]), "{written:?}");
+        assert_eq!(
+            written.iter().filter(|report| lets_go(report)).count(),
+            1,
+            "{written:?}"
+        );
+    }
+
+    /// Whoever lets a pad go can wait, on another thread, until its last
+    /// report is written: not while that write is held, and at once
+    /// after, with nothing written to the pad after it.
+    #[test]
+    fn a_pad_let_go_is_rested_once_its_last_report_is_written() {
+        let (mut output, writer, reports, open) = recorded(true, None);
+        output.rumble(level(0x1000, 0)).unwrap();
+        reports.recv().unwrap();
+        // The writer is held in that write.
+        let rested = output.rested();
+        assert_eq!(rested.writes(), Writes::Reports);
+        drop(output);
+        let (said, waited) = mpsc::channel();
+        let waiting = {
+            let rested = rested.clone();
+            std::thread::spawn(move || {
+                rested.wait();
+                said.send(()).unwrap();
+            })
+        };
+        assert!(!rested.is_done());
+        open.send(()).unwrap();
+        // The rest, held as it is written.
+        let rest = reports.recv().unwrap();
+        assert!(is_rest(&rest), "{rest:?}");
+        assert!(!rested.is_done(), "not until the rest is written");
+        assert!(waited.try_recv().is_err());
+        open.send(()).unwrap();
+        waited.recv().unwrap();
+        assert!(rested.is_done());
+        waiting.join().unwrap();
+        writer.join().unwrap();
+        assert!(reports.try_recv().is_err(), "nothing after the rest");
+        // Dropping a handle waits for nothing and changes nothing.
+        drop(rested);
+        // A pad with no writer is done already.
+        let nothing = Rested::already();
+        assert_eq!(nothing.writes(), Writes::Nothing);
+        assert!(nothing.is_done());
+        nothing.wait();
+        fn shared<T: Send + Sync>(_: &T) {}
+        shared(&nothing);
     }
 
     /// A write the pad refuses is said at the next thing it is told.
@@ -807,18 +1108,74 @@ mod tests {
         }
     }
 
-    struct Left(mpsc::Sender<Told>);
+    /// Handed over with the pad, and said to be dropped only once the pad
+    /// is said to be at rest.
+    struct Left(mpsc::Sender<Told>, Rested);
 
     impl Drop for Left {
         fn drop(&mut self) {
+            assert!(self.1.is_done(), "dropped after the pad is said at rest");
             self.0.send(Told::After).unwrap();
         }
     }
 
+    /// Stands in for a pad whose writer panics as it writes a level.
+    struct Panicking {
+        told: mpsc::Sender<(Told, Option<String>)>,
+    }
+
+    impl Target for Panicking {
+        fn send(&mut self, _: Option<&[u8; GAME_SIZE]>, _: Level, _: Once) -> io::Result<()> {
+            panic!("a writer that panics");
+        }
+
+        fn rest(self) {
+            let thread = std::thread::current().name().map(str::to_string);
+            self.told.send((Told::Rest, thread)).unwrap();
+        }
+    }
+
+    struct LeftOn(mpsc::Sender<(Told, Option<String>)>);
+
+    impl Drop for LeftOn {
+        fn drop(&mut self) {
+            let thread = std::thread::current().name().map(str::to_string);
+            self.0.send((Told::After, thread)).unwrap();
+        }
+    }
+
+    /// A writer that panics leaves the pad at rest at once, on its own
+    /// thread; everything the pad is told after fails; and what is handed
+    /// over as the pad is let go is still dropped there.
+    #[test]
+    fn a_writer_that_panics_says_so_and_still_leaves_the_pad_at_rest() {
+        let (told_by, told) = mpsc::channel();
+        let target = Panicking {
+            told: told_by.clone(),
+        };
+        let (mut output, writer) = Output::start(target, None, "pad-rumble").unwrap();
+        let rested = output.rested();
+        assert_eq!(rested.writes(), Writes::Effect);
+        output.rumble(level(0x1000, 0)).unwrap();
+        let writer_name = Some("pad-rumble".to_string());
+        assert_eq!(told.recv().unwrap(), (Told::Rest, writer_name.clone()));
+        // Said as soon as the rest is tried, the pad not yet let go.
+        rested.wait();
+        for _ in 0..2 {
+            let refused = output.rumble(level(0x2000, 0)).unwrap_err();
+            assert!(refused.raw_os_error().is_none(), "{refused}");
+            output.rumble(level(0x1000, 0)).unwrap_err();
+        }
+        output.leave_after(Box::new(LeftOn(told_by)));
+        drop(output);
+        assert_eq!(told.recv().unwrap(), (Told::After, writer_name));
+        writer.join().unwrap();
+    }
+
     /// While a pad's write waits, whoever tells it a level, or drops it,
     /// goes on at once: the newest level is sent once the write is let
-    /// go, then the pad is left at rest, and only then is what was left
-    /// with the writer dropped.
+    /// go, then the pad is left at rest and said to be, and only then is
+    /// what was left with the writer dropped.
     #[test]
     fn a_pad_whose_write_waits_holds_nobody_who_tells_it_or_drops_it() {
         let (told_by, told) = mpsc::channel();
@@ -836,7 +1193,7 @@ mod tests {
         output.rumble(level(0x3000, 0x3000)).unwrap();
         // Nothing for a pad that is sent only its level.
         output.pass(&lights(0x11)).unwrap();
-        output.leave_after(Box::new(Left(told_by)));
+        output.leave_after(Box::new(Left(told_by, output.rested())));
         drop(output);
         assert!(told.try_recv().is_err(), "{:?}", told.try_recv());
         open.send(()).unwrap();

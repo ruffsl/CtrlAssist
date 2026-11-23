@@ -1042,9 +1042,8 @@ fn a_virtual_dualsense_in_a_setup_reports_all_the_time() {
 
 /// A game's output reports each change only what they mark, and the pad
 /// behind a virtual DualSense is sent everything the games have set: a
-/// report that sets the lightbar and then one that sets the player LEDs
-/// reach it as one that sets both, whether the input thread reads them
-/// together or apart.
+/// report that sets the lightbar, passed on, and then one that sets the
+/// player LEDs reach it as one that sets both.
 #[test]
 fn a_pad_behind_a_virtual_dualsense_is_sent_everything_the_games_set() {
     const TEST: &str = "a_pad_behind_a_virtual_dualsense_is_sent_everything_the_games_set";
@@ -1094,6 +1093,16 @@ fn a_pad_behind_a_virtual_dualsense_is_sent_everything_the_games_set() {
     players[0] = 0x02;
     (players[2], players[44]) = (0x10, 0x05);
     game.write_all(&lights).unwrap();
+    // The lightbar passed on alone first, so the input thread reads the
+    // two apart, and the second report is all it has new.
+    let lit = |sent: &Vec<u8>| sent[2] & 0x04 != 0 && sent[45..48] == [1, 2, 3];
+    for _ in 0..400 {
+        if real.outputs().iter().any(lit) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(real.outputs().iter().any(lit), "{:?}", real.outputs());
     game.write_all(&players).unwrap();
     let both =
         |sent: &Vec<u8>| sent[2] & 0x14 == 0x14 && sent[44] == 0x05 && sent[45..48] == [1, 2, 3];
