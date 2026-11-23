@@ -3,7 +3,6 @@
 
 use ctrlassist::{DaemonClient, Problem, Profile, Reloaded};
 use ctrlassist_daemon::{Daemon, Paths};
-use ctrlassist_device::InputThread;
 use ctrlassist_gui::state::{Snapshot, health, reload_banner, reload_summary};
 use ctrlassist_gui::{AppWindow, Errors, ServiceHealth};
 use ctrlassist_protocol::VERSION;
@@ -127,7 +126,7 @@ async fn a_snapshot_reads_a_live_daemon_and_its_going() {
     let client = DaemonClient::connect(&socket).await.unwrap();
     assert_eq!(Snapshot::read(&client, None), Snapshot::default());
 
-    let (input, reports) = InputThread::spawn().unwrap();
+    let (input, reports) = Daemon::input_thread().unwrap();
     let paths = Paths {
         socket: socket.clone(),
         state: socket.with_file_name("state"),

@@ -20,7 +20,6 @@ use std::fs::OpenOptions;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
 
 use anyhow::{Context, Result, anyhow};
 use ctrlassist_device::{Database, InputThread, Report};
@@ -152,21 +151,39 @@ pub(crate) fn device_identity(identity: Identity) -> ctrlassist_device::Identity
     }
 }
 
+/// Where the input thread's reports arrive for a daemon to read: the
+/// queue the input thread's own forwarding thread fills.
+pub type Reports = mpsc::UnboundedReceiver<Report>;
+
 impl Daemon {
+    /// Starts the input thread a daemon runs around, with where its
+    /// reports arrive. Made by the caller before any async runtime
+    /// exists, as the thread asks for real-time scheduling for itself
+    /// alone; nothing it does needs a runtime.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the input thread can't start.
+    pub fn input_thread() -> std::io::Result<(InputThread, Reports)> {
+        let (reported, reports) = mpsc::unbounded_channel();
+        let input = InputThread::spawn_with(move |report| {
+            // Not read any more, the daemon having stopped: dropped
+            // here, off the input thread.
+            let _ = reported.send(report);
+        })?;
+        Ok((input, reports))
+    }
+
     /// Starts the daemon at `paths`, around an input thread that is
-    /// already running, and what it reports: that thread is created
-    /// before any async runtime exists, so the caller makes it.
+    /// already running, and what it reports, both from
+    /// [`input_thread`](Self::input_thread).
     ///
     /// # Errors
     ///
     /// Fails if the socket's directory can't be made, another daemon
     /// holds the socket, udev can't be watched, or zenoh refuses a
     /// declaration.
-    pub async fn start(
-        paths: &Paths,
-        input: InputThread,
-        reports: Receiver<Report>,
-    ) -> Result<Self> {
+    pub async fn start(paths: &Paths, input: InputThread, reports: Reports) -> Result<Self> {
         let input = Arc::new(input);
         let socket: &Path = &paths.socket;
         if let Some(directory) = socket.parent() {
@@ -231,20 +248,6 @@ impl Daemon {
         let blacklist = Arc::new(std::sync::Mutex::new(blacklist));
         reactor.blacklist = Arc::clone(&blacklist);
 
-        // The input thread's reports wait on a thread of their own, which
-        // ends with the input thread.
-        let (reported, reports_in) = mpsc::unbounded_channel();
-        std::thread::Builder::new()
-            .name("reports".into())
-            .spawn(move || {
-                for report in reports {
-                    if reported.send(report).is_err() {
-                        return;
-                    }
-                }
-            })
-            .context("starting the thread that carries the input thread's reports")?;
-
         // What games ask of the virtual pads and what the pads are told
         // is said only where it would be logged.
         input.tap(tracing::enabled!(tracing::Level::DEBUG));
@@ -282,7 +285,7 @@ impl Daemon {
         }
 
         let (stop, stopped) = oneshot::channel();
-        let reactor = tokio::spawn(reactor.run(rpcs, seen, reports_in, stopped));
+        let reactor = tokio::spawn(reactor.run(rpcs, seen, reports, stopped));
 
         // The token is what clients take as "the daemon is there", so it
         // comes last: everything it serves is declared by the time a

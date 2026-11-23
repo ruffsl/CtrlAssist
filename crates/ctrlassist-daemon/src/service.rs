@@ -3,13 +3,12 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use std::sync::mpsc::Receiver;
 
-use ctrlassist_device::{InputThread, Report};
+use ctrlassist_device::InputThread;
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::info;
 
-use crate::{Daemon, Paths};
+use crate::{Daemon, Paths, Reports};
 
 /// The daemon's arguments.
 #[derive(clap::Args, Clone, Debug, Default)]
@@ -43,14 +42,14 @@ pub struct Args {
 pub fn main(args: Args) -> Result<()> {
     // Before the runtime: the input thread shares nothing with it but
     // its queues, and asks for real-time scheduling for itself alone.
-    let (input, reports) = InputThread::spawn().context("starting the input thread")?;
+    let (input, reports) = Daemon::input_thread().context("starting the input thread")?;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(run(args, input, reports))
 }
 
-async fn run(args: Args, input: InputThread, reports: Receiver<Report>) -> Result<()> {
+async fn run(args: Args, input: InputThread, reports: Reports) -> Result<()> {
     crate::logging::init(
         "ctrlassist-daemon",
         &["ctrlassist_daemon=info", "ctrlassist_protocol=info"],

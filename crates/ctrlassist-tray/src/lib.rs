@@ -345,7 +345,6 @@ mod tests {
     use std::path::Path;
 
     use ctrlassist_daemon::{Daemon, Paths};
-    use ctrlassist_device::InputThread;
     use ctrlassist_test::{FakePad, can_make_pads};
     use tokio::sync::Mutex;
 
@@ -361,7 +360,7 @@ mod tests {
     }
 
     async fn start_daemon(paths: &Paths) -> Daemon {
-        let (input, reports) = InputThread::spawn().unwrap();
+        let (input, reports) = Daemon::input_thread().unwrap();
         Daemon::start(paths, input, reports).await.unwrap()
     }
 

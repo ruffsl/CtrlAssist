@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use ctrlassist::{DaemonClient, Error, ErrorCode, StateEvent, StateWatcher, StateWatcherConfig};
 use ctrlassist_daemon::{Daemon, Paths};
-use ctrlassist_device::InputThread;
 use ctrlassist_protocol::caller::RPC_TIMEOUT;
 use ctrlassist_protocol::endpoint::setup;
 use ctrlassist_protocol::error::WireError;
@@ -72,7 +71,7 @@ pub(crate) async fn start_daemon(socket: &std::path::Path) -> Daemon {
 /// A daemon that takes the tests' fake pads for pads, or one that
 /// doesn't, as a daemon in use doesn't.
 pub(crate) async fn start_daemon_taking(socket: &std::path::Path, test_pads: bool) -> Daemon {
-    let (input, reports) = InputThread::spawn().unwrap();
+    let (input, reports) = Daemon::input_thread().unwrap();
     let paths = Paths {
         socket: socket.to_path_buf(),
         state: socket.with_file_name("state"),
