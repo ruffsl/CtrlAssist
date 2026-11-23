@@ -10,7 +10,7 @@ CtrlAssist's package derivation, its NixOS module, the virtual machine checks, a
 | [`module.nix`](module.nix) | The NixOS module: `services.ctrlassist.enable`, and the `hiding`, `realtime` and `tray` switches. |
 | [`crate.nix`](crate.nix) | One workspace crate's binaries as a package, for what the checks need before the full package, such as the test crate's `ctrlassist-fixture`. |
 | [`slint-runtime.nix`](slint-runtime.nix) | The libraries the window needs at run time beyond what the linker records, shared by the package's rpath and the dev shell. |
-| [`cargo-about.nix`](cargo-about.nix) | cargo-about pinned to the release that keeps the Slint crates' license text, for the dev shell. |
+| [`cargo-about.nix`](cargo-about.nix) | cargo-about pinned to the release that keeps the Slint crates' license text, for the dev shell and the package's own license bundle. |
 | [`slint-lsp.nix`](slint-lsp.nix), [`slint-viewer.nix`](slint-viewer.nix) | The dev shell's Slint language server and viewer, at the workspace's Slint version. |
 | `test-*.nix` | The virtual machine checks, one flake check each; what each asserts is in [docs/testing.md](../../docs/testing.md#virtual-machine-checks). |
 
@@ -42,7 +42,7 @@ The module's default `package` is `pkgs.ctrlassist` when an overlay provides it,
 - **Which crates are built** comes from `workspace.default-members` in the root `Cargo.toml`, the shipping binaries, so the list lives in one place.
 - **No tests in the build** (`doCheck = false`): the workspace's tests run in the dev shell and in CI, and the virtual machine checks run the package itself.
 - **The source is a fileset** of what the build reads, so a change to the docs doesn't rebuild it.
-- **The license bundle** is written in `preBuild` by cargo-about from the vendored sources, with no network.
+- **The license bundle** is written in `preBuild` by the pinned cargo-about (`cargo-about.nix`) from the vendored sources, with no network.
 - **The window's run-time libraries** go on its rpath by hand in `postFixup` (`slint-runtime.nix`), and the usual pass that would take off what it finds no use of is skipped, since patchelf can't see a library opened by name.
 
 ## Virtual machine checks

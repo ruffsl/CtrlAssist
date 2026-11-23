@@ -55,8 +55,9 @@ rustPlatform.buildRustPackage {
   doCheck = false;
 
   nativeBuildInputs = [
-    # Writes the third-party license bundle in preBuild.
-    cargo-about
+    # Writes the third-party license bundle in preBuild. The pinned one,
+    # or the Slint crates' license text can go missing (./cargo-about.nix).
+    (callPackage ./cargo-about.nix { inherit cargo-about; })
     pkg-config
     # Copies `desktopItems` into $out/share/applications.
     copyDesktopItems
