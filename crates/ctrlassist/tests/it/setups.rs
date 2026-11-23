@@ -262,20 +262,31 @@ async fn a_setup_that_cannot_start_says_why_and_leaves_nothing() {
     let unknown = client.start_setup("nothing").await.unwrap_err();
     assert_eq!(unknown.rpc_code(), Some(ErrorCode::UnknownProfile));
 
-    // The same pad named twice: right as a profile, wrong to run.
-    client
+    // The same pad named twice, two ways: wrong as a profile already.
+    let refused = client
         .put_profile(
             "twice",
             "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"address:0c:27:56:4f:bd:14\"\n",
         )
         .await
-        .unwrap();
-    let refused = client.start_setup("twice").await.unwrap_err();
+        .unwrap_err();
     assert_eq!(refused.rpc_code(), Some(ErrorCode::InvalidProfile));
     assert!(
-        refused.to_string().contains("another source's pad too"),
+        refused.to_string().contains("each needs its own"),
         "{refused}"
     );
+
+    // A pad still to choose: right as a profile, wrong to run.
+    client
+        .put_profile(
+            "half",
+            "mode = \"priority\"\nprimary = \"model:1209:8e01\"\n",
+        )
+        .await
+        .unwrap();
+    let refused = client.start_setup("half").await.unwrap_err();
+    assert_eq!(refused.rpc_code(), Some(ErrorCode::InvalidProfile));
+    assert!(refused.to_string().starts_with("mode: "), "{refused}");
     assert!(client.list_setups().unwrap().is_empty());
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(client.list_setups().unwrap().is_empty());
