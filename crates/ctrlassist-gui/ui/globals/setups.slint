@@ -1,24 +1,7 @@
-// The running profiles: each setup as the Profiles pane.s STATUS group
-// shows it, and what that group asks. Rust pushes `rows` from the
-// daemon's mirror on every change and binds the callbacks.
-
-// A pad of a setup, by the role the profile gives it.
-export struct SetupPadRow {
-    role: string,
-    // The pad's id, empty while no pad that fits has been found.
-    pad: string,
-    // Its name, or its id when the daemon no longer knows it.
-    name: string,
-    present: bool,
-}
-
-// A virtual pad of a setup.
-export struct SetupSinkRow {
-    name: string,
-    identity: string,
-    // Its event node, empty until it is made.
-    node: string,
-}
+// The running profiles: what of each setup the Profiles pane's STATUS
+// group shows, and what that group asks. Rust pushes `rows` from the
+// daemon's mirror on every change and binds the callbacks. The pads and
+// virtual pads a setup has are the profile's rows' own.
 
 // A node of a setup that selects one of its choices.
 export struct SetupNodeRow {
@@ -30,19 +13,10 @@ export struct SetupNodeRow {
 export struct SetupRow {
     // The setup's name: the profile it runs.
     name: string,
-    // "starting", "running", "held" or "failed".
-    phase: string,
-    // The phase as a person reads it, and the `Chip` tone for it.
-    phase-label: string,
-    tone: string,
-    // Why it failed; empty otherwise.
-    reason: string,
     // The profile as kept is another than it runs, or gone.
     stale: bool,
     // Whether a profile of its name is kept at all.
     profile-kept: bool,
-    pads: [SetupPadRow],
-    sinks: [SetupSinkRow],
     nodes: [SetupNodeRow],
 }
 

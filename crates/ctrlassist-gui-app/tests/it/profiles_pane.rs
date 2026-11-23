@@ -109,9 +109,30 @@ fn row<'a>(rows: &'a [ProfileRow], name: &str) -> &'a ProfileRow {
         .expect("the profile has a row")
 }
 
-fn field(row: &ProfileRow, key: &str) -> ProfileFieldRow {
-    row.fields
+/// Every field of a row's form, in whichever card it is shown.
+fn fields(row: &ProfileRow) -> Vec<ProfileFieldRow> {
+    let mut all: Vec<ProfileFieldRow> = row.input_fields.iter().collect();
+    if !row.identity_field.key.is_empty() {
+        all.push(row.identity_field.clone());
+    }
+    all.extend(row.output_fields.iter());
+    all.extend(row.preset_fields.iter());
+    all
+}
+
+/// The keys of a row's fields, sorted.
+fn keys(row: &ProfileRow) -> Vec<String> {
+    let mut keys: Vec<String> = fields(row)
         .iter()
+        .map(|field| field.key.to_string())
+        .collect();
+    keys.sort();
+    keys
+}
+
+fn field(row: &ProfileRow, key: &str) -> ProfileFieldRow {
+    fields(row)
+        .into_iter()
         .find(|field| field.key == key)
         .expect("the form has the field")
 }
@@ -137,16 +158,10 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
 
     let couch = row(&rows, "couch");
     assert_eq!(couch.kind, "preset");
-    assert_eq!(couch.summary, "priority · xbox");
-    assert!(couch.kept && !couch.unfinished && !couch.running && !couch.is_default);
-    let keys: Vec<String> = couch
-        .fields
-        .iter()
-        .map(|field| field.key.to_string())
-        .collect();
+    assert!(couch.kept && !couch.unfinished && couch.setup_index < 0 && !couch.is_default);
     assert_eq!(
-        keys,
-        ["mode", "primary", "assist", "identity", "rumble", "hide"],
+        keys(couch),
+        ["assist", "hide", "identity", "mode", "primary", "rumble"],
         "a preset of two pads has no pad count"
     );
     let preset = field(couch, "mode");
@@ -154,7 +169,6 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
         (preset.kind.as_str(), preset.value_label.as_str()),
         ("choice", "Priority")
     );
-    assert!(preset.description.starts_with("Two pads as one."));
     assert_eq!(preset.options.row_count(), 5);
     // A pad named by its bare address is the pad of that address; the
     // dropdown lists connected pads first, absent ones marked.
@@ -311,18 +325,9 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
             "Primary DualSense [address:0c:27:56:4f:bd:14]"
         ]
     );
-    assert!(quick.running);
-    assert_eq!(
-        (quick.phase_label.as_str(), quick.tone.as_str()),
-        ("Running", "success")
-    );
-
     let attic = row(&rows, "attic");
-    assert_eq!(
-        (attic.kind.as_str(), attic.summary.as_str()),
-        ("full", "full form")
-    );
-    assert_eq!(attic.fields.row_count(), 0);
+    assert_eq!(attic.kind, "full");
+    assert!(fields(attic).is_empty());
     // Written by hand: a shape for its tile and how it is, and nothing
     // of its text.
     assert_eq!(attic.shape, "merge", "it names more than one pad");
@@ -349,12 +354,7 @@ fn what_the_window_holds_shows_as_unfinished_until_it_is_a_profile() {
     let den = row(&rows, "den");
     assert!(den.unfinished && !den.kept);
     assert_eq!(den.unfinished_why, "mode: this preset needs `pad`");
-    let keys: Vec<String> = den
-        .fields
-        .iter()
-        .map(|field| field.key.to_string())
-        .collect();
-    assert_eq!(keys, ["mode", "pad", "outputs", "identity", "hide"]);
+    assert_eq!(keys(den), ["hide", "identity", "mode", "outputs", "pad"]);
     let outputs = field(den, "outputs");
     assert_eq!((outputs.number, outputs.min, outputs.max), (3, 1, 8));
     assert_eq!(field(den, "pad").value_label, "");
@@ -396,7 +396,7 @@ fn app() -> AppWindow {
         .iter()
         .map(|profile| profile.name.clone())
         .collect();
-    setups::show(&app, setups::rows(&known.setups, &known.pads, &kept), "");
+    setups::show(&app, setups::rows(&known.setups, &kept), "");
     profiles::show(&app, known);
     app
 }
@@ -676,7 +676,7 @@ fn a_profile_s_pad_and_a_pad_s_profile_are_a_click_apart_and_back_returns() {
         .iter()
         .map(|profile| profile.name.clone())
         .collect();
-    setups::show(&app, setups::rows(&known.setups, &known.pads, &kept), "");
+    setups::show(&app, setups::rows(&known.setups, &kept), "");
     pads::show(
         &app,
         pads::rows(&known.pads, &known.setups, &known.profiles, &[]),
@@ -1036,11 +1036,7 @@ fn a_running_profile_that_is_deleted_keeps_a_row_to_stop_it() {
         .iter()
         .map(|profile| profile.name.clone())
         .collect();
-    setups::show(
-        &app,
-        setups::rows(&known_now.setups, &known_now.pads, &kept),
-        "",
-    );
+    setups::show(&app, setups::rows(&known_now.setups, &kept), "");
     profiles::show(&app, known_now);
     app.global::<Profiles>().invoke_select("quick".into());
     settle();

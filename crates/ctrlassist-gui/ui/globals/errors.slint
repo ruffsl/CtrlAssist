@@ -26,8 +26,8 @@ export struct ErrorState {
 export global Errors {
     /// The Pads pane: an Identify or a Forget the daemon refused.
     in-out property <ErrorState> pads;
-    /// The Setups pane: a stop, an update or a selection the daemon
-    /// refused.
+    /// A running profile, shown in the Profiles pane: a stop, an update
+    /// or a selection the daemon refused.
     in-out property <ErrorState> setups;
     /// The Profiles pane: a put, a start, a delete the daemon refused.
     in-out property <ErrorState> profiles;

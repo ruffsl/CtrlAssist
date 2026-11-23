@@ -4,9 +4,9 @@
 //! Alt+Left/Right (a top-level `FocusScope` in `main.slint`) and the
 //! mouse back/forward buttons (a winit event hook in `lib.rs`) can
 //! replay it. Each entry remembers the pane and where focus was when it
-//! was left, and the pad or the setup selected there, so going back
+//! was left, and the pad or the profile selected there, so going back
 //! shows what was being looked at: also after a click-through from one
-//! pane into another (a pad's setup, a setup's pad).
+//! pane into another (a pad's profile, a profile's pad).
 //!
 //! [`wire`] returns the [`NavHandles`] the rest of the app needs: the
 //! click-throughs record history through `go_*`, and the winit

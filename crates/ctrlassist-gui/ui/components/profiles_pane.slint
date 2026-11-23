@@ -1,16 +1,16 @@
 // The Profiles pane: the profiles the daemon keeps, and for the one
 // selected a form over its preset, rendered from the fields the daemon
-// serves. Each change applies at once. A profile only its text can
-// show (the full form) is shown as text.
+// serves. Each change applies at once. A profile written by hand (the
+// full form) shows what it names and none of its text.
 //
-// The list and the detail are the shapes of the Pads and Setups panes,
-// and so of TisVlay's; the list's "+" and the name dialogs are its
-// profile list's.
+// The list and the detail are the shapes of the Pads pane, and so of
+// TisVlay's; the list's "+" and the name dialogs are its profile
+// list's.
 
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { ListRow, Group, Chip, ThemedButton, LinkText, IconBtn, ContextualHelpButton, ConfirmDialog, NameInputDialog, InlineError, ThemedSwitch, ThemedSpinBox, Focusable, ProfileTile, FormRow, ListCaption, ToneText, ToneDot } from "../widgets.slint";
+import { ListRow, Group, Chip, ThemedButton, IconBtn, ContextualHelpButton, ConfirmDialog, NameInputDialog, InlineError, ThemedSwitch, ThemedSpinBox, Focusable, ProfileTile, FormRow, ListCaption, ToneText, ToneDot } from "../widgets.slint";
 import { Icons } from "../globals/icons.slint";
 import { Setups, SetupRow } from "../globals/setups.slint";
 import { ThemedSelect } from "../globals/select.slint";
@@ -18,7 +18,7 @@ import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { ServiceHealth } from "../globals/health.slint";
 import { Errors } from "../globals/errors.slint";
 import { Nav } from "../globals/nav.slint";
-import { Profiles, ProfileRow, ProfileFieldRow, ProfileUseRow, ProfileOutputRow } from "../globals/profiles.slint";
+import { Profiles, ProfileRow, ProfileFieldRow } from "../globals/profiles.slint";
 
 component ProfileListRow inherits ListRow {
     in property <ProfileRow> profile;
@@ -270,9 +270,6 @@ component ProfileList inherits Rectangle {
         }
     }
 }
-
-// One field of the form: its label, its control by its kind, and under
-// the control the chosen choice's sentence or the field's help.
 
 // One field of a preset: its label, its control by its kind, and a slot
 // at the row's end. For a pad that slot opens the pad, and its

@@ -99,8 +99,7 @@ fn virtual_rows(setups: &[Setup], identities: &[ctrlassist::Identity]) -> Vec<Pa
             // It goes by the name a game sees it under, as a real pad
             // does; which profile's it is, is said under that.
             let name = known.map_or_else(|| identity.clone(), |known| known.name.clone());
-            let (word, tone) =
-                status::of(&setup.name, None, false, std::slice::from_ref(setup), &[]);
+            let status = status::of(&setup.name, None, false, std::slice::from_ref(setup), &[]);
             PadRow {
                 is_virtual: true,
                 key: SharedString::from(key_of(&id)),
@@ -129,8 +128,8 @@ fn virtual_rows(setups: &[Setup], identities: &[ctrlassist::Identity]) -> Vec<Pa
                 profiles: ModelRc::new(VecModel::from(vec![PadProfileRow {
                     name: SharedString::from(setup.name.as_str()),
                     part: SharedString::from(status::capitalized(&sink.name)),
-                    word: SharedString::from(word),
-                    tone: SharedString::from(tone),
+                    word: SharedString::from(status.word()),
+                    tone: SharedString::from(status.tone()),
                 }])),
                 ..PadRow::default()
             }
@@ -181,12 +180,12 @@ fn real_rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow
                         .sources
                         .iter()
                         .find(|source| status::names(&source.pad, pad))?;
-                    let (word, tone) = status::of(name, Some(plan), *unset, setups, pads);
+                    let status = status::of(name, Some(plan), *unset, setups, pads);
                     Some(PadProfileRow {
                         name: SharedString::from(*name),
                         part: SharedString::from(status::capitalized(&source.name)),
-                        word: SharedString::from(word),
-                        tone: SharedString::from(tone),
+                        word: SharedString::from(status.word()),
+                        tone: SharedString::from(status.tone()),
                     })
                 })
                 .collect();
@@ -232,6 +231,7 @@ fn real_rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow
                     Some(false) => "No",
                     None => "",
                 }),
+                without_rumble: pad.rumble == Some(false),
                 setup: SharedString::from(pad.setup.clone().unwrap_or_default()),
                 role: SharedString::from(role),
                 hidden: pad.hidden,

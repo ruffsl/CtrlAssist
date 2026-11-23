@@ -1,8 +1,9 @@
 //! ctrlassist-gui: the settings window, in Slint.
 //!
-//! The UI itself is compiled in `ctrlassist-gui`; this crate drives it.
-//! So far that is the shell: a sidebar and its panes, empty, steered by
-//! keys alone, with couch mode for a TV across the room.
+//! The UI itself is compiled in `ctrlassist-gui`; this crate drives it:
+//! the Pads, Profiles, Settings and About panes from the daemon's and
+//! the tray's state, steered by keys alone, with couch mode for a TV
+//! across the room.
 
 pub mod about;
 mod accent;

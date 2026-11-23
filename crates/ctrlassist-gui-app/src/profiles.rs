@@ -19,6 +19,7 @@ use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
 use tracing::warn;
 
 use crate::nav::NavHandles;
+use crate::status::Status;
 use crate::{
     AppWindow, ErrorState, Errors, ProfileFieldRow, ProfileOutputRow, ProfileRow, ProfileUseRow,
     Profiles, on_ui,
@@ -96,7 +97,6 @@ fn field_row(field: &Field, value: &str, pads: &[Pad], profile: &str) -> Profile
         group: SharedString::from(field.group.as_str()),
         key: SharedString::from(field.key.as_str()),
         label: SharedString::from(field.label.as_str()),
-        help: SharedString::from(field.help.as_str()),
         value: SharedString::from(value),
         default_value: SharedString::from(field.default.as_str()),
         at_default: value == field.default,
@@ -109,7 +109,6 @@ fn field_row(field: &Field, value: &str, pads: &[Pad], profile: &str) -> Profile
             row.option_values = strings(choices.iter().map(|choice| choice.value.clone()));
             if let Some(chosen) = choices.iter().find(|choice| choice.value == value) {
                 row.value_label = SharedString::from(chosen.label.as_str());
-                row.description = SharedString::from(chosen.description.as_str());
             }
         }
         Kind::Pad => {
@@ -354,8 +353,6 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
             // A setup whose profile was deleted, or whose file a reload
             // found gone: it runs as its profile was when it started.
             let gone = kept.is_none() && held.is_none() && setup.is_some();
-            let (phase_label, tone) =
-                setup.map_or(("", ""), |setup| crate::setups::phase_text(setup.phase));
             let preset = values
                 .as_ref()
                 .and_then(|values| values.get(form::PRESET))
@@ -377,13 +374,6 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                         .collect()
                 })
                 .unwrap_or_default();
-            let summary = match &values {
-                Some(values) => match values.get("identity") {
-                    Some(identity) => format!("{preset} · {identity}"),
-                    None => preset.clone(),
-                },
-                None => "full form".to_string(),
-            };
             let plan =
                 kept.and_then(|kept| ctrlassist_protocol::profile::Profile::check(&kept.toml).ok());
             // Its pads still to choose: as picked here, or as kept.
@@ -395,8 +385,8 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 .is_empty(),
                 None => kept.is_some_and(|kept| !kept.unset.is_empty()),
             };
-            let (word, word_tone) = if why.is_some() || (kept.is_none() && !gone) {
-                ("Unfinished", "warn")
+            let status = if why.is_some() || (kept.is_none() && !gone) {
+                Status::Unfinished
             } else {
                 crate::status::of(name, plan.as_ref(), unset, &known.setups, &known.pads)
             };
@@ -419,12 +409,12 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                     _ => "",
                 },
             };
-            let note = match (setup, word) {
+            let note = match (setup, status) {
                 (Some(setup), _) => setup_note(setup),
-                (None, "Ready") => "Its pads are connected and free.".to_string(),
-                (None, "Unfinished") => "It isn't a profile yet.".to_string(),
-                (None, "Not set up") => "Choose its pads to start it.".to_string(),
-                (None, "Wrong") => "The daemon can't run it as it is written.".to_string(),
+                (None, Status::Ready) => "Its pads are connected and free.".to_string(),
+                (None, Status::Unfinished) => "It isn't a profile yet.".to_string(),
+                (None, Status::NotSetUp) => "Choose its pads to start it.".to_string(),
+                (None, Status::Wrong) => "The daemon can't run it as it is written.".to_string(),
                 (None, _) => {
                     "A pad it names is missing, or in a profile that is running.".to_string()
                 }
@@ -478,8 +468,8 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
             ProfileRow {
                 shape: SharedString::from(shape),
                 mode_label: SharedString::from(mode_label),
-                word: SharedString::from(word),
-                word_tone: SharedString::from(word_tone),
+                word: SharedString::from(status.word()),
+                word_tone: SharedString::from(status.tone()),
                 note: SharedString::from(note),
                 // A change the window holds says so before it is kept.
                 managed: values
@@ -489,7 +479,7 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                         || plan.as_ref().is_some_and(|plan| plan.managed),
                         |value| value == "true",
                     ),
-                can_start: setup.is_none() && matches!(word, "Ready" | "Waiting"),
+                can_start: setup.is_none() && matches!(status, Status::Ready | Status::Waiting),
                 setup_index: running
                     .iter()
                     .position(|running| *running == name)
@@ -511,10 +501,6 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                         .map(ToString::to_string)
                         .unwrap_or_default(),
                 ),
-                summary: SharedString::from(summary),
-                running: setup.is_some(),
-                phase_label: SharedString::from(phase_label),
-                tone: SharedString::from(tone),
                 is_default: name == DEFAULT,
                 input_fields: in_card(&fields, |group| group == form::INPUTS),
                 // The first virtual pad's row carries the identity,
@@ -536,7 +522,6 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
                 preset_fields: in_card(&fields, |group| {
                     group != form::INPUTS && group != form::OUTPUTS
                 }),
-                fields: ModelRc::new(VecModel::from(fields)),
             }
         })
         .collect()
@@ -555,7 +540,6 @@ fn render(app: &AppWindow) {
             let same = |a: &ProfileFieldRow, b: &ProfileFieldRow| {
                 a.key == b.key && a.kind == b.kind && a.read_only == b.read_only
             };
-            row.fields = crate::models::sync(&old.fields, row.fields.iter().collect(), same);
             row.input_fields =
                 crate::models::sync(&old.input_fields, row.input_fields.iter().collect(), same);
             row.output_fields =

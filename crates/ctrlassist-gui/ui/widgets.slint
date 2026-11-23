@@ -4,7 +4,6 @@
 // themed colors, not raw hex values. Add a primitive here when it's
 // needed by ≥ 2 panes; pane-specific helpers stay in their pane.
 
-import { Slider } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
 import { Clipboard } from "globals/clipboard.slint";
@@ -300,8 +299,7 @@ export component Chip inherits Focusable {
 }
 
 // =============================================================================
-// ListRow — a row of a list region: the TVs, the profiles, the wizard's
-// discovered TVs.
+// ListRow — a row of a list region: the pads, the profiles.
 // =============================================================================
 //
 // A focusable in the list column with its ring inside its bounds (the
@@ -471,97 +469,6 @@ export component ContextualHelpButton inherits Focusable {
         width: 100%;
         height: 100%;
         text: root.text;
-    }
-}
-
-// =============================================================================
-// LinkText — clickable single-line text with a tight hit area.
-// =============================================================================
-//
-// Slint's `TouchArea` doesn't auto-size to its child's preferred
-// dimensions; wrapping `Text { ... } TouchArea { ... }` in a layout
-// stretches the click area across the whole row, which makes per-name
-// click targets in a `[name · name · name]` ticker overlap. This
-// component pins a Rectangle to its inner Text's preferred size so
-// the TouchArea has a fitted hit area — useful for "Used by [name]"
-// rows and any future inline-link contexts.
-//
-// Hover / pressed states:
-//
-//   - Default: text in `text-color` (a muted tint by default —
-//     `Theme.info-text`); no underline; default cursor.
-//   - Hover:   text shifts to `hover-color` (full foreground by
-//     default — `Theme.text`); a 1 px underline appears, pinned
-//     absolutely at the baseline so the widget height stays
-//     stable; default cursor.
-//   - Pressed: text dims via `.with-alpha(0.7)` so a click visibly
-//     registers.
-//
-// Cursor stays the default arrow rather than `pointer` — the
-// `pointer` (finger) cursor is reserved for external navigation
-// (open in browser / follow URL) per KDE HIG + the project's
-// "pointer = external link only" convention. In-app navigation
-// (`Profiles.open-tv(uuid)` and similar) signals interactivity
-// through the hover underline + color shift instead.
-
-export component LinkText inherits Focusable {
-    in property <string> text;
-    /// Base color rendered in the resting state.
-    in property <brush> text-color: Theme.info-text;
-    /// Color the text shifts to under the pointer. Defaults to the
-    /// full-contrast foreground so the muted base tint pulls toward
-    /// the focal-element color on hover. Callers passing a non-
-    /// default `text-color` (e.g. a status tint) may want to set
-    /// `hover-color` in parallel for visual consistency.
-    in property <brush> hover-color: Theme.text;
-    in property <length> font-size: Design.font-helper;
-    /// Optional override for the announced label. Useful when the
-    /// link carries auxiliary state that screen readers should hear
-    /// (e.g. `@tr("{}, automated", tv.name)` for a status-tinted
-    /// span). Empty string falls back to `root.text`.
-    in property <string> accessible-label-override;
-    // Optional hover hint, driven by the same TouchArea as the underline
-    // (so both fire together — the hover isn't "hijacked"). Empty → none.
-    in property <string> tip;
-    callback clicked();
-
-    horizontal-stretch: 0;
-    vertical-stretch: 0;
-    width: inner.preferred-width;
-    height: inner.preferred-height;
-
-    accessible-label: root.accessible-label-override == ""
-        ? root.text
-        : root.accessible-label-override;
-    activated => {
-        root.clicked();
-        tip-trigger.hover-leave();
-    }
-    // The same hover that the underline reads also drives the tip.
-    hover-changed(hovering) => {
-        tip-trigger.set-hover(hovering);
-    }
-
-    inner := Text {
-        text: root.text;
-        color: root.pressed
-            ? root.text-color.with-alpha(0.7)
-            : root.hovered ? root.hover-color : root.text-color;
-        font-size: root.font-size;
-    }
-    // Hover-only underline, pinned at the baseline so the widget's
-    // overall height stays the same in resting + hovered states.
-    Rectangle {
-        x: 0;
-        y: parent.height - 1px;
-        width: inner.preferred-width;
-        height: 1px;
-        background: root.hovered ? inner.color : transparent;
-    }
-    tip-trigger := HelpTrigger {
-        width: 100%;
-        height: 100%;
-        text: root.tip;
     }
 }
 
@@ -742,7 +649,7 @@ export component ThemedButton inherits Focusable {
 // looks alien. Placement (right side, after a Cancel) and explicit
 // wording carry the destructive intent. A primary `ThemedButton` under
 // its own name, so call sites read destructive-by-name
-// (`DangerBtn { text: "Remove TV" }`).
+// (`DangerBtn { text: "Forget pad" }`).
 export component DangerBtn inherits ThemedButton {
     primary: true;
 }
@@ -791,69 +698,6 @@ export component ThemedSwitch inherits Focusable {
         border-radius: 8px;
         background: white;
         animate x { duration: 150ms; easing: ease-out; }
-    }
-}
-
-// =============================================================================
-// ThemedCheckBox — labeled check box.
-// =============================================================================
-//
-// Replaces the std-widgets `CheckBox`, same `checked` / `toggled`
-// contract as `ThemedSwitch`. The ring wraps the box and its label,
-// which are one hit area.
-
-export component ThemedCheckBox inherits Focusable {
-    in property <string> text;
-    in-out property <bool> checked;
-    callback toggled(bool);
-
-    accessible-role: checkbox;
-    accessible-checkable: true;
-    accessible-checked: root.checked;
-    accessible-label: root.text;
-    activated => {
-        root.checked = !root.checked;
-        root.toggled(root.checked);
-    }
-
-    horizontal-stretch: 0;
-    vertical-stretch: 0;
-    border-radius: Design.radius-control;
-    opacity: root.enabled ? 1.0 : Design.opacity-disabled;
-
-    HorizontalLayout {
-        spacing: Design.gap-stack;
-        VerticalLayout {
-            alignment: center;
-            Rectangle {
-                width: 18px;
-                height: 18px;
-                border-radius: 3px;
-                background: root.checked
-                    ? (root.hovered && root.enabled ? Theme.accent-pressed : Theme.accent)
-                    : (root.hovered && root.enabled ? Theme.surface2 : Theme.surface);
-                border-color: root.checked ? Theme.accent : Theme.border-strong;
-                border-width: Design.border-thin;
-                animate background, border-color { duration: 150ms; }
-                if root.checked: Path {
-                    x: 3px;
-                    y: 3px;
-                    width: 12px;
-                    height: 12px;
-                    stroke: white;
-                    stroke-width: 2px;
-                    viewbox-width: 12;
-                    viewbox-height: 12;
-                    commands: "M 2 6.5 L 5 9.5 L 10 3";
-                }
-            }
-        }
-        if root.text != "": Text {
-            text: root.text;
-            color: Theme.text;
-            font-size: Design.font-body;
-            vertical-alignment: center;
-        }
     }
 }
 
@@ -1289,165 +1133,6 @@ export component InlineError inherits Rectangle {
     }
 }
 
-
-// =============================================================================
-// OptimisticSlider — slider + readout that tracks user intent.
-// =============================================================================
-//
-// A horizontal slider paired with a numeric readout, designed for
-// values that are mirrored on a remote endpoint (the daemon → TV).
-// Convergence gating lives on the Rust side (`Reconciler<V>` /
-// `ReconcilerMap<K, V>` in `tisvlay-runtime`); this component is a thin
-// view that displays a Rust-driven `model-value` and forwards user
-// input via `committed(int)`.
-//
-// Behavior:
-//   - `model-value` is the gated authoritative value pushed by Rust
-//     after going through the reconciler. While the Rust side has a
-//     pending dispatch, intermediate ramp echoes are dropped before
-//     reaching `model-value`, so the value Slint receives is stable
-//     during a TV transition.
-//   - The Slider's `value` is two-way bound to a local `display`
-//     property so user drag updates the thumb without breaking the
-//     binding to `model-value`. The `changed model-value` handler
-//     re-syncs `display` from the model after a user drag (one
-//     writer per direction, no loop hazard).
-//   - User input fires `committed(int)`; the consumer is expected to
-//     dispatch through its `Reconciler` + daemon write path.
-//
-// Use for any value mirrored on the daemon as a numeric property and
-// driven via a "live preview" slider thumb (volume, backlight,
-// future contrast / brightness / color balance). For discrete
-// selection inputs use `ThemedSelect` (globals/select.slint) — the
-// flicker pattern doesn't apply.
-
-export component OptimisticSlider {
-    /// The row's label, for screen readers.
-    in property <string> label;
-    /// Gated authoritative value from the model (Rust drives it
-    /// through a reconciler; intermediate ramp echoes are dropped
-    /// upstream).
-    in property <int> model-value;
-    in property <int> minimum: 0;
-    in property <int> maximum: 100;
-    /// Slider responds to user input. Independent from `value-visible`
-    /// because some values (volume) keep showing a number even when
-    /// muted disables drag.
-    in property <bool> enabled: true;
-    /// Readout shows the numeric value (else "—") and uses normal vs
-    /// faint text color.
-    in property <bool> value-visible: true;
-    /// Fired when the user changes the value, rounded to int. The
-    /// consumer is expected to dispatch the write through its
-    /// reconciler + daemon write path.
-    callback committed(int);
-
-    /// The detail row the slider sits in (`Nav.next-row-id`); 0 for none.
-    in property <int> nav-row: 0;
-
-    // Local display value bound two-way to the Slider so user drag
-    // updates the thumb. Re-synced from `model-value` whenever Rust
-    // pushes a new value (the user-side `<=>` write breaks the
-    // initial-value binding; this restores it).
-    in-out property <float> display: model-value;
-    changed model-value => { display = model-value; }
-
-    // Couch mode: the focused slider is its row's stop first, Left and
-    // Right walking the row (the shell takes them while `Nav.value-idle`),
-    // and Return enters it, Left and Right then adjusting the value
-    // until Return or Escape. On a desktop arrows adjust at once.
-    property <bool> couch: Couch.active;
-    property <bool> entered;
-    // `Nav.focus-seq` as of this slider's focus-in: whether it's still
-    // the last stop to have reported when it loses focus.
-    property <int> seen-seq: -1;
-    function sync-idle() {
-        Nav.value-idle = root.couch && slider.has-focus && !root.entered;
-    }
-
-    HorizontalLayout {
-        spacing: Design.gap-row;
-
-        // The row stretches the slider to its height; the wrapper keeps
-        // the slider's own and sits in the middle, level with the label.
-        VerticalLayout {
-            horizontal-stretch: 1;
-            alignment: center;
-
-            // The slider keeps fluent's look (its focused state is the
-            // "pressed" one); the shared ring around it is what reads at
-            // a distance, and a soft fill says it's entered.
-            Rectangle {
-                vertical-stretch: 0;
-                height: slider.preferred-height;
-                border-radius: Design.radius-pill;
-                background: root.entered ? Theme.accent-soft : transparent;
-                // The keys the slider leaves (Return, Escape) bubble here.
-                FocusScope {
-                    focus-on-tab-navigation: false;
-                    focus-on-click: false;
-                    key-pressed(event) => {
-                        if (root.couch && slider.has-focus) {
-                            if (event.text == Key.Return) {
-                                root.entered = !root.entered;
-                                root.sync-idle();
-                                return accept;
-                            }
-                            if (event.text == Key.Escape && root.entered) {
-                                root.entered = false;
-                                root.sync-idle();
-                                return accept;
-                            }
-                        }
-                        reject
-                    }
-                    // No height of its own: the wrapper takes the slider's
-                    // preferred height, and a percentage here would size both
-                    // to nothing.
-                    slider := Slider {
-                        accessible-label: root.label;
-                        width: 100%;
-                        minimum: root.minimum;
-                        maximum: root.maximum;
-                        value <=> root.display;
-                        enabled: root.enabled;
-                        changed(v) => { root.committed(round(v)); }
-                        changed has-focus => {
-                            root.entered = false;
-                            if (self.has-focus) {
-                                Nav.stop-focused-at(2, root.nav-row, "", root.absolute-position.x, root.absolute-position.y, root.height);
-                                root.seen-seq = Nav.focus-seq;
-                                root.sync-idle();
-                            } else if (Nav.focus-seq == root.seen-seq) {
-                                // Change handlers run newest first, so the
-                                // stop gaining focus has usually reported by
-                                // now and the flag is its to set; clear it
-                                // only while nobody has.
-                                root.sync-idle();
-                            }
-                        }
-                    }
-                }
-                FocusRing {
-                    shown: slider.has-focus && Nav.focus-visible;
-                    host-width: parent.width;
-                    host-height: parent.height;
-                    host-radius: Design.radius-pill;
-                }
-            }
-        }
-
-        Text {
-            width: Design.width-readout-col;
-            text: root.value-visible ? round(root.display) : "—";
-            color: root.value-visible ? Theme.text : Theme.text-faint;
-            font-size: Design.font-body;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-        }
-    }
-}
-
 // =============================================================================
 // ThemedSpinBox — themed integer entry with up/down steppers.
 // =============================================================================
@@ -1459,7 +1144,7 @@ export component OptimisticSlider {
 // (surface2 fill, accent focus ring, `size-input` height); width
 // behavior is `min-width: 0` + stretch, as the std one's.
 //
-// Value model (mirrors `OptimisticSlider` above):
+// Value model:
 //   - `value` is the gated authoritative value pushed by Rust (bound to
 //     the row's `number-value`). The daemon echoes an edit back as an
 //     in-place `set_row_data` on the SAME row, so committing per
@@ -1523,8 +1208,8 @@ export component ThemedSpinBox inherits Rectangle {
     in property <int> step: 1;
     in property <bool> enabled: true;
     /// Fired ONLY on commit (blur / Enter / stepper), rounded to int —
-    /// never per keystroke. Named `committed` (not `edited`) to match
-    /// `OptimisticSlider`; in this codebase `edited` means per-keystroke.
+    /// never per keystroke. Named `committed`, not `edited`, which in
+    /// this codebase means per keystroke.
     callback committed(int);
 
     // Local optimistic mirror. Re-synced from `value` on the daemon
@@ -1811,7 +1496,7 @@ export component Group {
         // action IconBtn, so a title with actions and one without are the
         // same height — the card body never shifts when actions are added,
         // and cards stay box-aligned across panes. Cards that need actions
-        // (e.g. the TVs pane CONFIG header) mirror this band structure.
+        // (a profile's cards) mirror this band structure.
         HorizontalLayout {
             min-height: Design.size-card-header;
             padding-left: 2px;
@@ -1858,7 +1543,7 @@ export component Group {
 }
 
 // =============================================================================
-// SpinnerArc — track ring + rotating top-quarter arc (`tv-spin`).
+// SpinnerArc — track ring + rotating top-quarter arc.
 // =============================================================================
 //
 // A still gray ring with one accent-colored quarter at the top,
@@ -1902,53 +1587,10 @@ export component SpinnerArc inherits Rectangle {
 }
 
 // =============================================================================
-// PulseDot — radar-ping liveness indicator (10×10).
-// =============================================================================
-//
-// A solid 6×6 dot in front of an animated
-// 10×10 disc that scales 0.6 → 2.4 while fading 0.7 → 0 on a 1.4s
-// ease-out loop. Communicates ambient liveness ("the system is
-// listening") without consuming attention.
-
-export component PulseDot inherits Rectangle {
-    width: 10px;
-    height: 10px;
-    horizontal-stretch: 0;
-    vertical-stretch: 0;
-
-    // Radar ring — scales out from 0.6× to 2.4× while fading.
-    // `transform-scale` extends the rendering beyond the 10×10
-    // layout bounds; that's intentional (the ring radiates).
-    Rectangle {
-        x: 0;
-        y: 0;
-        width: 10px;
-        height: 10px;
-        border-radius: 5px;
-        background: Theme.accent;
-        // Ease-out approximation: t * (2 - t) gives natural decay.
-        property <float> phase: (animation-tick() / 1400ms).mod(1);
-        property <float> eased: phase * (2.0 - phase);
-        transform-scale: 0.6 + 1.8 * eased;
-        opacity: 0.7 * (1.0 - eased);
-    }
-
-    // Solid inner dot — still, on top of the radar ring.
-    Rectangle {
-        x: 2px;
-        y: 2px;
-        width: 6px;
-        height: 6px;
-        border-radius: 3px;
-        background: Theme.accent;
-    }
-}
-
-// =============================================================================
 // CopyBtn — square ghost button that copies a string to the clipboard.
 // =============================================================================
 //
-// Used next to read-only identifier values (TV ID, serial, MAC, …)
+// Used next to read-only identifier values (a pad's ID, model, address)
 // where the user might want to copy the value into another tool.
 // Glyph comes from `Clipboard.copy-icon` (Rust resolves it against
 // the freedesktop `edit-copy` name); when missing, the button still
@@ -1961,7 +1603,7 @@ export component CopyBtn inherits Focusable {
     in property <string> value;
     /// Noun the success toast displays — typically forwarded from
     /// the wrapping `LabeledRow`'s `@tr()`-translated label
-    /// ("TV ID", "MAC", "serial", …). Empty string falls
+    /// ("Pad ID", "Address", …). Empty string falls
     /// back to the generic "Copied to clipboard." toast.
     in property <string> label;
 
@@ -2001,12 +1643,11 @@ export component CopyBtn inherits Focusable {
 //
 // Same 24px ghost shape as `CopyBtn`, but the icon is supplied by
 // the caller rather than tied to a specific role. Used for the
-// TVs-pane INFO group's edit / save / cancel triplet (pencil →
-// checkmark + X). Callers wire each instance to its own icon
-// (loaded into the `Icons` global at startup) and `clicked`
-// callback. `enabled = false` dims the glyph and disables the
-// pointer interaction so disabled-Save during an in-flight write
-// reads as inert without changing the layout.
+// pencils that open a pad or a profile, and a field's reset. Callers
+// wire each instance to its own icon (loaded into the `Icons` global
+// at startup) and `clicked` callback. `enabled = false` dims the
+// glyph and disables the pointer interaction, so a button that can't
+// act now reads as inert without changing the layout.
 //
 // `loading = true` swaps the icon for a `SpinnerArc` in the same
 // slot. Standard "the thing I clicked is processing" pattern
@@ -2019,7 +1660,7 @@ export component IconBtn inherits Focusable {
     in property <bool> loading: false;
     /// `framed: false` (default) → ghost style: transparent
     /// background, hover-only highlight, no border. Used by the
-    /// TVs-pane edit/save/cancel triplet.
+    /// pencils and resets in the panes.
     /// `framed: true` → matches `UriBtn`'s surface fill + border, so
     /// an icon-only button can sit alongside text buttons in a row
     /// without looking like an empty slot. Used by the About-pane

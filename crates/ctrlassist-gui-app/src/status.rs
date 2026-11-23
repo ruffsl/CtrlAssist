@@ -5,9 +5,60 @@
 use ctrlassist::{Pad, Phase, Profile, Setup};
 use ctrlassist_protocol::profile::{PadRef, Plan};
 
-/// A word and the tone it is shown in: a chip's tones, with `neutral`
-/// for the faint one.
-pub type Word = (&'static str, &'static str);
+/// How a profile is. Logic goes by this, and only [`word`](Self::word)
+/// is shown, so a translated word can't change what the window does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    /// Its setup is on its way to running.
+    Starting,
+    /// Its setup runs, with its virtual pads there.
+    Running,
+    /// Its setup waits for a pad that left.
+    Held,
+    /// Its setup stopped working; Stop clears it.
+    Failed,
+    /// Its pads are still to choose.
+    NotSetUp,
+    /// The daemon can't run it as it is written.
+    Wrong,
+    /// Every pad it names is connected and in no setup.
+    Ready,
+    /// A pad it names is away, or in a setup.
+    Waiting,
+    /// A change the window holds isn't a profile yet.
+    Unfinished,
+}
+
+impl Status {
+    /// The word a person reads.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Starting => "Starting",
+            Self::Running => "Running",
+            Self::Held => "Held",
+            Self::Failed => "Failed",
+            Self::NotSetUp => "Not set up",
+            Self::Wrong => "Wrong",
+            Self::Ready => "Ready",
+            Self::Waiting => "Waiting",
+            Self::Unfinished => "Unfinished",
+        }
+    }
+
+    /// The tone it is shown in: a chip's tones, with `neutral` for the
+    /// faint one.
+    #[must_use]
+    pub fn tone(self) -> &'static str {
+        match self {
+            Self::Running => "success",
+            Self::Held | Self::Unfinished => "warn",
+            Self::Failed | Self::Wrong => "danger",
+            Self::Starting | Self::Ready => "info",
+            Self::NotSetUp | Self::Waiting => "neutral",
+        }
+    }
+}
 
 /// Whether `pad` is one `wanted` means.
 #[must_use]
@@ -67,29 +118,30 @@ pub fn plan_of(profile: &Profile) -> Option<(Plan, bool)> {
 /// set up while its pads are still to choose, ready when every pad it
 /// names is connected and in no setup, and waits for a pad otherwise.
 #[must_use]
-pub fn of(name: &str, plan: Option<&Plan>, unset: bool, setups: &[Setup], pads: &[Pad]) -> Word {
+pub fn of(name: &str, plan: Option<&Plan>, unset: bool, setups: &[Setup], pads: &[Pad]) -> Status {
     if let Some(setup) = setups.iter().find(|setup| setup.name == name) {
         return match setup.phase {
-            Phase::Running => ("Running", "success"),
-            Phase::Held => ("Held", "warn"),
-            Phase::Failed => ("Failed", "danger"),
-            _ => ("Starting", "info"),
+            Phase::Running => Status::Running,
+            Phase::Held => Status::Held,
+            Phase::Failed => Status::Failed,
+            // Starting, and any phase a later daemon adds.
+            _ => Status::Starting,
         };
     }
     if unset {
-        return ("Not set up", "neutral");
+        return Status::NotSetUp;
     }
     let Some(plan) = plan else {
-        return ("Wrong", "danger");
+        return Status::Wrong;
     };
     let free = |wanted: &PadRef| {
         pads.iter()
             .any(|pad| names(wanted, pad) && pad.connected && pad.setup.is_none())
     };
     if plan.sources.iter().all(|source| free(&source.pad)) {
-        ("Ready", "info")
+        Status::Ready
     } else {
-        ("Waiting", "neutral")
+        Status::Waiting
     }
 }
 

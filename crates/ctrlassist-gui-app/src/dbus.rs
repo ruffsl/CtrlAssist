@@ -3,10 +3,9 @@
 //! Two interfaces are served at `/io/github/ctrlassist/Gui` on the user bus
 //! under the well-known name `io.github.ctrlassist.Gui`:
 //!
-//! - `io.github.ctrlassist.Gui1` — version + config_path introspection.
-//!   Mirrors the version/path fields of the daemon's and session
-//!   service's `info` rpcs so external tooling can probe peers
-//!   uniformly.
+//! - `io.github.ctrlassist.Gui1` — version + config_path introspection,
+//!   as the daemon's and the tray's `info` rpcs say theirs, so external
+//!   tooling can ask each part the same way.
 //! - `org.freedesktop.Application` — single-instance activation per
 //!   the freedesktop Desktop Entry D-Bus spec. Launchers (KRunner,
 //!   the Plasma app menu, GNOME Shell, the tray's "Settings"
@@ -181,9 +180,8 @@ async fn proxy_activate(connection: &zbus::Connection) -> Result<()> {
 }
 
 // ----------------------------------------------------------------
-// io.github.ctrlassist.Gui1 — peer introspection. Mirrors the version/path
-// fields of the other peers' `info` rpcs; external tooling probes
-// them uniformly across all four peers (daemon, session, tray, GUI).
+// io.github.ctrlassist.Gui1 — the window's release and file, as the
+// daemon's and the tray's `info` rpcs say theirs.
 // ----------------------------------------------------------------
 
 pub(crate) struct GuiService {
@@ -204,9 +202,8 @@ impl GuiService {
         env!("CARGO_PKG_VERSION")
     }
 
-    /// Resolved on-disk path of the GUI's config file. Empty
-    /// string until the GUI gains persistent settings (window
-    /// state, theme overrides, etc.).
+    /// Where the window keeps its preferences, `gui.toml`; empty when
+    /// it wasn't given one.
     #[zbus(property(emits_changed_signal = "const"))]
     fn config_path(&self) -> String {
         self.config_path

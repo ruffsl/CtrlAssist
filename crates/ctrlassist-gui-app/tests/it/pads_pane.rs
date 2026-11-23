@@ -159,6 +159,15 @@ fn rows_put_connected_pads_first_and_say_what_each_is() {
     };
     let row = &rows(&[odd], &[], &[], &[])[0];
     assert_eq!((row.connection.as_str(), row.rumble.as_str()), ("", ""));
+    // What the pane goes by is apart from the word it shows.
+    assert!(!row.without_rumble && !dualsense.without_rumble);
+    let still = Pad {
+        rumble: Some(false),
+        ..pad("port:usb-2/input0", "Still", true, None)
+    };
+    let row = &rows(&[still], &[], &[], &[])[0];
+    assert!(row.without_rumble);
+    assert_eq!(row.rumble, "No");
 }
 
 fn app() -> AppWindow {

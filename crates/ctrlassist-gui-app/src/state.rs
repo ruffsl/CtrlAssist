@@ -146,7 +146,6 @@ impl Snapshot {
             app,
             crate::setups::rows(
                 &self.setups,
-                &self.pads,
                 &self
                     .profiles
                     .iter()
