@@ -89,14 +89,27 @@ pub fn wanted(value: &str, pads: &[Pad]) -> Option<PadRef> {
     PadRef::parse(value)
 }
 
+/// The pads `parts` name exactly: each is its part's, and no part named
+/// by model takes it.
+fn named_exactly<'a>(parts: &[(&str, &'a PadRef)]) -> Vec<&'a str> {
+    parts
+        .iter()
+        .filter_map(|(_, wanted)| match wanted {
+            PadRef::Exact(id) => Some(id.as_str()),
+            PadRef::Model(..) => None,
+        })
+        .collect()
+}
+
 /// The pads a profile's `parts`, each a part's name and the pad it
 /// names, would have if it started now, by part, as the daemon binds
-/// them: in the order of the parts' names, one named by its id is that
-/// pad, if it is known; one named by model is the first pad of the model
-/// that is connected, in no setup, and not taken by a part before it. A
-/// part with no pad to have isn't there. The daemon takes the first of a
-/// model to have connected, which it doesn't publish: the order here is
-/// the one it publishes the pads in, by id. A pad of the setup `own`
+/// them, in two passes: first each part named by its id has that pad, if
+/// it is known; then each part named by model, in the order of the
+/// parts' names, has the first pad of the model that is connected, in no
+/// setup, named by its id by no part, and not taken by a part before it.
+/// A part with no pad to have isn't there. The daemon takes the first of
+/// a model to have connected, which it doesn't publish: the order here
+/// is the one it publishes the pads in, by id. A pad of the setup `own`
 /// counts as free, as a restart of that setup frees it. The tray binds
 /// them the same way.
 #[must_use]
@@ -105,19 +118,28 @@ pub fn bind<'a>(
     parts: &[(&str, &PadRef)],
     own: Option<&str>,
 ) -> BTreeMap<String, &'a Pad> {
+    let named = named_exactly(parts);
     let mut parts = parts.to_vec();
     parts.sort_by_key(|(name, _)| *name);
     let mut bound: BTreeMap<String, &Pad> = BTreeMap::new();
+    for (name, wanted) in &parts {
+        if let PadRef::Exact(id) = wanted
+            && let Some(pad) = pads.iter().find(|pad| pad.id == *id)
+        {
+            bound.insert((*name).to_string(), pad);
+        }
+    }
     for (name, wanted) in parts {
-        let pad = match wanted {
-            PadRef::Exact(id) => pads.iter().find(|pad| pad.id == *id),
-            PadRef::Model(..) => pads.iter().find(|pad| {
-                names(wanted, pad)
-                    && pad.connected
-                    && (pad.setup.is_none() || pad.setup.as_deref() == own)
-                    && !bound.values().any(|taken| taken.id == pad.id)
-            }),
-        };
+        if matches!(wanted, PadRef::Exact(_)) {
+            continue;
+        }
+        let pad = pads.iter().find(|pad| {
+            names(wanted, pad)
+                && pad.connected
+                && (pad.setup.is_none() || pad.setup.as_deref() == own)
+                && !named.contains(&pad.id.as_str())
+                && !bound.values().any(|taken| taken.id == pad.id)
+        });
         if let Some(pad) = pad {
             bound.insert(name.to_string(), pad);
         }
@@ -127,7 +149,8 @@ pub fn bind<'a>(
 
 /// The pad each of the profile `profile`'s `parts` has, by part: one
 /// named by model, while `setup` runs the profile, the pad the setup has
-/// for it; otherwise the pad a start would take now, as [`bind`] has it.
+/// for it unless another part names that pad by its id; otherwise the
+/// pad a start would take now, as [`bind`] has it.
 #[must_use]
 pub fn taken<'a>(
     pads: &'a [Pad],
@@ -138,6 +161,7 @@ pub fn taken<'a>(
     let Some(setup) = setup else {
         return taken;
     };
+    let named = named_exactly(parts);
     for (name, wanted) in parts {
         let has = setup
             .sources
@@ -145,7 +169,7 @@ pub fn taken<'a>(
             .find(|source| source.name == *name)
             .and_then(|source| source.pad.as_deref())
             .and_then(|id| pads.iter().find(|pad| pad.id == id))
-            .filter(|pad| names(wanted, pad));
+            .filter(|pad| names(wanted, pad) && !named.contains(&pad.id.as_str()));
         if let (PadRef::Model(..), Some(pad)) = (wanted, has) {
             taken.insert((*name).to_string(), pad);
         }
@@ -304,5 +328,69 @@ mod tests {
         let bound = bind(&two, &parts, None);
         assert_eq!(bound["assist"].id, "address:aa");
         assert_eq!(bound["primary"].id, "address:bb");
+    }
+
+    /// A part named by model takes no pad another part names by its id,
+    /// though it comes first in order: the daemon binds the parts named
+    /// by id first. So the profile is ready with a second pad of the
+    /// model, and waits without one.
+    #[test]
+    fn a_part_named_by_model_leaves_the_pads_named_by_id() {
+        let toml =
+            "mode = \"toggle\"\nassist = \"model:054c:0ce6\"\nprimary = \"serial:054c:0ce6:aa\"\n";
+        let plan = ctrlassist_protocol::profile::Profile::check(toml).expect("a profile");
+        let two = [
+            pad("serial:054c:0ce6:aa", None),
+            pad("serial:054c:0ce6:bb", None),
+        ];
+        let parts: Vec<(&str, &PadRef)> = plan
+            .sources
+            .iter()
+            .map(|source| (source.name.as_str(), &source.pad))
+            .collect();
+        let bound = bind(&two, &parts, None);
+        assert_eq!(bound["assist"].id, "serial:054c:0ce6:bb");
+        assert_eq!(bound["primary"].id, "serial:054c:0ce6:aa");
+        assert_eq!(of("couch", Some(&plan), false, &[], &two), Status::Ready);
+        let one = [pad("serial:054c:0ce6:aa", None)];
+        assert!(!bind(&one, &parts, None).contains_key("assist"));
+        assert_eq!(of("couch", Some(&plan), false, &[], &one), Status::Waiting);
+    }
+
+    /// While a setup runs, a part named by model shows the pad the setup
+    /// has for it, but never one another part names by its id: taking
+    /// the change, the daemon gives that pad up.
+    #[test]
+    fn a_running_part_named_by_model_gives_up_a_pad_named_by_id() {
+        let model = PadRef::Model(0x054c, 0x0ce6);
+        let exact = PadRef::Exact("serial:054c:0ce6:aa".to_string());
+        let parts = [("assist", &model), ("primary", &exact)];
+        let pads = [
+            pad("serial:054c:0ce6:aa", Some("couch")),
+            pad("serial:054c:0ce6:bb", Some("couch")),
+        ];
+        let setup = Setup {
+            name: "couch".to_string(),
+            start: 1,
+            phase: Phase::Running,
+            reason: None,
+            sources: [
+                ("assist", "serial:054c:0ce6:aa"),
+                ("primary", "serial:054c:0ce6:bb"),
+            ]
+            .into_iter()
+            .map(|(name, pad)| ctrlassist::SetupSource {
+                name: name.to_string(),
+                pad: Some(pad.to_string()),
+                present: true,
+            })
+            .collect(),
+            sinks: Vec::new(),
+            nodes: Vec::new(),
+            stale: false,
+        };
+        let taken = taken(&pads, &parts, Some(&setup));
+        assert!(!taken.contains_key("assist"), "{taken:?}");
+        assert_eq!(taken["primary"].id, "serial:054c:0ce6:aa");
     }
 }

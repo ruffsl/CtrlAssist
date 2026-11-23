@@ -32,6 +32,7 @@ Look at the tray menu's **Hiding:** line, just above **Settings**, or the daemon
 
 - **Hiding: service** means controllers are truly hidden while an arrangement runs. If the game still shows one, it was probably started before the arrangement; restart the game.
 - **Hiding: grab** means the hiding service hasn't been reachable, so controllers are only grabbed. Most games then see just the virtual controller, but a program that reads controllers its own way still sees the real ones. Steam does this for PlayStation controllers. Check `systemctl status ctrlassist-hider.socket`. The daemon looks for the service again each time an arrangement starts, so once the service is there, stop and start the arrangement. While controllers are only grabbed, CtrlAssist also asks Steam to leave their models alone, by adding them to Steam's controller blacklist for as long as the arrangement runs; Steam takes that up only when it next starts, so restart Steam after starting the arrangement.
+- **Hiding: looking for the service…** means the daemon has only just started and hasn't heard from the hiding service yet. It changes to `service` or `grab` as soon as it has; an arrangement started meanwhile waits for that answer.
 
 ## "no virtual pad can be made"
 

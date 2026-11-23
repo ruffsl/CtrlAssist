@@ -836,7 +836,7 @@ fn a_pick_moves_the_other_parts_as_the_shared_cases_say() {
         }
         ran += 1;
     }
-    assert_eq!(ran, 10, "every case was read");
+    assert_eq!(ran, 12, "every case was read");
 }
 
 /// Picking the pad another part has makes the two change places, so two

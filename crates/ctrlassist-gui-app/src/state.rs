@@ -27,9 +27,10 @@ pub struct Snapshot {
     pub hydrated: bool,
     /// Its release, once it has said.
     pub version: Option<String>,
-    /// Whether the hiding service hides setups' pads, or they are only
-    /// grabbed; unknown until the daemon's own state has arrived.
-    pub hidden: Option<bool>,
+    /// How the daemon hides setups' pads: by the hiding service, only
+    /// grabbed, or not known while it is still looking for the service;
+    /// unknown until the daemon's own state has arrived.
+    pub hiding: Option<Hiding>,
     /// The hiding service's release, as the daemon passes it on; none
     /// with no service, or from one too old to say.
     pub hider: Option<String>,
@@ -67,7 +68,7 @@ impl Snapshot {
             available: daemon.is_available(),
             hydrated: daemon.is_hydrated(),
             version: daemon.service_info().map(|info| info.version),
-            hidden: state.as_ref().map(|state| state.hiding == Hiding::Service),
+            hiding: state.as_ref().map(|state| state.hiding),
             hider: state.as_ref().and_then(|state| state.hider_version.clone()),
             config: state
                 .as_ref()
@@ -99,13 +100,20 @@ impl Snapshot {
     }
 
     /// The hiding service's health, as the daemon finds it: absent with
-    /// no daemon to ask, and while the daemon hasn't said; judged by
-    /// its release where it says one.
+    /// no daemon to ask, while the daemon hasn't said, and where pads
+    /// are only grabbed; being looked for while the daemon, just
+    /// started, is still looking for it; and judged by its release where
+    /// it says one.
     #[must_use]
     pub fn hider_health(&self) -> ServiceHealth {
-        match (self.available, self.hidden) {
-            (true, Some(true)) => health(true, self.hider.as_deref()),
-            _ => ServiceHealth::Offline,
+        match (self.available, self.hiding) {
+            (true, Some(Hiding::Service)) => health(true, self.hider.as_deref()),
+            (true, Some(Hiding::Looking)) => ServiceHealth::Looking,
+            (true, Some(Hiding::Grab) | None) | (false, _) => ServiceHealth::Offline,
+            // A mechanism from a later release, which this window can't
+            // tell the service's health by. The protocol marks the enum
+            // non-exhaustive, so this arm can't be left out.
+            (true, Some(_)) => ServiceHealth::Offline,
         }
     }
 

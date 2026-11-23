@@ -91,7 +91,9 @@ impl View {
     /// What happened between `before` and this view that is worth a
     /// notification: a setup started or stopped, held, running again or
     /// failed; a setup started whose pads are only grabbed or can't
-    /// rumble; a setup restarted; and a pad that no setup uses
+    /// rumble, or found only grabbed once the daemon, which was still
+    /// looking for the hiding service as it started, finds the service
+    /// absent; a setup restarted; and a pad that no setup uses
     /// connecting or leaving. A restart seen over more than two views,
     /// which takes [`news_for`](Self::news_for)'s bookkeeping to tell, is
     /// said as a stop and a start.
@@ -200,6 +202,20 @@ impl View {
             entry.stopped(setup.start, said, &mut news);
         }
         asked.retain(|_, asked| !asked.is_empty());
+        // A setup seen started while the daemon was still looking for
+        // the hiding service: that its pads are only grabbed is said once
+        // the daemon has found the service absent.
+        if before.looking() && self.grabbed() {
+            let started = |phase: Phase| matches!(phase, Phase::Running | Phase::Held);
+            for setup in &self.setups {
+                let seen = before
+                    .setup(&setup.name)
+                    .is_some_and(|was| was.start == setup.start && started(was.phase));
+                if seen && started(setup.phase) {
+                    news.push(grabbed_news(&setup.name));
+                }
+            }
+        }
         for pad in &self.pads {
             let was = before.pad(&pad.id);
             // A setup speaks for its pads: held, and running again.
@@ -228,6 +244,30 @@ impl View {
         news
     }
 
+    /// Whether the daemon has found the hiding service absent, so that a
+    /// setup's pads are only grabbed. Not while it is still looking for
+    /// the service, as it does for a moment after it starts: that is no
+    /// sign the service is absent.
+    fn grabbed(&self) -> bool {
+        self.daemon
+            .as_ref()
+            .is_some_and(|daemon| match daemon.hiding {
+                Hiding::Grab => true,
+                Hiding::Service | Hiding::Looking => false,
+                // A mechanism from a later release, which this tray knows
+                // nothing to warn of. The protocol marks the enum
+                // non-exhaustive, so this arm can't be left out.
+                _ => false,
+            })
+    }
+
+    /// Whether the daemon is still looking for the hiding service.
+    fn looking(&self) -> bool {
+        self.daemon
+            .as_ref()
+            .is_some_and(|daemon| daemon.hiding == Hiding::Looking)
+    }
+
     /// What to say of `setup` starting: that it did, then what it
     /// couldn't do for its pads. Started in place of another start, a
     /// `restart`, it finds what the start before it found, said then.
@@ -251,17 +291,8 @@ impl View {
             },
             GOOD,
         )];
-        if self
-            .daemon
-            .as_ref()
-            .is_some_and(|daemon| daemon.hiding == Hiding::Grab)
-        {
-            news.push(toast(
-                Category::SetupTrouble,
-                format!("{name}: its pads are grabbed, not hidden"),
-                "The hiding service isn't there. A program that reads a pad some other way, as Steam reads a PlayStation pad, still sees it beside the virtual pad.",
-                WARNING,
-            ));
+        if self.grabbed() {
+            news.push(grabbed_news(name));
         }
         let silent: Vec<&str> = setup
             .sources
@@ -311,6 +342,17 @@ fn failed_news(setup: &Setup) -> Toast {
             setup.reason.as_deref().unwrap_or("It stopped working")
         ),
         ERROR,
+    )
+}
+
+/// What the setup `name`'s notification says when its pads are only
+/// grabbed.
+fn grabbed_news(name: &str) -> Toast {
+    toast(
+        Category::SetupTrouble,
+        format!("{name}: its pads are grabbed, not hidden"),
+        "The hiding service isn't there. A program that reads a pad some other way, as Steam reads a PlayStation pad, still sees it beside the virtual pad.",
+        WARNING,
     )
 }
 
@@ -1286,6 +1328,34 @@ pub(crate) mod tests {
         assert_eq!(
             summaries(&news),
             ["couch started", "couch: no rumble on 8BitDo Pro 2"]
+        );
+    }
+
+    /// While the daemon is still looking for the hiding service, a setup
+    /// starting gives no warning that its pads are only grabbed: that is
+    /// no sign the service is absent. Once the daemon finds it absent the
+    /// warning is said, once; found there, nothing is.
+    #[test]
+    fn a_setup_started_while_the_daemon_looks_is_warned_of_only_once_it_finds() {
+        let none = view(None, Hiding::Looking);
+        let started = view(Some(Phase::Running), Hiding::Looking);
+        assert_eq!(summaries(&started.news(&none)), ["couch started"]);
+        let grabbed = view(Some(Phase::Running), Hiding::Grab);
+        let news = grabbed.news(&started);
+        assert_eq!(
+            summaries(&news),
+            ["couch: its pads are grabbed, not hidden"]
+        );
+        assert_eq!(news[0].category, Category::SetupTrouble);
+        assert!(grabbed.news(&grabbed).is_empty());
+        let hidden = view(Some(Phase::Running), Hiding::Service);
+        assert!(hidden.news(&started).is_empty());
+        // Nothing running, nothing to warn of.
+        assert!(view(None, Hiding::Grab).news(&none).is_empty());
+        // Started as the daemon finds it absent: said once, by the start.
+        assert_eq!(
+            summaries(&grabbed.news(&none)),
+            ["couch started", "couch: its pads are grabbed, not hidden"]
         );
     }
 
