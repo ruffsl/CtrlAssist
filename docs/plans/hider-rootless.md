@@ -46,7 +46,7 @@ A marker is a file directly in the marker directory, whose name says how the rul
 | `hid-<HID device>` | the pad has a HID device | all its nodes, through the HID device's kernel name (`%b` after `SUBSYSTEMS=="hid"`) |
 | `uniq-<HID_ID>-<HID_UNIQ>` | the HID device's own `HID_UNIQ` is set and well-formed | hidraw nodes, through `IMPORT{parent}` |
 | `port-<USB interface>` | on USB, with no address and no serial | event, js and mouse nodes under a USB interface of that kernel name (`%b` after `SUBSYSTEMS=="usb", KERNELS=="?*:?*"`), such as `1-2:1.0` |
-| `raw-<USB interface>` | the pad has a HID device on USB, whatever else it has | hidraw nodes under a USB interface of that name |
+| `raw-<USB interface>-<HID_ID>` | the pad has a HID device on USB, whatever else it has | hidraw nodes under a USB interface of that name whose HID device is of that bus, vendor and product |
 
 What this means for each kind of pad:
 
@@ -96,7 +96,7 @@ A pad whose event node has no HID device and no USB interface with a driver (a u
 ### Reconcile and the sweep
 
 - **Reconcile,** when the service starts and from the unit's `ExecStopPost=` however it stopped, deletes every marker, then shows again every pad the rule has hidden.
-- **The sweep:** a pad is hidden by the rule exactly when its event node belongs to the service's group, which nothing else sets. After a pad is shown again, and at reconcile, the service sends the re-bind request for each such pad that no hidden pad's record holds and no remaining marker names. That is how a forged twin, a clone or a pad plugged into a hidden pad's port comes back. It doesn't wait for those re-binds.
+- **The sweep:** a pad is hidden by the rule exactly when its event node belongs to the service's group, which nothing else sets. A raw node can be hidden with its pad's event node not (one of the model of a pad hidden, with another address or serial, plugged into its port while it was away), and its group can't say so, a PlayStation pad's raw node having the group hidden or not; so the rule sets `CTRLASSIST_HIDDEN=1` on every node it hides, which udev keeps in its record of the node until its next event. After a pad is shown again, and at reconcile, the service sends the re-bind request for the HID device or USB interface of each such pad and raw node that no hidden pad's record holds and no remaining marker names. That is how a forged twin, a clone or a pad plugged into a hidden pad's port comes back: the re-bind makes its nodes afresh as the stock rules make them. The raw node's own `uevent` file is root's, so a change event of its own isn't the service's to send; a HID device of a pad's model, which is all a `raw-` marker names, has had its `uevent` file given to the group as a pad's.
 
 ### The unit's sandbox
 
@@ -204,4 +204,5 @@ What only hardware can show, after the VM checks:
   - **The activation variables are not unset,** as H-10's entry above said they were; nothing the service runs could inherit them.
 - **After the third review ([review.md](review.md), its "Third review, of the second's fixes"),** these depart from the design as written, each said in place above:
   - **A recorded device is one enumeration of it,** not a place in sysfs: a pad on USB with no HID device is recorded by its USB interface, whose place is its port's, so whatever was next plugged into that port passed for it, and `reopen` skipped the check that the caller is in front and the search by vendor and product. The USB device's `USEC_INITIALIZED` is recorded with it, not its `devnum`, which wraps after 127 enumerations on a bus.
+  - **A `raw-` marker names the model as well as the port,** `raw-<USB interface>-<HID_ID>`: by the port alone, a keyboard, a headset or a security key later plugged into a hidden pad's port had its raw node hidden, and nothing showed it again. And the sweep finds raw nodes hidden with no marker naming them, by a property the rule sets on every node it hides, where it looked at event nodes alone.
 - **The wire changed after all,** where this plan kept it as it was: a `cancel` request, a refusal `cancelled`, and a count of re-binds in two bits of a reply's flags, so that a hide the daemon gives up as its setup stops says what it did and the daemon's count of a pad's goings and comings back is exact (see [A hide given up](#a-hide-given-up-the-service-says-what-it-did)). Sizes are unchanged, and each side works with a peer from before as it did.

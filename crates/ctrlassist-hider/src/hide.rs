@@ -457,19 +457,45 @@ pub(crate) fn open_under(
     Ok(fd)
 }
 
-/// Shows again each pad the rule hides that nothing should: one that no
-/// pad in `held` is and that no marker in `markers` names, as a pad
-/// sharing an address with one that was hidden, or plugged into its port
-/// while it was away. Doesn't wait for udev.
-pub(crate) fn sweep(group: u32, held: &[&Path], markers: &BTreeSet<String>) {
-    for pad in pad::hidden(group) {
-        let named = pad.markers.intersection(markers).next().is_some();
-        if !named
-            && !held.contains(&pad.parent.path.as_path())
-            && let Err(error) = request(&pad.parent.path)
+/// The device of each pad, and of each raw node, the rule hides that
+/// nothing should: one that no pad in `held` is and that no marker in
+/// `markers` names, as a pad sharing an address with one that was
+/// hidden, or plugged into its port while it was away. A pad's event
+/// nodes hidden are known by their group; a raw node by what the rule
+/// sets on a node it hides.
+pub(crate) fn unnamed(group: u32, held: &[&Path], markers: &BTreeSet<String>) -> Vec<Device> {
+    let mut found: Vec<(Device, BTreeSet<String>)> = pad::hidden(group)
+        .into_iter()
+        .map(|pad| (pad.parent, pad.markers))
+        .collect();
+    for (device, names) in pad::hidden_raw() {
+        match found
+            .iter_mut()
+            .find(|(other, _)| other.path == device.path)
         {
+            Some((_, markers)) => markers.extend(names),
+            None => found.push((device, names)),
+        }
+    }
+    found
+        .into_iter()
+        .filter(|(device, names)| {
+            !held.contains(&device.path.as_path()) && names.is_disjoint(markers)
+        })
+        .map(|(device, _)| device)
+        .collect()
+}
+
+/// Shows again each pad the rule hides that nothing should, as
+/// [`unnamed`] finds them, by re-binding its driver, which makes every
+/// node afresh as the stock rules make it. A raw node's own change event
+/// isn't the service's to send, its `uevent` file being root's; its HID
+/// device's is, for a pad's. Doesn't wait for udev.
+pub(crate) fn sweep(group: u32, held: &[&Path], markers: &BTreeSet<String>) {
+    for device in unnamed(group, held, markers) {
+        if let Err(error) = request(&device.path) {
             warn!(
-                device = %pad.parent.path.display(),
+                device = %device.path.display(),
                 %error,
                 "couldn't ask for a pad no marker names to be shown again; it stays hidden until it is plugged in again"
             );
@@ -530,7 +556,7 @@ mod tests {
         for marker in [
             "addr-0a:1b:2c:3d:4e:14",
             "port-1-2:1.0",
-            "raw-3-1.4.2:1.3",
+            "raw-3-1.4.2:1.3-0003:0000054C:00000CE6",
             "x..",
         ] {
             assert!(is_flat(marker), "{marker}");

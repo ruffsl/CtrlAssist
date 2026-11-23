@@ -78,9 +78,11 @@ SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST=="/run/ctrlassist/hide/port-%b", GOTO=
 GOTO="ctrlassist_hide_end"
 
 # Hidraw nodes: by their HID device, by its own unique string (an
-# address on Bluetooth, set as the device is made), or by its USB port.
-# The imports have lines of their own: udev compares a line's ENV keys
-# before it runs the line's imports.
+# address on Bluetooth, set as the device is made), or by its USB port
+# and its model together, so that a keyboard, a headset or a security key
+# later plugged into that port is never taken for the pad. The imports
+# have lines of their own: udev compares a line's ENV keys before it runs
+# the line's imports.
 LABEL="ctrlassist_hide_hidraw"
 # The raw node of a pad whose raw node the service opens unhidden, for
 # the DualSense identity's copy: the group's, beside whatever seat access
@@ -90,13 +92,17 @@ SUBSYSTEMS=="hid", TEST=="/run/ctrlassist/hide/hid-%b", GOTO="ctrlassist_hide"
 IMPORT{parent}="HID_UNIQ"
 IMPORT{parent}="HID_ID"
 ENV{HID_UNIQ}=="?*", ENV{HID_UNIQ}!="*/*", ENV{HID_ID}=="?*", ENV{HID_ID}!="*/*", TEST=="/run/ctrlassist/hide/uniq-$env{HID_ID}-$env{HID_UNIQ}", GOTO="ctrlassist_hide"
-SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST=="/run/ctrlassist/hide/raw-%b", GOTO="ctrlassist_hide"
+ENV{HID_ID}=="?*", ENV{HID_ID}!="*/*", SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST=="/run/ctrlassist/hide/raw-%b-$env{HID_ID}", GOTO="ctrlassist_hide"
 GOTO="ctrlassist_hide_end"
 
 # Hidden: the group's alone, with no seat access. Final, so that a later
 # rule can't open the node again. A node made by a re-bind has no ACL
-# for the tag's removal to leave behind.
+# for the tag's removal to leave behind. CTRLASSIST_HIDDEN says so in
+# udev's record of the node until its next event, which the service
+# reads to find a raw node left hidden that no marker names any more:
+# the group can't say it, a PlayStation pad's raw node having the group
+# hidden or not.
 LABEL="ctrlassist_hide"
-OWNER:="root", GROUP:="ctrlassist-hider", MODE:="0660", TAG-="uaccess"
+OWNER:="root", GROUP:="ctrlassist-hider", MODE:="0660", TAG-="uaccess", ENV{CTRLASSIST_HIDDEN}="1"
 
 LABEL="ctrlassist_hide_end"

@@ -196,17 +196,13 @@ pub(crate) struct Names {
 
 /// The marker files that hide a pad, as the rule names them, from what
 /// its devices say: by address, else serial number; by HID device; by
-/// port where neither; and for its raw node, by the HID device's own
-/// unique string, and by port whenever it has one. Only what passes the
-/// checks above reaches a name, and no name has a `/` in it.
+/// port where neither; and its raw node as [`raw_markers`] says. Only
+/// what passes the checks above reaches a name, and no name has a `/` in
+/// it.
 pub(crate) fn markers(names: &Names) -> BTreeSet<String> {
-    let mut markers = BTreeSet::new();
+    let mut markers = raw_markers(names);
     let address = names.uniq.as_deref().filter(|uniq| is_address(uniq));
     let serial = names.serial.as_deref().filter(|serial| is_serial(serial));
-    let interface = names
-        .interface
-        .as_deref()
-        .filter(|interface| is_usb_interface(interface));
     if let Some(address) = address {
         markers.insert(format!("addr-{address}"));
     } else if let (Some(serial), Some(vendor), Some(product)) =
@@ -216,23 +212,43 @@ pub(crate) fn markers(names: &Names) -> BTreeSet<String> {
     }
     if address.is_none()
         && serial.is_none()
-        && let Some(interface) = interface
+        && let Some(interface) = interface(names)
     {
         markers.insert(format!("port-{interface}"));
     }
-    if let Some(hid) = names.hid.as_deref().filter(|name| is_hid_name(name)) {
-        markers.insert(format!("hid-{hid}"));
-        let uniq = names.hid_uniq.as_deref().filter(|uniq| is_uniq(uniq));
-        let id = names.hid_id.as_deref().filter(|id| is_hid_id(id));
-        if let (Some(uniq), Some(id)) = (uniq, id) {
-            markers.insert(format!("uniq-{id}-{uniq}"));
-        }
-        // Whatever the HID device says of its address: a driver can set
-        // it after the raw node is made, as a DualSense's does on USB, so
-        // the node of one that comes back may be made before it.
-        if let Some(interface) = interface {
-            markers.insert(format!("raw-{interface}"));
-        }
+    markers
+}
+
+/// The USB interface `names` hang from, if its name is the kernel's.
+fn interface(names: &Names) -> Option<&str> {
+    names
+        .interface
+        .as_deref()
+        .filter(|interface| is_usb_interface(interface))
+}
+
+/// The marker files that hide a HID device's raw node, as the rule names
+/// them: by the HID device itself; by its own unique string; and, on USB,
+/// by its port and its model together, so that only a HID device of the
+/// same bus, vendor and product plugged into that port is taken for it,
+/// never a keyboard, a headset or a security key. None without a HID
+/// device.
+pub(crate) fn raw_markers(names: &Names) -> BTreeSet<String> {
+    let mut markers = BTreeSet::new();
+    let Some(hid) = names.hid.as_deref().filter(|name| is_hid_name(name)) else {
+        return markers;
+    };
+    markers.insert(format!("hid-{hid}"));
+    let uniq = names.hid_uniq.as_deref().filter(|uniq| is_uniq(uniq));
+    let id = names.hid_id.as_deref().filter(|id| is_hid_id(id));
+    if let (Some(uniq), Some(id)) = (uniq, id) {
+        markers.insert(format!("uniq-{id}-{uniq}"));
+    }
+    // Whatever the HID device says of its address: a driver can set it
+    // after the raw node is made, as a DualSense's does on USB, so the
+    // node of one that comes back may be made before it.
+    if let (Some(interface), Some(id)) = (interface(names), id) {
+        markers.insert(format!("raw-{interface}-{id}"));
     }
     markers
 }
@@ -469,6 +485,59 @@ pub(crate) fn hidden(group: u32) -> Vec<Pad> {
     found
 }
 
+/// What the rule sets on every node it hides, and on no other: udev keeps
+/// a node's properties from the last event it took, so this says the
+/// node was hidden then. A raw node's group can't say it, the rule giving
+/// a PlayStation pad's raw node the group whether it is hidden or not.
+const HIDDEN: &str = "CTRLASSIST_HIDDEN";
+
+/// The HID device of each raw node the rule hid when udev last took an
+/// event of it, with the markers that would hide that node now. A raw
+/// node can be hidden with its pad's event node not, as a pad of the
+/// model of one hidden, plugged into its port while it was away, is.
+pub(crate) fn hidden_raw() -> Vec<(Device, BTreeSet<String>)> {
+    let Ok(mut nodes) = udev::Enumerator::new() else {
+        return Vec::new();
+    };
+    if nodes.match_subsystem("hidraw").is_err() || nodes.match_is_initialized().is_err() {
+        return Vec::new();
+    }
+    let Ok(nodes) = nodes.scan_devices() else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for node in nodes {
+        if property(&node, HIDDEN) != Some("1") {
+            continue;
+        }
+        let ancestors = || std::iter::successors(Some(node.clone()), udev::Device::parent);
+        let Some(hid) = ancestors().find(|device| subsystem(device) == Some("hid")) else {
+            continue;
+        };
+        let interface = ancestors().find(|device| {
+            subsystem(device) == Some("usb")
+                && device.devtype().and_then(|kind| kind.to_str()) == Some("usb_interface")
+        });
+        let names = Names {
+            hid: hid.sysname().to_str().map(str::to_string),
+            hid_uniq: property(&hid, "HID_UNIQ").map(str::to_string),
+            hid_id: property(&hid, "HID_ID").map(str::to_string),
+            interface: interface
+                .and_then(|interface| interface.sysname().to_str().map(str::to_string)),
+            ..Names::default()
+        };
+        let Some(enumeration) = enumeration(&hid) else {
+            continue;
+        };
+        let device = Device {
+            path: hid.syspath().to_path_buf(),
+            enumeration,
+        };
+        found.push((device, raw_markers(&names)));
+    }
+    found
+}
+
 /// How telling a marker is of the pad it names, most first: an address
 /// or a serial number names one pad wherever it is plugged; a port names
 /// whatever is plugged there.
@@ -684,7 +753,7 @@ mod tests {
                 "addr-0a:1b:2c:3d:4e:14",
                 "hid-0003:054C:0CE6.0017",
                 "uniq-0003:0000054C:00000CE6-0a:1b:2c:3d:4e:14",
-                "raw-1-2:1.3",
+                "raw-1-2:1.3-0003:0000054C:00000CE6",
             ])
         );
         // The same, its raw node seen before the address was set.
@@ -697,7 +766,7 @@ mod tests {
             set(&[
                 "addr-0a:1b:2c:3d:4e:14",
                 "hid-0003:054C:0CE6.0017",
-                "raw-1-2:1.3",
+                "raw-1-2:1.3-0003:0000054C:00000CE6",
             ])
         );
         // On Bluetooth: no port.
@@ -730,9 +799,10 @@ mod tests {
         };
         assert_eq!(markers(&xpad), set(&["port-2-1:1.0"]));
         // A HID pad on USB with neither: its nodes by port and HID device,
-        // its raw node by port.
+        // its raw node by port and model.
         let hid = Names {
             hid: Some("0003:1209:5EEE.0002".into()),
+            hid_id: Some("0003:00001209:00005EEE".into()),
             interface: Some("3-1.4.2:1.0".into()),
             ..names()
         };
@@ -741,7 +811,7 @@ mod tests {
             set(&[
                 "port-3-1.4.2:1.0",
                 "hid-0003:1209:5EEE.0002",
-                "raw-3-1.4.2:1.0",
+                "raw-3-1.4.2:1.0-0003:00001209:00005EEE",
             ])
         );
         // A uhid pad has no USB interface, and nothing names it by port.
@@ -750,6 +820,37 @@ mod tests {
             ..names()
         };
         assert_eq!(markers(&uhid), set(&["hid-0003:1209:5EEE.0002"]));
+    }
+
+    /// A keyboard, or any other HID device, plugged into a hidden pad's
+    /// port afterwards: no raw marker of the pad's names its raw node, and
+    /// with no model to go by none names the port alone.
+    #[test]
+    fn a_raw_node_is_named_by_its_port_only_with_its_model() {
+        let pad = Names {
+            hid: Some("0003:1209:5EF0.0004".into()),
+            hid_id: Some("0003:00001209:00005EF0".into()),
+            interface: Some("2-1:1.0".into()),
+            ..names()
+        };
+        let keyboard = Names {
+            hid: Some("0003:1209:5EFA.0005".into()),
+            hid_id: Some("0003:00001209:00005EFA".into()),
+            ..pad.clone()
+        };
+        assert!(raw_markers(&pad).is_disjoint(&raw_markers(&keyboard)));
+        // The same model in the same port is taken for it, as it is meant
+        // to be: it may be the pad itself, back.
+        let again = Names {
+            hid: Some("0003:1209:5EF0.0006".into()),
+            ..pad.clone()
+        };
+        assert!(!raw_markers(&pad).is_disjoint(&raw_markers(&again)));
+        let unknown = Names {
+            hid_id: None,
+            ..pad
+        };
+        assert_eq!(raw_markers(&unknown), set(&["hid-0003:1209:5EF0.0004"]));
     }
 
     #[test]

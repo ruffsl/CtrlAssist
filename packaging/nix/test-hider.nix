@@ -16,6 +16,8 @@ let
   #       a wired Xbox 360 pad, for the xpad driver, through FunctionFS
   #   usb-gadget hid <name> <serial> <n> <product> <product string>
   #       a HID game pad, for usbhid and the generic HID driver
+  #   usb-gadget kbd <name> <n> <product>
+  #       a HID boot keyboard, with no serial
   #
   # A serial of "-" gives the pad none.
   gadget = pkgs.writers.writePython3Bin "usb-gadget" { doCheck = false; } ''
@@ -33,6 +35,18 @@ let
         0x75, 0x01, 0x81, 0x02, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31,
         0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x02, 0x81, 0x02,
         0xC0, 0xC0,
+    ])
+
+    # A boot keyboard: eight modifier bits, a reserved byte, six keys, and
+    # five lights out.
+    KEYBOARD = bytes([
+        0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x05, 0x07, 0x19, 0xE0,
+        0x29, 0xE7, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x08,
+        0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01, 0x95, 0x05,
+        0x75, 0x01, 0x05, 0x08, 0x19, 0x01, 0x29, 0x05, 0x91, 0x02,
+        0x95, 0x01, 0x75, 0x03, 0x91, 0x01, 0x95, 0x06, 0x75, 0x08,
+        0x15, 0x00, 0x25, 0x65, 0x05, 0x07, 0x19, 0x00, 0x29, 0x65,
+        0x81, 0x00, 0xC0,
     ])
 
 
@@ -120,14 +134,15 @@ let
                     os.read(ep0, length)
 
 
-    def hid(name, serial, udc, product, product_string):
+    def hid(name, serial, udc, product, product_string, report=GAME_PAD, kind=("0", "0", "3")):
         function = f"hid.{name}"
         gadget = made(name, serial, "0x1209", product, "0x00", product_string, function)
+        protocol, subclass, length = kind
         for attribute, value in [
-            ("protocol", "0"),
-            ("subclass", "0"),
-            ("report_length", "3"),
-            ("report_desc", GAME_PAD),
+            ("protocol", protocol),
+            ("subclass", subclass),
+            ("report_length", length),
+            ("report_desc", report),
         ]:
             write(f"{gadget}/functions/{function}/{attribute}", value)
         link(gadget, function, udc)
@@ -140,8 +155,10 @@ let
             xpad(name, serial, udc)
         case ["hid", name, serial, udc, product, product_string]:
             hid(name, serial, udc, product, product_string)
+        case ["kbd", name, udc, product]:
+            hid(name, "-", udc, product, "Keyboard", KEYBOARD, ("1", "1", "8"))
         case _:
-            sys.exit("usage: usb-gadget xpad|hid <name> <serial> <udc> ...")
+            sys.exit("usage: usb-gadget xpad|hid|kbd <name> ...")
   '';
 
   # A client of the service that does what the fixture's well-behaved one
@@ -871,7 +888,7 @@ pkgs.testers.runNixOSTest {
         assert told.startswith("ok"), told
         found = markers()
         print(f"a HID pad on USB with a serial number, on {interface}: " + " ".join(found))
-        assert "./serial-1209-5ef0-HIDFIXTURE1" in found and f"./raw-{interface}" in found, found
+        assert "./serial-1209-5ef0-HIDFIXTURE1" in found and f"./raw-{interface}-0003:00001209:00005EF0" in found, found
         assert f"./port-{interface}" not in found, "a pad with a serial number isn't hidden by its port"
         assert all_are(by_name(name, "alice"), "denied")
         replug("serial", 1, name)
@@ -897,7 +914,7 @@ pkgs.testers.runNixOSTest {
         assert told.startswith("ok"), told
         found = markers()
         print(f"a HID pad on USB with neither, on {interface}, phys {phys}: " + " ".join(found))
-        assert f"./port-{interface}" in found and f"./raw-{interface}" in found, found
+        assert f"./port-{interface}" in found and f"./raw-{interface}-0003:00001209:00005EF1" in found, found
         assert all("/" not in marker[2:] for marker in found), "every marker is a file in the marker directory"
         assert all_are(by_name(name, "alice"), "denied")
         # A port marker as a directory named after the port's phys, as
@@ -999,6 +1016,54 @@ pkgs.testers.runNixOSTest {
         machine.succeed("udevadm settle")
         assert alice_can_open(key, "event")
         machine.succeed("systemctl stop switched-port")
+        wait_restored()
+
+    def raw_under(interface):
+        """The raw node of the HID device under a USB interface."""
+        return "/dev/" + machine.succeed(f"basename /sys/bus/usb/devices/{interface}/*/hidraw/hidraw*").strip()
+
+    with subtest("a raw node is hidden by its port only with its model, and one left hidden is shown again once nothing names it"):
+        name = "Fixture Model Pad"
+        machine.succeed("systemd-run --unit gadget-model usb-gadget hid model MODELPAD1 4 0x5ef4 'Model Pad'")
+        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -F '{name}'", timeout=60)
+        machine.succeed("udevadm settle")
+        nodes = by_name(name, "alice")
+        assert all_are(nodes, "open"), nodes
+        interface = sysfs(nodes["event"][0], "device/..").split("/")[-1]
+        control, told = hide("hide-model", nodes["event"][0])
+        assert told.startswith("ok"), told
+        raw = [marker for marker in markers() if marker.startswith("./raw-")]
+        assert raw == [f"./raw-{interface}-0003:00001209:00005EF4"], markers()
+        # Taken out, and a keyboard plugged into its port: no node of the
+        # keyboard is hidden, its raw node included, which a 60- rule opens.
+        unplug("model", name)
+        machine.succeed("systemd-run --unit gadget-keyboard usb-gadget kbd keyboard 4 0x5efa")
+        machine.wait_until_succeeds(f"ls /sys/bus/usb/devices/{interface}/*/hidraw", timeout=60)
+        machine.succeed("udevadm settle")
+        keyboard = raw_under(interface)
+        print(f"a keyboard in a hidden pad's port: " + machine.succeed(f"stat -c '%n %a %U:%G' {keyboard}").strip())
+        assert alice_opens(keyboard), "a keyboard's raw node in a hidden pad's port"
+        machine.succeed("echo > /sys/kernel/config/usb_gadget/keyboard/UDC")
+        machine.wait_until_fails(f"ls /sys/bus/usb/devices/{interface}")
+        # Another pad of the model, with another serial number: its raw node
+        # is hidden, as one of the model in that port, its event node not.
+        machine.succeed("systemd-run --unit gadget-model-other usb-gadget hid modelother MODELPAD2 4 0x5ef4 'Model Pad'")
+        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -F '{name}'", timeout=60)
+        machine.succeed("udevadm settle")
+        other = by_name(name, "alice")
+        print(f"another pad of the model in the port: {other}")
+        assert other["event"][1] == "open" and other["hidraw"][1] == "denied", other
+        # The pad shown again while away: its markers go, nothing names the
+        # other's raw node, and it is made again, open as the stock rules
+        # and the 60- rule leave it.
+        assert order(control, "restore").startswith("ok")
+        machine.wait_until_succeeds(f"test -z \"$(ls -A {MARKERS})\"")
+        machine.wait_until_succeeds(f"su -l alice -c 'ctrlassist-fixture pads' | grep -F '{name}' | grep -E 'hidraw=[^ ]*:open'")
+        machine.succeed("udevadm settle")
+        print(f"once nothing names it: {by_name(name, 'alice')}")
+        assert all_are(by_name(name, "alice"), "open")
+        machine.succeed("systemctl stop hide-model")
+        unplug("modelother", name)
         wait_restored()
 
     with subtest("users with no seat share one cap however many user IDs they connect as, and leave room for the user at the seat"):
