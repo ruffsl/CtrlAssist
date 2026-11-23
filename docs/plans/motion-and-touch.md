@@ -51,6 +51,39 @@ Each is to be answered before the decision it bears on is settled.
 - **The desktop's use of the touchpad.** Outside a game, a DualSense's touchpad moves the desktop's pointer, and Steam can map it. While a setup hides the pad its touchpad's nodes are hidden with it. Whether the pointer then stops was not checked through a compositor, only that the seat user can't open the nodes; and a pad that is grabbed and not hidden keeps its touchpad, a grab being of the pad's own node alone. Whether a setup should leave the desktop its pointer is a question of its own.
 - **Cost on the input thread.** Two more nodes for each PlayStation pad, the sensors' at a high rate. To be measured with the bench before it is built on.
 
+## What the research found
+
+Three surveys were made on 2026-11-23, by agents reading public sources. What a source says is given with the source; what is reasoned from it is marked as inference. None of it has been tried here on a pad.
+
+### The gyroscope, and aiming by it
+
+**A game integrates a rate.** Aiming by gyro is `camera.yaw += rate.yaw × sensitivity × dt`, and the same for pitch: a relative device, as a mouse is ([GyroWiki, "The Gyro is a Mouse"](http://gyrowiki.jibbsmart.com/blog:good-gyro-controls-part-1:the-gyro-is-a-mouse)). The camera's angle is continuous whatever the rate's source, and no absolute pose of the pad maps to where the camera points. Sensitivity is in real turning to turning in the game: at 1, 37.5° of the pad is 37.5° of the camera. Steam's guidance to developers is to add up every source of camera turning before moving the camera, and not to take the last one active ([Steam Deck recommendations](https://partner.steamgames.com/doc/steamdeck/recommendations)).
+
+**Three spaces, two of which need gravity.** Local space uses the pad's own axes and no accelerometer. World space and player space both take the estimated gravity vector to tell a turn about the vertical from one about the pad's own axis; player space forgives an error in it of about 45° (a relax factor of 1.41; JoyShockMapper uses 2, about 60°), and world space shows any error as a cosine and as leakage between axes ([GyroWiki, "Player Space Gyro"](http://gyrowiki.jibbsmart.com/blog:player-space-gyro-and-alternatives-explained)). Player space is the default the library most games would copy recommends ([GamepadMotionHelpers](https://github.com/JibbSmart/GamepadMotionHelpers)).
+
+**Gravity is estimated, not read.** The estimate is turned by the gyro and pulled toward the accelerometer, at a rate of about 1 a second when the pad is still, 0.1 when shaken, and capped near a tenth of the turning rate ([GyroWiki, "Finding Gravity with Sensor Fusion"](http://gyrowiki.jibbsmart.com/blog:finding-gravity-with-sensor-fusion)). "The accelerometer alone cannot reliably tell you the direction of gravity."
+
+**Small rates are already treated specially.** Smoothing below a threshold and "tightening", a soft scaling down of rates under about 5°/s, are the community's answer to a hand's shake; a hard cutoff is advised against, and the way to say "I am not aiming now" is a button that turns the gyro off or on while held (JoyShockMapper's `GYRO_ON`/`GYRO_OFF`). An acceleration curve makes sensitivity grow with speed, so it is not linear in the rate.
+
+**Bias is the game's to remove, and it assumes one pad.** The kernel's driver applies the pad's calibration for scale and subtracts no bias (a change of 2023), so whoever reads the sensor node calibrates drift itself. GamepadMotionHelpers does it two ways: when gyro and accelerometer are both still for a time, the mean is the bias; and by comparing the gyro with the turning the accelerometer's gravity implies, taking the difference for bias when the turning is steady. An uncorrected bias of 0.5°/s at a sensitivity of 2 is 60° of drift a minute.
+
+**What a DualSense gives.** Through the kernel, a second input device, "Motion Sensors", with the accelerometer on `ABS_X/Y/Z` at 8192 to a g, the gyro on `ABS_RX/RY/RZ` at 1024 to a degree a second, and a timestamp in microseconds as `MSC_TIMESTAMP`. SDL pairs it with the pad by its `uniq` string and hands a game the rate in radians a second and acceleration in m/s² with gravity in it: readings, and no pose. Steam's own API adds a fused quaternion. Reports come at 250 Hz on USB and, by SDL's comments, 1000 Hz on Bluetooth.
+
+**Aim assist goes when gyro is on.** Fortnite and The Finals say so of themselves. One player on gyro and the other on the stick loses the stick its aim assist in such games.
+
+**Not found.** Measured noise or bias for these pads' sensors; a healthy hand's tremor in degrees a second from a primary source (reasoned to be 2 to 6°/s at its peaks, at 8 to 12 Hz, which is the band fine aiming is in); any game saying whether it reads rates or a platform's pose.
+
+**What follows for two pads (inference from the above).**
+
+- **Timestamps come first.** A virtual pad must make its own clock. Passing on each source pad's timestamps makes the clock jump on a change of source, and SDL turns a jump backward into a very long step, which every integrator downstream then takes.
+- **Bias must be removed here, for each pad, before anything is mixed.** A game that has learned one pad's bias drifts on the other's; a sum carries both biases; and the game's own calibrator, fed two pads, either refuses to calibrate or learns a mixture. Each pad's stillness is detectable from its own two sensors.
+- **A rate can't tell a held pad from an aiming one.** A pad lying on a table (under 0.3°/s, its accelerometer constant) is cleanly told from a held one. A held and idle hand is not told from one aiming finely: both are a few degrees a second. So the deadzone that makes priority work for a stick does not carry over to the gyro as it stands: a threshold high enough to pass over tremor drops fine aim, the lost start of each movement makes a turn come up short, and near the threshold the two pads trade places at the tremor's own rate.
+- **A hard switch between pads is otherwise benign** in local space, like handing over a mouse: the camera stays where it was left.
+- **A sum is exact for a rate** and lets either aim, and works well when the idle pad lies flat; held, the idle hand's tremor goes straight to the camera. The two pads' axes agree only if they are held alike.
+- **An average halves the sensitivity** of whoever moves alone, which breaks the learned measure of a turn, and blended only while both move it changes gain by half at each crossing.
+- **Gyro from one pad and accelerometer from another is the worst of the mixtures.** Local space doesn't notice. Player space is unaffected while the two pads' poses differ by less than about 45°, weakens past that and reverses past 90°. The gravity estimate is turned by one pad and pulled toward the other. And calibration by fusion takes one player's steady aiming, unseen by the other pad's accelerometer, for bias, and corrects it away. This weighs against the first position's "the primary's accelerometer always".
+- **JoyShockMapper's way with two Joy-Cons** is to let each move the mouse by itself, each after its own calibration and curve: a sum of results, not of signals.
+
 ## Steps
 
 To be written once the open questions are answered. The first will be a spike: one real DualSense's sensors and touchpad carried to a virtual one, tried in a game that aims by gyro and one that steers by tilt.
