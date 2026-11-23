@@ -16,6 +16,10 @@ use ctrlassist_test::{FakePad, can_make_pads, phys_connected, phys_of};
 
 use crate::client::{eventually, next_matching, socket, start_daemon};
 
+/// The fake pads' vendor. Each test makes pads of products of its own:
+/// a test's daemon sees every pad on the machine, those of the tests
+/// running beside it included, and a profile that names a model takes
+/// whichever pad of it it finds.
 const VENDOR: u16 = 0x1209;
 
 /// A priority profile over two models of fake pad.
@@ -262,20 +266,31 @@ async fn a_setup_that_cannot_start_says_why_and_leaves_nothing() {
     let unknown = client.start_setup("nothing").await.unwrap_err();
     assert_eq!(unknown.rpc_code(), Some(ErrorCode::UnknownProfile));
 
-    // The same pad named twice: right as a profile, wrong to run.
-    client
+    // The same pad named twice, two ways: wrong as a profile already.
+    let refused = client
         .put_profile(
             "twice",
             "mode = \"priority\"\nprimary = \"0c:27:56:4f:bd:14\"\nassist = \"address:0c:27:56:4f:bd:14\"\n",
         )
         .await
-        .unwrap();
-    let refused = client.start_setup("twice").await.unwrap_err();
+        .unwrap_err();
     assert_eq!(refused.rpc_code(), Some(ErrorCode::InvalidProfile));
     assert!(
-        refused.to_string().contains("another source's pad too"),
+        refused.to_string().contains("each needs its own"),
         "{refused}"
     );
+
+    // A pad still to choose: right as a profile, wrong to run.
+    client
+        .put_profile(
+            "half",
+            "mode = \"priority\"\nprimary = \"model:1209:8e01\"\n",
+        )
+        .await
+        .unwrap();
+    let refused = client.start_setup("half").await.unwrap_err();
+    assert_eq!(refused.rpc_code(), Some(ErrorCode::InvalidProfile));
+    assert!(refused.to_string().starts_with("mode: "), "{refused}");
     assert!(client.list_setups().unwrap().is_empty());
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(client.list_setups().unwrap().is_empty());
@@ -306,7 +321,10 @@ async fn without_the_hiding_service_a_setup_s_pads_are_grabbed() {
     std::fs::write(&steam, listing("28de/1142,1209/dead")).unwrap();
     let state = socket.with_file_name("state");
     std::fs::create_dir_all(&state).unwrap();
-    let left = "schema = 1\nadded = [\"1209/dead\"]\n";
+    let left = format!(
+        "schema = 1\n[added]\n\"{}\" = [\"1209/dead\"]\n",
+        steam.display()
+    );
     std::fs::write(state.join("steam-blacklist.toml"), left).unwrap();
     let daemon = start_daemon(&socket).await;
     assert_eq!(
@@ -1331,12 +1349,12 @@ async fn a_reload_brings_a_running_setup_up_to_its_profile() {
     if !can_make_pads(TEST) {
         return;
     }
-    let _primary = FakePad::new("Reload Primary", VENDOR, 0x8601).unwrap();
-    let _assist = FakePad::new("Reload Assist", VENDOR, 0x8602).unwrap();
+    let _primary = FakePad::new("Reload Primary", VENDOR, 0x8d01).unwrap();
+    let _assist = FakePad::new("Reload Assist", VENDOR, 0x8d02).unwrap();
     let (_dir, socket) = socket();
     let daemon = start_daemon(&socket).await;
     let client = hydrated(&socket).await;
-    let blended = priority(0x8601, 0x8602);
+    let blended = priority(0x8d01, 0x8d02);
     client.put_profile("couch", &blended).await.unwrap();
     client.start_setup("couch").await.unwrap();
     let before = in_phase(&client, "couch", Phase::Running).await;
@@ -1388,7 +1406,7 @@ async fn a_reload_brings_a_running_setup_up_to_its_profile() {
     );
 
     // A profile that is wrong now leaves what runs as it was.
-    std::fs::write(&file, "mode = \"priority\"\n").unwrap();
+    std::fs::write(&file, "mode = \"priority\"\npad = \"model:1209:8d01\"\n").unwrap();
     let reloaded = client.reload().await.unwrap();
     assert_eq!(reloaded.wrong.len(), 1);
     tokio::time::sleep(Duration::from_millis(100)).await;
