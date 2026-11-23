@@ -191,12 +191,13 @@ impl DaemonClient {
     /// Whether the daemon's liveliness token is present, as last delivered
     /// to this client: a mirror read, which unlike [`Self::is_available`]
     /// doesn't wait for the client to have subscribed to the daemon's
-    /// state. A daemon that is stopping withdraws its token first and
-    /// then answers what is in flight; over a session in client mode,
-    /// as `ctrlassist_protocol::bootstrap::client_config` opens, the
+    /// state. A daemon declares its token before anything it serves can
+    /// answer, and as it stops withdraws it before anything else, then
+    /// answers what is in flight. Over a session in client mode, as
+    /// `ctrlassist_protocol::bootstrap::client_config` opens, the
     /// daemon's token reaches the client in order with its replies, so
-    /// once a call has been answered this tells such a daemon from one
-    /// that is up.
+    /// once a call has been answered this is false only for a daemon
+    /// that is stopping, never for one that is starting.
     #[must_use]
     pub fn token_present(&self) -> bool {
         self.mirror.token_present()

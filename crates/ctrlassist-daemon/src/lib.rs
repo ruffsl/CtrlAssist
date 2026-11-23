@@ -284,17 +284,20 @@ impl Daemon {
             warn!("/dev/uinput can't be opened; no virtual pad can be made until it can");
         }
 
-        let (stop, stopped) = oneshot::channel();
-        let reactor = tokio::spawn(reactor.run(rpcs, seen, reports, stopped));
-
-        // The token is what clients take as "the daemon is there", so it
-        // comes last: everything it serves is declared by the time a
-        // client can see it alive.
+        // The token is what clients take as "the daemon is there": every
+        // rpc is declared and every key published by now, and a query
+        // that arrives waits in its queryable's queue for the reactor. It
+        // goes before the reactor is spawned, since nothing else answers
+        // a query: no reply can reach a client ahead of the token, and a
+        // command that takes an answer without a token for a daemon that
+        // is stopping is never told that of one that is starting.
         let alive = session
             .liveliness()
             .declare_token(keys::daemon_alive())
             .await
             .map_err(|error| anyhow!("declaring the daemon's liveliness: {error}"))?;
+        let (stop, stopped) = oneshot::channel();
+        let reactor = tokio::spawn(reactor.run(rpcs, seen, reports, stopped));
         info!(socket = %socket.display(), state = %state_dir.display(), version = VERSION, realtime, "the daemon is up");
         Ok(Self {
             blacklist,
