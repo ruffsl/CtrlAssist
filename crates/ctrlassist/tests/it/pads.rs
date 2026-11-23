@@ -59,6 +59,11 @@ async fn a_pad_is_listed_while_connected_and_remembered_until_forgotten() {
     let id = format!("{model}:SDK Listed Pad");
     let changed = StateEvent::PadChanged { pad: id.clone() };
     next_matching(&mut watcher, |e| *e == changed).await;
+    // Whether it can rumble is learned after it is taken in, and follows
+    // as a change.
+    while of_model(&client, PRODUCT).unwrap().rumble.is_none() {
+        next_matching(&mut watcher, |e| *e == changed).await;
+    }
     let pad = of_model(&client, PRODUCT).unwrap();
     assert_eq!(pad.id, id);
     assert_eq!(pad.name, "SDK Listed Pad");
@@ -81,9 +86,11 @@ async fn a_pad_is_listed_while_connected_and_remembered_until_forgotten() {
     );
 
     // It leaves: still known, no longer connected.
+    // The change that said whether it can rumble may still be queued.
     drop(fake);
-    next_matching(&mut watcher, |e| *e == changed).await;
-    assert!(!of_model(&client, PRODUCT).unwrap().connected);
+    while of_model(&client, PRODUCT).unwrap().connected {
+        next_matching(&mut watcher, |e| *e == changed).await;
+    }
     assert_eq!(
         refusal(
             client

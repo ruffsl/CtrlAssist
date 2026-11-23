@@ -51,6 +51,12 @@ pub(crate) fn of(node: &udev::Device) -> Option<Anchor> {
     let device = ancestors()
         .find(|device| subsystem(device) == Some("hid"))
         .or_else(|| ancestors().find(|device| is_usb(device, "usb_interface")))?;
+    at(&device)
+}
+
+/// `device`, which a pad can be anchored to, as the enumeration it is;
+/// none if its USB device has no stamp yet.
+pub(crate) fn at(device: &udev::Device) -> Option<Anchor> {
     let usb = std::iter::successors(Some(device.clone()), udev::Device::parent)
         .find(|device| is_usb(device, "usb_device"));
     let enumeration = match usb {

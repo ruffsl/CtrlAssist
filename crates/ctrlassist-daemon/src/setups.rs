@@ -3669,7 +3669,7 @@ mod tests {
         // The pad the primary names connected first.
         rig.reactor
             .book
-            .arrived(&connecting(PRIMARY, "/nowhere/event1"), None);
+            .arrived(&connecting(PRIMARY, "/nowhere/event1"));
         let exact = toggle(primary, model);
         // With only that pad, the assist is one short: waited for, and
         // the profile isn't one that would run if started now.
@@ -3680,7 +3680,7 @@ mod tests {
 
         rig.reactor
             .book
-            .arrived(&connecting(OTHER, "/nowhere/event2"), None);
+            .arrived(&connecting(OTHER, "/nowhere/event2"));
         assert!(rig.reactor.ready(&exact));
         let slots = rig.reactor.bind("couch", &exact).unwrap();
         assert_eq!(pads_of(&slots), [Some(OTHER), Some(PRIMARY)]);
@@ -3722,7 +3722,7 @@ mod tests {
         ];
         let mut book = Book::new(Vec::new());
         for (pad, node) in [(PRIMARY, "/nowhere/event1"), (OTHER, "/nowhere/event2")] {
-            book.arrived(&connecting(pad, node), None);
+            book.arrived(&connecting(pad, node));
             book.claim(pad, "couch");
         }
         let (slots, keep) = rebind(&book, "couch", &has, &toggle(primary, model)).unwrap();
@@ -3738,7 +3738,7 @@ mod tests {
         let mut rig = rig().await;
         follow(&mut rig.reactor, 7, Phase::Starting);
         for (id, node) in [(PRIMARY, "/nowhere/event1"), (ASSIST, "/nowhere/event2")] {
-            rig.reactor.book.arrived(&connecting(id, node), None);
+            rig.reactor.book.arrived(&connecting(id, node));
             rig.reactor.pad_arrived(id).await;
         }
         // The sources go by name: the assist, then the primary.
@@ -3782,7 +3782,7 @@ mod tests {
         let mut rig = rig().await;
         follow(&mut rig.reactor, 7, Phase::Held);
         let primary = connecting(PRIMARY, "/nowhere/event1");
-        rig.reactor.book.arrived(&primary, None);
+        rig.reactor.book.arrived(&primary);
         rig.reactor.bring_back("couch", 1);
         rig.reactor.pad_arrived(PRIMARY).await;
         assert!(rig.reactor.setups.entries["couch"].slots[1].again);
@@ -3806,7 +3806,7 @@ mod tests {
             .reported(Report::Failed(SetupId(7), handed_back()))
             .await;
         for (id, node) in [(ASSIST, "/nowhere/event2"), (PRIMARY, "/nowhere/event1")] {
-            rig.reactor.book.arrived(&connecting(id, node), None);
+            rig.reactor.book.arrived(&connecting(id, node));
             rig.reactor.pad_arrived(id).await;
             assert_eq!(rig.reactor.book.user(id), None, "{id}");
         }
@@ -3906,7 +3906,7 @@ mod tests {
         rig.reactor.profiles.put("couch", &managed).unwrap();
         let nodes = ["/nowhere/event2", "/nowhere/event1"];
         for (pad, node) in [ASSIST, PRIMARY].into_iter().zip(nodes) {
-            rig.reactor.book.arrived(&connecting(pad, node), None);
+            rig.reactor.book.arrived(&connecting(pad, node));
         }
         nodes
     }
@@ -3926,7 +3926,7 @@ mod tests {
                 "going {time}"
             );
             rig.reactor
-                .saw(Seen::Arrived(connecting(PRIMARY, node), None))
+                .saw(Seen::Arrived(connecting(PRIMARY, node)))
                 .await;
             assert!(
                 rig.reactor.setups.setup("couch").is_none(),
@@ -3983,7 +3983,7 @@ mod tests {
         let hider = with_hider(rig, script).await;
         let nodes = ["/nowhere/event2", "/nowhere/event1"];
         for (pad, node) in [ASSIST, PRIMARY].into_iter().zip(nodes) {
-            rig.reactor.book.arrived(&connecting(pad, node), None);
+            rig.reactor.book.arrived(&connecting(pad, node));
         }
         follow(&mut rig.reactor, 7, Phase::Running);
         for (place, pad) in [ASSIST, PRIMARY].into_iter().enumerate() {
@@ -4033,7 +4033,7 @@ mod tests {
         rig.reactor.profiles.put("couch", &managed).unwrap();
         let (_hider, [_, node]) = running_hidden(&mut rig, Script::default()).await;
         let second = "/nowhere/event3";
-        rig.reactor.book.arrived(&connecting(PRIMARY, second), None);
+        rig.reactor.book.arrived(&connecting(PRIMARY, second));
         let stopping = ask(&mut rig, true).await;
         rig.reactor
             .reported(Report::Stopped(SetupId(7), handed_back()))
@@ -4050,7 +4050,7 @@ mod tests {
         }
         for back in [node, second] {
             rig.reactor
-                .saw(Seen::Arrived(connecting(PRIMARY, back), None))
+                .saw(Seen::Arrived(connecting(PRIMARY, back)))
                 .await;
             assert!(rig.reactor.book.pad(PRIMARY).unwrap().connected);
             assert!(
@@ -4079,7 +4079,7 @@ mod tests {
             }),
             ..connecting(PRIMARY, node)
         };
-        rig.reactor.saw(Seen::Arrived(again, None)).await;
+        rig.reactor.saw(Seen::Arrived(again)).await;
         assert!(rig.reactor.setups.setup("couch").is_some(), "started");
         finish(&mut rig.reactor).await;
     }
@@ -4100,7 +4100,7 @@ mod tests {
             return;
         }
         rig.reactor
-            .saw(Seen::Arrived(connecting(PRIMARY, node), None))
+            .saw(Seen::Arrived(connecting(PRIMARY, node)))
             .await;
         assert!(rig.reactor.setups.setup("couch").is_some(), "started");
         finish(&mut rig.reactor).await;

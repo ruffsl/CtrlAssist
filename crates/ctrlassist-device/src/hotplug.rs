@@ -59,6 +59,10 @@ pub enum Change {
         /// The event nodes under it as the request is heard.
         present: Vec<PathBuf>,
     },
+    /// Changes were lost, the monitor not read in time: what is connected
+    /// is to be looked at again, with [`connected`] and [`anchors`]. What
+    /// is read after this came after the loss.
+    Overran,
 }
 
 /// The argument the hiding service's request for a re-bind carries, as
@@ -168,6 +172,27 @@ pub fn connected() -> io::Result<Vec<Found>> {
         .collect())
 }
 
+/// Every device a pad can be anchored to now, each as the enumeration it
+/// is.
+///
+/// # Errors
+///
+/// Fails if udev can't be asked.
+pub fn anchors() -> io::Result<Vec<Anchor>> {
+    let mut found = Vec::new();
+    for subsystem in ["hid", "usb"] {
+        let mut devices = udev::Enumerator::new()?;
+        devices.match_subsystem(subsystem)?;
+        found.extend(
+            devices
+                .scan_devices()?
+                .filter(anchor::can_be)
+                .filter_map(|device| anchor::at(&device)),
+        );
+    }
+    Ok(found)
+}
+
 /// Watches pads connect and disconnect.
 pub struct Monitor {
     socket: udev::MonitorSocket,
@@ -185,6 +210,12 @@ impl Monitor {
     /// Beside input nodes it hears the devices a pad can be anchored to,
     /// filtered by udev before they are sent.
     ///
+    /// Its socket's buffer is as large as an unprivileged process can
+    /// have: udev's library asks 128 MiB, which the kernel caps at
+    /// `net.core.rmem_max` for a process without `CAP_NET_ADMIN`, so
+    /// nothing more is asked here. Events lost all the same are said by
+    /// [`Change::Overran`].
+    ///
     /// # Errors
     ///
     /// Fails if udev can't be listened to.
@@ -200,42 +231,129 @@ impl Monitor {
     /// Passes every change waiting to `change`, and returns when none is
     /// left. The monitor is readable, as a descriptor, when one is.
     pub fn read(&mut self, mut change: impl FnMut(Change)) {
-        for event in self.socket.iter() {
-            let device = event.device();
-            match event.event_type() {
-                udev::EventType::Remove if anchor::can_be(&device) => {
-                    change(Change::Unplugged(device.syspath().to_path_buf()));
-                }
-                udev::EventType::Change if is_rebind(&device) => {
-                    change(Change::Rebinding {
-                        anchor: device.syspath().to_path_buf(),
-                        present: event_nodes_under(&device),
-                    });
-                }
-                udev::EventType::Add | udev::EventType::Change => {
-                    if let Some(found) = found(&device) {
-                        change(Change::Arrived(found));
-                    }
-                }
-                udev::EventType::Remove => {
-                    // What it was is gone with it; only its node is left
-                    // to say which pad this was.
-                    let is_event = device
-                        .sysname()
-                        .to_str()
-                        .is_some_and(|name| name.starts_with("event"));
-                    if let (true, Some(node)) = (is_event, device.devnode()) {
-                        change(Change::Left(node.to_path_buf()));
-                    }
-                }
-                _ => {}
+        let socket = &self.socket;
+        drain(
+            || socket.iter().next(),
+            || io::Error::last_os_error().raw_os_error(),
+            |event| match event {
+                Some(event) => changed(&event.device(), event.event_type(), &mut change),
+                None => change(Change::Overran),
+            },
+        );
+    }
+}
+
+/// Reads what `next` gives until it gives nothing, passing each to
+/// `each`. udev's library says why it had nothing in `errno`: once after
+/// the kernel dropped events for a socket not read in time, it is
+/// `ENOBUFS`, which is passed on as `None`, and what was queued after the
+/// loss is read still.
+fn drain<T>(
+    mut next: impl FnMut() -> Option<T>,
+    errno: impl Fn() -> Option<i32>,
+    mut each: impl FnMut(Option<T>),
+) {
+    loop {
+        match next() {
+            Some(item) => each(Some(item)),
+            None if errno() == Some(libc::ENOBUFS) => each(None),
+            None => return,
+        }
+    }
+}
+
+/// Passes on what an event of `kind` on `device` says of pads, if
+/// anything.
+fn changed(device: &udev::Device, kind: udev::EventType, change: &mut impl FnMut(Change)) {
+    match kind {
+        udev::EventType::Remove if anchor::can_be(device) => {
+            change(Change::Unplugged(device.syspath().to_path_buf()));
+        }
+        udev::EventType::Change if is_rebind(device) => {
+            change(Change::Rebinding {
+                anchor: device.syspath().to_path_buf(),
+                present: event_nodes_under(device),
+            });
+        }
+        udev::EventType::Add | udev::EventType::Change => {
+            if let Some(found) = found(device) {
+                change(Change::Arrived(found));
             }
         }
+        udev::EventType::Remove => {
+            // What it was is gone with it; only its node is left
+            // to say which pad this was.
+            let is_event = device
+                .sysname()
+                .to_str()
+                .is_some_and(|name| name.starts_with("event"));
+            if let (true, Some(node)) = (is_event, device.devnode()) {
+                change(Change::Left(node.to_path_buf()));
+            }
+        }
+        _ => {}
     }
 }
 
 impl AsFd for Monitor {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.socket.as_fd()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
+
+    use super::*;
+
+    /// What the socket gives, in turn: an event, or nothing with `errno`
+    /// saying why.
+    enum Read {
+        Event(u32),
+        Nothing(i32),
+    }
+
+    /// Drains `script` as the monitor drains its socket, and says what
+    /// was passed on, an overrun as `None`, and how much is left unread.
+    fn drained(script: Vec<Read>) -> (Vec<Option<u32>>, usize) {
+        let script = RefCell::new(VecDeque::from(script));
+        let errno = Cell::new(0);
+        let passed = RefCell::new(Vec::new());
+        drain(
+            || match script.borrow_mut().pop_front()? {
+                Read::Event(event) => Some(event),
+                Read::Nothing(error) => {
+                    errno.set(error);
+                    None
+                }
+            },
+            || Some(errno.get()),
+            |event| passed.borrow_mut().push(event),
+        );
+        (passed.into_inner(), script.into_inner().len())
+    }
+
+    /// Events lost to a socket not read in time are said, once each time
+    /// the kernel says so, and what was queued after is still read.
+    #[test]
+    fn an_overrun_is_said_and_what_follows_is_read() {
+        let (passed, left) = drained(vec![
+            Read::Event(1),
+            Read::Nothing(libc::ENOBUFS),
+            Read::Event(2),
+            Read::Nothing(libc::EAGAIN),
+            Read::Event(3),
+        ]);
+        assert_eq!(passed, [Some(1), None, Some(2)]);
+        assert_eq!(left, 1, "read at the socket's next wake");
+    }
+
+    /// Nothing for any other reason ends the read without an overrun.
+    #[test]
+    fn nothing_else_is_an_overrun() {
+        let (passed, left) = drained(vec![Read::Nothing(libc::EINVAL), Read::Event(1)]);
+        assert_eq!((passed, left), (Vec::new(), 1));
     }
 }
