@@ -186,7 +186,12 @@ fn couch_mode_is_set_from_the_pane() {
     app.global::<Couch>()
         .set_config_path("/somewhere/gui.toml".into());
     settle();
-    for id in ["settings-couch-mode", "settings-couch-scale"] {
+    for id in [
+        "settings-couch-mode",
+        "settings-couch-scale",
+        "settings-help-couch",
+        "settings-help-notify",
+    ] {
         assert!(find_by_accessible_id(&app, id).is_some(), "{id}");
     }
     // Where the file is kept is About's to say, not this pane's.

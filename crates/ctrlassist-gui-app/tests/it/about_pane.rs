@@ -118,6 +118,7 @@ fn the_pane_shows_the_rows_the_window_holds() {
         "about-issue-button",
         "about-diagnostics-button",
         "about-notices-button",
+        "about-help-components",
     ] {
         assert!(find_by_accessible_id(&app, id).is_some(), "{id}");
     }

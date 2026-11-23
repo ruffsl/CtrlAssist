@@ -87,6 +87,8 @@ export component SettingsPane inherits Rectangle {
         // the wire.
         Group {
             title: @tr("NOTIFY ME WHEN");
+            help: @tr("Desktop notifications, sent by the tray: they need it running, and are kept with it. What you start or stop from the tray itself isn't announced, since you can see it there.");
+            help-id: "settings-help-notify";
 
             NotificationRow {
                 label: @tr("A setup starts or stops");
@@ -153,6 +155,8 @@ export component SettingsPane inherits Rectangle {
         // the preference through the `Couch` callbacks.
         Group {
             title: @tr("COUCH MODE");
+            help: @tr("For using this window from across the room, on a TV, with a remote or a pad. It changes this window only: not the tray, and not what a profile does.");
+            help-id: "settings-help-couch";
 
             SettingRow {
                 label: @tr("Couch mode");

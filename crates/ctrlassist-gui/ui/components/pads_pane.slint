@@ -430,6 +430,8 @@ component PadDetail inherits Rectangle {
                 // leads a TV's, with a line of state beside it.
                 Group {
                     title: @tr("STATUS");
+                    help: @tr("What the chips above say. Connected: plugged in or paired now. Remembered: seen before and away; a profile can still name it. In a profile: a running profile is using it. Hidden or Grabbed: how games are kept from seeing it meanwhile. Virtual: made by a running profile for games to read. Identify buzzes the pad, to tell which one it is.");
+                    help-id: root.id-prefix + "pads-help-status";
 
                     HorizontalLayout {
                         spacing: Design.gap-row;
@@ -487,6 +489,8 @@ component PadDetail inherits Rectangle {
                 // profile's.
                 Group {
                     title: @tr("PROFILES");
+                    help: @tr("Every profile that names this pad, the part it plays there, and how the profile is. The pencil opens the profile, where it is started, stopped and changed.");
+                    help-id: root.id-prefix + "pads-help-profiles";
 
                     if root.pad.profiles.length == 0: Text {
                         text: @tr("No profile names this pad. Pick it in a profile to use it.");
@@ -551,6 +555,8 @@ component PadDetail inherits Rectangle {
                 // -- INFO --
                 Group {
                     title: @tr("INFO");
+                    help: @tr("What tells this pad from others. A profile names a pad by its ID, for this pad and no other, or by its model, for any pad of that kind.");
+                    help-id: root.id-prefix + "pads-help-info";
                     if !root.pad.is-virtual: LabeledRow {
                         label: @tr("Pad ID");
                         value: root.pad.id;

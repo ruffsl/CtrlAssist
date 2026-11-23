@@ -281,6 +281,15 @@ Found while building it, for review:
 
 **A pad a profile names that the daemon doesn't know** (found by the maintainer, 2026-11-22, with pads that had been forgotten). The window showed such a pad as text, with no dropdown, so there was no picking another: the same for any pad of a model. It is a dropdown as any other, reading "bd:14 (not known)" or "Any pad of model 054c:09cc". The header's name lost its check mark, which is its row's in the list: with it "default" was cut to "defa…". And a profile whose pads aren't there reads "Waiting", where it read "Waits for a pad": the chip was the header's widest and left the name no room.
 
+**Help in the gaps** (2026-11-22; the maintainer's choice of places, earlier: the header's chips, Identify, and Settings' groups). Each group's title can carry an "i", as a profile's PRESET card had: the shared `Group` gained an optional `help`, which TisVlay's hasn't, with a row of its own for the keys. It says what the group is about, and where a pane's header has chips, what each chip means, since a chip has no room to say so and nothing to hover that a remote could reach.
+
+- **Pads:** STATUS (the chips, and Identify), PROFILES, INFO (what a profile names a pad by).
+- **Profiles:** STATUS (each word a profile can be at), INPUTS (that picking the other part's pad swaps the two), OUTPUTS (what an identity changes, and that changing it replaces the virtual pad).
+- **Settings:** NOTIFY ME WHEN (the tray sends them; its own starts and stops aren't said), COUCH MODE (this window only).
+- **About:** COMPONENTS (what a chip that isn't green means).
+
+Not given one: a virtual pad's and a remembered pad's DANGER ZONE, About's LICENSE, and the rows that have a sentence beside them already.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps

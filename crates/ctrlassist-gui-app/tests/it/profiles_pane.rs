@@ -567,6 +567,13 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
     activate_shown(&app, "profiles-start");
     assert_eq!(*asked.borrow(), ["start couch"]);
     assert!(find_by_accessible_id(&app, "profiles-field-mode").is_some());
+    for id in [
+        "profiles-help-status",
+        "profiles-help-inputs",
+        "profiles-help-outputs",
+    ] {
+        assert!(find_by_accessible_id(&app, id).is_some(), "{id}");
+    }
 
     // Delete asks first.
     activate_shown(&app, "profiles-delete");

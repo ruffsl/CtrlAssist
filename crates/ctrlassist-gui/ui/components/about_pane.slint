@@ -389,6 +389,8 @@ export component AboutPane inherits Rectangle {
             // -- COMPONENTS (data-driven; one row per peer with stacked status + version pills) --
             Group {
                 title: @tr("COMPONENTS");
+                help: @tr("The parts of CtrlAssist and the release each one runs. A chip that isn't green says that part runs another release than this window: restart it, or the one left over from before an upgrade. The folder button opens where a part keeps its files.");
+                help-id: "about-help-components";
 
                 for c[i] in root.components: ComponentRow {
                     entry: c;

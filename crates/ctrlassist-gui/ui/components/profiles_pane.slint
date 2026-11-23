@@ -650,6 +650,8 @@ component ProfileDetail inherits Rectangle {
                 // an update to take, its pads, who has control.
                 Group {
                     title: @tr("STATUS");
+                    help: @tr("How the profile is, as its header says. Running: started, with its virtual pad there. Held: a pad it uses has left, and it waits for it. Failed: it stopped working, and Stop clears it. Ready: its pads are connected and free. Waiting: a pad it names is away or in use. Not set up: its pads are still to choose.");
+                    help-id: root.id-prefix + "profiles-help-status";
 
                     HorizontalLayout {
                         spacing: Design.gap-row;
@@ -800,8 +802,10 @@ component ProfileDetail inherits Rectangle {
                 // names.
                 Card {
                     title: @tr("INPUTS");
+                    help: @tr("The pads this profile takes, each with whether it is connected. Picking the pad another part has swaps the two. The pencil opens the pad.");
                     id-prefix: root.id-prefix;
                     key: "inputs";
+                    nav-row: root.caption-row;
 
                     for field in root.profile.input-fields: FieldRow {
                         profile: root.profile.name;
@@ -864,8 +868,10 @@ component ProfileDetail inherits Rectangle {
                 // on the first.
                 Card {
                     title: @tr("OUTPUTS");
+                    help: @tr("The virtual pad games read in place of the real ones, and what it presents itself as: some games show its buttons by that, and a DualSense passes on lights and trigger effects. Changing it replaces the virtual pad, which a game sees as its controller reconnecting.");
                     id-prefix: root.id-prefix;
                     key: "outputs";
+                    nav-row: root.caption-row;
 
                     for field in root.profile.output-fields: FieldRow {
                         profile: root.profile.name;

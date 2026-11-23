@@ -337,6 +337,14 @@ fn virtual_pads_follow_the_real_ones() {
     crate::support::activate_shown(&app, "pads-identify");
     assert_eq!(*buzzed.borrow(), ["virtual:quick/virtual"]);
     assert!(find_by_accessible_id(&app, "pads-forget").is_none());
+    // Each group says what it is about, behind its "i".
+    for id in ["pads-help-status", "pads-help-profiles", "pads-help-info"] {
+        let help = find_by_accessible_id(&app, id).unwrap_or_else(|| unreachable!("no {id}"));
+        assert!(
+            !help.accessible_description().unwrap_or_default().is_empty(),
+            "{id}"
+        );
+    }
 
     // One that presents itself as nobody else's is CtrlAssist's own.
     let mut generic = quick();

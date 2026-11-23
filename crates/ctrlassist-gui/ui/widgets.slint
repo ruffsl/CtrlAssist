@@ -1778,6 +1778,17 @@ export component SettingRow {
 
 export component Group {
     in property <string> title;
+    /// What the group is about, behind an "i" after its title; none
+    /// where empty. `help-id` is the "i"'s accessible id.
+    in property <string> help;
+    in property <string> help-id;
+    // The "i" is a stop of a row of its own.
+    property <int> help-row;
+    init => {
+        if (root.help != "") {
+            root.help-row = Nav.next-row-id();
+        }
+    }
     in property <length> body-padding: Design.pad-card;
     /// Vertical spacing between body children. Default
     /// `Design.gap-block` gives interactive rows (FormRow,
@@ -1800,6 +1811,8 @@ export component Group {
         HorizontalLayout {
             min-height: Design.size-card-header;
             padding-left: 2px;
+            spacing: Design.gap-form;
+            alignment: start;
             // Center the title in the reserved band (matching cards whose
             // header carries action icons), so the label sits at the same
             // height whether or not the header has actions.
@@ -1811,6 +1824,14 @@ export component Group {
                     font-size: Design.font-mini;
                     font-weight: 600;
                     letter-spacing: 0.6px;
+                }
+            }
+            if root.help != "": VerticalLayout {
+                alignment: center;
+                ContextualHelpButton {
+                    nav-row: root.help-row;
+                    text: root.help;
+                    accessible-id: root.help-id;
                 }
             }
         }
