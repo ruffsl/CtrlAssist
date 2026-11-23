@@ -9,3 +9,4 @@ Things the design depends on that have not been observed, or risks accepted for 
 - [`suspend-and-reconnect.md`](suspend-and-reconnect.md) — suspend, resume and a Bluetooth drop are untested.
 - [`realtime-refused.md`](realtime-refused.md) — without real-time scheduling the latency tail is not dependable under load.
 - [`identity-unverified-input.md`](identity-unverified-input.md) — virtual pad identities were detected, not played.
+- [`lz4-flex-advisory.md`](lz4-flex-advisory.md) — zenoh pins an lz4_flex with a decompression advisory, unreachable while compression is off.

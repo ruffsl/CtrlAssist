@@ -103,6 +103,35 @@ skip = [
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
+# Triaged advisories, each with its reason. TisVlay's list, with the paths
+# traced through this workspace's tree.
+ignore = [
+    # Unmaintained, no safe upgrade — accepted:
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.x unmaintained; no safe upgrade; transitive via zenoh-ext 1.10" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; no safe upgrade; transitive proc-macro via token-cell under zenoh-keyexpr" },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained; no safe upgrade; unconditional via zenoh-config 1.10/serde_yaml; CtrlAssist builds its zenoh config in code, never from YAML; revisit on a zenoh bump" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; no safe upgrade; transitive via winit sctk-adwaita" },
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils unmaintained; no safe upgrade; build-time only, via spin_on under slint-build and slint-macros; revisit when spin_on drops pin-utils" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained (soft-deprecated upstream); no safe upgrade; transitive via i-slint-core; revisit when Slint moves off it" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained (listed alongside chrono's deprecation); no safe upgrade; transitive via zenoh-util and uhlc; revisit on the next zenoh release" },
+    # zbus 6 absorbed its helper crates, which zbus 5 still depends on.
+    # ashpd, slint's winit backend, ksni and notify-rust are all on zbus 5,
+    # and so are the tray and the settings window to match; revisit together
+    # on the zbus 6 migration.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained (merged into zbus 6 as its wire module); no safe upgrade; via zbus 5" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6 as its names module); no safe upgrade; via zbus 5" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6); no safe upgrade; via zbus 5" },
+    # Fixed upstream, but not yet reachable:
+    { id = "RUSTSEC-2026-0041", reason = "lz4_flex decompression memory leak; fixed >=0.11.6/>=0.12.1; zenoh-transport 1.10.2, the latest zenoh, still pulls in 0.10, whose calls are behind its transport_compression feature, which is off; revisit on the next zenoh release; see docs/concerns/lz4-flex-advisory.md" },
+    # Assessed, but not listed here: unsound advisories against transitive
+    # crates, which cargo-deny doesn't gate (`unsound` defaults to
+    # `workspace`), so an ignore entry would only warn that it's unused.
+    # Scanners reading the release binaries (`cargo audit bin`, Trivy,
+    # grype) still report them:
+    #   RUSTSEC-2026-0253  lru 0.16 (`LruCache::pop` panic safety), via
+    #                      zenoh-ext 1.10.2; fixed in >=0.18.2; revisit on
+    #                      the next zenoh release.
+]
 
 [sources]
 unknown-registry = "deny"

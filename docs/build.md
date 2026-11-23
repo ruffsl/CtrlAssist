@@ -99,7 +99,7 @@ Vendored code keeps upstream's formatting and is outside the workspace's lints, 
 
 `just deny` holds the graph to one version of each crate. When an update brings a second version of something, first try to move the crates that pin the old one; only if upstream forces the duplicate does it go in `packaging/licensing/deny.toml`'s skip-list, with its reason. A skip that no longer matches anything fails the gate, so the list can't outlive what it excuses.
 
-`just audit` checks the RustSec advisory database. It is not part of `just check`: advisories change without the lockfile changing, so they are checked on their own schedule rather than gating unrelated work.
+`just audit` checks the RustSec advisory database. It is not part of `just check`: advisories change without the lockfile changing, so they are checked on their own schedule rather than gating unrelated work. An advisory with no upgrade that reaches it is triaged into `packaging/licensing/deny.toml`'s ignore list, each entry with its reason and the dependency path it arrives by; one that is fixed upstream but held back gets a doc under `docs/concerns/` too.
 
 ### Review triggers
 
