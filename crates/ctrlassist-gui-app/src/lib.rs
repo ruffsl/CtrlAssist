@@ -97,6 +97,13 @@ pub fn run() -> Result<()> {
             info!("ctrlassist-gui is open already: handed over to that window");
             return Ok(());
         }
+        // A window holds the name and didn't answer: not a missing bus,
+        // and not a reason to open a second window beside it.
+        Ok((dbus::ClaimResult::Unanswered(error), _)) => {
+            return Err(error.context(
+                "a ctrlassist-gui holds the window's name on the session bus and didn't answer",
+            ));
+        }
         Err(error) => {
             warn!(
                 error = format!("{error:#}"),

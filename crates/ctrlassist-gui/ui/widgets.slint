@@ -751,21 +751,25 @@ export component DangerBtn inherits ThemedButton {
 // ThemedSwitch — on/off toggle.
 // =============================================================================
 //
-// Replaces the std-widgets `Switch` on the same contract: a user toggle
-// writes `checked` and fires `toggled`, severing the caller's binding
-// as the std widget does, so callers re-sync through the model. A pill
-// track that fills with the accent when on, with a sliding knob.
+// Replaces the std-widgets `Switch`, but on another contract: a user
+// toggle only asks, firing `toggled` with the state asked for, and the
+// switch shows `checked` as the caller binds it. It never writes
+// `checked` itself, since writing a property removes its binding: the
+// switch would stop following the value it shows after one toggle (one
+// set elsewhere, as from the tray, wouldn't reach it) and a change that
+// was refused would leave it showing the state asked for. A pill track
+// that fills with the accent when on, with a sliding knob.
 
 export component ThemedSwitch inherits Focusable {
-    in-out property <bool> checked;
+    in property <bool> checked;
+    // The state asked for: the opposite of `checked`.
     callback toggled(bool);
 
     accessible-role: switch;
     accessible-checkable: true;
     accessible-checked: root.checked;
     activated => {
-        root.checked = !root.checked;
-        root.toggled(root.checked);
+        root.toggled(!root.checked);
     }
 
     width: 40px;

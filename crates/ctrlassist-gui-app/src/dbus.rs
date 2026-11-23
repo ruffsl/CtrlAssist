@@ -55,6 +55,11 @@ pub(crate) enum ClaimResult {
     /// Another instance owns the name; an `Activate` call has
     /// already been proxied to it. Exit cleanly.
     Proxied,
+    /// Another instance owns the name and the `Activate` handed to it
+    /// failed: it is hung, or isn't a window that answers. There is a
+    /// bus, so this is not the case of none; a second window isn't
+    /// opened beside the one that holds the name.
+    Unanswered(anyhow::Error),
 }
 
 /// Connect to the user bus, register the `Gui1` and
@@ -143,8 +148,10 @@ async fn claim_on_connection(
                 bus_name = GUI_BUS_NAME,
                 "Another ctrlassist-gui instance is running; proxying Activate and exiting"
             );
-            proxy_activate(&connection).await?;
-            Ok((ClaimResult::Proxied, activation))
+            match proxy_activate(&connection).await {
+                Ok(()) => Ok((ClaimResult::Proxied, activation)),
+                Err(error) => Ok((ClaimResult::Unanswered(error), activation)),
+            }
         }
     }
 }
@@ -382,5 +389,73 @@ mod tests {
             activation.cold_spawn_token.lock().unwrap().as_deref(),
             Some("kept")
         );
+    }
+
+    /// A private `dbus-daemon`, killed when dropped.
+    struct PrivateBus {
+        child: std::process::Child,
+        address: String,
+    }
+
+    impl Drop for PrivateBus {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    /// A bus of the test's own; none where `dbus-daemon` isn't on PATH,
+    /// which the dev shell doesn't carry.
+    fn private_bus() -> Option<PrivateBus> {
+        use std::io::BufRead as _;
+        let mut child = std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut address = String::new();
+        let stdout = child.stdout.take()?;
+        std::io::BufReader::new(stdout)
+            .read_line(&mut address)
+            .ok()?;
+        Some(PrivateBus {
+            child,
+            address: address.trim().to_string(),
+        })
+    }
+
+    /// The name held by something that doesn't answer an `Activate` is
+    /// a window that is there, not a missing bus: the launch ends, where
+    /// it used to open a second window.
+    #[tokio::test]
+    async fn a_name_held_by_one_that_doesnt_answer_is_not_a_missing_bus() {
+        let Some(bus) = private_bus() else {
+            return;
+        };
+        let connect = || async {
+            zbus::connection::Builder::address(bus.address.as_str())
+                .expect("dbus-daemon printed an address")
+                .build()
+                .await
+                .expect("the private bus takes a connection")
+        };
+        // The name, with an object at the window's path that has no
+        // `org.freedesktop.Application`: an `Activate` fails at once.
+        let holder = connect().await;
+        holder
+            .object_server()
+            .at(GUI_OBJECT_PATH, GuiService::new(None))
+            .await
+            .expect("the object is served");
+        holder
+            .request_name(GUI_BUS_NAME)
+            .await
+            .expect("the name is free on a bus of the test's own");
+
+        let (claimed, _) = claim_on_connection(connect().await, None)
+            .await
+            .expect("a bus is there");
+        assert!(matches!(claimed, ClaimResult::Unanswered(_)));
     }
 }

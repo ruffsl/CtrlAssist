@@ -355,6 +355,25 @@ component FieldRow inherits Rectangle {
                     maximum: root.field.max;
                     committed(v) => { Profiles.set-number(root.profile, root.field.key, v); }
                 }
+                // A switch the daemon serves other than Managed, which
+                // the STATUS group shows.
+                if root.field.kind == "switch" && !root.field.read-only: HorizontalLayout {
+                    horizontal-stretch: 1;
+                    alignment: start;
+                    VerticalLayout {
+                        alignment: center;
+                        ThemedSwitch {
+                            accessible-label: root.field.label;
+                            accessible-id: root.control-id;
+                            nav-row: row.row-id;
+                            enabled: root.enabled;
+                            checked: root.field.checked;
+                            toggled(on) => {
+                                Profiles.set-field(root.profile, root.field.key, on ? "true" : "false");
+                            }
+                        }
+                    }
+                }
             }
             // The slot at the row's end is there on every row, so the
             // controls end at one edge.

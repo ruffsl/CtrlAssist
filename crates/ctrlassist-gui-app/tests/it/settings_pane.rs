@@ -178,6 +178,46 @@ fn a_switch_and_the_test_button_ask_the_tray() {
     );
 }
 
+/// A switch asks and shows what the tray then publishes, after a toggle
+/// as before it: a refused request leaves it showing the tray's
+/// setting, and a change made elsewhere reaches it.
+#[test]
+fn a_switch_shows_the_tray_s_setting_and_not_what_was_asked() {
+    let app = app();
+    let tray_says = |setup_started: bool| {
+        Snapshot {
+            available: true,
+            tray_available: true,
+            notifications: Some(NotificationSettings {
+                setup_started,
+                ..NotificationSettings::default()
+            }),
+            ..Snapshot::default()
+        }
+        .show(&app);
+        settle();
+    };
+    tray_says(true);
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    app.global::<Tray>().on_set_notification({
+        let asked = Rc::clone(&asked);
+        move |key, on| asked.borrow_mut().push(format!("{key}={on}"))
+    });
+    let id = "settings-notify-setup-started";
+    find_by_accessible_id(&app, id)
+        .unwrap()
+        .invoke_accessible_default_action();
+    settle();
+    assert_eq!(*asked.borrow(), ["setup_started=false"]);
+    // Nothing published yet, or the tray refused: as it was.
+    assert_eq!(switch_is(&app, id), (true, true));
+    tray_says(false);
+    assert_eq!(switch_is(&app, id), (false, true));
+    // Turned on again from the tray's file or another window.
+    tray_says(true);
+    assert_eq!(switch_is(&app, id), (true, true));
+}
+
 /// Couch mode's two controls are in the pane, with where the
 /// preference is kept.
 #[test]

@@ -10,7 +10,7 @@
 //! missing; the next change that completes it is put. What the window
 //! holds is dropped once the kept profile says the same, or on Discard.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
 use ctrlassist::form::{self, Field, Kind, Values};
@@ -672,11 +672,143 @@ fn refused(what: &str, error: &ctrlassist::Error) -> ErrorState {
     }
 }
 
+/// A change to put: a profile's whole text as the form makes it, and
+/// whether a setup running it takes it up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Change {
+    name: String,
+    /// The number the window gave it, counting up; the latest asked of
+    /// a profile is the one whose outcome is shown.
+    number: u64,
+    toml: String,
+    /// A profile still short of pads is kept as not set up, and a setup
+    /// running it can't take that up, so it isn't asked to.
+    update: bool,
+}
+
+/// Why a change didn't come to be.
+#[derive(Debug)]
+enum Failed {
+    /// The daemon didn't keep it.
+    Put(ctrlassist::Error),
+    /// It was kept, and the setup running it didn't take it up.
+    Update(ctrlassist::Error),
+}
+
+/// Where changes go to be put, one at a time and in the order they were
+/// asked: each is its own task otherwise, and a quick run of them (an
+/// arrow held on the virtual-pad count) could land out of order.
+#[derive(Clone)]
+struct Writer(tokio::sync::mpsc::UnboundedSender<Change>);
+
+thread_local! {
+    /// The number of the last change asked of each profile whose
+    /// outcome is still to come.
+    static ASKED: RefCell<BTreeMap<String, u64>> = const { RefCell::new(BTreeMap::new()) };
+    /// How many changes have been asked.
+    static COUNTED: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Of a run of changes, those still to put: each carries its profile's
+/// whole text, so one a later change of the same profile follows is
+/// left out. The rest keep their order.
+fn latest(batch: Vec<Change>) -> Vec<Change> {
+    let mut kept: Vec<Change> = Vec::new();
+    for change in batch {
+        kept.retain(|earlier| earlier.name != change.name);
+        kept.push(change);
+    }
+    kept
+}
+
+/// Puts a change, and has a setup running it take it up.
+async fn apply(daemon: &DaemonClient, change: &Change) -> Result<(), Failed> {
+    daemon
+        .put_profile(&change.name, &change.toml)
+        .await
+        .map_err(Failed::Put)?;
+    // A setup running it takes it at once, as the tray's does.
+    if change.update
+        && daemon
+            .setup(&change.name)
+            .map_err(Failed::Update)?
+            .is_some()
+    {
+        daemon
+            .update_setup(&change.name, true)
+            .await
+            .map_err(Failed::Update)?;
+    }
+    Ok(())
+}
+
+/// Puts the changes as they come, one after another.
+async fn write(
+    mut changes: tokio::sync::mpsc::UnboundedReceiver<Change>,
+    daemon: DaemonClient,
+    app: slint::Weak<AppWindow>,
+) {
+    while let Some(first) = changes.recv().await {
+        let mut batch = vec![first];
+        while let Ok(next) = changes.try_recv() {
+            batch.push(next);
+        }
+        for change in latest(batch) {
+            let outcome = apply(&daemon, &change).await;
+            on_ui(&app, move |app| {
+                done(&app, &change.name, change.number, outcome);
+            });
+        }
+    }
+}
+
+/// What a change came to. Only the latest asked of a profile is said: an
+/// earlier one is carried whole by the later, whose outcome is the one
+/// that counts. A change the daemon didn't keep is dropped from what the
+/// window holds; one that was kept stays held until the daemon says it,
+/// as any is.
+fn done(app: &AppWindow, name: &str, number: u64, outcome: Result<(), Failed>) {
+    let latest = ASKED.with_borrow(|asked| asked.get(name) == Some(&number));
+    if !latest {
+        return;
+    }
+    ASKED.with_borrow_mut(|asked| asked.remove(name));
+    let errors = app.global::<Errors>();
+    // The banner a change to this profile raised, and nothing else.
+    let kind = format!("change:{name}");
+    let banner = match outcome {
+        Ok(()) => {
+            if errors.get_profiles().kind == kind {
+                errors.set_profiles(ErrorState::default());
+            }
+            return;
+        }
+        Err(Failed::Put(error)) => {
+            HELD.with_borrow_mut(|held| held.remove(name));
+            render(app);
+            refused(&format!("The change to '{name}' couldn't be kept"), &error)
+        }
+        Err(Failed::Update(error)) => ErrorState {
+            tone: SharedString::from("warn"),
+            ..refused(
+                &format!(
+                    "The change to '{name}' was kept, but the running profile couldn't take it up"
+                ),
+                &error,
+            )
+        },
+    };
+    errors.set_profiles(ErrorState {
+        kind: SharedString::from(kind),
+        ..banner
+    });
+}
+
 /// A field was set. The window holds the change and shows it; if it
 /// makes a profile, the profile is put and a setup running it updated.
 /// The held change goes once the kept profile says the same, or is
 /// dropped with a banner if the daemon refuses it.
-fn set_field(app: &AppWindow, daemon: &DaemonClient, name: &str, key: &str, value: &str) {
+fn set_field(app: &AppWindow, writer: &Writer, name: &str, key: &str, value: &str) {
     let Some(mut values) = values_of(name) else {
         return;
     };
@@ -685,7 +817,7 @@ fn set_field(app: &AppWindow, daemon: &DaemonClient, name: &str, key: &str, valu
     }
     KNOWN.with_borrow(|known| change_places(known, &mut values, key, value));
     values.insert(key.to_string(), value.to_string());
-    let (toml, complete) = KNOWN.with_borrow(|known| {
+    let change = KNOWN.with_borrow(|known| {
         if key == form::PRESET {
             // Another preset: its own fields at their defaults, and
             // none of the last one's that it doesn't have.
@@ -703,42 +835,40 @@ fn set_field(app: &AppWindow, daemon: &DaemonClient, name: &str, key: &str, valu
                 }
             }
         }
-        // What the daemon keeps: a profile, or a preset that lacks
-        // only its pads, which it keeps as not set up.
-        let toml = form::to_toml(&known.fields, &values);
-        let keepable = unfinished_why(&known.fields, &values).is_none()
-            || !ctrlassist_protocol::profile::Profile::unchosen(&toml).is_empty();
-        (toml, keepable)
+        change(&known.fields, name, &values)
     });
     HELD.with_borrow_mut(|held| held.insert(name.to_string(), values));
     render(app);
-    if !complete {
+    let Some(mut change) = change else {
         return;
+    };
+    change.number = COUNTED.get() + 1;
+    COUNTED.set(change.number);
+    ASKED.with_borrow_mut(|asked| asked.insert(name.to_string(), change.number));
+    if writer.0.send(change).is_err() {
+        warn!(
+            profile = name,
+            "the change wasn't put: nothing writes changes any more"
+        );
     }
-    let (weak, daemon, name) = (app.as_weak(), daemon.clone(), name.to_string());
-    tokio::spawn(async move {
-        let outcome = async {
-            daemon.put_profile(&name, &toml).await?;
-            // A setup running it takes it at once, as the tray's does.
-            if daemon.setup(&name)?.is_some() {
-                daemon.update_setup(&name, true).await?;
-            }
-            Ok::<(), ctrlassist::Error>(())
-        }
-        .await;
-        on_ui(&weak, move |app| {
-            let banner = match outcome {
-                Ok(()) => ErrorState::default(),
-                Err(error) => {
-                    // Back to what is kept.
-                    HELD.with_borrow_mut(|held| held.remove(&name));
-                    render(&app);
-                    refused("The change couldn't be applied", &error)
-                }
-            };
-            app.global::<Errors>().set_profiles(banner);
-        });
-    });
+}
+
+/// The change to put for `values`, if they are something the daemon
+/// keeps: a profile, or a preset that lacks only its pads, which it
+/// keeps as not set up and no setup can take up. Its number is still
+/// to give.
+fn change(fields: &[Field], name: &str, values: &Values) -> Option<Change> {
+    let toml = form::to_toml(fields, values);
+    let unchosen = ctrlassist_protocol::profile::Profile::unchosen(&toml);
+    if unfinished_why(fields, values).is_some() && unchosen.is_empty() {
+        return None;
+    }
+    Some(Change {
+        name: name.to_string(),
+        number: 0,
+        toml,
+        update: unchosen.is_empty(),
+    })
 }
 
 /// Before `key` takes the pad `value`: if another part of the profile
@@ -850,15 +980,18 @@ pub fn bind_local(app: &AppWindow, nav: &NavHandles) {
 pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient, nav: &NavHandles) {
     bind_local(app, nav);
     let profiles = app.global::<Profiles>();
+    let (changes, to_write) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(write(to_write, daemon.clone(), app.as_weak()));
+    let writer = Writer(changes);
 
-    let (weak, client) = (app.as_weak(), daemon.clone());
+    let (weak, client) = (app.as_weak(), writer.clone());
     profiles.on_set_field(move |name, key, value| {
         if let Some(app) = weak.upgrade() {
             set_field(&app, &client, &name, &key, &value);
         }
     });
     // Back to its default: what leaving the field out means.
-    let (weak, client) = (app.as_weak(), daemon.clone());
+    let (weak, client) = (app.as_weak(), writer.clone());
     profiles.on_reset_field(move |name, key| {
         let default = KNOWN.with_borrow(|known| {
             known
@@ -871,7 +1004,7 @@ pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient, nav: &NavHandles) {
             set_field(&app, &client, &name, &key, &default);
         }
     });
-    let (weak, client) = (app.as_weak(), daemon.clone());
+    let (weak, client) = (app.as_weak(), writer);
     profiles.on_set_number(move |name, key, number| {
         if let Some(app) = weak.upgrade() {
             set_field(&app, &client, &name, &key, &number.to_string());
@@ -956,5 +1089,91 @@ pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient, nav: &NavHandles) {
 /// state between windows.
 pub fn forget_held() {
     HELD.with_borrow_mut(BTreeMap::clear);
+    ASKED.with_borrow_mut(BTreeMap::clear);
     KNOWN.set(Known::default());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn numbered(name: &str, number: u64) -> Change {
+        Change {
+            name: name.to_string(),
+            number,
+            toml: format!("# {number}\n"),
+            update: true,
+        }
+    }
+
+    #[test]
+    fn of_a_run_of_changes_the_last_of_each_profile_is_put_in_order() {
+        let put = latest(vec![
+            numbered("a", 1),
+            numbered("b", 2),
+            numbered("a", 3),
+            numbered("c", 4),
+            numbered("b", 5),
+        ]);
+        let numbers: Vec<u64> = put.iter().map(|change| change.number).collect();
+        assert_eq!(numbers, [3, 4, 5]);
+    }
+
+    #[test]
+    fn a_profile_still_short_of_pads_is_put_and_no_setup_asked_to_take_it_up() {
+        let fields = form::fields();
+        let mut values = Values::new();
+        values.insert(form::PRESET.to_string(), "unicast".to_string());
+        let short = change(&fields, "den", &values).expect("kept as not set up");
+        assert!(!short.update);
+        values.insert("pad".to_string(), "address:0c:27:56:4f:bd:14".to_string());
+        assert!(change(&fields, "den", &values).expect("a profile").update);
+        // Not a profile, whatever its pads.
+        values.insert(form::PRESET.to_string(), "sideways".to_string());
+        assert_eq!(change(&fields, "den", &values), None);
+    }
+
+    #[test]
+    fn only_the_last_change_s_outcome_is_said_and_one_kept_stays_held() {
+        i_slint_backend_testing::init_no_event_loop();
+        forget_held();
+        let app = AppWindow::new().expect("the window builds on the testing backend");
+        let errors = app.global::<Errors>();
+        let refused = || ctrlassist::Error::Rpc {
+            code: ctrlassist::ErrorCode::BadRequest,
+            message: "no".to_string(),
+        };
+        let held = || HELD.with_borrow(|held| held.contains_key("den"));
+        HELD.with_borrow_mut(|held| held.insert("den".to_string(), Values::new()));
+        let ask = |number: u64| {
+            ASKED.with_borrow_mut(|asked| asked.insert("den".to_string(), number));
+        };
+
+        // The first of two fails: the second carries it whole and is
+        // still to come, so nothing is said or dropped yet.
+        ask(2);
+        done(&app, "den", 1, Err(Failed::Put(refused())));
+        assert!(held());
+        assert_eq!(errors.get_profiles(), ErrorState::default());
+
+        // Kept, and not taken up by the setup running it: said as
+        // that, and held until the daemon says it.
+        done(&app, "den", 2, Err(Failed::Update(refused())));
+        assert!(held());
+        let banner = errors.get_profiles();
+        assert_eq!(banner.tone, "warn");
+        assert!(banner.title.contains("was kept"), "{}", banner.title);
+
+        // The next that lands clears what the last raised.
+        ask(3);
+        done(&app, "den", 3, Ok(()));
+        assert_eq!(errors.get_profiles(), ErrorState::default());
+
+        // One the daemon didn't keep is dropped from what is held.
+        ask(4);
+        done(&app, "den", 4, Err(Failed::Put(refused())));
+        assert!(!held());
+        assert!(errors.get_profiles().title.contains("couldn't be kept"));
+        forget_held();
+    }
 }

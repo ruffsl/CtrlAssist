@@ -860,6 +860,78 @@ fn a_pick_is_the_pad_shown_when_the_list_opened() {
     );
 }
 
+/// Managed follows the profile as the daemon keeps it, after a toggle
+/// as before: the switch asks, and shows what is kept.
+#[test]
+fn the_managed_switch_follows_the_profile_after_a_toggle() {
+    let app = app();
+    let asked = record_set_field(&app);
+    app.global::<Profiles>().invoke_select("couch".into());
+    settle();
+    let checked = |app: &AppWindow| {
+        find_by_accessible_id(app, "profiles-managed")
+            .and_then(|switch| switch.accessible_checked())
+            .unwrap_or_default()
+    };
+    let chip = |app: &AppWindow| {
+        find_by_accessible_id(app, "profiles-managed-chip")
+            .and_then(|chip| chip.accessible_label())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let kept = |app: &AppWindow, managed: bool| {
+        let mut known_now = known();
+        let couch = known_now
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.name == "couch")
+            .unwrap();
+        couch.toml = format!("{COUCH}managed = {managed}\n");
+        profiles::show(app, known_now);
+        settle();
+    };
+    assert!(!checked(&app));
+    activate_shown(&app, "profiles-managed");
+    assert_eq!(*asked.borrow(), ["couch managed true"]);
+    // Asked, not kept: as it was.
+    assert!(!checked(&app));
+    kept(&app, true);
+    assert!(checked(&app));
+    assert_eq!(chip(&app), "Managed");
+    // Turned off from the tray, then on again from a file.
+    kept(&app, false);
+    assert!(!checked(&app));
+    assert_eq!(chip(&app), "Unmanaged");
+    kept(&app, true);
+    assert!(checked(&app));
+}
+
+/// A switch the daemon serves, other than Managed, gets a control in
+/// its card, as any field does.
+#[test]
+fn a_served_switch_has_a_control_of_its_own() {
+    use ctrlassist::form::{Field, Kind};
+    let app = app();
+    let asked = record_set_field(&app);
+    let mut known_now = known();
+    known_now.fields.push(Field {
+        key: "lights".to_string(),
+        label: "Lights".to_string(),
+        help: String::new(),
+        kind: Kind::Switch,
+        presets: Vec::new(),
+        default: "false".to_string(),
+        group: form::ARRANGEMENT.to_string(),
+    });
+    profiles::show(&app, known_now);
+    app.global::<Profiles>().invoke_select("couch".into());
+    settle();
+    let switch = find_by_accessible_id(&app, "profiles-field-lights").expect("a control");
+    assert_eq!(switch.accessible_checked(), Some(false));
+    activate_shown(&app, "profiles-field-lights");
+    assert_eq!(*asked.borrow(), ["couch lights true"]);
+}
+
 /// A profile deleted while it runs leaves its setup running: the setup
 /// keeps a row, with its pads and virtual pads as it has them, and its
 /// Stop.

@@ -27,7 +27,7 @@ component NotificationRow inherits SettingRow {
         accessible-id: root.switch-id;
         checked: root.checked;
         enabled: root.enabled;
-        toggled => { root.toggled(self.checked); }
+        toggled(on) => { root.toggled(on); }
     }
 }
 
