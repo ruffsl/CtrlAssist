@@ -78,9 +78,11 @@ SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST=="/run/ctrlassist/hide/port-%b", GOTO=
 GOTO="ctrlassist_hide_end"
 
 # Hidraw nodes: by their HID device, by its own unique string (an
-# address on Bluetooth, set as the device is made), or by its USB port
-# and its model together, so that a keyboard, a headset or a security key
-# later plugged into that port is never taken for the pad. The imports
+# address on Bluetooth, set as the device is made), or, for a HID device
+# on the USB bus, by its USB port and its model together, so that a
+# keyboard, a headset or a security key later plugged into that port is
+# never taken for the pad. A pad on Bluetooth through the kernel's HIDP
+# has a USB interface above it too, the adapter's, which isn't its port. The imports
 # have lines of their own: udev compares a line's ENV keys before it runs
 # the line's imports.
 LABEL="ctrlassist_hide_hidraw"
@@ -92,7 +94,7 @@ SUBSYSTEMS=="hid", TEST=="/run/ctrlassist/hide/hid-%b", GOTO="ctrlassist_hide"
 IMPORT{parent}="HID_UNIQ"
 IMPORT{parent}="HID_ID"
 ENV{HID_UNIQ}=="?*", ENV{HID_UNIQ}!="*/*", ENV{HID_ID}=="?*", ENV{HID_ID}!="*/*", TEST=="/run/ctrlassist/hide/uniq-$env{HID_ID}-$env{HID_UNIQ}", GOTO="ctrlassist_hide"
-ENV{HID_ID}=="?*", ENV{HID_ID}!="*/*", SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST=="/run/ctrlassist/hide/raw-%b-$env{HID_ID}", GOTO="ctrlassist_hide"
+ENV{HID_ID}=="0003:?*", ENV{HID_ID}!="*/*", SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST=="/run/ctrlassist/hide/raw-%b-$env{HID_ID}", GOTO="ctrlassist_hide"
 GOTO="ctrlassist_hide_end"
 
 # Hidden: the group's alone, with no seat access. Final, so that a later

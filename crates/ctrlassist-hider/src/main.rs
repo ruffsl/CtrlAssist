@@ -19,7 +19,6 @@ mod activation;
 mod connections;
 mod descriptor;
 mod hide;
-mod in_flight;
 mod pad;
 mod seat;
 
@@ -165,9 +164,9 @@ fn refused(refusal: Refusal, rebinds: u8) -> Reply {
 /// that nothing should is shown again too. The entry stays, as showing,
 /// until the re-bind is done, so the pad can't be hidden again meanwhile;
 /// the wait for it ends when udev is done, the pad is unplugged, or
-/// `client`, the one that asked, hangs up; but not before udev has
-/// answered the request, so a hide of the pad once the entry has gone is
-/// never judged on this re-bind. Returns how many times the pad was
+/// `client`, the one that asked, hangs up. A hide of the pad once the
+/// entry has gone asks its re-bind after this one's, which udev runs
+/// first. Returns how many times the pad was
 /// re-bound for it, which it goes and comes back for, as
 /// [`hide::Rebound::went`] counts.
 fn show(shared: &Arc<Shared>, token: u32, client: Option<BorrowedFd<'_>>, rebind: bool) -> u8 {
@@ -204,54 +203,15 @@ fn show(shared: &Arc<Shared>, token: u32, client: Option<BorrowedFd<'_>>, rebind
     rebinds
 }
 
-/// Shows again what the rule hides that nothing should, each device on a
-/// thread of its own that waits for its turn, re-binds it and waits for
-/// udev's answer: tracked as every re-bind is, so the next re-bind of the
-/// device waits for this one. Doesn't wait itself.
-fn sweep(shared: &Arc<Shared>) {
-    let (held, markers) = {
-        let state = shared.state();
-        (state.held(), state.markers())
-    };
+/// Shows again what the rule hides that nothing should, waiting for none
+/// of it. Holds the state as it asks, so that a hide of one of those
+/// devices is either in the state, and the device left alone, or asks
+/// its own re-bind after this one, which udev runs after it.
+fn sweep(shared: &Shared) {
+    let state = shared.state();
+    let held = state.held();
     let held: Vec<&Path> = held.iter().map(PathBuf::as_path).collect();
-    for (device, _) in hide::unnamed(group(), &held, &markers) {
-        let theirs = Arc::clone(shared);
-        let device_theirs = device.clone();
-        let spawned = std::thread::Builder::new()
-            .name("sweep".into())
-            .spawn(move || sweep_one(&theirs, &device_theirs));
-        if let Err(error) = spawned {
-            warn!(device = %device.path.display(), %error, "couldn't start a thread to show a pad again; showing it here");
-            sweep_one(shared, &device);
-        }
-    }
-}
-
-/// Re-binds one device the sweep found, once its turn has come, if it is
-/// still hidden and named by nothing: a hide of it since would be cut off
-/// by this re-bind, and another sweep may have shown it already.
-fn sweep_one(shared: &Shared, device: &Device) {
-    let unnamed = || {
-        let (held, markers) = {
-            let state = shared.state();
-            (state.held(), state.markers())
-        };
-        let held: Vec<&Path> = held.iter().map(PathBuf::as_path).collect();
-        let still = hide::unnamed(group(), &held, &markers)
-            .iter()
-            .any(|(other, _)| other.path == device.path);
-        if still { Ok(()) } else { Err(Refusal::Busy) }
-    };
-    let rebound = hide::rebind_if(device, Leave::AsTheRuleSays, hide::Asker::Nobody, unnamed);
-    match rebound.outcome {
-        Ok(()) => debug!(device = %device.path.display(), "showed again a pad no marker names"),
-        Err(Refusal::Busy) => {}
-        Err(refusal) => warn!(
-            device = %device.path.display(),
-            %refusal,
-            "couldn't show again a pad no marker names; it stays hidden until it is plugged in again"
-        ),
-    }
+    hide::sweep(group(), &held, &state.markers());
 }
 
 /// The seats `user` is in front on now, as a person at the machine.
@@ -608,8 +568,7 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
         closed: eventfd(0, EventfdFlags::CLOEXEC)?,
     });
     // Nothing is connected yet, so anything still hidden was left by a
-    // service that died. Its showing again takes each device's turn, so
-    // a hide of it asked meanwhile waits for it.
+    // service that died.
     hide::clear();
     sweep(&shared);
     // Out of descriptors or memory, accepting is left until a connection
