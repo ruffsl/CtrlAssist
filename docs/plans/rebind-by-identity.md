@@ -55,4 +55,4 @@ Decided; steps 1 to 3 under way.
 
 ## Deviations
 
-None yet.
+- **The running service's sweep holds the service's state as it writes its requests,** which the reconcile at start has no need to. The sweep's threads looked again, once their turn came, whether the device was still hidden and named by nothing, so as not to cut off a hide of it asked meanwhile; with the state held, such a hide is either in it, and the device left alone, or writes its request after the sweep's, which udev runs first. Reading sysfs and writing a `uevent` file wait on no client and on no udev event.

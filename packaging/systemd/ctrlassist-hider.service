@@ -27,9 +27,9 @@ NoNewPrivileges=yes
 # The service caps them: 40 for a user logged in at a seat, whose daemon
 # holds two for each pad it is hiding; and eight for any other user, with
 # 32 between all of them. A connection's thread holds at most six
-# descriptors at once, and three more for each pad it shows again as it
-# closes, so this is room for some thirty users at seats, each with their
-# cap full.
+# descriptors at once, and one more for each pad it shows again as it
+# closes; the sweep holds none. So this is room for some thirty users at
+# seats, each with their cap full.
 LimitNOFILE=8192
 
 # The markers the rule hides pads by. Kept when the service stops, so
