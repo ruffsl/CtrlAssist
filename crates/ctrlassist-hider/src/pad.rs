@@ -675,7 +675,7 @@ pub(crate) fn unhidden(ownership: Ownership, tags: Option<&str>, group: u32) -> 
 }
 
 /// What is wrong with a device's node for one the rule has hidden, if
-/// anything.
+/// anything, its ACL included.
 pub(crate) fn unhidden_node(node: &udev::Device, group: u32) -> Option<String> {
     let path = node.devnode()?;
     match rustix::fs::stat(path) {
@@ -687,8 +687,53 @@ pub(crate) fn unhidden_node(node: &udev::Device, group: u32) -> Option<String> {
             },
             property(node, "CURRENT_TAGS"),
             group,
-        ),
+        )
+        .or_else(|| acl_wrong(|buffer| rustix::fs::getxattr(path, ACL, buffer))),
         Err(error) => Some(format!("not to be looked at: {error}")),
+    }
+}
+
+/// The attribute a file's POSIX ACL is kept in.
+pub(crate) const ACL: &str = "system.posix_acl_access";
+
+/// Whether a POSIX ACL, as the kernel gives it from [`ACL`], grants
+/// anything beyond the file's mode: an entry for a named user or group,
+/// as logind's seat access adds, or the mask that comes with one. The
+/// owner's, the group's and everyone else's entries are the mode itself.
+/// What isn't shaped as an ACL is taken to.
+fn acl_grants_beyond_mode(acl: &[u8]) -> bool {
+    /// `ACL_USER_OBJ`, `ACL_GROUP_OBJ` and `ACL_OTHER`.
+    const MODE: [u16; 3] = [0x01, 0x04, 0x20];
+    let Some((version, entries)) = acl.split_first_chunk::<4>() else {
+        return true;
+    };
+    let (entries, rest) = entries.as_chunks::<8>();
+    if u32::from_le_bytes(*version) != 2 || !rest.is_empty() {
+        return true;
+    }
+    entries
+        .iter()
+        .any(|[tag, high, ..]| !MODE.contains(&u16::from_le_bytes([*tag, *high])))
+}
+
+/// What a node's ACL grants beyond its mode, if anything. `read` reads
+/// the node's [`ACL`] attribute into a buffer, as `fgetxattr` does.
+pub(crate) fn acl_wrong(
+    read: impl FnOnce(&mut [u8]) -> rustix::io::Result<usize>,
+) -> Option<String> {
+    // Room for the header and 31 entries; a hidden node has none.
+    let mut buffer = [0u8; 252];
+    match read(&mut buffer) {
+        Ok(length) => buffer
+            .get(..length)
+            .is_none_or(acl_grants_beyond_mode)
+            .then(|| "given access beyond its mode by an ACL".to_string()),
+        // No ACL, or a file system that keeps none.
+        Err(rustix::io::Errno::NODATA | rustix::io::Errno::OPNOTSUPP) => None,
+        Err(rustix::io::Errno::RANGE) => {
+            Some("given access beyond its mode by an ACL too long to read".to_string())
+        }
+        Err(error) => Some(format!("its ACL couldn't be read: {error}")),
     }
 }
 
@@ -1005,5 +1050,51 @@ mod tests {
         );
         // A tag that only contains the word isn't the tag.
         assert_eq!(unhidden(hidden, Some(":seat:not-uaccess:"), 999), None);
+    }
+
+    fn acl(entries: &[(u16, u16, u32)]) -> Vec<u8> {
+        let mut bytes = 2u32.to_le_bytes().to_vec();
+        for (tag, permissions, id) in entries {
+            bytes.extend(tag.to_le_bytes());
+            bytes.extend(permissions.to_le_bytes());
+            bytes.extend(id.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn a_hidden_node_has_no_acl_entry_beyond_its_mode() {
+        let read = |bytes: Vec<u8>| {
+            move |buffer: &mut [u8]| {
+                buffer[..bytes.len()].copy_from_slice(&bytes);
+                Ok(bytes.len())
+            }
+        };
+        // The mode as an ACL: owner, group, others.
+        let mode = acl(&[
+            (0x01, 6, u32::MAX),
+            (0x04, 6, u32::MAX),
+            (0x20, 0, u32::MAX),
+        ]);
+        assert_eq!(acl_wrong(read(mode)), None);
+        // What logind's seat access adds: the user, and the mask.
+        let seat = acl(&[
+            (0x01, 6, u32::MAX),
+            (0x02, 6, 1000),
+            (0x04, 6, u32::MAX),
+            (0x10, 6, u32::MAX),
+            (0x20, 0, u32::MAX),
+        ]);
+        assert!(acl_wrong(read(seat)).is_some());
+        // A named group alone.
+        assert!(acl_wrong(read(acl(&[(0x08, 4, 174)]))).is_some());
+        // Not shaped as an ACL.
+        assert!(acl_wrong(read(vec![1, 0, 0, 0])).is_some());
+        assert!(acl_wrong(read(vec![2, 0, 0, 0, 1])).is_some());
+        // None at all, or none kept.
+        assert_eq!(acl_wrong(|_| Err(rustix::io::Errno::NODATA)), None);
+        assert_eq!(acl_wrong(|_| Err(rustix::io::Errno::OPNOTSUPP)), None);
+        assert!(acl_wrong(|_| Err(rustix::io::Errno::RANGE)).is_some());
+        assert!(acl_wrong(|_| Err(rustix::io::Errno::IO)).is_some());
     }
 }

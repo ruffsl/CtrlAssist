@@ -19,14 +19,16 @@ use std::os::fd::{BorrowedFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use ctrlassist_hider::Refusal;
+use ctrlassist_hider::{Refusal, Request};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{Access, OFlags};
 use rustix::io::Errno;
+use rustix::net::{RecvFlags, recv};
 use rustix::rand::{GetRandomFlags, getrandom};
 use rustix::time::{ClockId, clock_gettime};
 use tracing::{debug, error, warn};
 
+use crate::in_flight::{self, Turn};
 use crate::pad::{self, Device, Pad};
 
 /// Where the markers are, as the shipped rule names it. The unit's
@@ -69,7 +71,7 @@ pub(crate) fn delete(marker: &str) {
 }
 
 /// Deletes everything in the marker directory, whatever made it.
-fn clear() {
+pub(crate) fn clear() {
     let Ok(entries) = fs::read_dir(MARKERS) else {
         return;
     };
@@ -108,13 +110,17 @@ fn now() -> u64 {
         + u64::try_from(now.tv_nsec).unwrap_or(0) / 1_000
 }
 
-/// Whether the service may ask for the device at `parent` to be re-bound:
-/// the shipped rule gives the group the `uevent` file of a pad's device
-/// as it first sees the pad. Where the group can't write it, the rule
-/// isn't installed, or didn't take the device for a pad's.
-pub(crate) fn may_request(parent: &Path) -> Result<(), Refusal> {
-    let uevent = parent.join("uevent");
+/// Whether the service may ask for `device` to be re-bound: the shipped
+/// rule gives the group the `uevent` file of a pad's device as it first
+/// sees the pad. Where the group can't write it, the rule isn't
+/// installed, or didn't take the device for a pad's; or the device has
+/// gone.
+pub(crate) fn may_request(device: &Device) -> Result<(), Refusal> {
+    let uevent = device.path.join("uevent");
     rustix::fs::access(&uevent, Access::WRITE_OK).map_err(|error| {
+        if !device.is_there() {
+            return Refusal::Absent;
+        }
         error!(
             file = %uevent.display(),
             %error,
@@ -163,37 +169,133 @@ pub(crate) enum Asker<'a> {
     Nobody,
     /// A client whose hanging up ends it.
     HangsUp(BorrowedFd<'a>),
-    /// A client whose hanging up ends it, and so does anything it sends
-    /// meanwhile, as `cancel` is: that is looked for before the re-bind
-    /// is asked as well, and then it isn't.
+    /// A client whose hanging up ends it, and so does its `cancel`: that
+    /// is looked for before the re-bind is asked as well, and then it
+    /// isn't. Anything else it sends meanwhile stays queued, to be served
+    /// in order once the re-bind is done.
     Cancels(BorrowedFd<'a>),
 }
 
-impl<'a> Asker<'a> {
-    /// The client to watch, and what of it ends the wait.
-    fn watch(self) -> Option<(BorrowedFd<'a>, PollFlags)> {
-        match self {
-            Self::Nobody => None,
-            Self::HangsUp(client) => Some((client, PollFlags::RDHUP)),
-            Self::Cancels(client) => Some((client, PollFlags::IN | PollFlags::RDHUP)),
+/// A client as a wait on its behalf watches it.
+struct Watched<'a> {
+    asker: Asker<'a>,
+    /// Whether a request it sent ahead is at the head of its queue, where
+    /// it stays for `serve` to read in order: from then on only its
+    /// hanging up is watched for, its socket staying readable.
+    queued: bool,
+}
+
+impl<'a> Watched<'a> {
+    fn new(asker: Asker<'a>) -> Self {
+        Self {
+            asker,
+            queued: false,
         }
     }
 
-    /// Whether the client has hung up, or sent what cancels, already.
-    fn has_cancelled(self) -> bool {
-        let Self::Cancels(client) = self else {
+    /// The client's socket to poll, and for what.
+    fn poll_fd(&self) -> Option<PollFd<'a>> {
+        let (client, flags) = match self.asker {
+            Asker::Nobody => return None,
+            Asker::HangsUp(client) => (client, PollFlags::RDHUP),
+            Asker::Cancels(client) if self.queued => (client, PollFlags::RDHUP),
+            Asker::Cancels(client) => (client, PollFlags::IN | PollFlags::RDHUP),
+        };
+        Some(PollFd::from_borrowed_fd(client, flags))
+    }
+
+    /// Whether what a poll found of the client ends the wait: it hung up,
+    /// or, for a hide, the next message it sent is `cancel`, or empty,
+    /// which ends the connection as a hang-up does. Any other request is
+    /// left where it is.
+    fn ends(&mut self, revents: PollFlags) -> bool {
+        if revents.intersects(PollFlags::HUP | PollFlags::RDHUP | PollFlags::ERR) {
+            return !matches!(self.asker, Asker::Nobody);
+        }
+        let Asker::Cancels(client) = self.asker else {
             return false;
         };
-        let mut fds = [PollFd::from_borrowed_fd(
-            client,
-            PollFlags::IN | PollFlags::RDHUP,
-        )];
-        // Looked at as it is now, not waited on.
+        if self.queued || !revents.contains(PollFlags::IN) {
+            return false;
+        }
+        match next_is_cancel(client) {
+            Some(true) => true,
+            Some(false) => {
+                self.queued = true;
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Whether the client has ended the wait already, looked at as it is
+    /// now, not waited on.
+    fn has_ended(&mut self) -> bool {
+        let Some(fd) = self.poll_fd() else {
+            return false;
+        };
+        let mut fds = [fd];
         let now = Timespec {
             tv_sec: 0,
             tv_nsec: 0,
         };
-        matches!(poll(&mut fds, Some(&now)), Ok(ready) if ready > 0)
+        match poll(&mut fds, Some(&now)) {
+            Ok(ready) if ready > 0 => {
+                let revents = fds[0].revents();
+                self.ends(revents)
+            }
+            _ => false,
+        }
+    }
+
+    /// Waits until `ended`, a turn's, hangs up. A client that may cancel
+    /// ends the wait by doing so; one that may only hang up doesn't: a
+    /// pad being shown again is shown whoever has gone.
+    fn wait_for_turn(&mut self, ended: BorrowedFd<'_>) -> Result<(), Refusal> {
+        loop {
+            let mut fds = vec![PollFd::from_borrowed_fd(ended, PollFlags::IN)];
+            if matches!(self.asker, Asker::Cancels(_))
+                && let Some(fd) = self.poll_fd()
+            {
+                fds.push(fd);
+            }
+            match poll(&mut fds, None) {
+                Ok(_) | Err(Errno::INTR) => {}
+                Err(error) => {
+                    warn!(%error, "couldn't wait for an earlier re-bind of the pad to be answered");
+                    return Err(Refusal::Failed);
+                }
+            }
+            let turn_ended = !fds[0].revents().is_empty();
+            let client = fds.get(1).map(PollFd::revents);
+            drop(fds);
+            if client.is_some_and(|revents| self.ends(revents)) {
+                return Err(Refusal::Cancelled);
+            }
+            if turn_ended {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Whether the next message a client sent is `cancel`, or empty: `None`
+/// when it has sent nothing more. Looked at, not taken: whatever it is,
+/// `serve` reads it in its turn.
+fn next_is_cancel(client: BorrowedFd<'_>) -> Option<bool> {
+    let mut buffer = [0u8; Request::SIZE];
+    match recv(
+        client,
+        &mut buffer,
+        RecvFlags::PEEK | RecvFlags::DONTWAIT | RecvFlags::TRUNC,
+    ) {
+        Ok((_, 0)) => Some(true),
+        Ok((_, length)) => {
+            Some(buffer.get(..length).and_then(Request::decode) == Some(Request::Cancel))
+        }
+        Err(Errno::AGAIN | Errno::INTR) => None,
+        // A connection that broke ends the wait as a hang-up does.
+        Err(_) => Some(true),
     }
 }
 
@@ -220,19 +322,52 @@ impl Rebound {
 }
 
 /// Where the re-bind of `device` has got to. `before` is its inputs
-/// before it was asked for, `since` when it was asked for, and `answered`
-/// whether udev has said it acted on the request.
+/// before it was asked for, `since` when it was asked for, `answered`
+/// whether udev has said it acted on the request, and `overran` whether
+/// the monitor has lost events since, which the answer may have been.
+///
+/// Done needs the answer: until it comes, what sysfs and udev's record
+/// say may be an earlier re-bind's doing. Only after an overrun may state
+/// alone say done, and that is sound but for one case: re-binds of a
+/// device take turns, so every earlier one had been answered when this
+/// one was asked, and `before` was read after that. The inputs it names
+/// then go only by this request's unbind, or by something besides the
+/// service, a driver making its inputs anew or someone else re-binding
+/// it, which would be taken for this re-bind.
+///
+/// The checks of state that fail come before the answer is needed, to
+/// fail early: the inputs still there or no driver once udev has
+/// answered, a node made not hidden. A failure seen with the device gone
+/// is its unplugging, whichever read saw it go.
 fn progress(
     device: &Device,
     before: &[PathBuf],
     since: u64,
     leave: Leave,
     answered: bool,
+    overran: bool,
+) -> Progress {
+    match looked(device, before, since, leave, answered, overran) {
+        Progress::Failed(_, _) if !device.is_there() => {
+            debug!(device = %device.path.display(), "the pad was unplugged as its driver was re-bound");
+            Progress::Failed(Refusal::Absent, false)
+        }
+        progress => progress,
+    }
+}
+
+/// [`progress`] as read once.
+fn looked(
+    device: &Device,
+    before: &[PathBuf],
+    since: u64,
+    leave: Leave,
+    answered: bool,
+    overran: bool,
 ) -> Progress {
     let parent = device.path.as_path();
     let shown = parent.display();
     if !device.is_there() {
-        debug!(device = %shown, "the pad was unplugged as its driver was re-bound");
         return Progress::Failed(Refusal::Absent, false);
     }
     // The rule unbinds the driver and probes again before udev says it
@@ -279,114 +414,239 @@ fn progress(
             return Progress::Waiting;
         }
     }
+    if !answered && !overran {
+        return Progress::Waiting;
+    }
     Progress::Done
 }
 
-/// Has udev re-bind the driver of the device at `parent`, and waits until
-/// it has finished with the nodes that makes. Gives up if the pad is
-/// unplugged, or if `asker` goes or cancels meanwhile; one that has
-/// cancelled already has nothing re-bound.
-///
-/// It waits on state, not on particular events: at every event udev sends
-/// for a pad's devices, and after the monitor's socket overran and lost
-/// some, it reads afresh what sysfs and udev's record say. The re-bind is
-/// done when the inputs there before are gone, a driver is bound, and
-/// udev has finished with every node under the device since it was asked,
-/// each hidden if it is to be. It fails at once when the rule's effect is
-/// missing: udev has acted on the request and the driver is as it was, no
-/// driver took the pad again, or a node came back not hidden.
-pub(crate) fn rebind(device: &Device, leave: Leave, asker: Asker<'_>) -> Rebound {
-    let parent = device.path.as_path();
-    if let Err(refusal) = may_request(parent) {
-        return Rebound::not_asked(refusal);
-    }
-    let before = pad::inputs_under(parent);
-    let shown = parent.display();
-    // Listening from before the request, so nothing it causes is missed.
-    let monitor = udev::MonitorBuilder::new()
+/// Listens to udev's events for pads' devices.
+fn listen() -> io::Result<udev::MonitorSocket> {
+    udev::MonitorBuilder::new()
         .and_then(|monitor| monitor.match_subsystem("hid"))
         .and_then(|monitor| monitor.match_subsystem("usb"))
         .and_then(|monitor| monitor.match_subsystem("input"))
         .and_then(|monitor| monitor.match_subsystem("hidraw"))
-        .and_then(udev::MonitorBuilder::listen);
-    let monitor = match monitor {
+        .and_then(udev::MonitorBuilder::listen)
+}
+
+/// A re-bind udev has been asked for, watched until its answer.
+struct Watch {
+    /// The device's turn, held until the answer has come.
+    _turn: Turn,
+    /// Listening since before the request.
+    monitor: udev::MonitorSocket,
+    device: Device,
+    uuid: String,
+    before: Vec<PathBuf>,
+    since: u64,
+    answered: bool,
+    overran: bool,
+}
+
+impl Watch {
+    /// Reads every event udev has sent, each only a reason to look at
+    /// state again, but for the request's own answer.
+    fn drain(&mut self) {
+        loop {
+            if let Some(event) = self.monitor.iter().next() {
+                self.answered |= event.event_type() == udev::EventType::Change
+                    && event.syspath() == self.device.path
+                    && event
+                        .property_value("SYNTH_UUID")
+                        .and_then(|value| value.to_str())
+                        == Some(self.uuid.as_str());
+                continue;
+            }
+            // udev's library says why it had nothing: once after the
+            // kernel dropped events for a socket not read in time, it is
+            // ENOBUFS, and the answer may have been among them. What is
+            // queued after is still read.
+            if io::Error::last_os_error().raw_os_error() == Some(libc::ENOBUFS) {
+                if !self.overran {
+                    warn!(
+                        device = %self.device.path.display(),
+                        "udev's events overran the service's monitor; the pad's re-bind is judged on state alone"
+                    );
+                }
+                self.overran = true;
+                continue;
+            }
+            return;
+        }
+    }
+
+    fn progress(&self, leave: Leave) -> Progress {
+        progress(
+            &self.device,
+            &self.before,
+            self.since,
+            leave,
+            self.answered,
+            self.overran,
+        )
+    }
+
+    /// Whether nothing more is to come of the request: udev has answered
+    /// it, or the device is gone.
+    fn over(&self) -> bool {
+        self.answered || !self.device.is_there()
+    }
+
+    /// Ends the wait with `outcome`, once nothing more is to come of the
+    /// request: one given up before udev's answer, as a hide cancelled
+    /// before udev took it is, waits for the answer still, holding the
+    /// device's turn, so the next re-bind of the device, such as the one
+    /// that shows the pad again, starts after it. udev answers a request
+    /// as soon as it has run the rule for it, before the nodes it makes.
+    fn end(mut self, outcome: Result<(), Refusal>, went: bool) -> Rebound {
+        self.settle();
+        Rebound {
+            outcome,
+            asked: true,
+            went,
+        }
+    }
+
+    /// Waits until nothing more is to come of the request. After an
+    /// overrun, state alone may say so, as [`progress`] says.
+    fn settle(&mut self) {
+        while !self.over() {
+            if self.overran && self.progress(Leave::AsTheRuleSays) != Progress::Waiting {
+                break;
+            }
+            let mut fds = [PollFd::new(&self.monitor, PollFlags::IN)];
+            match poll(&mut fds, None) {
+                Ok(_) | Err(Errno::INTR) => {}
+                Err(error) => {
+                    warn!(
+                        device = %self.device.path.display(),
+                        %error,
+                        "couldn't wait on udev for a re-bind's answer; the device's next re-bind goes ahead without it"
+                    );
+                    return;
+                }
+            }
+            self.drain();
+        }
+    }
+}
+
+/// Has udev re-bind the driver of `device`, and waits until it has
+/// finished with the nodes that makes; see [`rebind_if`].
+pub(crate) fn rebind(device: &Device, leave: Leave, asker: Asker<'_>) -> Rebound {
+    rebind_if(device, leave, asker, || Ok(()))
+}
+
+/// Has udev re-bind the driver of `device`, if `ahead` still allows it
+/// once the device's turn has come, and waits until udev has answered and
+/// finished with the nodes that makes. Gives up if the pad is unplugged,
+/// or if `asker` goes or cancels meanwhile; one that has cancelled before
+/// udev is asked has nothing re-bound.
+///
+/// An earlier re-bind of the device still in flight is waited for first,
+/// so this one is never judged on what that one does. Then it waits on
+/// state, read afresh at every event udev sends for a pad's devices, and
+/// on the request's own answer: see [`progress`]. A re-bind given up
+/// before its answer still waits for the answer, holding the device's
+/// turn, before it returns.
+pub(crate) fn rebind_if(
+    device: &Device,
+    leave: Leave,
+    asker: Asker<'_>,
+    ahead: impl FnOnce() -> Result<(), Refusal>,
+) -> Rebound {
+    let parent = device.path.as_path();
+    let shown = parent.display();
+    if let Err(refusal) = may_request(device) {
+        return Rebound::not_asked(refusal);
+    }
+    let mut client = Watched::new(asker);
+    let turn = match in_flight::take(parent, |ended| client.wait_for_turn(ended)) {
+        Ok(turn) => turn,
+        Err(refusal) => {
+            debug!(device = %shown, %refusal, "gave up waiting for an earlier re-bind of the pad");
+            return Rebound::not_asked(refusal);
+        }
+    };
+    if let Err(refusal) = ahead() {
+        return Rebound::not_asked(refusal);
+    }
+    // Listening from before the request, so nothing it causes is missed.
+    let monitor = match listen() {
         Ok(monitor) => monitor,
         Err(error) => {
             warn!(%error, "couldn't listen to udev");
             return Rebound::not_asked(Refusal::Failed);
         }
     };
-    if asker.has_cancelled() {
+    // Only a hide is given up before it is asked: a pad is shown again
+    // whoever has gone.
+    if matches!(asker, Asker::Cancels(_)) && client.has_ended() {
         debug!(device = %shown, "the client cancelled before the pad's driver was re-bound");
         return Rebound::not_asked(Refusal::Cancelled);
     }
+    // Read with every earlier re-bind answered: the inputs this one is to
+    // remove.
+    let before = pad::inputs_under(parent);
     let since = now();
     let uuid = match request(parent) {
         Ok(uuid) => uuid,
         Err(error) => {
+            if !device.is_there() {
+                return Rebound::not_asked(Refusal::Absent);
+            }
             warn!(device = %shown, %error, "couldn't ask udev to re-bind the pad's driver");
             return Rebound::not_asked(Refusal::Failed);
         }
     };
     // Asked: from here on the pad goes and comes back for it, unless the
     // re-bind is seen to end otherwise.
-    let ended = |refusal| Rebound {
-        outcome: Err(refusal),
-        asked: true,
-        went: true,
+    let mut watch = Watch {
+        _turn: turn,
+        monitor,
+        device: device.clone(),
+        uuid,
+        before,
+        since,
+        answered: false,
+        overran: false,
     };
-    let mut answered = false;
     loop {
-        let mut fds = vec![PollFd::new(&monitor, PollFlags::IN)];
-        if let Some((client, flags)) = asker.watch() {
-            fds.push(PollFd::from_borrowed_fd(client, flags));
+        let mut fds = vec![PollFd::new(&watch.monitor, PollFlags::IN)];
+        if let Some(fd) = client.poll_fd() {
+            fds.push(fd);
         }
         match poll(&mut fds, None) {
             Ok(_) | Err(Errno::INTR) => {}
             Err(error) => {
+                drop(fds);
                 warn!(device = %shown, %error, "couldn't wait on udev for the pad's driver to be re-bound");
-                return ended(Refusal::Failed);
+                return watch.end(Err(Refusal::Failed), true);
             }
         }
-        if fds.get(1).is_some_and(|fd| !fd.revents().is_empty()) {
-            return match asker {
+        let revents = fds.get(1).map(PollFd::revents);
+        drop(fds);
+        // udev's side first: a re-bind seen to fail in the same wake as
+        // the client's message is told as failed, and not counted.
+        watch.drain();
+        match watch.progress(leave) {
+            Progress::Waiting => {}
+            Progress::Done => return watch.end(Ok(()), true),
+            Progress::Failed(refusal, went) => return watch.end(Err(refusal), went),
+        }
+        if revents.is_some_and(|revents| client.ends(revents)) {
+            let refusal = match asker {
                 Asker::Cancels(_) => {
                     debug!(device = %shown, "the client cancelled, or hung up, as the pad's driver was re-bound");
-                    ended(Refusal::Cancelled)
+                    Refusal::Cancelled
                 }
                 Asker::HangsUp(_) | Asker::Nobody => {
                     debug!(device = %shown, "the client hung up as the pad's driver was re-bound");
-                    ended(Refusal::Failed)
+                    Refusal::Failed
                 }
             };
-        }
-        drop(fds);
-        // Each event is only a reason to look again. One lost to an
-        // overrun ends the iteration early, and is a reason too.
-        for event in monitor.iter() {
-            answered |= event.event_type() == udev::EventType::Change
-                && event.syspath() == parent
-                && event
-                    .property_value("SYNTH_UUID")
-                    .and_then(|value| value.to_str())
-                    == Some(uuid.as_str());
-        }
-        match progress(device, &before, since, leave, answered) {
-            Progress::Waiting => {}
-            Progress::Done => {
-                return Rebound {
-                    outcome: Ok(()),
-                    asked: true,
-                    went: true,
-                };
-            }
-            Progress::Failed(refusal, went) => {
-                return Rebound {
-                    outcome: Err(refusal),
-                    asked: true,
-                    went,
-                };
-            }
+            return watch.end(Err(refusal), true);
         }
     }
 }
@@ -445,7 +705,12 @@ pub(crate) fn open_under(
         let tags = opened
             .property_value("CURRENT_TAGS")
             .and_then(|tags| tags.to_str());
-        if let Some(wrong) = pad::unhidden(ownership, tags, group) {
+        // The ACL too, read on the descriptor opened: seat access is given
+        // by one, and a node with an entry beyond its mode is open to
+        // someone its mode doesn't say.
+        let wrong = pad::unhidden(ownership, tags, group)
+            .or_else(|| pad::acl_wrong(|buffer| rustix::fs::fgetxattr(&fd, pad::ACL, buffer)));
+        if let Some(wrong) = wrong {
             error!(
                 node = %node.display(),
                 wrong,
@@ -458,12 +723,16 @@ pub(crate) fn open_under(
 }
 
 /// The device of each pad, and of each raw node, the rule hides that
-/// nothing should: one that no pad in `held` is and that no marker in
-/// `markers` names, as a pad sharing an address with one that was
-/// hidden, or plugged into its port while it was away. A pad's event
-/// nodes hidden are known by their group; a raw node by what the rule
-/// sets on a node it hides.
-pub(crate) fn unnamed(group: u32, held: &[&Path], markers: &BTreeSet<String>) -> Vec<Device> {
+/// nothing should, with the markers that would name it: one that no pad
+/// in `held` is and that no marker in `markers` names, as a pad sharing
+/// an address with one that was hidden, or plugged into its port while
+/// it was away. A pad's event nodes hidden are known by their group; a
+/// raw node by what the rule sets on a node it hides.
+pub(crate) fn unnamed(
+    group: u32,
+    held: &[&Path],
+    markers: &BTreeSet<String>,
+) -> Vec<(Device, BTreeSet<String>)> {
     let mut found: Vec<(Device, BTreeSet<String>)> = pad::hidden(group)
         .into_iter()
         .map(|pad| (pad.parent, pad.markers))
@@ -482,17 +751,23 @@ pub(crate) fn unnamed(group: u32, held: &[&Path], markers: &BTreeSet<String>) ->
         .filter(|(device, names)| {
             !held.contains(&device.path.as_path()) && names.is_disjoint(markers)
         })
-        .map(|(device, _)| device)
         .collect()
 }
 
-/// Shows again each pad the rule hides that nothing should, as
-/// [`unnamed`] finds them, by re-binding its driver, which makes every
-/// node afresh as the stock rules make it. A raw node's own change event
-/// isn't the service's to send, its `uevent` file being root's; its HID
-/// device's is, for a pad's. Doesn't wait for udev.
-pub(crate) fn sweep(group: u32, held: &[&Path], markers: &BTreeSet<String>) {
-    for device in unnamed(group, held, markers) {
+/// Deletes every marker, then asks for each pad the rule still hides to
+/// be shown again, as [`unnamed`] finds them, by re-binding its driver,
+/// which makes every node afresh as the stock rules make it: undoes what
+/// an earlier service left hidden, run when no connection can own
+/// anything. A raw node's own change event isn't the service's to send,
+/// its `uevent` file being root's; its HID device's is, for a pad's.
+///
+/// Doesn't wait for udev: this is for a process that ends at once after,
+/// as the unit's `ExecStopPost=` does, with no later re-bind in it to
+/// keep in turn. The running service sweeps with each re-bind taking its
+/// turn.
+pub(crate) fn reconcile(group: u32) {
+    clear();
+    for (device, _) in unnamed(group, &[], &BTreeSet::new()) {
         if let Err(error) = request(&device.path) {
             warn!(
                 device = %device.path.display(),
@@ -503,17 +778,9 @@ pub(crate) fn sweep(group: u32, held: &[&Path], markers: &BTreeSet<String>) {
     }
 }
 
-/// Undoes whatever an earlier service left hidden: run when no connection
-/// can still own anything. Every marker goes, then every pad the rule
-/// still hides is shown again.
-pub(crate) fn reconcile(group: u32) {
-    clear();
-    sweep(group, &[], &BTreeSet::new());
-}
-
 /// Cuts off whatever has a pad open, once its markers are made: the
 /// re-bind, then a descriptor on its event node as the re-bind made it,
-/// checked to be hidden. `client` hanging up, or sending anything, stops
+/// checked to be hidden. `client` hanging up, or sending `cancel`, stops
 /// the wait. Returns too what the re-bind came to.
 pub(crate) fn cut_off(
     pad: &Pad,
@@ -590,7 +857,7 @@ mod tests {
         let leave = Leave::AsTheRuleSays;
         // Neither of these makes the pad go and come back.
         assert_eq!(
-            progress(&gone, &[], 0, leave, false),
+            progress(&gone, &[], 0, leave, false, false),
             Progress::Failed(Refusal::Absent, false)
         );
         // A device there whose inputs are still those from before: waiting
@@ -598,9 +865,12 @@ mod tests {
         // an input.
         let here = stand_in();
         let before = [PathBuf::from(env!("CARGO_MANIFEST_DIR"))];
-        assert_eq!(progress(&here, &before, 0, leave, false), Progress::Waiting);
         assert_eq!(
-            progress(&here, &before, 0, leave, true),
+            progress(&here, &before, 0, leave, false, false),
+            Progress::Waiting
+        );
+        assert_eq!(
+            progress(&here, &before, 0, leave, true, false),
             Progress::Failed(Refusal::Failed, false)
         );
     }
@@ -618,33 +888,78 @@ mod tests {
         assert!(!other.is_there());
     }
 
-    /// A client that has sent something, as a `cancel`, or hung up, has
-    /// cancelled; one that has sent nothing hasn't, and one that may only
-    /// hang up never cancels.
+    fn pair() -> (OwnedFd, OwnedFd) {
+        use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
+        socketpair(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap()
+    }
+
+    fn sends(client: &OwnedFd, request: Request) {
+        rustix::net::send(client, &request.encode(), rustix::net::SendFlags::empty()).unwrap();
+    }
+
+    /// A client that has sent `cancel`, or an empty message, or hung up,
+    /// has ended a hide's wait; one that has sent nothing hasn't, and one
+    /// that may only hang up ends it by hanging up alone. Nothing is taken
+    /// off the client's socket: `serve` reads every message in its turn.
     #[test]
-    fn a_client_has_cancelled_once_it_sends_anything_or_hangs_up() {
+    fn only_a_cancel_or_a_hang_up_ends_a_hide_s_wait() {
         use std::os::fd::AsFd;
 
-        use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
-        let pair = || {
-            socketpair(
-                AddressFamily::UNIX,
-                SocketType::SEQPACKET,
-                SocketFlags::CLOEXEC,
-                None,
-            )
-            .unwrap()
-        };
         let (service, client) = pair();
-        let cancels = Asker::Cancels(service.as_fd());
-        assert!(!cancels.has_cancelled());
-        rustix::net::send(&client, &[7, 0, 0, 0, 0], rustix::net::SendFlags::empty()).unwrap();
-        assert!(cancels.has_cancelled());
-        assert!(!Asker::HangsUp(service.as_fd()).has_cancelled());
-        assert!(!Asker::Nobody.has_cancelled());
+        let mut cancels = Watched::new(Asker::Cancels(service.as_fd()));
+        assert!(!cancels.has_ended());
+        sends(&client, Request::Cancel);
+        assert!(cancels.has_ended());
+        assert!(!Watched::new(Asker::HangsUp(service.as_fd())).has_ended());
+        assert!(!Watched::new(Asker::Nobody).has_ended());
+        let mut buffer = [0u8; 8];
+        let (length, _) = ctrlassist_hider::receive(service.as_fd(), &mut buffer).unwrap();
+        assert_eq!(Request::decode(&buffer[..length]), Some(Request::Cancel));
+
+        // An empty message ends the connection as a hang-up does.
+        let (service, client) = pair();
+        rustix::net::send(&client, &[], rustix::net::SendFlags::empty()).unwrap();
+        assert!(Watched::new(Asker::Cancels(service.as_fd())).has_ended());
         let (service, client) = pair();
         drop(client);
-        assert!(Asker::Cancels(service.as_fd()).has_cancelled());
+        assert!(Watched::new(Asker::Cancels(service.as_fd())).has_ended());
+        assert!(Watched::new(Asker::HangsUp(service.as_fd())).has_ended());
+    }
+
+    /// A request sent ahead during a hide stays queued, and with it any
+    /// `cancel` behind it: that is served after the hide, as a cancel of a
+    /// hide done. Only a hang-up ends the wait from then on.
+    #[test]
+    fn a_request_sent_ahead_stays_queued_and_doesn_t_end_a_hide_s_wait() {
+        use std::os::fd::AsFd;
+
+        let (service, client) = pair();
+        let mut cancels = Watched::new(Asker::Cancels(service.as_fd()));
+        sends(&client, Request::Version);
+        sends(&client, Request::Cancel);
+        assert!(!cancels.has_ended());
+        assert!(!cancels.has_ended(), "looked at again, it is still there");
+        let mut buffer = [0u8; 8];
+        let (length, _) = ctrlassist_hider::receive(service.as_fd(), &mut buffer).unwrap();
+        assert_eq!(Request::decode(&buffer[..length]), Some(Request::Version));
+        // A request that isn't one at all doesn't end it either.
+        let (service, client) = pair();
+        rustix::net::send(
+            &client,
+            &[7, 0, 0, 0, 0, 0],
+            rustix::net::SendFlags::empty(),
+        )
+        .unwrap();
+        let mut cancels = Watched::new(Asker::Cancels(service.as_fd()));
+        assert!(!cancels.has_ended());
+        drop(client);
+        assert!(cancels.has_ended());
     }
 
     /// A re-bind that is never asked is never one the pad goes and comes
