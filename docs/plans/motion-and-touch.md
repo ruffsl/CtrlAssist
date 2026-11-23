@@ -10,7 +10,7 @@ The goal is for a virtual DualSense to carry them, by rules that keep what each 
 
 ## State
 
-Not started. The decisions below are a first position, taken in conversation on 2026-11-23, and wait on the research in Open questions before any is settled. Nothing is to be built before 0.5.0 unless the maintainer says so.
+Not started. The research is in and the first decisions are made (Decided after the research); the rest are open. A spike comes once the review's fixes have settled, and the build after 0.5.0.
 
 ## What the modes promise
 
@@ -143,6 +143,16 @@ To be talked through with the maintainer before any decision above is changed.
 - **The settled practice elsewhere is one source, selected.** Sony's own feature is motion from the primary's pad and none from the assist's. That is the least surprising default for every mode, with the assist's part something a profile opts into.
 - **Who has the motion wants showing.** Both studies ask for it, and the tray and the window already say who has control.
 - **A profile would need new words for it,** which is the maintainer's thought of widening presets: at least where motion comes from, what engages the assist's, and how gravity is made. The vocabulary above is what such words have been elsewhere. Converting motion into a stick or a mouse is a remapper's work and stays out.
+
+## Decided after the research
+
+By the maintainer, 2026-11-23. These stand over the first position where the two differ.
+
+- **With nothing said in a profile, motion and the touchpad's position are the primary's pad's,** as PlayStation's own assist feature has it: gyroscope, accelerometer and touchpad together from the one pad in priority and average, and from the pad that has control in toggle. The assist's sensors are left out unless a profile asks for them. A game then sees one pad's two sensors, which agree.
+- **An assist engages their gyroscope by touching a control the profile names,** not by turning past a rate. While it is held, the assist's motion stands in for the primary's.
+- **The order of work:** the plan's decisions now; a spike once the review's fixes have settled; the build after 0.5.0.
+
+Still open: how far presets widen to say this; how gravity is made while the assist's gyroscope is engaged and in average; the touchpad in average; steering by tilt outside toggle; the desktop's pointer.
 
 ## Steps
 
