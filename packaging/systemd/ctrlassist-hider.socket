@@ -8,6 +8,13 @@ ListenSequentialPacket=/run/ctrlassist/hider.sock
 # front on a seat, and checks that itself on each connection.
 SocketMode=0666
 DirectoryMode=0755
+# The service exits when its last client has gone and is started again by
+# the next, so how often the socket starts it is anyone's doing: past the
+# trigger limit, 20 in 2 s by default, the socket would fail and stop
+# listening, for everyone, until restarted by hand. The limit on polling
+# is left as it is: it could only slow the starts down, never fail the
+# socket.
+TriggerLimitIntervalSec=0
 
 [Install]
 WantedBy=sockets.target

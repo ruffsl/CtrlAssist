@@ -185,6 +185,10 @@ let
   #       opens <count> connections and sends nothing, then one more that
   #       passes a TCP socket whose close lingers, its data never read;
   #       says how many it holds and whether the last was closed; holds
+  #   hider-probe churn <socket> <count>
+  #       <count> times without pause: connects, asks the release,
+  #       closes, and waits for the service to exit; says how many were
+  #       answered and how many refused
   #   hider-probe uhid <name> <phys> [<uniq> combo]
   #       makes a HID game pad through uhid with that phys and no address;
   #       holds. With combo, a game pad and a keyboard in one descriptor,
@@ -209,8 +213,10 @@ let
     import glob
     import os
     import resource
+    import select
     import socket
     import struct
+    import subprocess
     import sys
     import time
 
@@ -341,6 +347,28 @@ let
                 closed = True
             print(f"held={len(peers)} closed={closed}", flush=True)
             time.sleep(3600)
+        case ["churn", path, count]:
+            answered = refused = 0
+            for _ in range(int(count)):
+                try:
+                    peer = connect(path)
+                    peer.send(struct.pack("<BI", 6, 0))
+                    answered += len(peer.recv(6)) == 6
+                except OSError:
+                    refused += 1
+                    continue
+                # Closed once the service that answered is known, and the
+                # next connection made once it has exited: each is one
+                # start of the service by the socket.
+                pid = subprocess.run(
+                    ["systemctl", "show", "-p", "MainPID", "--value", "ctrlassist-hider.service"],
+                    capture_output=True, text=True, check=True,
+                ).stdout.strip()
+                service = os.pidfd_open(int(pid))
+                peer.close()
+                select.select([service], [], [])
+                os.close(service)
+            print(f"answered={answered} refused={refused}", flush=True)
         case ["uhid", name, phys, *combo]:
             # The test crate's uhid pad's descriptor: a game pad.
             descriptor = bytes([
@@ -452,7 +480,7 @@ let
                 elif action in ("unbind", "bind"):
                     print(f"{source} {action}", flush=True)
         case _:
-            sys.exit("usage: hider-probe opath|hide|long|silent|idle|uids|lingering|uhid|hang-up|stop-then-hide|uevent|rebinds ...")
+            sys.exit("usage: hider-probe opath|hide|long|silent|idle|uids|lingering|churn|uhid|hang-up|stop-then-hide|uevent|rebinds ...")
   '';
 in
 pkgs.testers.runNixOSTest {
@@ -1239,6 +1267,24 @@ pkgs.testers.runNixOSTest {
         # The probe gone, its unread data is reset and the close ends.
         machine.succeed("systemctl stop past-lingering lingering")
         machine.wait_until_fails(f"{closer} | grep -q tcp_close")
+        wait_restored()
+
+    with subtest("a user with no seat who connects and closes without pause while nothing is hidden doesn't put the socket out of service"):
+        # Each connection starts the service afresh: two hundred is ten
+        # times systemd's default limit on a socket's starts.
+        machine.wait_until_fails("systemctl is-active ctrlassist-hider.service")
+        started = "journalctl -u ctrlassist-hider.service -o cat | grep -c '^Started CtrlAssist hiding service'"
+        before = int(machine.succeed(started))
+        told = machine.succeed(f"runuser -u bob -- hider-probe churn {SOCKET} 200").strip()
+        after = int(machine.succeed(started))
+        print(f"two hundred connections, each closed at once: {told}; the service started {after - before} times; the socket: " + machine.succeed("systemctl show -p ActiveState -p Result ctrlassist-hider.socket").replace("\n", " "))
+        assert told == "answered=200 refused=0", told
+        assert after - before == 200, after - before
+        machine.succeed("systemctl is-active ctrlassist-hider.socket")
+        control, told = hide("after-churn", pads()[A]["event"][0])
+        assert told.startswith("ok"), told
+        assert order(control, "restore").startswith("ok")
+        machine.succeed("systemctl stop after-churn")
         wait_restored()
 
     def refused_at_once(unit, name, uniq):
