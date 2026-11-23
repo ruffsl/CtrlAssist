@@ -10,7 +10,7 @@ Found while debugging Hades streamed through Moonshine to a DualSense and a Dual
 
 - **Moonshine's pads are Bluetooth ones to the kernel:** HID bus `0005`, `054c:0ce6`, bound to the kernel's PlayStation driver, each with a raw node. The daemon takes neither for whole reports, `RawOutput::takes` wanting USB for a DualSense, so the game's lightbar colors, which the virtual pad does receive, go no further.
 - **A DualShock 4 on Bluetooth is already written whole reports,** checksum and all (`dualshock4_report`). The DualSense's is the missing case, not a new kind of work.
-- **Moonshine 0.16.1 relays rumble from its pads and nothing else.** Its binary links `inputtino_joypad_ps5_set_on_rumble` and no LED callback, so a color written to its pad is dropped there whatever the daemon does. Lights through Moonshine wait on Moonshine; this plan is worth doing for a real DualSense on Bluetooth all the same.
+- **Moonshine relays lights too.** It was first read otherwise, from its binary linking a rumble callback and no LED one by name, and that was wrong: with step 1 built, a game's lightbar colors reached both real pads through Moonshine 0.16.1 and Moonlight. What kept the lights from them was the daemon's gap alone. A callback's name in a binary is not evidence of what a program does.
 - **Rumble reaches both of Moonshine's pads.** Every level the game asked for was told to both, and pulses at the game's strengths and lengths, sent the daemon's way, were felt on both real pads. A report that the DualShock 4 stayed still in play was not reproduced. A pad's refused rumble write was discarded unseen; it is now tapped (`Tap::Refused`), to be looked for if it happens again.
 
 ## Decisions
@@ -30,7 +30,7 @@ Found while debugging Hades streamed through Moonshine to a DualSense and a Dual
 
 Step 1 is built: the report, the pad taken on either bus, and unit tests of the report's layout, sequence and checksum. The tests check the layout against the kernel driver's structure as read, not against bytes captured from a raw node, which step 1 asked for: a capture needs a pad on Bluetooth. Steps 2 to 4 are open; the architecture's feedback section is updated, the guide not.
 
-Not yet tried on any hardware. Two things to watch for on the first try: that Moonshine's pads still rumble, now that their rumble travels in a report the daemon writes and not through the kernel's effects; and that a real DualSense on Bluetooth takes the report at all.
+Tried by the maintainer on 2026-11-22: Hades streamed through Moonshine 0.16.1 to Moonlight on a tablet, a DualSense and a DualShock 4 paired to the tablet, a virtual DualSense in front of Moonshine's two pads. The lightbar colors the game sets show on both real pads. The daemon's log for the session has every rumble told to both pads, no write refused, and no warning; Moonshine's has nothing about its pads beyond their connecting. Not yet tried: a real DualSense paired to this machine over Bluetooth, and trigger effects on anything.
 
 ## Deviations
 
