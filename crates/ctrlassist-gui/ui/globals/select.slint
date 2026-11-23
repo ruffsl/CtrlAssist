@@ -13,10 +13,14 @@
 // to the `Select` global and opens; the single `SelectOverlay` at the
 // AppWindow root reads it and draws the list — below the anchor, flipped
 // above when there's no room, clamped into the window. Picking routes
-// back to the owning button by id.
+// back to the owning button by id, with the value of the row picked as
+// the list was when it opened: the button's own model may have changed
+// order since (a pad list sorts connected pads first), and an index
+// into it would name another option.
 //
 // Drop-in for `ComboBox` on the `model` / `current-value` / `selected`
-// subset the panes use.
+// subset the panes use, with `values` beside `model` for options whose
+// value isn't their label.
 
 import { ScrollView } from "std-widgets.slint";
 import { OverlayAnchor, OverlayIds } from "overlay.slint";
@@ -29,21 +33,24 @@ export global Select {
     // Open state + the active request's data.
     in-out property <bool> open;
     in-out property <[string]> options;
+    // What each of `options` stands for, place for place, copied with
+    // them as the list opens.
+    in-out property <[string]> values;
     in-out property <string> current-value;
     in-out property <OverlayAnchor> anchor;
     // Which button owns the open list (routes the pick back to it).
     in-out property <int> owner;
     // Keyboard cursor within the open list.
     in-out property <int> highlight;
-    // Bumped on a pick; the owning button reads `picked-index` in its change
-    // handler and re-emits `selected` / `selected-index`. The value is
-    // derived from `options[picked-index]` — no separate stored copy.
+    // Bumped on a pick; the owning button reads `picked-value` in its
+    // change handler and re-emits it as `selected`.
     in-out property <int> pick-tick;
-    in-out property <int> picked-index;
+    in-out property <string> picked-value;
 
-    public function open-for(id: int, opts: [string], current: string, a: OverlayAnchor) {
+    public function open-for(id: int, opts: [string], vals: [string], current: string, a: OverlayAnchor) {
         root.owner = id;
         root.options = opts;
+        root.values = vals;
         root.current-value = current;
         root.anchor = a;
         root.highlight = 0;
@@ -57,8 +64,8 @@ export global Select {
     }
 
     public function pick(index: int) {
-        if (root.open && index >= 0 && index < root.options.length) {
-            root.picked-index = index;
+        if (root.open && index >= 0 && index < root.values.length) {
+            root.picked-value = root.values[index];
             root.pick-tick += 1;
         }
         root.close();
@@ -240,12 +247,14 @@ export component ThemedSelect inherits Rectangle {
     /// The detail row the select sits in (`Nav.next-row-id`); 0 for none.
     in property <int> nav-row: 0;
     in property <[string]> model;
+    // What each option of `model` stands for, place for place; empty for
+    // options that stand for their labels.
+    in property <[string]> values;
     in property <string> current-value;
-    // Emitted on pick with the chosen value; `selected-index` carries the
-    // same pick as a model index (for index-bound consumers like the
-    // pairing wizard's `current-index <=> ...` vendor selector).
+    // Emitted on pick with the chosen option's value: from `values`, or
+    // its label where there are none. Never an index: the model may have
+    // changed order while the list was open.
     callback selected(value: string);
-    callback selected-index(index: int);
     in property <bool> enabled: true;
 
     property <int> id;
@@ -294,6 +303,7 @@ export component ThemedSelect inherits Rectangle {
         Select.open-for(
             root.id,
             root.model,
+            root.values.length == root.model.length ? root.values : root.model,
             root.current-value,
             { x: root.absolute-position.x, y: root.absolute-position.y, width: root.width, height: root.height });
     }
@@ -388,8 +398,7 @@ export component ThemedSelect inherits Rectangle {
     property <int> pick-mirror: Select.pick-tick;
     changed pick-mirror => {
         if (Select.owner == root.id) {
-            root.selected(root.model[Select.picked-index]);
-            root.selected-index(Select.picked-index);
+            root.selected(Select.picked-value);
         }
     }
 

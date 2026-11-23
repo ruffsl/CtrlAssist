@@ -178,6 +178,72 @@ fn a_switch_and_the_test_button_ask_the_tray() {
     );
 }
 
+/// A switch asks and shows what the tray then publishes, after a toggle
+/// as before it: a refused request leaves it showing the tray's
+/// setting, and a change made elsewhere reaches it.
+#[test]
+fn a_switch_shows_the_tray_s_setting_and_not_what_was_asked() {
+    let app = app();
+    let tray_says = |setup_started: bool| {
+        Snapshot {
+            available: true,
+            tray_available: true,
+            notifications: Some(NotificationSettings {
+                setup_started,
+                ..NotificationSettings::default()
+            }),
+            ..Snapshot::default()
+        }
+        .show(&app);
+        settle();
+    };
+    tray_says(true);
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    app.global::<Tray>().on_set_notification({
+        let asked = Rc::clone(&asked);
+        move |key, on| asked.borrow_mut().push(format!("{key}={on}"))
+    });
+    let id = "settings-notify-setup-started";
+    find_by_accessible_id(&app, id)
+        .unwrap()
+        .invoke_accessible_default_action();
+    settle();
+    assert_eq!(*asked.borrow(), ["setup_started=false"]);
+    // Nothing published yet, or the tray refused: as it was.
+    assert_eq!(switch_is(&app, id), (true, true));
+    tray_says(false);
+    assert_eq!(switch_is(&app, id), (false, true));
+    // Turned on again from the tray's file or another window.
+    tray_says(true);
+    assert_eq!(switch_is(&app, id), (true, true));
+}
+
+/// Right from the sidebar lands on the pane's first control: the first
+/// notification switch, or couch mode while there is no tray to set
+/// the switches.
+#[test]
+fn keys_into_the_pane_land_on_its_first_control() {
+    use ctrlassist_gui::{Nav, keys, nav};
+    use slint::platform::Key;
+
+    use crate::support::press;
+    let app = app();
+    let _ = nav::wire(&app);
+    keys::bind_key_router(&app);
+    app.show().expect("the testing backend shows a window");
+    let focus = app.global::<Nav>();
+    for (tray, first) in [
+        (true, "settings-notify-setup-started"),
+        (false, "settings-couch-mode"),
+    ] {
+        app.global::<Tray>().set_available(tray);
+        app.invoke_focus_active_sidebar_item();
+        settle();
+        press(&app, Key::RightArrow);
+        assert_eq!(focus.get_focus_id(), first, "with a tray: {tray}");
+    }
+}
+
 /// Couch mode's two controls are in the pane, with where the
 /// preference is kept.
 #[test]

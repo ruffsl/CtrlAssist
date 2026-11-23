@@ -109,9 +109,30 @@ fn row<'a>(rows: &'a [ProfileRow], name: &str) -> &'a ProfileRow {
         .expect("the profile has a row")
 }
 
-fn field(row: &ProfileRow, key: &str) -> ProfileFieldRow {
-    row.fields
+/// Every field of a row's form, in whichever card it is shown.
+fn fields(row: &ProfileRow) -> Vec<ProfileFieldRow> {
+    let mut all: Vec<ProfileFieldRow> = row.input_fields.iter().collect();
+    if !row.identity_field.key.is_empty() {
+        all.push(row.identity_field.clone());
+    }
+    all.extend(row.output_fields.iter());
+    all.extend(row.preset_fields.iter());
+    all
+}
+
+/// The keys of a row's fields, sorted.
+fn keys(row: &ProfileRow) -> Vec<String> {
+    let mut keys: Vec<String> = fields(row)
         .iter()
+        .map(|field| field.key.to_string())
+        .collect();
+    keys.sort();
+    keys
+}
+
+fn field(row: &ProfileRow, key: &str) -> ProfileFieldRow {
+    fields(row)
+        .into_iter()
         .find(|field| field.key == key)
         .expect("the form has the field")
 }
@@ -137,16 +158,10 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
 
     let couch = row(&rows, "couch");
     assert_eq!(couch.kind, "preset");
-    assert_eq!(couch.summary, "priority · xbox");
-    assert!(couch.kept && !couch.unfinished && !couch.running && !couch.is_default);
-    let keys: Vec<String> = couch
-        .fields
-        .iter()
-        .map(|field| field.key.to_string())
-        .collect();
+    assert!(couch.kept && !couch.unfinished && couch.setup_index < 0 && !couch.is_default);
     assert_eq!(
-        keys,
-        ["mode", "primary", "assist", "identity", "rumble", "hide"],
+        keys(couch),
+        ["assist", "hide", "identity", "mode", "primary", "rumble"],
         "a preset of two pads has no pad count"
     );
     let preset = field(couch, "mode");
@@ -154,7 +169,6 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
         (preset.kind.as_str(), preset.value_label.as_str()),
         ("choice", "Priority")
     );
-    assert!(preset.description.starts_with("Two pads as one."));
     assert_eq!(preset.options.row_count(), 5);
     // A pad named by its bare address is the pad of that address; the
     // dropdown lists connected pads first, absent ones marked.
@@ -311,18 +325,9 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
             "Primary DualSense [address:0c:27:56:4f:bd:14]"
         ]
     );
-    assert!(quick.running);
-    assert_eq!(
-        (quick.phase_label.as_str(), quick.tone.as_str()),
-        ("Running", "success")
-    );
-
     let attic = row(&rows, "attic");
-    assert_eq!(
-        (attic.kind.as_str(), attic.summary.as_str()),
-        ("full", "full form")
-    );
-    assert_eq!(attic.fields.row_count(), 0);
+    assert_eq!(attic.kind, "full");
+    assert!(fields(attic).is_empty());
     // Written by hand: a shape for its tile and how it is, and nothing
     // of its text.
     assert_eq!(attic.shape, "merge", "it names more than one pad");
@@ -349,12 +354,7 @@ fn what_the_window_holds_shows_as_unfinished_until_it_is_a_profile() {
     let den = row(&rows, "den");
     assert!(den.unfinished && !den.kept);
     assert_eq!(den.unfinished_why, "mode: this preset needs `pad`");
-    let keys: Vec<String> = den
-        .fields
-        .iter()
-        .map(|field| field.key.to_string())
-        .collect();
-    assert_eq!(keys, ["mode", "pad", "outputs", "identity", "hide"]);
+    assert_eq!(keys(den), ["hide", "identity", "mode", "outputs", "pad"]);
     let outputs = field(den, "outputs");
     assert_eq!((outputs.number, outputs.min, outputs.max), (3, 1, 8));
     assert_eq!(field(den, "pad").value_label, "");
@@ -396,7 +396,7 @@ fn app() -> AppWindow {
         .iter()
         .map(|profile| profile.name.clone())
         .collect();
-    setups::show(&app, setups::rows(&known.setups, &known.pads, &kept), "");
+    setups::show(&app, setups::rows(&known.setups, &kept), "");
     profiles::show(&app, known);
     app
 }
@@ -676,7 +676,7 @@ fn a_profile_s_pad_and_a_pad_s_profile_are_a_click_apart_and_back_returns() {
         .iter()
         .map(|profile| profile.name.clone())
         .collect();
-    setups::show(&app, setups::rows(&known.setups, &known.pads, &kept), "");
+    setups::show(&app, setups::rows(&known.setups, &kept), "");
     pads::show(
         &app,
         pads::rows(&known.pads, &known.setups, &known.profiles, &[]),
@@ -756,4 +756,302 @@ fn picking_the_other_part_s_pad_changes_the_two_places() {
     .unwrap();
     profiles::change_places(&known, &mut one, "primary", "address:0c:27:56:4f:bd:14");
     assert!(!one.contains_key("assist"));
+}
+
+/// By keys from the sidebar to the control of that id in the form of
+/// the profile selected; the window shown, as keys need.
+fn focus_by_keys(app: &AppWindow, id: &str) {
+    use slint::platform::Key;
+    app.show().expect("the testing backend shows a window");
+    app.invoke_focus_active_sidebar_item();
+    settle();
+    let nav = app.global::<ctrlassist_gui::Nav>();
+    crate::support::press(app, Key::RightArrow);
+    crate::support::press(app, Key::RightArrow);
+    for _ in 0..16 {
+        if nav.get_focus_id() == id {
+            break;
+        }
+        crate::support::press(app, Key::DownArrow);
+    }
+    assert_eq!(nav.get_focus_id(), id);
+}
+
+/// Whatever the window is asked to set, as `name key value`.
+fn record_set_field(app: &AppWindow) -> Rc<RefCell<Vec<String>>> {
+    let asked: Rc<RefCell<Vec<String>>> = Rc::default();
+    let set = asked.clone();
+    app.global::<Profiles>()
+        .on_set_field(move |name, key, value| {
+            set.borrow_mut().push(format!("{name} {key} {value}"));
+        });
+    asked
+}
+
+/// The Identity dropdown sits in the first virtual pad's row. A change
+/// the daemon reports while it is open, or after a pick, keeps that row
+/// and so the dropdown: the list stays its own, a pick from it lands,
+/// and the keys go on from it.
+#[test]
+fn a_dropdown_in_a_virtual_pad_s_row_lives_through_a_daemon_change() {
+    use ctrlassist_gui::Select;
+    use slint::platform::Key;
+    let app = app();
+    let asked = record_set_field(&app);
+    app.global::<Profiles>().invoke_select("couch".into());
+    settle();
+    let outputs = |app: &AppWindow| {
+        let rows: Vec<ProfileRow> = app.global::<Profiles>().get_rows().iter().collect();
+        row(&rows, "couch").outputs.clone()
+    };
+    let before = outputs(&app);
+    focus_by_keys(&app, "profiles-field-identity");
+    crate::support::press(&app, Key::Return);
+    let select = app.global::<Select>();
+    assert!(select.get_open());
+    // A pad connects, or anything else the daemon says.
+    profiles::show(&app, known());
+    settle();
+    assert!(before == outputs(&app), "the rows are the same ones");
+    crate::support::press(&app, Key::DownArrow);
+    crate::support::press(&app, Key::Return);
+    assert!(!select.get_open());
+    assert_eq!(*asked.borrow(), ["couch identity dualsense"]);
+    // Again after the pick: focus is still on the dropdown.
+    profiles::show(&app, known());
+    settle();
+    crate::support::press(&app, Key::Return);
+    assert!(select.get_open(), "the dropdown kept focus");
+    crate::support::press(&app, Key::Escape);
+}
+
+/// A pad list puts connected pads first, so it may change order while
+/// it is open; the pick is the pad that was picked, not the one now in
+/// its place.
+#[test]
+fn a_pick_is_the_pad_shown_when_the_list_opened() {
+    use ctrlassist_gui::Select;
+    use slint::platform::Key;
+    let app = app();
+    let asked = record_set_field(&app);
+    app.global::<Profiles>().invoke_select("couch".into());
+    settle();
+    focus_by_keys(&app, "profiles-field-primary");
+    crate::support::press(&app, Key::Return);
+    let select = app.global::<Select>();
+    assert!(select.get_open());
+    // The cursor to the Xbox pad, last as it isn't connected.
+    crate::support::press(&app, Key::DownArrow);
+    crate::support::press(&app, Key::DownArrow);
+    assert_eq!(
+        select.get_options().row_data(2).unwrap(),
+        "Xbox pad · FFB17 (not connected)"
+    );
+    // It connects and the DualSense leaves: the two change places.
+    let mut moved = known();
+    moved.pads[0].connected = true;
+    moved.pads[2].connected = false;
+    profiles::show(&app, moved);
+    settle();
+    crate::support::press(&app, Key::Return);
+    assert_eq!(
+        *asked.borrow(),
+        ["couch primary serial:045e:02dd:7EED821FFB17"]
+    );
+}
+
+/// A pad named by its model is said by the pad of that model a start
+/// would take: a free one before one another profile has.
+#[test]
+fn any_pad_of_a_model_is_said_by_the_one_a_start_would_take() {
+    let mut known_now = known();
+    let of_model = |id: &str, setup: Option<&str>| Pad {
+        product: 0x09cc,
+        setup: setup.map(str::to_string),
+        ..pad(id, "Wireless Controller", true)
+    };
+    known_now
+        .pads
+        .push(of_model("address:aa:aa:aa:aa:aa:01", Some("quick")));
+    known_now
+        .pads
+        .push(of_model("address:aa:aa:aa:aa:aa:02", None));
+    let rows = profiles::rows(&known_now, &BTreeMap::new());
+    let couch = row(&rows, "couch");
+    let assist = field(couch, "assist");
+    assert_eq!(
+        (assist.status_word.as_str(), assist.status_tone.as_str()),
+        ("Connected", "success")
+    );
+    let used = couch
+        .uses
+        .iter()
+        .find(|used| used.part == "Assist")
+        .unwrap();
+    assert_eq!(used.pad, "address:aa:aa:aa:aa:aa:02");
+}
+
+/// Leaving a draft that isn't a profile yet asks first; discarding it
+/// asks nothing, though the selection moves off it too.
+#[test]
+fn leaving_an_unfinished_draft_asks_and_discarding_it_does_not() {
+    let app = app();
+    let pane = app.global::<Profiles>();
+    // The pane is made as the tree is first walked, as a window shown
+    // makes it at once; what it follows starts from then.
+    assert!(find_by_accessible_id(&app, "profiles-new").is_some());
+    pane.invoke_create("den".into());
+    settle();
+    assert!(find_by_accessible_id(&app, "profiles-discard").is_some());
+    pane.invoke_select("couch".into());
+    settle();
+    assert!(find_by_accessible_id(&app, "dialog-confirm").is_some());
+    // Back to it, to finish it.
+    activate_shown(&app, "dialog-cancel");
+    let rows: Vec<ProfileRow> = pane.get_rows().iter().collect();
+    assert_eq!(
+        rows[usize::try_from(pane.get_selected_index()).unwrap()].name,
+        "den"
+    );
+    pane.invoke_discard("den".into());
+    settle();
+    assert!(find_by_accessible_id(&app, "dialog-confirm").is_none());
+    assert_eq!(pane.get_selected_index(), -1);
+}
+
+/// Managed follows the profile as the daemon keeps it, after a toggle
+/// as before: the switch asks, and shows what is kept.
+#[test]
+fn the_managed_switch_follows_the_profile_after_a_toggle() {
+    let app = app();
+    let asked = record_set_field(&app);
+    app.global::<Profiles>().invoke_select("couch".into());
+    settle();
+    let checked = |app: &AppWindow| {
+        find_by_accessible_id(app, "profiles-managed")
+            .and_then(|switch| switch.accessible_checked())
+            .unwrap_or_default()
+    };
+    let chip = |app: &AppWindow| {
+        find_by_accessible_id(app, "profiles-managed-chip")
+            .and_then(|chip| chip.accessible_label())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let kept = |app: &AppWindow, managed: bool| {
+        let mut known_now = known();
+        let couch = known_now
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.name == "couch")
+            .unwrap();
+        couch.toml = format!("{COUCH}managed = {managed}\n");
+        profiles::show(app, known_now);
+        settle();
+    };
+    assert!(!checked(&app));
+    activate_shown(&app, "profiles-managed");
+    assert_eq!(*asked.borrow(), ["couch managed true"]);
+    // Asked, not kept: as it was.
+    assert!(!checked(&app));
+    kept(&app, true);
+    assert!(checked(&app));
+    assert_eq!(chip(&app), "Managed");
+    // Turned off from the tray, then on again from a file.
+    kept(&app, false);
+    assert!(!checked(&app));
+    assert_eq!(chip(&app), "Unmanaged");
+    kept(&app, true);
+    assert!(checked(&app));
+}
+
+/// A switch the daemon serves, other than Managed, gets a control in
+/// its card, as any field does.
+#[test]
+fn a_served_switch_has_a_control_of_its_own() {
+    use ctrlassist::form::{Field, Kind};
+    let app = app();
+    let asked = record_set_field(&app);
+    let mut known_now = known();
+    known_now.fields.push(Field {
+        key: "lights".to_string(),
+        label: "Lights".to_string(),
+        help: String::new(),
+        kind: Kind::Switch,
+        presets: Vec::new(),
+        default: "false".to_string(),
+        group: form::ARRANGEMENT.to_string(),
+    });
+    profiles::show(&app, known_now);
+    app.global::<Profiles>().invoke_select("couch".into());
+    settle();
+    let switch = find_by_accessible_id(&app, "profiles-field-lights").expect("a control");
+    assert_eq!(switch.accessible_checked(), Some(false));
+    activate_shown(&app, "profiles-field-lights");
+    assert_eq!(*asked.borrow(), ["couch lights true"]);
+}
+
+/// A profile deleted while it runs leaves its setup running: the setup
+/// keeps a row, with its pads and virtual pads as it has them, and its
+/// Stop.
+#[test]
+fn a_running_profile_that_is_deleted_keeps_a_row_to_stop_it() {
+    let mut known_now = known();
+    known_now.profiles.retain(|profile| profile.name != "quick");
+    let rows = profiles::rows(&known_now, &BTreeMap::new());
+    let gone = row(&rows, "quick");
+    assert_eq!(gone.kind, "gone");
+    assert!(!gone.kept && !gone.unfinished && !gone.can_start);
+    assert_eq!(
+        (gone.word.as_str(), gone.word_tone.as_str()),
+        ("Running", "success")
+    );
+    assert_eq!(gone.setup_index, 0);
+    assert_eq!(gone.shape, "merge");
+    let uses: Vec<String> = gone
+        .uses
+        .iter()
+        .map(|used| format!("{} {} {}", used.part, used.name, used.word))
+        .collect();
+    assert_eq!(
+        uses,
+        [
+            "Assist Wireless Controller Connected",
+            "Primary DualSense Connected"
+        ]
+    );
+    let made = gone.outputs.row_data(0).unwrap();
+    assert_eq!(
+        (made.name.as_str(), made.pad.as_str()),
+        ("Virtual", "virtual:quick/virtual")
+    );
+
+    let app = app();
+    let stopped: Rc<RefCell<Vec<String>>> = Rc::default();
+    let log = stopped.clone();
+    app.global::<Setups>()
+        .on_stop(move |name| log.borrow_mut().push(name.to_string()));
+    let kept: Vec<String> = known_now
+        .profiles
+        .iter()
+        .map(|profile| profile.name.clone())
+        .collect();
+    setups::show(&app, setups::rows(&known_now.setups, &kept), "");
+    profiles::show(&app, known_now);
+    app.global::<Profiles>().invoke_select("quick".into());
+    settle();
+    for id in ["profiles-gone", "profiles-stale"] {
+        assert!(find_by_accessible_id(&app, id).is_some(), "{id}");
+    }
+    // Nothing to update to, delete, or say how it starts.
+    for id in [
+        "profiles-update",
+        "profiles-delete",
+        "profiles-managed",
+        "profiles-managed-chip",
+    ] {
+        assert!(find_by_accessible_id(&app, id).is_none(), "{id}");
+    }
+    activate_shown(&app, "profiles-stop");
+    assert_eq!(*stopped.borrow(), ["quick"]);
 }

@@ -2,62 +2,21 @@
 //! which the Profiles pane's STATUS group shows, and what that group asks
 //! of the daemon.
 
-use ctrlassist::{DaemonClient, Pad, Phase, Setup};
+use ctrlassist::{DaemonClient, Phase, Setup};
 use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
 use tracing::warn;
 
-use crate::{
-    AppWindow, ErrorState, Errors, SetupNodeRow, SetupPadRow, SetupRow, SetupSinkRow, Setups, on_ui,
-};
+use crate::{AppWindow, ErrorState, Errors, SetupNodeRow, SetupRow, Setups, on_ui};
 
-/// A phase as a person reads it, and the chip's tone for it.
-pub(crate) fn phase_text(phase: Phase) -> (&'static str, &'static str) {
-    match phase {
-        Phase::Running => ("Running", "success"),
-        Phase::Held => ("Held: a pad is missing", "warn"),
-        Phase::Failed => ("Failed", "danger"),
-        // Starting, and any phase a later daemon adds.
-        _ => ("Starting", "neutral"),
-    }
-}
-
-/// The pane's rows, in name order. `pads` gives each pad its name;
-/// `kept` is the names of the profiles kept now.
+/// The rows, in name order. `kept` is the names of the profiles kept
+/// now.
 #[must_use]
-pub fn rows(setups: &[Setup], pads: &[Pad], kept: &[String]) -> Vec<SetupRow> {
+pub fn rows(setups: &[Setup], kept: &[String]) -> Vec<SetupRow> {
     let mut sorted: Vec<&Setup> = setups.iter().collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
     sorted
         .into_iter()
         .map(|setup| {
-            let (label, tone) = phase_text(setup.phase);
-            let sources: Vec<SetupPadRow> = setup
-                .sources
-                .iter()
-                .map(|source| {
-                    let id = source.pad.clone().unwrap_or_default();
-                    // A pad the daemon no longer knows goes by its id.
-                    let name = pads
-                        .iter()
-                        .find(|pad| pad.id == id)
-                        .map_or_else(|| id.clone(), |pad| pad.name.clone());
-                    SetupPadRow {
-                        role: SharedString::from(crate::status::capitalized(&source.name)),
-                        pad: SharedString::from(id),
-                        name: SharedString::from(name),
-                        present: source.present,
-                    }
-                })
-                .collect();
-            let sinks: Vec<SetupSinkRow> = setup
-                .sinks
-                .iter()
-                .map(|sink| SetupSinkRow {
-                    name: SharedString::from(sink.name.as_str()),
-                    identity: SharedString::from(sink.identity.as_str()),
-                    node: SharedString::from(sink.node.clone().unwrap_or_default()),
-                })
-                .collect();
             let nodes: Vec<SetupNodeRow> = setup
                 .nodes
                 .iter()
@@ -74,14 +33,8 @@ pub fn rows(setups: &[Setup], pads: &[Pad], kept: &[String]) -> Vec<SetupRow> {
                 .collect();
             SetupRow {
                 name: SharedString::from(setup.name.as_str()),
-                phase: SharedString::from(setup.phase.as_str()),
-                phase_label: SharedString::from(label),
-                tone: SharedString::from(tone),
-                reason: SharedString::from(setup.reason.clone().unwrap_or_default()),
                 stale: setup.stale,
                 profile_kept: kept.contains(&setup.name),
-                pads: ModelRc::new(VecModel::from(sources)),
-                sinks: ModelRc::new(VecModel::from(sinks)),
                 nodes: ModelRc::new(VecModel::from(nodes)),
             }
         })
@@ -103,19 +56,13 @@ pub fn trouble(setups: &[Setup]) -> &'static str {
 /// Puts the rows on the window.
 pub fn show(app: &AppWindow, mut rows: Vec<SetupRow>, trouble: &str) {
     let setups = app.global::<Setups>();
-    // In place, down to each setup's pads, virtual pads, nodes and a
-    // node's choices: see `models`.
+    // In place, down to each setup's nodes and a node's choices: see
+    // `models`.
     let current = setups.get_rows();
     for row in &mut rows {
         let Some(old) = current.iter().find(|old| old.name == row.name) else {
             continue;
         };
-        row.pads = crate::models::sync(&old.pads, row.pads.iter().collect(), |a, b| {
-            a.role == b.role
-        });
-        row.sinks = crate::models::sync(&old.sinks, row.sinks.iter().collect(), |a, b| {
-            a.name == b.name
-        });
         let mut nodes: Vec<SetupNodeRow> = row.nodes.iter().collect();
         for node in &mut nodes {
             if let Some(old) = old.nodes.iter().find(|old| old.name == node.name) {

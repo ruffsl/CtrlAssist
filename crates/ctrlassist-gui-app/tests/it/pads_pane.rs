@@ -159,6 +159,15 @@ fn rows_put_connected_pads_first_and_say_what_each_is() {
     };
     let row = &rows(&[odd], &[], &[], &[])[0];
     assert_eq!((row.connection.as_str(), row.rumble.as_str()), ("", ""));
+    // What the pane goes by is apart from the word it shows.
+    assert!(!row.without_rumble && !dualsense.without_rumble);
+    let still = Pad {
+        rumble: Some(false),
+        ..pad("port:usb-2/input0", "Still", true, None)
+    };
+    let row = &rows(&[still], &[], &[], &[])[0];
+    assert!(row.without_rumble);
+    assert_eq!(row.rumble, "No");
 }
 
 fn app() -> AppWindow {
@@ -410,4 +419,123 @@ fn an_empty_list_says_why() {
     assert_eq!(said(&app), "Loading");
     app.set_daemon_available(false);
     assert_eq!(said(&app), "Daemon offline");
+}
+
+/// By keys from the sidebar into the detail of the pad at `at`, then
+/// down to the control of that id.
+fn focus_by_keys(app: &AppWindow, at: i32, id: &str) {
+    app.show().expect("the testing backend shows a window");
+    app.invoke_focus_active_sidebar_item();
+    settle();
+    let nav = app.global::<Nav>();
+    press(app, Key::RightArrow);
+    for _ in 0..at {
+        press(app, Key::DownArrow);
+    }
+    assert_eq!(app.global::<Pads>().get_selected_index(), at);
+    press(app, Key::RightArrow);
+    for _ in 0..8 {
+        if nav.get_focus_id() == id {
+            break;
+        }
+        press(app, Key::DownArrow);
+    }
+    assert_eq!(nav.get_focus_id(), id);
+}
+
+/// A profile whose pads are still partly to choose names the pads it
+/// has: each lists it, as not set up.
+#[test]
+fn a_profile_not_set_up_is_listed_on_the_pads_it_names() {
+    let den = Profile {
+        name: "den".to_string(),
+        toml: "mode = \"priority\"\nprimary = \"address:0c:27:56:4f:bd:14\"\n".to_string(),
+        unset: vec!["assist".to_string()],
+        problem: None,
+    };
+    let made = rows(&some_pads(), &[], std::slice::from_ref(&den), &[]);
+    let named: Vec<String> = made[1]
+        .profiles
+        .iter()
+        .map(|row| format!("{} {} {} {}", row.name, row.part, row.word, row.tone))
+        .collect();
+    assert_eq!(named, ["den Primary Not set up neutral"]);
+    // The pad still to choose is none of them.
+    assert!(
+        made.iter()
+            .all(|row| row.id == made[1].id || row.profiles.row_count() == 0)
+    );
+
+    let app = app();
+    show(&app, made);
+    app.global::<Pads>().set_selected_index(1);
+    settle();
+    assert!(find_by_accessible_id(&app, "pads-profile-den").is_some());
+    assert!(find_by_accessible_id(&app, "pads-no-profiles").is_none());
+}
+
+/// Entering a pad's detail by keys lands on a stop in it, whether or
+/// not Identify can buzz the pad.
+#[test]
+fn keys_into_a_detail_land_somewhere_when_identify_cannot_buzz() {
+    use ctrlassist::SetupSink;
+    let mut pads = some_pads();
+    // The Wireless Controller, connected, with no rumble.
+    pads[1].rumble = Some(false);
+    let mut running = quick();
+    // A virtual pad not made yet.
+    running.sinks = vec![SetupSink {
+        name: "virtual".to_string(),
+        identity: "generic".to_string(),
+        node: None,
+    }];
+    let app = app();
+    show(&app, rows(&pads, &[running], &profiles(), &[]));
+    app.show().expect("the testing backend shows a window");
+    let nav = app.global::<Nav>();
+    let list = app.global::<Pads>();
+    for (at, name) in [(2, "Wireless Controller"), (4, "Generic")] {
+        app.invoke_focus_active_sidebar_item();
+        settle();
+        press(&app, Key::RightArrow);
+        for _ in 0..at {
+            press(&app, Key::DownArrow);
+        }
+        assert_eq!(
+            list.get_rows()
+                .row_data(usize::try_from(at).unwrap())
+                .unwrap()
+                .name,
+            name
+        );
+        press(&app, Key::RightArrow);
+        assert_eq!(nav.get_column(), 2, "{name}");
+        // On the next stop after it: the Games row's "i", or the
+        // PROFILES group's.
+        let landed = nav.get_focus_id();
+        assert!(
+            !landed.is_empty() && landed != "pads-identify",
+            "{name}: {landed}"
+        );
+        // And the keys go on from there.
+        press(&app, Key::Escape);
+        assert_eq!(nav.get_column(), 1, "{name}");
+        press(&app, Key::Escape);
+    }
+}
+
+/// A change the daemon reports keeps the rows of a pad's PROFILES, so
+/// the pencil with keyboard focus keeps it.
+#[test]
+fn a_pad_s_profile_pencil_keeps_focus_through_a_daemon_change() {
+    let app = app();
+    let pads = app.global::<Pads>();
+    let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+    let seen = opened.clone();
+    pads.on_open_profile(move |name| seen.borrow_mut().push(name.to_string()));
+    focus_by_keys(&app, 1, "pads-profile-desk");
+    show(&app, rows(&some_pads(), &[quick()], &profiles(), &[]));
+    settle();
+    press(&app, Key::Return);
+    assert_eq!(*opened.borrow(), ["desk"]);
 }

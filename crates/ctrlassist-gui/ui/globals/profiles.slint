@@ -1,13 +1,13 @@
 // The Profiles pane's model and callbacks. Rust pushes `rows` from the
 // daemon's mirror, the fields the daemon serves for a preset, and the
-// edits the window is holding that aren't a profile yet.
+// edits the window is holding that aren't a profile yet. Every word in
+// them is made in Rust and only shown.
 
 // One field of a preset's form, with what it holds now. Which control
 // shows it goes by `kind`: "choice", "pad", "number" or "switch".
 export struct ProfileFieldRow {
     key: string,
     label: string,
-    help: string,
     kind: string,
     // A choice's or a pad's options as a person reads them, and, place
     // for place, as a profile writes them.
@@ -16,10 +16,9 @@ export struct ProfileFieldRow {
     // What it holds, as a profile writes it, and as a person reads it.
     value: string,
     value-label: string,
-    // The chosen choice's sentence; empty when it has none.
-    description: string,
-    // A pad the form can't pick (any pad of a model, or one the daemon
-    // has never seen): shown, not changed.
+    // A field of a kind this window doesn't know, which a later daemon
+    // may serve: shown as the profile writes it, and changed in its
+    // file.
     read-only: bool,
     // For a number: what it is, and its range.
     number: int,
@@ -74,13 +73,16 @@ export struct ProfileUseRow {
 export struct ProfileRow {
     name: string,
     // "preset": the form shows it. "full": it is written by hand, and
-    // the window shows none of it.
+    // the window shows none of it. "gone": only its setup is left, the
+    // profile deleted or its file removed, and the row is there so the
+    // setup can be stopped.
     kind: string,
     // Its arrangement's shape, for its tile: "merge", "split", or
     // empty for neither.
     shape: string,
-    // How it is, in a word, and the word's tone: Running, Held, Failed,
-    // Ready, Waiting, Unfinished, Wrong.
+    // How it is, in a word, and the word's tone: Starting, Running,
+    // Held, Failed, Ready, Waiting, Not set up, Unfinished, Wrong. Shown,
+    // and never compared: the window's logic goes by the other fields.
     word: string,
     word-tone: string,
     // A line of how it is, beside its Start or Stop.
@@ -106,18 +108,10 @@ export struct ProfileRow {
     kept: bool,
     // What the daemon finds wrong with the kept text; empty for none.
     problem: string,
-    // A line for the list: the preset and identity, or "full form".
-    summary: string,
-    // Its setup, if one exists: the phase as read, and the chip's tone.
-    running: bool,
-    phase-label: string,
-    tone: string,
     // The default profile: always kept, listed first, never renamed or
     // deleted.
     is-default: bool,
-    // A preset's fields, all of them and then by the card each is
-    // shown in.
-    fields: [ProfileFieldRow],
+    // A preset's fields, by the card each is shown in.
     input-fields: [ProfileFieldRow],
     // Those of the outputs but the identity, which the first virtual
     // pad's row carries; its `key` is empty for a profile with none.
@@ -146,6 +140,8 @@ export global Profiles {
     callback rename(string, string);
     // What is wrong with a name for a new profile; empty for a good one.
     pure callback name-problem(string) -> string;
+    // Whether the window holds a change to it that isn't a profile yet.
+    pure callback unfinished(string) -> bool;
     // Select the profile of that name.
     callback select(string);
     // Show its file in the file manager.

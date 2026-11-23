@@ -2,12 +2,63 @@
 //! name, and what a pad's detail says beside each profile that names
 //! the pad. One place, so the two can't disagree.
 
-use ctrlassist::{Pad, Phase, Setup};
+use ctrlassist::{Pad, Phase, Profile, Setup};
 use ctrlassist_protocol::profile::{PadRef, Plan};
 
-/// A word and the tone it is shown in: a chip's tones, with `neutral`
-/// for the faint one.
-pub type Word = (&'static str, &'static str);
+/// How a profile is. Logic goes by this, and only [`word`](Self::word)
+/// is shown, so a translated word can't change what the window does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    /// Its setup is on its way to running.
+    Starting,
+    /// Its setup runs, with its virtual pads there.
+    Running,
+    /// Its setup waits for a pad that left.
+    Held,
+    /// Its setup stopped working; Stop clears it.
+    Failed,
+    /// Its pads are still to choose.
+    NotSetUp,
+    /// The daemon can't run it as it is written.
+    Wrong,
+    /// Every pad it names is connected and in no setup.
+    Ready,
+    /// A pad it names is away, or in a setup.
+    Waiting,
+    /// A change the window holds isn't a profile yet.
+    Unfinished,
+}
+
+impl Status {
+    /// The word a person reads.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Starting => "Starting",
+            Self::Running => "Running",
+            Self::Held => "Held",
+            Self::Failed => "Failed",
+            Self::NotSetUp => "Not set up",
+            Self::Wrong => "Wrong",
+            Self::Ready => "Ready",
+            Self::Waiting => "Waiting",
+            Self::Unfinished => "Unfinished",
+        }
+    }
+
+    /// The tone it is shown in: a chip's tones, with `neutral` for the
+    /// faint one.
+    #[must_use]
+    pub fn tone(self) -> &'static str {
+        match self {
+            Self::Running => "success",
+            Self::Held | Self::Unfinished => "warn",
+            Self::Failed | Self::Wrong => "danger",
+            Self::Starting | Self::Ready => "info",
+            Self::NotSetUp | Self::Waiting => "neutral",
+        }
+    }
+}
 
 /// Whether `pad` is one `wanted` means.
 #[must_use]
@@ -18,33 +69,79 @@ pub fn names(wanted: &PadRef, pad: &Pad) -> bool {
     }
 }
 
-/// How the profile `name` is. `plan` is the profile worked out, or
-/// nothing for one the daemon finds wrong.
-///
-/// A profile that runs says its setup's phase. One that doesn't is
-/// ready when every pad it names is connected and in no setup, and
-/// waits for a pad otherwise.
+/// The pad `wanted` means for the profile `profile`, as a start would
+/// find it: of the known pads it names, one that profile's setup has,
+/// else one connected and in no setup, else one connected, else any.
+/// For a pad named by its model several may fit, and this is the one
+/// [`of`] judges the profile by.
 #[must_use]
-pub fn of(name: &str, plan: Option<&Plan>, setups: &[Setup], pads: &[Pad]) -> Word {
+pub fn meant<'a>(wanted: &PadRef, pads: &'a [Pad], profile: &str) -> Option<&'a Pad> {
+    let named = || pads.iter().filter(|pad| names(wanted, pad));
+    named()
+        .find(|pad| pad.connected && pad.setup.as_deref() == Some(profile))
+        .or_else(|| named().find(|pad| pad.connected && pad.setup.is_none()))
+        .or_else(|| named().find(|pad| pad.connected))
+        .or_else(|| named().next())
+}
+
+/// The profile worked out, and whether its pads are still to choose.
+/// The daemon keeps a preset that lacks only its pads, as not set up;
+/// it is worked out here with stand-ins in their places, which are then
+/// left out, so that the pads it does name can be told. Nothing for a
+/// profile the daemon finds wrong.
+#[must_use]
+pub fn plan_of(profile: &Profile) -> Option<(Plan, bool)> {
+    if let Ok(plan) = ctrlassist_protocol::profile::Profile::check(&profile.toml) {
+        return Some((plan, false));
+    }
+    if profile.unset.is_empty() {
+        return None;
+    }
+    let mut table: toml::Table = profile.toml.parse().ok()?;
+    for (at, key) in profile.unset.iter().enumerate() {
+        table.insert(
+            key.clone(),
+            toml::Value::String(format!("model:0000:{:04x}", at + 1)),
+        );
+    }
+    let mut plan = ctrlassist_protocol::profile::Profile::check(&table.to_string()).ok()?;
+    plan.sources
+        .retain(|source| !profile.unset.contains(&source.name));
+    Some((plan, true))
+}
+
+/// How the profile `name` is. `plan` is the profile worked out, or
+/// nothing for one the daemon finds wrong; `unset`, that its pads are
+/// still to choose.
+///
+/// A profile that runs says its setup's phase. One that doesn't is not
+/// set up while its pads are still to choose, ready when every pad it
+/// names is connected and in no setup, and waits for a pad otherwise.
+#[must_use]
+pub fn of(name: &str, plan: Option<&Plan>, unset: bool, setups: &[Setup], pads: &[Pad]) -> Status {
     if let Some(setup) = setups.iter().find(|setup| setup.name == name) {
         return match setup.phase {
-            Phase::Running => ("Running", "success"),
-            Phase::Held => ("Held", "warn"),
-            Phase::Failed => ("Failed", "danger"),
-            _ => ("Starting", "info"),
+            Phase::Running => Status::Running,
+            Phase::Held => Status::Held,
+            Phase::Failed => Status::Failed,
+            // Starting, and any phase a later daemon adds.
+            _ => Status::Starting,
         };
     }
+    if unset {
+        return Status::NotSetUp;
+    }
     let Some(plan) = plan else {
-        return ("Wrong", "danger");
+        return Status::Wrong;
     };
     let free = |wanted: &PadRef| {
         pads.iter()
             .any(|pad| names(wanted, pad) && pad.connected && pad.setup.is_none())
     };
     if plan.sources.iter().all(|source| free(&source.pad)) {
-        ("Ready", "info")
+        Status::Ready
     } else {
-        ("Waiting", "neutral")
+        Status::Waiting
     }
 }
 

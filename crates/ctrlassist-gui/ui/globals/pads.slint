@@ -32,8 +32,11 @@ export struct PadRow {
     // is some other.
     connection: string,
     connected: bool,
-    // "Yes", "No", or empty when the daemon couldn't tell.
+    // "Yes", "No", or empty when the daemon couldn't tell: shown, and
+    // never compared, since it may be translated.
     rumble: string,
+    // The daemon found it has no rumble, so Identify can't buzz it.
+    without-rumble: bool,
     // Its maker, for its tile: "sony", "microsoft", "nintendo",
     // "8bitdo", "valve", or empty for any other.
     maker: string,

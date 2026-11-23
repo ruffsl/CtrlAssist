@@ -1,16 +1,16 @@
 // The Profiles pane: the profiles the daemon keeps, and for the one
 // selected a form over its preset, rendered from the fields the daemon
-// serves. Each change applies at once. A profile only its text can
-// show (the full form) is shown as text.
+// serves. Each change applies at once. A profile written by hand (the
+// full form) shows what it names and none of its text.
 //
-// The list and the detail are the shapes of the Pads and Setups panes,
-// and so of TisVlay's; the list's "+" and the name dialogs are its
-// profile list's.
+// The list and the detail are the shapes of the Pads pane, and so of
+// TisVlay's; the list's "+" and the name dialogs are its profile
+// list's.
 
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { ListRow, Group, Chip, ThemedButton, LinkText, IconBtn, ContextualHelpButton, ConfirmDialog, NameInputDialog, InlineError, ThemedSwitch, ThemedSpinBox, Focusable, ProfileTile, FormRow, ListCaption, ToneText, ToneDot } from "../widgets.slint";
+import { ListRow, Group, Chip, ThemedButton, IconBtn, ContextualHelpButton, ConfirmDialog, NameInputDialog, InlineError, ThemedSwitch, ThemedSpinBox, Focusable, ProfileTile, FormRow, ListCaption, ToneText, ToneDot } from "../widgets.slint";
 import { Icons } from "../globals/icons.slint";
 import { Setups, SetupRow } from "../globals/setups.slint";
 import { ThemedSelect } from "../globals/select.slint";
@@ -18,7 +18,7 @@ import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { ServiceHealth } from "../globals/health.slint";
 import { Errors } from "../globals/errors.slint";
 import { Nav } from "../globals/nav.slint";
-import { Profiles, ProfileRow, ProfileFieldRow, ProfileUseRow, ProfileOutputRow } from "../globals/profiles.slint";
+import { Profiles, ProfileRow, ProfileFieldRow } from "../globals/profiles.slint";
 
 component ProfileListRow inherits ListRow {
     in property <ProfileRow> profile;
@@ -271,9 +271,6 @@ component ProfileList inherits Rectangle {
     }
 }
 
-// One field of the form: its label, its control by its kind, and under
-// the control the chosen choice's sentence or the field's help.
-
 // One field of a preset: its label, its control by its kind, and a slot
 // at the row's end. For a pad that slot opens the pad, and its
 // connection is said under the control; for a field with a default it
@@ -324,9 +321,10 @@ component FieldRow inherits Rectangle {
                     nav-row: row.row-id;
                     enabled: root.enabled;
                     model: root.field.options;
+                    values: root.field.option-values;
                     current-value: root.field.value-label;
-                    selected-index(i) => {
-                        Profiles.set-field(root.profile, root.field.key, root.field.option-values[i]);
+                    selected(value) => {
+                        Profiles.set-field(root.profile, root.field.key, value);
                     }
                 }
                 // A kind of field this window doesn't know: shown as
@@ -353,6 +351,25 @@ component FieldRow inherits Rectangle {
                     minimum: root.field.min;
                     maximum: root.field.max;
                     committed(v) => { Profiles.set-number(root.profile, root.field.key, v); }
+                }
+                // A switch the daemon serves other than Managed, which
+                // the STATUS group shows.
+                if root.field.kind == "switch" && !root.field.read-only: HorizontalLayout {
+                    horizontal-stretch: 1;
+                    alignment: start;
+                    VerticalLayout {
+                        alignment: center;
+                        ThemedSwitch {
+                            accessible-label: root.field.label;
+                            accessible-id: root.control-id;
+                            nav-row: row.row-id;
+                            enabled: root.enabled;
+                            checked: root.field.checked;
+                            toggled(on) => {
+                                Profiles.set-field(root.profile, root.field.key, on ? "true" : "false");
+                            }
+                        }
+                    }
                 }
             }
             // The slot at the row's end is there on every row, so the
@@ -480,12 +497,33 @@ component ProfileDetailHeader inherits Rectangle {
                 alignment: start;
                 // The name alone: the default profile's mark is its
                 // row's in the list, and here it left the name cut short.
-                Text {
-                    text: root.profile.name;
-                    color: Theme.text;
-                    font-size: Design.font-title-3;
-                    font-weight: 700;
-                    overflow: elide;
+                // A long one is still cut at the window's smallest, and
+                // then shows whole on hover.
+                name-box := Rectangle {
+                    property <bool> cut: name-text.preferred-width > self.width;
+                    min-width: Design.font-title-3;
+                    preferred-width: name-text.preferred-width;
+                    preferred-height: name-text.preferred-height;
+                    name-text := Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: root.profile.name;
+                        color: Theme.text;
+                        font-size: Design.font-title-3;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    TouchArea {
+                        enabled: name-box.cut;
+                        changed has-hover => {
+                            name-help.set-hover(self.has-hover);
+                        }
+                    }
+                    name-help := HelpTrigger {
+                        width: 100%;
+                        height: 100%;
+                        text: name-box.cut ? root.profile.name : "";
+                    }
                 }
                 if root.profile.kept: VerticalLayout {
                     alignment: center;
@@ -560,7 +598,8 @@ component ProfileDetailHeader inherits Rectangle {
         VerticalLayout {
             alignment: center;
             spacing: Design.gap-tight;
-            HorizontalLayout {
+            // A profile that is gone says nothing of how it starts.
+            if root.profile.kind != "gone": HorizontalLayout {
                 alignment: end;
                 Chip {
                     label: root.profile.managed ? @tr("Managed") : @tr("Unmanaged");
@@ -650,7 +689,7 @@ component ProfileDetail inherits Rectangle {
                 // an update to take, its pads, who has control.
                 Group {
                     title: @tr("STATUS");
-                    help: @tr("How the profile is, as its header says. Running: started, with its virtual pad there. Held: a pad it uses has left, and it waits for it. Failed: it stopped working, and Stop clears it. Ready: its pads are connected and free. Waiting: a pad it names is away or in use. Not set up: its pads are still to choose.");
+                    help: @tr("How the profile is, as its header says. Starting: on its way to running. Running: started, with its virtual pad there. Held: a pad it uses has left, and it waits for it. Failed: it stopped working, and Stop clears it. Ready: its pads are connected and free. Waiting: a pad it names is away or in use. Not set up: its pads are still to choose. Unfinished: a change made here isn't a profile yet, so it isn't kept. Wrong: the daemon can't run it as it is written.");
                     help-id: root.id-prefix + "profiles-help-status";
 
                     HorizontalLayout {
@@ -690,8 +729,9 @@ component ProfileDetail inherits Rectangle {
 
                     // Whether the daemon starts it by itself, as a
                     // TV's Managed is in TisVlay. A profile written by
-                    // hand says it in its file.
-                    managed-row := FormRow {
+                    // hand says it in its file; one that is gone has
+                    // nothing to say it.
+                    if root.profile.kind != "gone": managed-row := FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("Managed");
                         key: "managed";
@@ -747,11 +787,13 @@ component ProfileDetail inherits Rectangle {
 
                     if root.live && root.setup.stale: HorizontalLayout {
                         spacing: Design.gap-row;
-                        ThemedButton {
+                        // With its profile gone there is nothing to
+                        // update to.
+                        if root.setup.profile-kept: ThemedButton {
                             nav-row: root.update-row;
                             text: @tr("Update…");
                             primary: true;
-                            enabled: root.daemon-available && root.setup.profile-kept;
+                            enabled: root.daemon-available;
                             accessible-id: root.id-prefix + "profiles-update";
                             clicked => { Setups.ask-update(root.profile.name); }
                         }
@@ -765,6 +807,7 @@ component ProfileDetail inherits Rectangle {
                                 color: Theme.warn-text;
                                 font-size: Design.font-helper;
                                 wrap: word-wrap;
+                                accessible-id: root.id-prefix + "profiles-stale";
                             }
                         }
                     }
@@ -786,8 +829,8 @@ component ProfileDetail inherits Rectangle {
                                 model: node.choices;
                                 current-value: node.selected >= 0 && node.selected < node.choices.length
                                     ? node.choices[node.selected] : "";
-                                selected-index(i) => {
-                                    Setups.select(root.profile.name, node.name, node.choices[i]);
+                                selected(choice) => {
+                                    Setups.select(root.profile.name, node.name, choice);
                                 }
                             }
                         }
@@ -904,10 +947,10 @@ component ProfileDetail inherits Rectangle {
                                 nav-row: output-row.row-id;
                                 enabled: root.daemon-available;
                                 model: root.profile.identity-field.options;
+                                values: root.profile.identity-field.option-values;
                                 current-value: root.profile.identity-field.value-label;
-                                selected-index(i) => {
-                                    Profiles.set-field(root.profile.name, "identity",
-                                        root.profile.identity-field.option-values[i]);
+                                selected(value) => {
+                                    Profiles.set-field(root.profile.name, "identity", value);
                                 }
                             }
                             if !output-row.chooses: VerticalLayout {
@@ -974,6 +1017,15 @@ component ProfileDetail inherits Rectangle {
                         wrap: word-wrap;
                         accessible-id: root.id-prefix + "profiles-by-hand";
                     }
+                    // Only its setup is left: what it shows is the
+                    // setup's.
+                    if root.profile.kind == "gone": Text {
+                        text: @tr("This profile was deleted, or its file removed, while it ran. What runs is what it said when it started, until it is stopped; its pads and virtual pads above are the setup's.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                        accessible-id: root.id-prefix + "profiles-gone";
+                    }
                 }
             }
         }
@@ -1016,22 +1068,19 @@ export component ProfilesPane {
 
     // A profile left with a change the window holds and the daemon
     // doesn't: ask before it is dropped. `shown` is the row the detail
-    // was on; when the selection moves off an unfinished one, the
-    // dialog offers to drop it or go back to it.
+    // was on; when the selection moves off one that is unfinished now,
+    // the dialog offers to drop it or go back to it. Asked as the
+    // selection moves, not remembered from before, so a draft just
+    // discarded (which moves the selection too) isn't asked about.
     property <string> shown: root.has-selection ? Profiles.rows[Profiles.selected-index].name : "";
     property <string> was-shown;
-    property <bool> was-unfinished;
     property <string> pending-leave: "";
     changed shown => {
-        if (root.was-unfinished && root.was-shown != "" && root.was-shown != root.shown && root.pending-leave == "") {
+        if (root.was-shown != "" && root.was-shown != root.shown && root.pending-leave == ""
+                && Profiles.unfinished(root.was-shown)) {
             root.pending-leave = root.was-shown;
         }
         root.was-shown = root.shown;
-        root.was-unfinished = root.has-selection && Profiles.rows[Profiles.selected-index].unfinished;
-    }
-    property <bool> unfinished-now: root.has-selection && Profiles.rows[Profiles.selected-index].unfinished;
-    changed unfinished-now => {
-        root.was-unfinished = root.unfinished-now;
     }
 
     VerticalLayout {

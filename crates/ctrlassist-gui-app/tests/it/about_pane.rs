@@ -145,3 +145,37 @@ fn the_pane_shows_the_rows_the_window_holds() {
     assert_eq!(row(&rows, "tray").health, ServiceHealth::Ok);
     assert_eq!(app.get_tray_health(), ServiceHealth::Ok);
 }
+
+/// A Copy the clipboard refuses says so, naming what wasn't copied. The
+/// clipboard itself isn't driven here: it is the desktop's own.
+#[test]
+fn a_failed_copy_says_what_wasn_t_copied_and_why() {
+    use ctrlassist_gui::about::copy_failed;
+    assert_eq!(
+        copy_failed("Pad ID", "no data-control protocol"),
+        "Couldn't copy Pad ID: no data-control protocol"
+    );
+    assert_eq!(copy_failed("", "no seat"), "Couldn't copy: no seat");
+}
+
+/// Each change the window shows makes About's rows again in the model
+/// Slint already has, so the Config buttons in them stay.
+#[test]
+fn the_rows_are_made_again_in_place() {
+    use slint::Model as _;
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("the window builds on the testing backend");
+    refresh(&app);
+    let before = app.get_about_components();
+    Snapshot {
+        available: true,
+        config: "/somewhere".to_string(),
+        ..Snapshot::default()
+    }
+    .show(&app);
+    assert!(app.get_about_components() == before);
+    assert_eq!(
+        before.row_data(0).map(|row| row.config_path),
+        Some("/somewhere".into())
+    );
+}

@@ -384,10 +384,13 @@ component PadDetail inherits Rectangle {
     in property <int> focus-tick;
     changed focus-tick => {
         if (root.visible) {
-            if (identify.enabled) {
-                identify.focus();
-            } else if (!root.pad.connected) {
+            if (!identify.enabled && !root.pad.connected && !root.pad.is-virtual) {
                 root.forget-focus-tick += 1;
+            } else {
+                // Refused by an Identify that can't buzz (a pad with no
+                // rumble, a virtual pad not made yet), focus walks on to
+                // the detail's next stop.
+                identify.focus();
             }
         }
     }
@@ -430,7 +433,7 @@ component PadDetail inherits Rectangle {
                 // leads a TV's, with a line of state beside it.
                 Group {
                     title: @tr("STATUS");
-                    help: @tr("What the chips above say. Connected: plugged in or paired now. Remembered: seen before and away; a profile can still name it. In a profile: a running profile is using it. Hidden or Grabbed: how games are kept from seeing it meanwhile. Virtual: made by a running profile for games to read. Identify buzzes the pad, to tell which one it is.");
+                    help: @tr("What the chips above say. Connected or Disconnected: whether it is plugged in or paired now. In couch, or In with another profile's name: that running profile is using it. Free: connected, and no running profile is using it. Remembered: seen before and away now; a profile can still name it. Virtual: made by a running profile for games to read. Identify buzzes the pad, to tell which one it is.");
                     help-id: root.id-prefix + "pads-help-status";
 
                     HorizontalLayout {
@@ -439,7 +442,7 @@ component PadDetail inherits Rectangle {
                             nav-row: root.status-row;
                             text: @tr("Identify");
                             icon: Icons.identify;
-                            enabled: root.daemon-available && root.pad.connected && root.pad.rumble != "No";
+                            enabled: root.daemon-available && root.pad.connected && !root.pad.without-rumble;
                             accessible-id: root.id-prefix + "pads-identify";
                             clicked => { Pads.identify(root.pad.id); }
                         }
@@ -449,7 +452,7 @@ component PadDetail inherits Rectangle {
                             Text {
                                 text: root.pad.is-virtual ? @tr("Rumbles this pad as a game would, so the pads behind it buzz as {} sends it on.", root.pad.setup)
                                     : !root.pad.connected ? @tr("Remembered from when it was last connected.")
-                                    : root.pad.rumble == "No" ? @tr("This pad has no rumble to buzz with.")
+                                    : root.pad.without-rumble ? @tr("This pad has no rumble to buzz with.")
                                     : @tr("Buzzes this pad, so you can tell which it is.");
                                 color: Theme.text-dim;
                                 font-size: Design.font-helper;

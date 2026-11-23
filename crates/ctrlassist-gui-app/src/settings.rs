@@ -37,10 +37,11 @@ pub fn patch(key: &str, enabled: bool) -> Option<NotificationSettingsPatch> {
     Some(patch)
 }
 
-/// Binds the pane's requests to the tray's rpcs. What the tray then
-/// publishes comes back through the state loop, so nothing is set here
-/// ahead of the tray's own word; a request that fails is said in a
-/// toast, and the switch goes back with the next state shown.
+/// Binds the pane's requests to the tray's rpcs. A switch only asks:
+/// what it shows is what the tray publishes, which comes back through
+/// the state loop, so nothing is set here ahead of the tray's own word.
+/// A request that fails is said in a toast, and the switch, which never
+/// moved, still shows the tray's setting.
 pub(crate) fn wire(app: &AppWindow, tray: Option<&TrayClient>) {
     let Some(tray) = tray else {
         return;

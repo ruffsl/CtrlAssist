@@ -1,8 +1,9 @@
 //! ctrlassist-gui: the settings window, in Slint.
 //!
-//! The UI itself is compiled in `ctrlassist-gui`; this crate drives it.
-//! So far that is the shell: a sidebar and its panes, empty, steered by
-//! keys alone, with couch mode for a TV across the room.
+//! The UI itself is compiled in `ctrlassist-gui`; this crate drives it:
+//! the Pads, Profiles, Settings and About panes from the daemon's and
+//! the tray's state, steered by keys alone, with couch mode for a TV
+//! across the room.
 
 pub mod about;
 mod accent;
@@ -10,6 +11,7 @@ mod couch;
 mod dbus;
 pub mod diagnostic;
 mod file_manager;
+mod fonts;
 mod icon_theme;
 mod icons;
 pub mod keys;
@@ -97,6 +99,13 @@ pub fn run() -> Result<()> {
             info!("ctrlassist-gui is open already: handed over to that window");
             return Ok(());
         }
+        // A window holds the name and didn't answer: not a missing bus,
+        // and not a reason to open a second window beside it.
+        Ok((dbus::ClaimResult::Unanswered(error), _)) => {
+            return Err(error.context(
+                "a ctrlassist-gui holds the window's name on the session bus and didn't answer",
+            ));
+        }
         Err(error) => {
             warn!(
                 error = format!("{error:#}"),
@@ -180,6 +189,7 @@ pub fn run() -> Result<()> {
     // The desktop's accent color, from the settings portal: with no
     // portal the theme's own stays.
     rt.spawn(accent::watch_accent_color(app.as_weak()));
+    fonts::resolve_monospace(app.as_weak());
 
     keys::bind_key_router(&app);
     // Escape on the sidebar with nothing to go back to, in couch mode:

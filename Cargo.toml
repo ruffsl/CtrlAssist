@@ -76,6 +76,11 @@ notify-rust = { version = ">=4.18, <4.19", default-features = false, features = 
 # slint-build and i-slint-backend-testing. TisVlay's pin and features.
 slint = { version = "=1.19.0", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
 
+# The system's monospace family for the window (the font library Slint
+# uses; kept on the version Slint pins so the graph holds one copy).
+# TisVlay's pin.
+fontique = "0.12"
+
 # Freedesktop icon-theme lookup, a name to a file's path, through
 # ctrlassist-icons. TisVlay's pin.
 freedesktop-icons = "0.4"
