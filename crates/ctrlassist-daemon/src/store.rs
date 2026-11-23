@@ -44,7 +44,7 @@ fn model(text: &str) -> Option<(u16, u16)> {
 }
 
 /// Where the known pads are kept.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Store {
     path: PathBuf,
     /// Cleared when the file on disk couldn't be understood.

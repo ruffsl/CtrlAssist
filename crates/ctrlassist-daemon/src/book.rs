@@ -41,25 +41,15 @@ struct Row {
     setup: Option<String>,
     /// Whether the hiding service has it hidden.
     hidden: bool,
-    /// Whether the hiding service is showing it again: that re-binds
-    /// its driver, so the pad goes and comes back without anyone having
-    /// touched it.
-    restoring: bool,
-    /// Where the pad is in going and coming back as it is shown again.
-    blip: Blip,
-}
-
-/// A pad the hiding service shows again by re-binding its driver goes
-/// and comes back, once. That isn't a pad leaving and one connecting,
-/// and isn't published as such.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Blip {
-    /// Nothing of the kind is under way.
-    No,
-    /// It is about to go.
-    Expected,
-    /// It has gone, and is on its way back.
-    Gone,
+    /// How many times it is still to go and come back because the
+    /// hiding service re-bound its driver, to hide it or to show it
+    /// again. Nobody touched it: that isn't a pad leaving and one
+    /// connecting, and isn't published as such.
+    comebacks: u32,
+    /// Whether it has gone on one of those, and is on its way back.
+    away: bool,
+    /// Whether it has just come back from one, until asked.
+    back: bool,
 }
 
 impl Row {
@@ -71,15 +61,34 @@ impl Row {
             bus: 0,
             setup: None,
             hidden: false,
-            restoring: false,
-            blip: Blip::No,
+            comebacks: 0,
+            away: false,
+            back: false,
         }
     }
 
     /// Whether the pad is there, as it is published: one that has gone
-    /// only to come back as it is shown again never left.
+    /// only to come back never left.
     fn connected(&self) -> bool {
-        !self.nodes.is_empty() || self.blip == Blip::Gone
+        !self.nodes.is_empty() || self.away
+    }
+
+    /// Notes that no setup uses the pad any more, nor hides it. A pad
+    /// that was hidden by re-binding its driver, as `rebinds` says, is
+    /// shown again the same way, and is expected to go and come back.
+    fn let_go(&mut self, rebinds: bool) {
+        self.setup = None;
+        if self.hidden && rebinds {
+            self.expect_back();
+        }
+        self.hidden = false;
+    }
+
+    /// Expects the pad to go and come back once more, if it is there to.
+    fn expect_back(&mut self) {
+        if self.connected() {
+            self.comebacks += 1;
+        }
     }
 }
 
@@ -161,8 +170,11 @@ impl Book {
             .entry(id.clone())
             .or_insert_with(|| Row::remembered(known.clone()));
         row.known = known;
-        // Back from being shown again, if that is where it was.
-        row.blip = Blip::No;
+        // Back from going only to come back, if that is where it was.
+        row.back = std::mem::take(&mut row.away);
+        if row.back {
+            row.comebacks = row.comebacks.saturating_sub(1);
+        }
         let connected = !row.nodes.contains(&found.node);
         if connected {
             if row.nodes.is_empty() {
@@ -180,30 +192,69 @@ impl Book {
 
     /// The pad on `node` has gone. Returns its id; it stays remembered.
     /// Nothing for a pad that has gone only to come back, as one does
-    /// that the hiding service is showing again: it is still there, as
+    /// whose driver the hiding service re-binds: it is still there, as
     /// far as anyone is told.
     pub(crate) fn left(&mut self, node: &Path) -> Option<String> {
         self.rows.iter_mut().find_map(|(id, row)| {
             let at = row.nodes.iter().position(|held| held == node)?;
             row.nodes.remove(at);
-            if row.nodes.is_empty() && row.blip == Blip::Expected {
-                row.blip = Blip::Gone;
+            if row.nodes.is_empty() && row.comebacks > 0 {
+                row.away = true;
                 return None;
             }
             Some(id.clone())
         })
     }
 
-    /// Notes that the pad, just let go by a setup, is one whose driver
-    /// the hiding service re-binds to show it again: it goes and comes
-    /// back, once. Only a pad that is there and was hidden does.
+    /// Notes that the hiding service is about to re-bind the pad's
+    /// driver to show it again, for no setup: it goes and comes back,
+    /// once, if it is there.
     pub(crate) fn expect_back(&mut self, id: &str) {
-        if let Some(row) = self.rows.get_mut(id)
-            && row.restoring
-            && !row.nodes.is_empty()
-        {
-            row.blip = Blip::Expected;
+        if let Some(row) = self.rows.get_mut(id) {
+            row.expect_back();
         }
+    }
+
+    /// When the pad last connected, as a count of connections, if it is
+    /// known: going and coming back counts as connecting.
+    pub(crate) fn arrival(&self, id: &str) -> Option<u64> {
+        Some(self.rows.get(id)?.connected)
+    }
+
+    /// Notes that the hiding service hid the pad by re-binding its
+    /// driver after `arrival`, the pad's [`arrival`](Self::arrival) then:
+    /// that it goes and comes back is expected too, if it hasn't been
+    /// seen to. Returns whether the pad is now published otherwise: one
+    /// already seen to go is there after all.
+    pub(crate) fn expect_back_since(&mut self, id: &str, arrival: u64) -> bool {
+        let Some(row) = self.rows.get_mut(id) else {
+            return false;
+        };
+        // Back already, or unplugged and plugged in since.
+        if row.connected != arrival || row.away {
+            return false;
+        }
+        row.comebacks += 1;
+        // Gone, and on its way back.
+        let gone = row.nodes.is_empty();
+        row.away = gone;
+        gone
+    }
+
+    /// Notes that the hiding service didn't show the pad again as was
+    /// expected: it doesn't go and come back after all. Returns whether
+    /// the pad is now published otherwise: one that went meanwhile has
+    /// gone.
+    pub(crate) fn not_shown(&mut self, id: &str) -> bool {
+        let Some(row) = self.rows.get_mut(id) else {
+            return false;
+        };
+        row.comebacks = row.comebacks.saturating_sub(1);
+        let gone = row.comebacks == 0 && row.away;
+        if gone {
+            row.away = false;
+        }
+        gone
     }
 
     /// The id of the pad `reference` names: an id, an id's key segment, a
@@ -298,35 +349,34 @@ impl Book {
         }
     }
 
-    /// Notes that no setup uses the pad any more, nor hides it.
-    pub(crate) fn let_go(&mut self, id: &str) {
+    /// Notes that no setup uses the pad any more, nor hides it. One that
+    /// was hidden by re-binding its driver, as `rebinds` says, is shown
+    /// again the same way: it is expected to go and come back.
+    pub(crate) fn let_go(&mut self, id: &str, rebinds: bool) {
         if let Some(row) = self.rows.get_mut(id) {
-            row.setup = None;
-            row.restoring |= row.hidden;
-            row.hidden = false;
+            row.let_go(rebinds);
         }
     }
 
-    /// Whether the pad has just come back from being shown again by the
-    /// hiding service, and not from being plugged in; asked once, as it
-    /// arrives. A pad with no driver to re-bind never goes, and its
-    /// next arrival is then taken for this one.
+    /// Whether the pad has just come back from going because the hiding
+    /// service re-bound its driver, and not from being plugged in;
+    /// asked once, as it arrives.
     pub(crate) fn was_restored(&mut self, id: &str) -> bool {
         self.rows
             .get_mut(id)
-            .is_some_and(|row| std::mem::take(&mut row.restoring))
+            .is_some_and(|row| std::mem::take(&mut row.back))
     }
 
-    /// Notes that `setup` no longer uses any pad, nor hides one. Returns
-    /// the pads it used.
-    pub(crate) fn release(&mut self, setup: &str) -> Vec<String> {
+    /// Notes that `setup` no longer uses any pad, nor hides one, as
+    /// [`let_go`](Self::let_go) does for each, with `rebinds` saying
+    /// which pads' drivers were re-bound to hide them. Returns the pads
+    /// it used.
+    pub(crate) fn release(&mut self, setup: &str, rebinds: impl Fn(&str) -> bool) -> Vec<String> {
         self.rows
             .iter_mut()
             .filter(|(_, row)| row.setup.as_deref() == Some(setup))
             .map(|(id, row)| {
-                row.setup = None;
-                row.restoring |= row.hidden;
-                row.hidden = false;
+                row.let_go(rebinds(id));
                 id.clone()
             })
             .collect()
@@ -597,9 +647,12 @@ mod tests {
         assert_eq!(refused.code, ErrorCode::PadInUse);
 
         // One that left and returned is the latest to connect.
-        assert_eq!(book.release("couch"), ["address:aa:bb:cc:dd:ee:02"]);
+        assert_eq!(
+            book.release("couch", |_| false),
+            ["address:aa:bb:cc:dd:ee:02"]
+        );
         assert!(!book.pad("address:aa:bb:cc:dd:ee:02").unwrap().hidden);
-        assert_eq!(book.release("couch"), Vec::<String>::new());
+        assert_eq!(book.release("couch", |_| false), Vec::<String>::new());
         book.arrived(&second, None);
         assert_eq!(
             book.fitting(&model),
@@ -622,27 +675,46 @@ mod tests {
         );
     }
 
+    /// A pad hidden by `couch` by re-binding its driver, connected on
+    /// `node`.
+    fn hidden_by_couch(node: &str) -> (Book, String) {
+        let mut book = Book::new(Vec::new());
+        let id = book.arrived(&dualsense(node), None).pop().unwrap().id;
+        book.claim(&id, "couch");
+        book.set_hidden(&id, true);
+        (book, id)
+    }
+
     /// Shown again by the hiding service, a pad goes and comes back by
     /// itself: that arrival is told from a pad plugged in, once.
     #[test]
     fn a_pad_shown_again_is_told_from_one_plugged_in() {
-        let mut book = Book::new(Vec::new());
-        let pad = dualsense("/dev/input/event5");
-        let id = book.arrived(&pad, None).pop().unwrap().id;
+        let node = Path::new("/dev/input/event5");
+        let (mut book, id) = hidden_by_couch("/dev/input/event5");
         assert!(!book.was_restored(&id), "plugged in");
-        book.claim(&id, "couch");
-        book.set_hidden(&id, true);
-        assert_eq!(book.release("couch"), std::slice::from_ref(&id));
+        assert_eq!(book.release("couch", |_| true), std::slice::from_ref(&id));
+        assert!(!book.was_restored(&id), "not back yet");
+        assert_eq!(book.left(node), None);
+        book.arrived(&dualsense("/dev/input/event5"), None);
         assert!(book.was_restored(&id));
         assert!(!book.was_restored(&id), "asked once");
+
         // Given up by a setup that goes on running.
         book.claim(&id, "couch");
         book.set_hidden(&id, true);
-        book.let_go(&id);
+        book.let_go(&id, true);
+        assert_eq!(book.left(node), None);
+        book.arrived(&dualsense("/dev/input/event5"), None);
         assert!(book.was_restored(&id));
-        // A pad that was only grabbed never went.
+
+        // A pad that was only grabbed never goes, nor does one whose
+        // driver wasn't re-bound: what comes next is a pad unplugged.
         book.claim(&id, "couch");
-        book.release("couch");
+        book.release("couch", |_| true);
+        book.set_hidden(&id, true);
+        book.let_go(&id, false);
+        assert_eq!(book.left(node), Some(id.clone()));
+        book.arrived(&dualsense("/dev/input/event5"), None);
         assert!(!book.was_restored(&id) && !book.was_restored("address:nothing"));
     }
 
@@ -651,14 +723,9 @@ mod tests {
     /// of its going. A pad unplugged is said to have gone, as ever.
     #[test]
     fn a_pad_that_goes_only_to_come_back_never_left() {
-        let mut book = Book::new(Vec::new());
         let node = Path::new("/dev/input/event5");
-        let pad = dualsense("/dev/input/event5");
-        let id = book.arrived(&pad, None).pop().unwrap().id;
-        book.claim(&id, "couch");
-        book.set_hidden(&id, true);
-        book.release("couch");
-        book.expect_back(&id);
+        let (mut book, id) = hidden_by_couch("/dev/input/event5");
+        book.release("couch", |_| true);
         assert_eq!(book.left(node), None, "nothing to publish");
         let gone = book.pad(&id).unwrap();
         assert!(gone.connected && gone.bus.is_some());
@@ -676,17 +743,101 @@ mod tests {
         assert_eq!(book.left(Path::new("/dev/input/event7")), Some(id.clone()));
         assert!(!book.pad(&id).unwrap().connected);
 
-        // Nothing is expected of a pad that wasn't hidden, or isn't there.
-        book.arrived(&pad, None);
+        // Nothing is expected of a pad that wasn't hidden.
+        book.arrived(&dualsense("/dev/input/event5"), None);
         book.claim(&id, "couch");
-        book.release("couch");
-        book.expect_back(&id);
+        book.release("couch", |_| true);
         assert_eq!(book.left(node), Some(id.clone()));
+        // Expected for no setup, it is expected all the same.
+        book.arrived(&dualsense("/dev/input/event5"), None);
+        book.expect_back(&id);
+        assert_eq!(book.left(node), None);
+    }
+
+    /// A pad let go while it isn't there has nothing to go and come back
+    /// from: turned on later, it is a pad plugged in, and the setups that
+    /// wait for it hear of it.
+    #[test]
+    fn a_pad_that_is_not_there_when_let_go_is_expected_back_from_nothing() {
+        let node = Path::new("/dev/input/event5");
+        let (mut book, id) = hidden_by_couch("/dev/input/event5");
+        // Its battery dies, and then its setup is stopped.
+        assert_eq!(book.left(node), Some(id.clone()));
+        book.release("couch", |_| true);
+        book.arrived(&dualsense("/dev/input/event5"), None);
+        assert!(!book.was_restored(&id), "turned on again");
+        assert_eq!(book.left(node), Some(id), "and off");
+    }
+
+    /// The hiding service may not show a pad again as asked: it refused,
+    /// or wasn't there to ask. The pad then doesn't go and come back, and
+    /// its next going is a going.
+    #[test]
+    fn a_pad_the_service_does_not_show_again_is_not_expected_back() {
+        let node = Path::new("/dev/input/event5");
+        let (mut book, id) = hidden_by_couch("/dev/input/event5");
+        book.release("couch", |_| true);
+        assert!(!book.not_shown(&id), "nothing to publish");
+        assert_eq!(book.left(node), Some(id.clone()), "unplugged");
+        assert!(!book.pad(&id).unwrap().connected);
+        book.arrived(&dualsense("/dev/input/event5"), None);
+        assert!(!book.was_restored(&id), "plugged in again");
+
+        // Unplugged while the service was asked: taken for going only to
+        // come back, until the service says it won't.
         book.claim(&id, "couch");
         book.set_hidden(&id, true);
-        book.release("couch");
-        book.expect_back(&id);
-        book.arrived(&pad, None);
-        assert_eq!(book.left(node), Some(id));
+        book.release("couch", |_| true);
+        assert_eq!(book.left(node), None);
+        assert!(book.not_shown(&id), "it has gone after all");
+        assert!(!book.pad(&id).unwrap().connected);
+        assert!(!book.not_shown(&id) && !book.not_shown("address:nothing"));
+    }
+
+    /// A pad hidden by re-binding its driver went and came back as it
+    /// was hidden, which may not have been seen yet when it is shown
+    /// again: then both goings and comings back are still to come, or
+    /// the second of them, and neither is a pad plugged in.
+    #[test]
+    fn a_pad_hidden_and_shown_again_at_once_goes_and_comes_back_twice() {
+        let node = Path::new("/dev/input/event5");
+        // Neither seen yet.
+        let (mut book, id) = hidden_by_couch("/dev/input/event5");
+        let arrival = book.arrival(&id).unwrap();
+        assert!(!book.expect_back_since(&id, arrival));
+        book.release("couch", |_| true);
+        for _ in 0..2 {
+            assert_eq!(book.left(node), None);
+            book.arrived(&dualsense("/dev/input/event5"), None);
+            assert!(book.was_restored(&id));
+        }
+        assert_eq!(book.left(node), Some(id.clone()), "then unplugged");
+
+        // Its going seen, and published, but not its coming back.
+        let (mut book, id) = hidden_by_couch("/dev/input/event5");
+        let arrival = book.arrival(&id).unwrap();
+        assert_eq!(book.left(node), Some(id.clone()));
+        assert!(book.expect_back_since(&id, arrival), "there after all");
+        assert!(book.pad(&id).unwrap().connected);
+        book.release("couch", |_| true);
+        book.arrived(&dualsense("/dev/input/event5"), None);
+        assert!(book.was_restored(&id), "back from being hidden");
+        assert_eq!(book.left(node), None, "shown again");
+        book.arrived(&dualsense("/dev/input/event5"), None);
+        assert!(book.was_restored(&id));
+        assert_eq!(book.left(node), Some(id.clone()), "then unplugged");
+
+        // Both seen already.
+        let (mut book, id) = hidden_by_couch("/dev/input/event5");
+        let arrival = book.arrival(&id).unwrap();
+        book.left(node);
+        book.arrived(&dualsense("/dev/input/event5"), None);
+        assert!(!book.expect_back_since(&id, arrival));
+        book.release("couch", |_| true);
+        assert_eq!(book.left(node), None);
+        book.arrived(&dualsense("/dev/input/event5"), None);
+        assert!(book.was_restored(&id));
+        assert_eq!(book.left(node), Some(id.clone()));
+        assert!(!book.expect_back_since("address:nothing", 0));
     }
 }

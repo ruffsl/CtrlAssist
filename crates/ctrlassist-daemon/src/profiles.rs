@@ -22,8 +22,25 @@ use crate::durable;
 /// few kilobytes; this stops a client filling the disk or the bus.
 const MOST_BYTES: usize = 64 * 1024;
 
+/// The text of the profile at `path`, if it is text and no larger than a
+/// profile may be: a larger one isn't read whole, nor kept.
+fn read(path: &Path) -> std::io::Result<String> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    let most = u64::try_from(MOST_BYTES).expect("the most a profile may be fits in a u64");
+    fs::File::open(path)?
+        .take(most + 1)
+        .read_to_string(&mut text)?;
+    if text.len() > MOST_BYTES {
+        return Err(std::io::Error::other(format!(
+            "a profile is at most {MOST_BYTES} bytes"
+        )));
+    }
+    Ok(text)
+}
+
 /// The kept profiles, by name.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Profiles {
     directory: PathBuf,
     kept: BTreeMap<String, String>,
@@ -34,6 +51,7 @@ impl Profiles {
     /// a profile may have. Anything else there is left alone.
     pub(crate) fn open(directory: &Path) -> Self {
         let mut kept = BTreeMap::new();
+        let mut unread = Vec::new();
         for entry in fs::read_dir(directory).into_iter().flatten().flatten() {
             let path = entry.path();
             let name = path
@@ -42,12 +60,13 @@ impl Profiles {
                 .and_then(|file| file.strip_suffix(".toml"))
                 .filter(|name| is_name(name));
             let Some(name) = name else { continue };
-            match fs::read_to_string(&path) {
+            match read(&path) {
                 Ok(text) => {
                     kept.insert(name.to_string(), text);
                 }
                 Err(error) => {
-                    warn!(path = %path.display(), %error, "a profile can't be read; leaving it out");
+                    warn!(path = %path.display(), %error, "a profile can't be read; leaving it out, and the file as it is");
+                    unread.push(name.to_string());
                 }
             }
         }
@@ -55,17 +74,21 @@ impl Profiles {
             directory: directory.to_path_buf(),
             kept,
         };
-        profiles.ensure_default();
+        profiles.ensure_default(unread.iter().any(|name| name == profile::DEFAULT));
         profiles
     }
 
     /// Makes the default profile where there is none: it is always
-    /// kept. One that can't be written is kept until the daemon stops.
-    fn ensure_default(&mut self) {
+    /// kept. One that can't be written is kept until the daemon stops,
+    /// as is one whose file is there and can't be read, which is left as
+    /// it is.
+    fn ensure_default(&mut self, unread: bool) {
         if self.kept.contains_key(profile::DEFAULT) {
             return;
         }
-        if let Err(error) = durable::write(&self.path(profile::DEFAULT), profile::DEFAULT_TOML) {
+        if !unread
+            && let Err(error) = durable::write(&self.path(profile::DEFAULT), profile::DEFAULT_TOML)
+        {
             warn!(%error, "the default profile couldn't be written; it is kept until the daemon stops");
         }
         self.kept.insert(
@@ -118,20 +141,23 @@ impl Profiles {
 
     /// What keeps `toml` from being a profile that runs, if anything.
     pub(crate) fn problem(toml: &str) -> Option<payload::Problem> {
-        if toml.len() > MOST_BYTES {
-            return Some(payload::Problem {
-                at: String::new(),
-                message: format!("a profile is at most {MOST_BYTES} bytes"),
-            });
-        }
-        Profile::check(toml).err().map(Into::into)
+        Self::too_large(toml).or_else(|| Profile::check(toml).err().map(Into::into))
+    }
+
+    /// Whether `toml` is larger than a profile may be.
+    fn too_large(toml: &str) -> Option<payload::Problem> {
+        (toml.len() > MOST_BYTES).then(|| payload::Problem {
+            at: String::new(),
+            message: format!("a profile is at most {MOST_BYTES} bytes"),
+        })
     }
 
     /// What keeps `toml` from being kept, if anything. A preset whose
     /// pads are still to choose isn't wrong: it is kept, and can't run
-    /// until they are chosen.
+    /// until they are chosen. One too large is wrong whatever it is.
     fn wrong(toml: &str) -> Option<payload::Problem> {
-        Self::problem(toml).filter(|_| Profile::unchosen(toml).is_empty())
+        Self::too_large(toml)
+            .or_else(|| Self::problem(toml).filter(|_| Profile::unchosen(toml).is_empty()))
     }
 
     /// Keeps `toml` as the profile `name`, durably, in place of any it
@@ -322,6 +348,52 @@ mod tests {
         profiles.delete("later").unwrap();
         assert!(dir.path().join("notes.txt").exists());
         assert!(dir.path().join("Not A Name.toml").exists());
+    }
+
+    /// A default profile whose file can't be read is the user's, left as
+    /// it is; the default is kept all the same, until the daemon stops.
+    #[test]
+    fn a_default_profile_that_cannot_be_read_is_left_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("default.toml");
+        let unreadable = [b'#', 0xff, 0xfe, b'\n'];
+        fs::write(&path, unreadable).unwrap();
+        let mut profiles = Profiles::open(dir.path());
+        assert_eq!(
+            profiles.profile("default").unwrap().toml,
+            profile::DEFAULT_TOML
+        );
+        assert_eq!(fs::read(&path).unwrap(), unreadable);
+        profiles.reload();
+        assert_eq!(fs::read(&path).unwrap(), unreadable, "nor on a reload");
+        // Put by a client, it is written as any other.
+        profiles.put("default", RIGHT).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), RIGHT);
+    }
+
+    /// No profile is larger than the most a profile may be, however it
+    /// came: a preset whose pads are still to choose included, and a file
+    /// that arrived some other way.
+    #[test]
+    fn no_profile_is_larger_than_a_profile_may_be() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut profiles = Profiles::open(dir.path());
+        let padded = format!("{}# {}\n", profile::DEFAULT_TOML, "x".repeat(MOST_BYTES));
+        assert!(!Profile::unchosen(&padded).is_empty(), "pads to choose");
+        let refused = profiles.put("couch", &padded).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidProfile);
+        assert!(refused.message.contains("at most 65536 bytes"));
+        assert!(profiles.profile("couch").is_none());
+
+        fs::write(dir.path().join("large.toml"), &padded).unwrap();
+        fs::write(dir.path().join("edge.toml"), "#".repeat(MOST_BYTES)).unwrap();
+        let profiles = Profiles::open(dir.path());
+        assert_eq!(
+            profiles.names().collect::<Vec<_>>(),
+            ["default", "edge"],
+            "left out, and the file as it is"
+        );
+        assert!(dir.path().join("large.toml").exists());
     }
 
     #[test]

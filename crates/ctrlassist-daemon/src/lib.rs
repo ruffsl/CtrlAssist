@@ -1,8 +1,8 @@
 //! CtrlAssist's daemon: the control side.
 //!
 //! It owns the input thread and serves the control plane on a Unix socket
-//! in the user's runtime directory. So far it answers the version check
-//! and publishes its own state; pads, profiles and setups follow.
+//! in the user's runtime directory: the pads it knows, the profiles it
+//! keeps and the setups that run them, as state and rpcs.
 
 mod blacklist;
 mod book;
@@ -28,7 +28,7 @@ use ctrlassist_protocol::profile::Identity;
 use ctrlassist_protocol::{VERSION, bootstrap, keys, payload};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use zenoh::Session;
 use zenoh::liveliness::LivelinessToken;
 
@@ -107,7 +107,8 @@ pub struct Daemon {
     // client sees the daemon gone before what it served goes.
     alive: LivelinessToken,
     stop: oneshot::Sender<()>,
-    reactor: JoinHandle<()>,
+    /// The reactor, until it is seen to have ended.
+    reactor: Option<JoinHandle<()>>,
     watch: Watch,
     session: Session,
     input: Arc<InputThread>,
@@ -187,15 +188,25 @@ impl Daemon {
             .await
             .map_err(|error| anyhow!("declaring the daemon's rpcs: {error}"))?;
 
+        // What the daemon keeps on disk, read off the runtime's workers.
+        let (config, state) = (paths.config.clone(), paths.state.clone());
+        let ((store, known), profiles, copied, database) = tokio::task::spawn_blocking(move || {
+            (
+                Store::open(&state),
+                Profiles::open(&config.join("profiles")),
+                copied::Copied::open(&state),
+                database(&config),
+            )
+        })
+        .await
+        .context("reading what the daemon keeps")?;
         // The pads remembered, then the pads connected now.
-        let (store, known) = Store::open(&paths.state);
         let (changes, seen) = mpsc::unbounded_channel();
         let state_dir = paths.state.clone();
         let (watch, now) = tokio::task::spawn_blocking(move || Watch::start(changes))
             .await
             .context("starting the hotplug watch")?
             .context("watching udev for pads")?;
-        let profiles = Profiles::open(&paths.config.join("profiles"));
         let hider = paths.hider.clone();
         let hiding = tokio::task::spawn_blocking(move || Hiding::find(&hider))
             .await
@@ -208,9 +219,9 @@ impl Daemon {
             store,
             profiles,
             Arc::clone(&input),
-            database(&paths.config),
+            database,
             hiding,
-            copied::Copied::open(&paths.state),
+            copied,
         );
         reactor.test_pads = paths.test_pads;
         let (steam, state) = (paths.steam.clone(), paths.state.clone());
@@ -286,7 +297,7 @@ impl Daemon {
             blacklist,
             alive,
             stop,
-            reactor,
+            reactor: Some(reactor),
             watch,
             session,
             input,
@@ -297,6 +308,22 @@ impl Daemon {
     #[must_use]
     pub fn is_realtime(&self) -> bool {
         self.input.is_realtime()
+    }
+
+    /// Waits for the daemon's reactor to end by itself, which it does
+    /// only if something in it panicked: the daemon serves nothing from
+    /// then on, though clients still see it there, and is to be stopped.
+    /// Never returns while the reactor runs.
+    pub async fn ended(&mut self) {
+        let Some(reactor) = &mut self.reactor else {
+            return std::future::pending().await;
+        };
+        let ended = reactor.await;
+        self.reactor = None;
+        match ended {
+            Ok(()) => error!("the daemon's reactor ended by itself"),
+            Err(error) => error!(%error, "the daemon's reactor ended by itself"),
+        }
     }
 
     /// Stops the daemon: clients see it gone, then the control plane
@@ -316,7 +343,11 @@ impl Daemon {
         }
         // The reactor ends when told, or when its sender is gone.
         drop(stop);
-        let _ = reactor.await;
+        if let Some(reactor) = reactor
+            && let Err(error) = reactor.await
+        {
+            error!(%error, "the daemon's reactor panicked as it stopped");
+        }
         if let Err(error) = session.close().await {
             warn!(%error, "closing the control plane failed");
         }

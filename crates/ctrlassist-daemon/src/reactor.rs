@@ -23,7 +23,7 @@ use serde::Serialize;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use zenoh::Session;
 use zenoh::bytes::Encoding;
 use zenoh::handlers::FifoChannelHandler;
@@ -187,14 +187,11 @@ impl Reactor {
     }
 
     /// Says how pads are hidden now, if that isn't what was last said:
-    /// the hiding service may be found after the daemon started.
+    /// the hiding service may be found after the daemon started, and its
+    /// connection may break. What was found is read as it stands, never
+    /// waiting on a request to the service under way.
     pub(crate) async fn publish_hiding(&mut self) {
-        let hiding = Arc::clone(&self.hiding);
-        let found =
-            tokio::task::spawn_blocking(move || (hiding.mechanism(), hiding.service_release()));
-        let Ok((now, release)) = found.await else {
-            return;
-        };
+        let (now, release) = (self.hiding.mechanism(), self.hiding.service_release());
         let Some(state) = self
             .state
             .clone()
@@ -317,7 +314,11 @@ impl Reactor {
                 responder.ok(&form).await;
             }
             Some(((), profile::Incoming::Put(request, responder))) => {
-                match self.profiles.put(&request.name, &request.toml) {
+                let (name, toml) = (request.name.clone(), request.toml.clone());
+                let put = self
+                    .keep_profiles(move |profiles| profiles.put(&name, &toml))
+                    .await;
+                match put {
                     Ok(()) => {
                         info!(profile = request.name, "a profile was put");
                         if let Err(error) = self.publish_profile(&request.name).await {
@@ -331,7 +332,11 @@ impl Reactor {
                 }
             }
             Some(((), profile::Incoming::Delete(request, responder))) => {
-                match self.profiles.delete(&request.name) {
+                let name = request.name.clone();
+                let deleted = self
+                    .keep_profiles(move |profiles| profiles.delete(&name))
+                    .await;
+                match deleted {
                     Ok(()) => {
                         info!(profile = request.name, "a profile was deleted");
                         self.unpublish(&keys::profile(&request.name)).await;
@@ -353,9 +358,52 @@ impl Reactor {
         }
     }
 
-    fn save(&self) {
-        if let Err(error) = self.store.save(&self.book.known()) {
-            warn!(%error, "the known pads couldn't be saved; they are kept until the daemon stops");
+    /// Changes the profiles off the async runtime's workers, since that
+    /// writes and syncs files: on a copy, which is kept once changed. The
+    /// reactor waits for it, so nothing else sees the profiles meanwhile.
+    /// What the change says comes back; nothing if it panicked, which
+    /// leaves them as they were.
+    async fn change_profiles<T: Send + 'static>(
+        &mut self,
+        change: impl FnOnce(&mut Profiles) -> T + Send + 'static,
+    ) -> Option<T> {
+        let mut profiles = self.profiles.clone();
+        let changed = tokio::task::spawn_blocking(move || {
+            let said = change(&mut profiles);
+            (profiles, said)
+        })
+        .await;
+        match changed {
+            Ok((profiles, said)) => {
+                self.profiles = profiles;
+                Some(said)
+            }
+            Err(error) => {
+                error!(%error, "changing the profiles panicked; they are as they were");
+                None
+            }
+        }
+    }
+
+    /// Puts or deletes a profile, as [`change_profiles`](Self::change_profiles).
+    async fn keep_profiles(
+        &mut self,
+        change: impl FnOnce(&mut Profiles) -> Result<(), WireError> + Send + 'static,
+    ) -> Result<(), WireError> {
+        self.change_profiles(change)
+            .await
+            .unwrap_or_else(|| Err(WireError::internal("changing the profiles failed")))
+    }
+
+    /// Saves the known pads, off the async runtime's workers.
+    async fn save(&self) {
+        let (store, known) = (self.store.clone(), self.book.known());
+        match tokio::task::spawn_blocking(move || store.save(&known)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                warn!(%error, "the known pads couldn't be saved; they are kept until the daemon stops");
+            }
+            Err(error) => error!(%error, "saving the known pads panicked"),
         }
     }
 
@@ -394,7 +442,7 @@ impl Reactor {
             }
         };
         if remembered {
-            self.save();
+            self.save().await;
         }
         for id in &changed {
             self.publish_pad_logged(id).await;
@@ -436,7 +484,10 @@ impl Reactor {
     /// what can now start by itself, and sets the running setups whose
     /// profiles changed to taking them up.
     async fn reload(&mut self) -> rpc::Reloaded {
-        let (changed, removed) = self.profiles.reload();
+        let (changed, removed) = self
+            .change_profiles(Profiles::reload)
+            .await
+            .unwrap_or_default();
         info!(?changed, ?removed, "the profiles were read again");
         for name in &removed {
             self.unpublish(&keys::profile(name)).await;
@@ -533,7 +584,7 @@ impl Reactor {
             Some(((), pad::Incoming::Forget(request, responder))) => {
                 match self.book.forget(&request.pad) {
                     Ok(id) => {
-                        self.save();
+                        self.save().await;
                         self.unpublish(&keys::pad(&keys::pad_id(&id))).await;
                         info!(pad = id, "a pad was forgotten");
                         responder.ok(&rpc::Ack {}).await;
@@ -563,10 +614,19 @@ impl Reactor {
                 Ok(query) = rpcs.profile.recv_async() => self.profile_rpc(query).await,
                 Ok(query) = rpcs.setup.recv_async() => self.setup_rpc(query).await,
                 Some(report) = reports.recv() => self.reported(report).await,
-                Some(Ok(done)) = self.work.join_next() => self.done(done).await,
+                Some(joined) = self.work.join_next() => match joined {
+                    Ok(done) => self.done(done).await,
+                    // Each piece catches its own panics and comes back
+                    // all the same; one that didn't is lost.
+                    Err(error) => error!(%error, "work done off the reactor was lost"),
+                },
                 Some(seen) = seen.recv() => self.saw(seen).await,
-                // A finished buzz has nothing to say.
-                Some(_) = self.buzzes.join_next() => {}
+                // A finished buzz has nothing to say, unless it panicked.
+                Some(joined) = self.buzzes.join_next() => {
+                    if let Err(error) = joined {
+                        error!(%error, "a buzz was lost");
+                    }
+                }
             }
         }
         // Pads still buzzing stop as their tasks are dropped.

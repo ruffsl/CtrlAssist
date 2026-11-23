@@ -56,7 +56,7 @@ fn parse(text: &str) -> Option<DualSenseData> {
 }
 
 /// What has been copied, as kept on disk.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Copied {
     path: PathBuf,
     dualsense: Option<DualSenseData>,
@@ -107,12 +107,7 @@ impl Copied {
         };
         let written = toml::to_string(&stored)
             .map_err(std::io::Error::other)
-            .and_then(|text| {
-                if let Some(directory) = self.path.parent() {
-                    fs::create_dir_all(directory)?;
-                }
-                durable::write(&self.path, &text)
-            });
+            .and_then(|text| durable::write(&self.path, &text));
         match written {
             Ok(()) => info!(path = %self.path.display(), "a connected DualSense was copied"),
             Err(error) => {

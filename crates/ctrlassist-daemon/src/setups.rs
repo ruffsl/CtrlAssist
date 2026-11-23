@@ -25,7 +25,7 @@ use ctrlassist_protocol::payload::{self, Phase};
 use ctrlassist_protocol::profile::{Hide, Identity, PadRef, Plan, Profile};
 use ctrlassist_protocol::serve::Responder;
 use ctrlassist_protocol::{keys, rpc};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use zenoh::query::Query;
 
 use crate::blacklist::Blacklist;
@@ -46,8 +46,26 @@ struct Slot {
     present: bool,
     /// Whether the pad is being opened to go back.
     returning: bool,
+    /// Whether it was asked for again while it was being opened: the
+    /// pad may have come back meanwhile, so an opening that fails is
+    /// tried once more.
+    again: bool,
     /// The hiding service's name for the pad, while it has it hidden.
     token: Option<Token>,
+}
+
+impl Slot {
+    fn new(name: String, wanted: PadRef, pad: Option<String>) -> Self {
+        Self {
+            name,
+            wanted,
+            pad,
+            present: false,
+            returning: false,
+            again: false,
+            token: None,
+        }
+    }
 }
 
 /// A setup, as the reactor follows it.
@@ -77,6 +95,13 @@ struct Entry {
     /// How its pads are kept from games, as its profile says: how each
     /// was taken, and how one that returns is taken again.
     hide: Hide,
+    /// By source number, when the pad it starts with last connected, as
+    /// the book counts: hiding it may make it go and come back, which is
+    /// then told from a pad plugged in by whether it has been seen.
+    arrivals: Vec<Option<u64>>,
+    /// Whether, failed, its pads are still being shown again: a stop or
+    /// a start afresh waits for that.
+    retiring: bool,
 }
 
 /// A change a running setup is taking: what it will be once the input
@@ -185,12 +210,9 @@ fn rebind(
                 .map(str::to_string),
         };
         slots.push(Slot {
-            name: source.name.clone(),
-            wanted: source.pad.clone(),
-            pad,
             present: kept.is_some_and(|kept| kept.present),
-            returning: false,
             token: kept.and_then(|kept| kept.token),
+            ..Slot::new(source.name.clone(), source.pad.clone(), pad)
         });
     }
     Ok((slots, keep))
@@ -375,11 +397,14 @@ impl Setups {
 pub(crate) struct Hiding {
     /// Where the service listens; none where there is none to look for.
     socket: Option<PathBuf>,
-    /// The connection, once the service has been found.
+    /// The connection, once the service has been found. Held for each
+    /// whole round trip, which may take as long as a driver's re-bind.
     client: Mutex<Option<Client>>,
-    /// The found service's release, as it said on being found; none
-    /// from one too old to be asked.
-    release: Mutex<Option<String>>,
+    /// Whether the service is connected now, and its release as it said
+    /// on being found: none from one too old to be asked. Kept apart
+    /// from the connection, so that saying how pads are hidden never
+    /// waits on a round trip.
+    found: Mutex<Option<Option<String>>>,
     /// The pads whose driver the service re-bound to hide them, as it
     /// said: it re-binds it again to show them, so each goes and comes
     /// back then.
@@ -393,10 +418,10 @@ impl Hiding {
         let hiding = Self {
             socket: Some(socket.to_path_buf()),
             client: Mutex::new(None),
-            release: Mutex::new(None),
+            found: Mutex::new(None),
             rebound: Mutex::default(),
         };
-        if hiding.mechanism() == payload::Hiding::Grab {
+        if hiding.client().is_none() {
             info!(socket = %socket.display(), "the hiding service isn't there; a setup's pads will be grabbed, which hides them from most games but not from a program that reads them some other way. It is looked for again each time it is needed");
         }
         hiding
@@ -408,7 +433,7 @@ impl Hiding {
         Self {
             socket: None,
             client: Mutex::new(None),
-            release: Mutex::new(None),
+            found: Mutex::new(None),
             rebound: Mutex::default(),
         }
     }
@@ -426,16 +451,16 @@ impl Hiding {
         {
             let release = found.version().ok();
             info!(socket = %socket.display(), ?release, "the hiding service is there");
-            *self.release() = release;
+            *self.found() = Some(release);
             *client = Some(found);
         }
         client
     }
 
-    fn release(&self) -> std::sync::MutexGuard<'_, Option<String>> {
-        self.release
+    fn found(&self) -> std::sync::MutexGuard<'_, Option<Option<String>>> {
+        self.found
             .lock()
-            .expect("nothing panics while the hiding service's release is held")
+            .expect("nothing panics while what was found of the hiding service is held")
     }
 
     fn rebound(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeSet<String>> {
@@ -453,14 +478,14 @@ impl Hiding {
     /// The found service's release, for the daemon's state: none with
     /// no service, or from one too old to say.
     pub(crate) fn service_release(&self) -> Option<String> {
-        let found = self.client().is_some();
-        self.release().clone().filter(|_| found)
+        self.found().clone().flatten()
     }
 
-    /// The mechanism, for the daemon's state: the service if it is
-    /// there now.
+    /// The mechanism, for the daemon's state: the service if it was
+    /// there when last asked something. It is looked for again when it
+    /// is next needed, not here.
     pub(crate) fn mechanism(&self) -> payload::Hiding {
-        match *self.client() {
+        match *self.found() {
             Some(_) => payload::Hiding::Service,
             None => payload::Hiding::Grab,
         }
@@ -468,8 +493,17 @@ impl Hiding {
 
     /// Asks one thing of the hiding service, if it is there.
     fn ask<T>(&self, ask: impl FnOnce(&Client) -> Result<T, ctrlassist_hider::Error>) -> Option<T> {
+        self.asked(ask).ok()
+    }
+
+    /// Asks one thing of the hiding service, and says whether it was
+    /// there to ask: `Err(None)` if it wasn't.
+    fn asked<T>(
+        &self,
+        ask: impl FnOnce(&Client) -> Result<T, ctrlassist_hider::Error>,
+    ) -> Result<T, Option<ctrlassist_hider::Error>> {
         let mut client = self.client();
-        let outcome = ask(client.as_ref()?);
+        let outcome = ask(client.as_ref().ok_or(None)?);
         match &outcome {
             // A pad that has just left can't be opened again yet: the
             // usual case of a pad leaving a setup, and nothing wrong.
@@ -484,16 +518,40 @@ impl Hiding {
         // needed, as a service that was restarted is found.
         if matches!(outcome, Err(ctrlassist_hider::Error::Io(_))) {
             *client = None;
+            *self.found() = None;
         }
-        outcome.ok()
+        outcome.map_err(Some)
     }
 
     /// Restores each pad named, once what read them has been dropped.
-    fn restore(&self, tokens: &[Token]) {
-        for token in tokens {
-            self.ask(|client| client.restore(*token));
-        }
+    /// Returns those the service won't show again, by what they are
+    /// known by: it refused, or wasn't there to ask. A connection that
+    /// broke as it was asked is closed, and the service restores what
+    /// was hidden through it then.
+    fn restore(&self, pads: &[(String, Token)]) -> Vec<String> {
+        pads.iter()
+            .filter(|(_, token)| {
+                let restored = self.asked(|client| client.restore(*token));
+                !matches!(restored, Ok(()) | Err(Some(ctrlassist_hider::Error::Io(_))))
+            })
+            .map(|(pad, _)| pad.clone())
+            .collect()
     }
+
+    /// Restores a pad nothing else is told of.
+    fn restore_token(&self, token: Token) {
+        self.ask(|client| client.restore(token));
+    }
+}
+
+/// Runs `work`, or if it panics, logs that and runs `instead`: work done
+/// off the reactor comes back to it whatever happens, or what waits on
+/// it waits for good.
+fn caught<T>(what: &str, work: impl FnOnce() -> T, instead: impl FnOnce() -> T) -> T {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|_| {
+        error!(work = what, "work done off the reactor panicked");
+        instead()
+    })
 }
 
 /// What the blocking work of a start made.
@@ -505,6 +563,25 @@ pub(crate) struct Made {
     /// Which sources' pads were opened, by source number, and the hiding
     /// service's name for each it hid.
     pads: Vec<(bool, Option<Token>)>,
+}
+
+/// Why a start's blocking work made nothing, and what of it is left to
+/// undo: the pads it had the hiding service hide, which are shown again
+/// once the reactor expects them to come back from that.
+#[derive(Debug)]
+pub(crate) struct Unmade {
+    reason: String,
+    /// The hiding service's name for each pad it hid, by source number.
+    tokens: Vec<Option<Token>>,
+}
+
+impl Unmade {
+    fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            tokens: Vec::new(),
+        }
+    }
 }
 
 /// Who asked for a setup to start.
@@ -545,35 +622,49 @@ pub(crate) enum Done {
     /// A start's pads are open and its virtual pads made, or not.
     Started {
         name: String,
-        outcome: Result<Made, String>,
+        outcome: Result<Made, Unmade>,
         asker: Asker,
     },
     /// The pads a change brings are open, each that could be, by the
-    /// new graph's source number.
+    /// new graph's source number, with the hiding service's name for
+    /// each it hid; `ids` says what each source's pad is known by.
     Retaken {
         name: String,
         graph: Graph,
+        ids: Vec<Option<String>>,
         pads: Vec<Option<(Pad, Option<Token>)>>,
     },
     /// A graph the input thread replaced is gone, and the pads it had no
-    /// place for are shown again: the update is answered.
-    Taken { responder: Updating },
+    /// place for are shown again: the update is answered. `unshown` are
+    /// the pads the hiding service didn't show again.
+    Taken {
+        responder: Updating,
+        unshown: Vec<String>,
+    },
     /// A pad that returned is open again, or couldn't be opened.
     Returned {
         name: String,
+        /// The setup that sent for it.
+        setup: SetupId,
         /// The pad, by what it is known by.
         id: String,
         pad: Option<Box<Pad>>,
-        /// The hiding service's name for it, if it hid it just now.
+        /// The hiding service's name for it, if it hid it just now; not
+        /// one the setup had, which it opened the pad again under.
         token: Option<Token>,
     },
     /// A setup the input thread handed back is gone, virtual pads and
-    /// all, and its pads are shown again; a stop that was waiting for
-    /// that is seen to.
+    /// all, and its pads are shown again, but for `unshown`; a stop
+    /// that was waiting for that is seen to.
     Retired {
         name: String,
+        setup: SetupId,
         waiting: Option<Waiting>,
+        unshown: Vec<String>,
     },
+    /// Pads let go were shown again, but for these, which the hiding
+    /// service didn't show again.
+    Shown(Vec<String>),
     /// A connected pad was copied, or couldn't be.
     Copied(Option<DualSenseData>),
     /// Something was dropped where dropping may block.
@@ -663,7 +754,7 @@ fn take(
                 Ok((pad, Some(hidden.token)))
             }
             Err(error) => {
-                hiding.restore(&[hidden.token]);
+                hiding.restore_token(hidden.token);
                 Err(error)
             }
         };
@@ -679,7 +770,8 @@ fn take(
 }
 
 /// Takes back a pad that returned. One the service still has hidden is
-/// opened through it: the pad was never visible in between.
+/// opened through it: the pad was never visible in between. Returns the
+/// service's name for the pad only if it hid it afresh.
 fn retake(
     wanted: &Wanted,
     token: Option<Token>,
@@ -693,7 +785,7 @@ fn retake(
         // The service knows the pad by what it is, not by its node.
         return read(hidden.event, &wanted.node, database).map(|mut pad| {
             give_raw(&mut pad, token, hiding);
-            (pad, Some(token))
+            (pad, None)
         });
     }
     let taken = take(wanted, database, hiding, hide)?;
@@ -702,7 +794,7 @@ fn retake(
     if let (Some(old), Some(new)) = (token, taken.1)
         && old != new
     {
-        hiding.restore(&[old]);
+        hiding.restore_token(old);
     }
     Ok(taken)
 }
@@ -742,18 +834,22 @@ fn make(
     hiding: &Hiding,
     dualsense: &(PathBuf, DualSenseData),
     blacklist: &Mutex<Blacklist>,
-) -> Result<Made, String> {
+) -> Result<Made, Unmade> {
     let hide = plan.hide;
-    let graph = Graph::build(plan.graph).map_err(|error| error.to_string())?;
+    let graph = Graph::build(plan.graph).map_err(|error| Unmade::new(error.to_string()))?;
     let mut pads = Vec::new();
     let mut taken = Vec::new();
     for node in nodes {
         // A pad that went between being chosen and being taken is one
         // the setup starts without.
         let pad = node.as_ref().and_then(|node| {
-            take(node, database, hiding, hide)
-                .inspect_err(|error| warn!(error, "a setup starts without a pad"))
-                .ok()
+            caught(
+                "taking a pad",
+                || take(node, database, hiding, hide),
+                || Err("taking it panicked".to_string()),
+            )
+            .inspect_err(|error| warn!(error, "a setup starts without a pad"))
+            .ok()
         });
         let (pad, token) = pad.unzip();
         taken.push((pad.is_some(), token.flatten()));
@@ -761,19 +857,26 @@ fn make(
     }
     let mut sinks = Vec::new();
     for sink in &plan.sinks {
-        match make_sink(setup, &sink.name, sink.identity, dualsense) {
+        let made = caught(
+            "making a virtual pad",
+            || make_sink(setup, &sink.name, sink.identity, dualsense),
+            || Err(std::io::Error::other("making it panicked")),
+        );
+        match made {
             Ok(made) => sinks.push(made),
             Err(error) => {
                 // Nothing of a start that fails is left: its pads are
-                // let go, then shown again.
+                // let go here, and shown again once the reactor expects
+                // them to come back.
                 drop(pads);
-                let tokens: Vec<Token> = taken.iter().filter_map(|(_, token)| *token).collect();
-                hiding.restore(&tokens);
-                return Err(format!(
-                    "making the virtual pad `{}` ({}): {error}",
-                    sink.name,
-                    sink.identity.as_str()
-                ));
+                return Err(Unmade {
+                    reason: format!(
+                        "making the virtual pad `{}` ({}): {error}",
+                        sink.name,
+                        sink.identity.as_str()
+                    ),
+                    tokens: taken.iter().map(|(_, token)| *token).collect(),
+                });
             }
         }
     }
@@ -805,6 +908,22 @@ fn make(
     })
 }
 
+/// The pad a slot holds hidden, and the hiding service's name for it.
+fn hidden_by(slot: &Slot) -> Option<(String, Token)> {
+    Some((slot.pad.clone()?, slot.token?))
+}
+
+/// Drops `dropped`, then has `hiding` show `pads` again, off the reactor.
+/// Returns those it didn't show again; all of them if that panicked.
+fn shown_again<T>(hiding: &Hiding, dropped: T, pads: &[(String, Token)]) -> Vec<String> {
+    caught("dropping", || drop(dropped), || ());
+    caught(
+        "showing pads again",
+        || hiding.restore(pads),
+        || pads.iter().map(|(pad, _)| pad.clone()).collect(),
+    )
+}
+
 fn unknown(name: &str) -> WireError {
     WireError::refusal(
         ErrorCode::UnknownSetup,
@@ -817,9 +936,19 @@ impl Reactor {
     /// its driver, and a virtual pad's on the kernel.
     fn drop_off<T: Send + 'static>(&mut self, thing: T) {
         self.work.spawn_blocking(move || {
-            drop(thing);
+            caught("dropping", || drop(thing), || ());
             Done::Dropped
         });
+    }
+
+    /// Drops `dropped`, then has the hiding service show `pads` again:
+    /// in that order, so that nothing of ours still reads a pad as it
+    /// comes back. Each pad the book expects to go and come back as it
+    /// is shown again is expected to by now.
+    fn show_again<T: Send + 'static>(&mut self, dropped: T, pads: Vec<(String, Token)>) {
+        let hiding = Arc::clone(&self.hiding);
+        self.work
+            .spawn_blocking(move || Done::Shown(shown_again(&hiding, dropped, &pads)));
     }
 
     /// Drops a setup the input thread handed back, then has the hiding
@@ -827,21 +956,35 @@ impl Reactor {
     /// ours still reads a pad as it comes back.
     fn retire(
         &mut self,
-        name: String,
+        (name, id): (String, SetupId),
         setup: Box<Setup>,
-        tokens: Vec<Token>,
+        pads: Vec<(String, Token)>,
         waiting: Option<Waiting>,
     ) {
         let hiding = Arc::clone(&self.hiding);
         let blacklist = Arc::clone(&self.blacklist);
         self.work.spawn_blocking(move || {
-            drop(setup);
-            hiding.restore(&tokens);
+            let unshown = shown_again(&hiding, setup, &pads);
             if let Ok(mut blacklist) = blacklist.lock() {
                 blacklist.set(&name, std::collections::BTreeSet::new());
             }
-            Done::Retired { name, waiting }
+            Done::Retired {
+                name,
+                setup: id,
+                waiting,
+                unshown,
+            }
         });
+    }
+
+    /// The pads the hiding service didn't show again, as it said: none
+    /// of them goes and comes back now.
+    async fn unshown(&mut self, pads: Vec<String>) {
+        for pad in pads {
+            if self.book.not_shown(&pad) {
+                self.publish_pad_logged(&pad).await;
+            }
+        }
     }
 
     /// Copies a DualSense that has connected over USB, if none has been
@@ -866,15 +1009,17 @@ impl Reactor {
         let node = found.node.clone();
         let hiding = Arc::clone(&self.hiding);
         self.work.spawn_blocking(move || {
-            let raw = open(&node)
-                .ok()
-                .and_then(|pad| hiding.ask(|client| client.raw(pad.as_fd())));
-            let data = raw.and_then(|raw| {
-                DualSenseData::read(raw.as_fd())
-                    .inspect_err(|error| warn!(node = %node.display(), %error, "a connected DualSense couldn't be copied"))
+            let copy = || {
+                let raw = open(&node)
                     .ok()
-            });
-            Done::Copied(data)
+                    .and_then(|pad| hiding.ask(|client| client.raw(pad.as_fd())));
+                raw.and_then(|raw| {
+                    DualSenseData::read(raw.as_fd())
+                        .inspect_err(|error| warn!(node = %node.display(), %error, "a connected DualSense couldn't be copied"))
+                        .ok()
+                })
+            };
+            Done::Copied(caught("copying a DualSense", copy, || None))
         });
     }
 
@@ -906,14 +1051,21 @@ impl Reactor {
         }
     }
 
-    /// Gives up a setup's pads, and says so.
+    /// Gives up a setup's pads, and says so. Those it hid by re-binding
+    /// their drivers are expected to go and come back as they are shown
+    /// again, which is done next.
     async fn release(&mut self, name: &str) {
-        for pad in self.book.release(name) {
-            if self.hiding.rebinds(&pad) {
-                self.book.expect_back(&pad);
-            }
+        let hiding = Arc::clone(&self.hiding);
+        for pad in self.book.release(name, |pad| hiding.rebinds(pad)) {
             self.publish_pad_logged(&pad).await;
         }
+    }
+
+    /// Gives up one of a setup's pads, as [`release`](Self::release)
+    /// does.
+    async fn let_go(&mut self, pad: &str) {
+        self.book.let_go(pad, self.hiding.rebinds(pad));
+        self.publish_pad_logged(pad).await;
     }
 
     /// Finds a pad for each source of `plan`, and notes them as `name`'s.
@@ -944,14 +1096,7 @@ impl Reactor {
                     .find(|id| !taken(id))
                     .map(str::to_string),
             };
-            slots.push(Slot {
-                name: source.name.clone(),
-                wanted: source.pad.clone(),
-                pad,
-                present: false,
-                returning: false,
-                token: None,
-            });
+            slots.push(Slot::new(source.name.clone(), source.pad.clone(), pad));
         }
         for slot in &slots {
             if let Some(pad) = &slot.pad {
@@ -998,6 +1143,10 @@ impl Reactor {
             })
             .collect();
         let pads: Vec<String> = slots.iter().filter_map(|slot| slot.pad.clone()).collect();
+        let arrivals = slots
+            .iter()
+            .map(|slot| self.book.arrival(slot.pad.as_deref()?))
+            .collect();
         self.setups.started += 1;
         let entry = Entry {
             id: SetupId(self.setups.started),
@@ -1020,6 +1169,8 @@ impl Reactor {
             toml: profile.toml,
             stale: false,
             hide: plan.hide,
+            arrivals,
+            retiring: false,
         };
         self.setups.entries.insert(name.clone(), entry);
         self.publish_setup(&name).await;
@@ -1034,41 +1185,39 @@ impl Reactor {
         );
         let blacklist = Arc::clone(&self.blacklist);
         self.work.spawn_blocking(move || Done::Started {
-            outcome: make(
-                plan, &name, &nodes, &database, &hiding, &dualsense, &blacklist,
+            outcome: caught(
+                "starting a setup",
+                || {
+                    make(
+                        plan, &name, &nodes, &database, &hiding, &dualsense, &blacklist,
+                    )
+                },
+                || Err(Unmade::new("starting it panicked")),
             ),
             name,
             asker,
         });
     }
 
-    async fn started(&mut self, name: String, outcome: Result<Made, String>, asker: Asker) {
+    async fn started(&mut self, name: String, outcome: Result<Made, Unmade>, asker: Asker) {
         let Some(entry) = self.setups.entries.get_mut(&name) else {
             // Nothing removes a setup that is starting.
             return asker.err(&WireError::internal("the setup is gone")).await;
         };
-        let sent = outcome.and_then(|made| {
+        let sent = outcome.map_err(|unmade| (unmade, None)).and_then(|made| {
             let Made { setup, nodes, pads } = made;
             match self.input.send(Command::Start(entry.id, setup)) {
                 Ok(()) => Ok((nodes, pads)),
                 Err(error) => {
-                    let reason = error.to_string();
-                    if let SendError::Full(command) | SendError::Stopped(command) = error {
-                        let hiding = Arc::clone(&self.hiding);
-                        let blacklist = Arc::clone(&self.blacklist);
-                        let stopped = name.clone();
-                        let tokens: Vec<Token> =
-                            pads.iter().filter_map(|(_, token)| *token).collect();
-                        self.work.spawn_blocking(move || {
-                            drop(command);
-                            hiding.restore(&tokens);
-                            if let Ok(mut blacklist) = blacklist.lock() {
-                                blacklist.set(&stopped, std::collections::BTreeSet::new());
-                            }
-                            Done::Dropped
-                        });
-                    }
-                    Err(format!("the input thread didn't take it: {reason}"))
+                    let unmade = Unmade {
+                        reason: format!("the input thread didn't take it: {error}"),
+                        tokens: pads.iter().map(|(_, token)| *token).collect(),
+                    };
+                    let command = match error {
+                        SendError::Full(command) | SendError::Stopped(command) => Some(command),
+                        _ => None,
+                    };
+                    Err((unmade, command))
                 }
             }
         });
@@ -1086,6 +1235,7 @@ impl Reactor {
                     sink.node = Some(node.display().to_string());
                 }
                 entry.settle();
+                let sources = entry.slots.len();
                 info!(
                     setup = name,
                     phase = entry.phase.as_str(),
@@ -1095,18 +1245,96 @@ impl Reactor {
                     self.book.set_hidden(&pad, true);
                     self.publish_pad_logged(&pad).await;
                 }
+                self.fill(&name).await;
                 self.publish_setup(&name).await;
                 asker.ok().await;
+                // A pad may have connected while it started, and one it
+                // has may have been in the middle of connecting: each is
+                // taken now.
+                for source in 0..sources {
+                    self.bring_back(&name, source);
+                }
             }
-            Err(reason) => {
+            Err((Unmade { reason, tokens }, leftover)) => {
                 // A start that fails leaves nothing behind.
-                self.setups.entries.remove(&name);
+                let entry = self.setups.entries.remove(&name);
+                let mut shown = Vec::new();
+                for (source, slot) in entry
+                    .iter()
+                    .flat_map(|entry| entry.slots.iter().enumerate())
+                {
+                    let token = tokens.get(source).copied().flatten();
+                    let (Some(pad), Some(token)) = (&slot.pad, token) else {
+                        continue;
+                    };
+                    // Hidden by re-binding its driver, the pad went and
+                    // came back, which may not have been seen yet; shown
+                    // again, it goes and comes back once more. Neither is
+                    // a pad plugged in, to start this again by.
+                    let arrival = entry
+                        .as_ref()
+                        .and_then(|entry| entry.arrivals.get(source).copied().flatten());
+                    if self.hiding.rebinds(pad)
+                        && let Some(arrival) = arrival
+                    {
+                        self.book.expect_back_since(pad, arrival);
+                    }
+                    self.book.set_hidden(pad, true);
+                    shown.push((pad.clone(), token));
+                }
                 self.release(&name).await;
                 self.publish_setup(&name).await;
+                let hiding = Arc::clone(&self.hiding);
+                let blacklist = Arc::clone(&self.blacklist);
+                let stopped = name.clone();
+                self.work.spawn_blocking(move || {
+                    let unshown = shown_again(&hiding, leftover, &shown);
+                    if let Ok(mut blacklist) = blacklist.lock() {
+                        blacklist.set(&stopped, std::collections::BTreeSet::new());
+                    }
+                    Done::Shown(unshown)
+                });
                 warn!(setup = name, reason, "a setup couldn't start");
                 let refusal = WireError::refusal(ErrorCode::SetupFailed, reason);
                 asker.err(&refusal).await;
             }
+        }
+    }
+
+    /// Clears away a failed setup, and anything the book still notes as
+    /// its own.
+    async fn clear_failed(&mut self, name: &str) {
+        self.setups.entries.remove(name);
+        self.release(name).await;
+        self.publish_setup(name).await;
+    }
+
+    /// Gives each of a setup's sources still without a pad one that fits
+    /// and is free, as a start does, and notes as the setup's each pad it
+    /// names that has come to be known since: for a setup that has just
+    /// started, which pads that connected meanwhile were left to.
+    async fn fill(&mut self, name: &str) {
+        let Some(entry) = self.setups.entries.get_mut(name) else {
+            return;
+        };
+        let mut claimed = Vec::new();
+        for slot in &mut entry.slots {
+            if slot.pad.is_none() {
+                slot.pad = self
+                    .book
+                    .fitting(&slot.wanted)
+                    .first()
+                    .map(ToString::to_string);
+            }
+            if let Some(pad) = &slot.pad
+                && self.book.user(pad).is_none()
+            {
+                self.book.claim(pad, name);
+                claimed.push(pad.clone());
+            }
+        }
+        for pad in claimed {
+            self.publish_pad_logged(&pad).await;
         }
     }
 
@@ -1115,10 +1343,13 @@ impl Reactor {
             return responder.err(&unknown(&name)).await;
         };
         match entry.phase {
-            Phase::Failed => {
-                // The input thread handed it back when it failed.
-                self.setups.entries.remove(&name);
-                self.publish_setup(&name).await;
+            // The input thread handed it back when it failed; the stop is
+            // answered once its pads are shown again.
+            Phase::Failed if entry.stopping.is_none() && entry.retiring => {
+                entry.stopping = Some(Waiting::Stop(responder));
+            }
+            Phase::Failed if entry.stopping.is_none() => {
+                self.clear_failed(&name).await;
                 responder.ok(&rpc::Ack {}).await;
             }
             Phase::Running | Phase::Held if entry.stopping.is_none() => {
@@ -1185,10 +1416,13 @@ impl Reactor {
         }
         let free = entry.stopping.is_none() && entry.taking.is_none();
         match (entry.phase, bound) {
-            (Phase::Failed, _) => {
-                // Nothing runs: clear it away and start afresh.
-                self.setups.entries.remove(&name);
-                self.publish_setup(&name).await;
+            // Nothing runs: it is cleared away and started afresh, once
+            // its pads are shown again.
+            (Phase::Failed, _) if free && entry.retiring => {
+                entry.stopping = Some(Waiting::Update(responder));
+            }
+            (Phase::Failed, _) if free => {
+                self.clear_failed(&name).await;
                 self.start(name, Asker::Update(responder)).await;
             }
             (Phase::Running | Phase::Held, Some((slots, keep))) if free => {
@@ -1232,9 +1466,13 @@ impl Reactor {
                 for pad in &brings {
                     self.publish_pad_logged(pad).await;
                 }
+                let ids = fresh
+                    .iter()
+                    .map(|wanted| Some(wanted.as_ref()?.id.clone()))
+                    .collect();
                 if fresh.iter().all(Option::is_none) {
                     let none = fresh.iter().map(|_| None).collect();
-                    return self.send_graph(name, graph, none).await;
+                    return self.send_graph(name, graph, ids, none).await;
                 }
                 let database = Arc::clone(&self.database);
                 let hiding = Arc::clone(&self.hiding);
@@ -1243,12 +1481,22 @@ impl Reactor {
                     let pads = fresh
                         .iter()
                         .map(|wanted| {
-                            take(wanted.as_ref()?, &database, &hiding, hide)
-                                .inspect_err(|error| warn!(error, "a setup changes without a pad"))
-                                .ok()
+                            let wanted = wanted.as_ref()?;
+                            caught(
+                                "taking a pad",
+                                || take(wanted, &database, &hiding, hide),
+                                || Err("taking it panicked".to_string()),
+                            )
+                            .inspect_err(|error| warn!(error, "a setup changes without a pad"))
+                            .ok()
                         })
                         .collect();
-                    Done::Retaken { name, graph, pads }
+                    Done::Retaken {
+                        name,
+                        graph,
+                        ids,
+                        pads,
+                    }
                 });
             }
             (Phase::Running | Phase::Held, None) if free => {
@@ -1298,6 +1546,7 @@ impl Reactor {
         &mut self,
         name: String,
         graph: Graph,
+        ids: Vec<Option<String>>,
         pads: Vec<Option<(Pad, Option<Token>)>>,
     ) {
         let ready = self.setups.entries.get_mut(&name).and_then(|entry| {
@@ -1315,16 +1564,16 @@ impl Reactor {
         });
         let Some((setup, nodes, taking)) = ready else {
             // It stopped or failed while the pads were being opened.
-            let tokens = pads
+            let hidden = pads
                 .iter()
-                .flatten()
-                .filter_map(|(_, token)| *token)
+                .zip(ids)
+                .filter_map(|(pad, id)| Some((id?, pad.as_ref()?.1?)))
                 .collect();
             let refusal = WireError::refusal(
                 ErrorCode::SetupBusy,
                 format!("the setup {name} is stopping; the change wasn't made"),
             );
-            return self.abandon(&name, pads, tokens, &refusal).await;
+            return self.abandon(&name, pads, hidden, &refusal).await;
         };
         let mut places = Vec::with_capacity(pads.len());
         for ((slot, keep), pad) in taking.slots.iter_mut().zip(&taking.keep).zip(pads) {
@@ -1356,12 +1605,12 @@ impl Reactor {
 
     /// Gives up a change a setup was taking. `brought` holds the pads it
     /// brought, which are let go and then shown again, with any named in
-    /// `tokens`; whoever asked for the change is told why it wasn't made.
+    /// `hidden`; whoever asked for the change is told why it wasn't made.
     async fn abandon<T: Send + 'static>(
         &mut self,
         name: &str,
         brought: T,
-        mut tokens: Vec<Token>,
+        mut hidden: Vec<(String, Token)>,
         refusal: &WireError,
     ) {
         let taking = self
@@ -1370,26 +1619,30 @@ impl Reactor {
             .get_mut(name)
             .and_then(|entry| entry.taking.take());
         if let Some(taking) = taking {
-            let mut freed = Vec::new();
             for slot in taking.fresh() {
-                tokens.extend(slot.token);
-                freed.extend(slot.pad.clone());
-            }
-            for pad in freed {
-                self.book.let_go(&pad);
-                if self.hiding.rebinds(&pad) {
-                    self.book.expect_back(&pad);
+                if let (Some(pad), Some(token)) = (&slot.pad, slot.token) {
+                    hidden.push((pad.clone(), token));
                 }
-                self.publish_pad_logged(&pad).await;
+            }
+            let freed: Vec<String> = taking.fresh().filter_map(|slot| slot.pad.clone()).collect();
+            for pad in freed {
+                // Hidden as it was brought: shown again as it is let go.
+                if hidden.iter().any(|(was, _)| *was == pad) {
+                    self.book.set_hidden(&pad, true);
+                }
+                self.let_go(&pad).await;
             }
             taking.responder.err(refusal).await;
+        } else {
+            // The setup let its pads go as it stopped; those hidden for
+            // it since are shown again for no setup.
+            for (pad, _) in &hidden {
+                if self.hiding.rebinds(pad) {
+                    self.book.expect_back(pad);
+                }
+            }
         }
-        let hiding = Arc::clone(&self.hiding);
-        self.work.spawn_blocking(move || {
-            drop(brought);
-            hiding.restore(&tokens);
-            Done::Dropped
-        });
+        self.show_again(brought, hidden);
     }
 
     /// The input thread has a setup's new graph: the setup is now what
@@ -1414,18 +1667,15 @@ impl Reactor {
             nodes,
             ..
         } = taking;
-        let mut tokens = Vec::new();
+        let mut hidden = Vec::new();
         let mut changed = Vec::new();
         for (index, slot) in entry.slots.iter().enumerate() {
-            if !keep.contains(&Some(index)) {
-                tokens.extend(slot.token);
-                if let Some(pad) = &slot.pad {
-                    self.book.let_go(pad);
-                    if self.hiding.rebinds(pad) {
-                        self.book.expect_back(pad);
-                    }
-                    changed.push(pad.clone());
-                }
+            if !keep.contains(&Some(index))
+                && let Some(pad) = &slot.pad
+            {
+                hidden.extend(slot.token.map(|token| (pad.clone(), token)));
+                self.book.let_go(pad, self.hiding.rebinds(pad));
+                changed.push(pad.clone());
             }
         }
         for (slot, keep) in slots.iter_mut().zip(&keep) {
@@ -1471,9 +1721,8 @@ impl Reactor {
         self.publish_setup(&name).await;
         let hiding = Arc::clone(&self.hiding);
         self.work.spawn_blocking(move || {
-            drop(old);
-            hiding.restore(&tokens);
-            Done::Taken { responder }
+            let unshown = shown_again(&hiding, old, &hidden);
+            Done::Taken { responder, unshown }
         });
         // A pad that isn't there may have come while the pads were
         // numbered by the old graph.
@@ -1698,14 +1947,24 @@ impl Reactor {
         if !matches!(entry.phase, Phase::Running | Phase::Held) || waits {
             return;
         }
-        let hide = entry.hide;
+        let (setup, hide) = (entry.id, entry.hide);
         let Some(slot) = entry.slots.get_mut(source) else {
             return;
         };
-        if slot.present || slot.returning {
+        if slot.present {
             return;
         }
+        if slot.returning {
+            // It may have come back since it was sent for, and the
+            // opening under way fail for that.
+            slot.again = true;
+            return;
+        }
+        // A pad another setup has taken meanwhile is that setup's.
         let wanted = slot.pad.as_deref().and_then(|pad| {
+            if self.book.user(pad).is_some_and(|user| user != name) {
+                return None;
+            }
             Some(Wanted {
                 id: pad.to_string(),
                 node: self.book.node(pad)?.to_path_buf(),
@@ -1722,13 +1981,17 @@ impl Reactor {
         self.work.spawn_blocking(move || {
             // A node from before the pad left doesn't open, or is some
             // other pad's by now; the pad's arrival will bring it back.
-            let (pad, token) = retake(&wanted, token, &database, &hiding, hide)
-                .ok()
-                .unzip();
+            let retaken = caught(
+                "taking a pad back",
+                || retake(&wanted, token, &database, &hiding, hide),
+                || Err("taking it back panicked".to_string()),
+            );
+            let (pad, token) = retaken.ok().unzip();
             Done::Returned {
                 pad: pad.map(Box::new),
                 token: token.flatten(),
                 name,
+                setup,
                 id: wanted.id,
             }
         });
@@ -1736,35 +1999,47 @@ impl Reactor {
 
     async fn returned(
         &mut self,
-        name: String,
+        (name, setup): (String, SetupId),
         id: String,
         pad: Option<Box<Pad>>,
         token: Option<Token>,
     ) {
         // By the pad, not by where it was when it was sent for: a setup
-        // that took a change since has its pads numbered anew.
+        // that took a change since has its pads numbered anew. Only to
+        // the setup that sent for it, and only while that runs: one that
+        // failed meanwhile has had its pads shown again.
         let place = self.setups.entries.get_mut(&name).and_then(|entry| {
+            let runs = matches!(entry.phase, Phase::Running | Phase::Held);
+            if entry.id != setup || !runs {
+                return None;
+            }
             let source = entry
                 .slots
                 .iter()
                 .position(|slot| slot.pad.as_deref() == Some(id.as_str()))?;
-            let (setup, taking) = (entry.id, entry.taking.is_some());
-            Some((setup, taking, source, entry.slots.get_mut(source)?))
+            let taking = entry.taking.is_some();
+            Some((taking, source, entry.slots.get_mut(source)?))
         });
-        let Some((setup, taking, source, slot)) = place else {
-            // The setup went, or gave the pad up, while the pad was
-            // being opened: the pad is let go, and shown again if it was
-            // hidden for this.
-            let hiding = Arc::clone(&self.hiding);
-            self.work.spawn_blocking(move || {
-                drop(pad);
-                hiding.restore(&token.into_iter().collect::<Vec<_>>());
-                Done::Dropped
-            });
-            return;
+        let Some((taking, source, slot)) = place else {
+            // The setup went, failed, or gave the pad up, while the pad
+            // was being opened: the pad is let go, and shown again if it
+            // was hidden afresh for this.
+            let hidden: Vec<(String, Token)> =
+                token.map(|token| (id.clone(), token)).into_iter().collect();
+            if !hidden.is_empty() && self.hiding.rebinds(&id) {
+                self.book.expect_back(&id);
+            }
+            return self.show_again(pad, hidden);
         };
         slot.returning = false;
-        let Some(pad) = pad else { return };
+        let again = std::mem::take(&mut slot.again);
+        let Some(pad) = pad else {
+            // It may be back by now, where it wasn't when sent for.
+            if again {
+                self.bring_back(&name, source);
+            }
+            return;
+        };
         let newly_hidden = token.is_some() && slot.token != token;
         slot.token = token.or(slot.token);
         if newly_hidden {
@@ -1803,20 +2078,34 @@ impl Reactor {
 
     /// A pad connected: a setup waiting for it takes it.
     pub(crate) async fn pad_arrived(&mut self, id: &str) {
-        // One pad, one place: its own if a setup is waiting for it, or
-        // else the first place it fits that has no pad yet.
-        let waiting = self.setups.entries.iter().find_map(|(name, entry)| {
-            entry.slots.iter().enumerate().find_map(|(source, slot)| {
-                let its_own = slot.pad.as_deref() == Some(id);
-                let free = slot.pad.is_none()
-                    && self.book.user(id).is_none()
-                    && self.book.fits(id, &slot.wanted);
-                (!slot.present && (its_own || free)).then(|| (name.clone(), source))
+        // One pad, one place: its own, in a setup that hasn't failed and
+        // that no other setup's use of it comes before; or else the first
+        // place it fits that has no pad yet, in a setup that runs. A
+        // setup that is starting looks for that itself once it has.
+        let user = self.book.user(id);
+        let own = self.setups.entries.iter().find_map(|(name, entry)| {
+            let mine = user.is_none_or(|user| user == name);
+            let source = entry
+                .slots
+                .iter()
+                .position(|slot| slot.pad.as_deref() == Some(id))?;
+            (mine && entry.phase != Phase::Failed).then(|| (name.clone(), source))
+        });
+        let place = own.or_else(|| {
+            let free = user.is_none();
+            self.setups.entries.iter().find_map(|(name, entry)| {
+                let runs = matches!(entry.phase, Phase::Running | Phase::Held);
+                let source = entry
+                    .slots
+                    .iter()
+                    .position(|slot| slot.pad.is_none() && self.book.fits(id, &slot.wanted))?;
+                (free && runs).then(|| (name.clone(), source))
             })
         });
-        let Some((name, source)) = waiting else {
+        let Some((name, source)) = place else {
             return;
         };
+        let mut placed = false;
         if let Some(slot) = self
             .setups
             .entries
@@ -1825,8 +2114,15 @@ impl Reactor {
             && slot.pad.is_none()
         {
             slot.pad = Some(id.to_string());
+            placed = true;
+        }
+        // Noted as the setup's, if it wasn't: an exact pad never seen
+        // before had nothing to note until now.
+        if self.book.user(id).is_none() {
             self.book.claim(id, &name);
             self.publish_pad_logged(id).await;
+        }
+        if placed {
             self.publish_setup(&name).await;
         }
         self.bring_back(&name, source);
@@ -1848,27 +2144,43 @@ impl Reactor {
             } => self.started(name, outcome, asker).await,
             Done::Returned {
                 name,
+                setup,
                 id,
                 pad,
                 token,
-            } => self.returned(name, id, pad, token).await,
-            Done::Retaken { name, graph, pads } => self.send_graph(name, graph, pads).await,
-            Done::Taken { responder } => responder.ok(&TAKEN).await,
-            Done::Retired { name, waiting } => match waiting {
-                Some(Waiting::Stop(responder)) => responder.ok(&rpc::Ack {}).await,
-                // The old setup is gone, pads restored: the new one starts
-                // from the profile as it is kept now.
-                Some(Waiting::Update(responder)) => {
-                    self.start(name, Asker::Update(responder)).await;
-                }
-                None => {}
-            },
+            } => self.returned((name, setup), id, pad, token).await,
+            Done::Retaken {
+                name,
+                graph,
+                ids,
+                pads,
+            } => self.send_graph(name, graph, ids, pads).await,
+            Done::Taken { responder, unshown } => {
+                self.unshown(unshown).await;
+                responder.ok(&TAKEN).await;
+            }
+            Done::Retired {
+                name,
+                setup,
+                waiting,
+                unshown,
+            } => self.retired(name, setup, waiting, unshown).await,
+            Done::Shown(unshown) => self.unshown(unshown).await,
             Done::Copied(data) => {
                 self.copying = false;
                 match data {
                     Some(data) => {
                         self.candidates.clear();
-                        self.copied.keep(data);
+                        // Kept on disk off the async runtime's workers.
+                        let mut copied = self.copied.clone();
+                        let kept = tokio::task::spawn_blocking(move || {
+                            copied.keep(data);
+                            copied
+                        });
+                        match kept.await {
+                            Ok(copied) => self.copied = copied,
+                            Err(error) => error!(%error, "keeping a copied DualSense panicked"),
+                        }
                         if let Err(error) = self.publish_identities().await {
                             warn!(%error, "publishing the identities failed");
                         }
@@ -1885,6 +2197,51 @@ impl Reactor {
         }
     }
 
+    /// Adds to `hidden` the pads a change a setup gave up had hidden for
+    /// it, which the book is told of as hidden: they are let go with the
+    /// setup's own, and shown again the same way.
+    fn hidden_for(&mut self, taking: &Taking, hidden: &mut Vec<(String, Token)>) {
+        for (pad, token) in taking.fresh().filter_map(hidden_by) {
+            self.book.set_hidden(&pad, true);
+            hidden.push((pad, token));
+        }
+    }
+
+    /// A setup the input thread handed back is gone and its pads shown
+    /// again: whoever waited for that is seen to, whether they asked
+    /// before it was handed back or, for one that failed, after.
+    async fn retired(
+        &mut self,
+        name: String,
+        setup: SetupId,
+        waiting: Option<Waiting>,
+        unshown: Vec<String>,
+    ) {
+        self.unshown(unshown).await;
+        let failed = self
+            .setups
+            .entries
+            .get_mut(&name)
+            .filter(|entry| entry.id == setup && entry.phase == Phase::Failed);
+        let mut asked = None;
+        if let Some(entry) = failed {
+            entry.retiring = false;
+            asked = entry.stopping.take();
+            if asked.is_some() {
+                self.clear_failed(&name).await;
+            }
+        }
+        match waiting.or(asked) {
+            Some(Waiting::Stop(responder)) => responder.ok(&rpc::Ack {}).await,
+            // The old setup is gone, pads restored: the new one starts
+            // from the profile as it is kept now.
+            Some(Waiting::Update(responder)) => {
+                self.start(name, Asker::Update(responder)).await;
+            }
+            None => {}
+        }
+    }
+
     /// The input thread has said something.
     pub(crate) async fn reported(&mut self, report: Report) {
         match report {
@@ -1893,28 +2250,28 @@ impl Reactor {
                     return self.drop_off(setup);
                 };
                 let mut entry = self.setups.entries.remove(&name);
-                let mut tokens: Vec<Token> = entry
+                let mut hidden: Vec<(String, Token)> = entry
                     .iter()
-                    .flat_map(|entry| entry.slots.iter().filter_map(|slot| slot.token))
+                    .flat_map(|entry| entry.slots.iter().filter_map(hidden_by))
                     .collect();
                 if let Some(taking) = entry.as_mut().and_then(|entry| entry.taking.take()) {
                     // Stopped before the pads a change brings were open,
                     // or with the report of the graph lost.
-                    tokens.extend(taking.fresh().filter_map(|slot| slot.token));
+                    self.hidden_for(&taking, &mut hidden);
                     let refusal = WireError::refusal(
                         ErrorCode::SetupBusy,
                         format!("the setup {name} stopped; the change wasn't made"),
                     );
                     taking.responder.err(&refusal).await;
                 }
+                self.release(&name).await;
                 // The stop is answered once the virtual pads are gone.
                 self.retire(
-                    name.clone(),
+                    (name.clone(), id),
                     setup,
-                    tokens,
+                    hidden,
                     entry.and_then(|entry| entry.stopping),
                 );
-                self.release(&name).await;
                 self.publish_setup(&name).await;
                 info!(setup = name, "a setup stopped");
             }
@@ -1922,16 +2279,16 @@ impl Reactor {
                 let Some(name) = self.setups.name_of(id) else {
                     return self.drop_off(setup);
                 };
-                let mut tokens: Vec<Token> = self
+                let mut hidden: Vec<(String, Token)> = self
                     .setups
                     .entries
                     .get_mut(&name)
                     .map(|entry| {
-                        entry
-                            .slots
-                            .iter_mut()
-                            .filter_map(|slot| slot.token.take())
-                            .collect()
+                        let hidden = entry.slots.iter().filter_map(hidden_by).collect();
+                        for slot in &mut entry.slots {
+                            slot.token = None;
+                        }
+                        hidden
                     })
                     .unwrap_or_default();
                 let stopping = self.setups.entries.get_mut(&name).and_then(|entry| {
@@ -1956,7 +2313,7 @@ impl Reactor {
                 if let Some(taking) = taking {
                     // The pads a change brought are shown again with the
                     // rest; the graph that holds them follows, refused.
-                    tokens.extend(taking.fresh().filter_map(|slot| slot.token));
+                    self.hidden_for(&taking, &mut hidden);
                     let refusal = WireError::refusal(
                         ErrorCode::SetupFailed,
                         "the setup failed as it took the change",
@@ -1968,9 +2325,13 @@ impl Reactor {
                 if stopping.is_some() {
                     // It was asked to stop, and it has.
                     self.setups.entries.remove(&name);
+                } else if let Some(entry) = self.setups.entries.get_mut(&name) {
+                    // Stopped or started afresh once its pads are shown
+                    // again.
+                    entry.retiring = true;
                 }
                 self.publish_setup(&name).await;
-                self.retire(name, setup, tokens, stopping);
+                self.retire((name, id), setup, hidden, stopping);
             }
             Report::PadGone { setup, source, pad } => {
                 self.drop_off(pad);
@@ -2159,6 +2520,8 @@ mod tests {
             toml: String::new(),
             stale: false,
             hide: plan.hide,
+            arrivals: Vec::new(),
+            retiring: false,
         };
         reactor.setups.entries.insert("couch".to_string(), entry);
     }
@@ -2232,6 +2595,7 @@ mod tests {
         assert_eq!(failed.sinks[0].node, None, "its virtual pads are gone");
         assert!(failed.sources.iter().all(|source| !source.present));
         assert_eq!(rig.reactor.book.user("address:0c:27:56:4f:bd:14"), None);
+        finish(&mut rig.reactor).await;
 
         // It can't be started over until it is stopped, which only
         // clears it away.
@@ -2340,7 +2704,9 @@ mod tests {
         rig.reactor
             .done(Done::Started {
                 name: "couch".to_string(),
-                outcome: Err("making the virtual pad `virtual` (generic): no uinput".to_string()),
+                outcome: Err(Unmade::new(
+                    "making the virtual pad `virtual` (generic): no uinput",
+                )),
                 asker: Asker::Client(responder),
             })
             .await;
@@ -2359,6 +2725,7 @@ mod tests {
         rig.reactor
             .done(Done::Returned {
                 name: "couch".to_string(),
+                setup: SetupId(7),
                 id: "address:0c:27:56:4f:bd:14".to_string(),
                 pad: None,
                 token: None,
@@ -2370,6 +2737,7 @@ mod tests {
         rig.reactor
             .done(Done::Returned {
                 name: "gone".to_string(),
+                setup: SetupId(7),
                 id: "address:0c:27:56:4f:bd:14".to_string(),
                 pad: None,
                 token: None,
@@ -2643,6 +3011,7 @@ mod tests {
         rig.reactor
             .done(Done::Returned {
                 name: "couch".to_string(),
+                setup: SetupId(7),
                 id: pad.to_string(),
                 pad: None,
                 token: None,
@@ -2681,6 +3050,7 @@ mod tests {
         rig.reactor
             .done(Done::Returned {
                 name: "couch".to_string(),
+                setup: SetupId(7),
                 id: pad.to_string(),
                 pad: None,
                 token: None,
@@ -2748,6 +3118,7 @@ mod tests {
             .done(Done::Retaken {
                 name: "couch".to_string(),
                 graph,
+                ids: vec![None, None],
                 pads: vec![None, None],
             })
             .await;
@@ -2781,12 +3152,12 @@ mod tests {
     #[test]
     fn a_change_keeps_each_pad_the_new_profile_has_a_use_for() {
         let slot = |name: &str, wanted: &str, pad: Option<&str>| Slot {
-            name: name.to_string(),
-            wanted: PadRef::parse(wanted).unwrap(),
-            pad: pad.map(str::to_string),
             present: pad.is_some(),
-            returning: false,
-            token: None,
+            ..Slot::new(
+                name.to_string(),
+                PadRef::parse(wanted).unwrap(),
+                pad.map(str::to_string),
+            )
         };
         let a = "address:0c:27:56:4f:bd:14";
         let b = "address:0c:27:56:4f:bd:15";
@@ -2838,5 +3209,277 @@ mod tests {
             carry(&old, &new),
             [None, Some((NodeId(0), vec![Some(2), Some(0)]))]
         );
+    }
+
+    /// [`PROFILE`]'s primary.
+    const PRIMARY: &str = "address:0c:27:56:4f:bd:14";
+    /// A pad of the model [`PROFILE`]'s assist wants.
+    const ASSIST: &str = "address:0c:27:56:4f:bd:20";
+
+    /// One of those two connecting on `node`, which nothing can open:
+    /// none of these tests makes a pad.
+    fn connecting(id: &str, node: &str) -> Found {
+        let address = id.strip_prefix("address:").unwrap();
+        Found {
+            node: PathBuf::from(node),
+            identifiers: ctrlassist_device::Identifiers {
+                name: "Wireless Controller".to_string(),
+                bus: 3,
+                vendor: 0x054c,
+                product: if id == ASSIST { 0x09cc } else { 0x0ce6 },
+                version: 1,
+                address: Some(address.to_string()),
+                serial: None,
+                port: None,
+            },
+        }
+    }
+
+    /// A start's making, done with no pads opened and no virtual pads.
+    fn made_without_pads() -> Result<Made, Unmade> {
+        Ok(Made {
+            setup: handed_back(),
+            nodes: Vec::new(),
+            pads: vec![(false, None); 2],
+        })
+    }
+
+    /// A pad that connects while its setup starts has nowhere to go
+    /// until the setup runs; then it is taken, whether the setup named
+    /// it or it fits a place still without a pad.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_that_connects_while_its_setup_starts_is_taken_once_it_has() {
+        let mut rig = rig().await;
+        follow(&mut rig.reactor, 7, Phase::Starting);
+        for (id, node) in [(PRIMARY, "/nowhere/event1"), (ASSIST, "/nowhere/event2")] {
+            rig.reactor.book.arrived(&connecting(id, node), None);
+            rig.reactor.pad_arrived(id).await;
+        }
+        // The sources go by name: the assist, then the primary.
+        let entry = &rig.reactor.setups.entries["couch"];
+        assert!(entry.slots.iter().all(|slot| !slot.returning));
+        assert_eq!(entry.slots[0].pad, None, "the assist's waits for the start");
+        assert_eq!(rig.reactor.book.user(PRIMARY), Some("couch"), "named");
+        assert_eq!(rig.reactor.book.user(ASSIST), None);
+
+        rig.reactor
+            .done(Done::Started {
+                name: "couch".to_string(),
+                outcome: made_without_pads(),
+                asker: Asker::Daemon,
+            })
+            .await;
+        let entry = &rig.reactor.setups.entries["couch"];
+        assert_eq!(entry.phase, Phase::Held);
+        assert_eq!(entry.slots[0].pad.as_deref(), Some(ASSIST));
+        assert_eq!(rig.reactor.book.user(ASSIST), Some("couch"));
+        assert!(
+            entry.slots.iter().all(|slot| slot.returning),
+            "each is being opened"
+        );
+        // Nothing is there to open: each is waited for still.
+        finish(&mut rig.reactor).await;
+        let entry = &rig.reactor.setups.entries["couch"];
+        assert!(
+            entry
+                .slots
+                .iter()
+                .all(|slot| !slot.returning && !slot.present)
+        );
+    }
+
+    /// A pad asked for while it is being opened may have come back
+    /// meanwhile: an opening that fails is tried again, once.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_that_returns_while_it_is_opened_is_opened_again_if_that_fails() {
+        let mut rig = rig().await;
+        follow(&mut rig.reactor, 7, Phase::Held);
+        let primary = connecting(PRIMARY, "/nowhere/event1");
+        rig.reactor.book.arrived(&primary, None);
+        rig.reactor.bring_back("couch", 1);
+        rig.reactor.pad_arrived(PRIMARY).await;
+        assert!(rig.reactor.setups.entries["couch"].slots[1].again);
+
+        let first = rig.reactor.work.join_next().await.unwrap().unwrap();
+        rig.reactor.done(first).await;
+        let slot = &rig.reactor.setups.entries["couch"].slots[1];
+        assert!(slot.returning && !slot.again, "sent for again");
+        finish(&mut rig.reactor).await;
+        let slot = &rig.reactor.setups.entries["couch"].slots[1];
+        assert!(!slot.returning, "and not again after that");
+    }
+
+    /// A failed setup runs nothing: a pad that connects isn't taken into
+    /// it, and nothing in the book is its own once it is stopped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_setup_takes_no_pad_that_connects() {
+        let mut rig = rig().await;
+        follow(&mut rig.reactor, 7, Phase::Running);
+        rig.reactor
+            .reported(Report::Failed(SetupId(7), handed_back()))
+            .await;
+        for (id, node) in [(ASSIST, "/nowhere/event2"), (PRIMARY, "/nowhere/event1")] {
+            rig.reactor.book.arrived(&connecting(id, node), None);
+            rig.reactor.pad_arrived(id).await;
+            assert_eq!(rig.reactor.book.user(id), None, "{id}");
+        }
+        let entry = &rig.reactor.setups.entries["couch"];
+        assert_eq!(entry.slots[0].pad, None);
+        assert!(entry.slots.iter().all(|slot| !slot.returning));
+        finish(&mut rig.reactor).await;
+        ask(&mut rig, true).await.await.unwrap().unwrap();
+        assert!(rig.reactor.setups.setup("couch").is_none());
+    }
+
+    /// A stop of a setup that failed is answered once its pads are shown
+    /// again, as a stop of one that runs is, so that a start straight
+    /// after finds them free.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_setup_is_stopped_once_its_pads_are_shown_again() {
+        let mut rig = rig().await;
+        follow(&mut rig.reactor, 7, Phase::Running);
+        rig.reactor
+            .reported(Report::Failed(SetupId(7), handed_back()))
+            .await;
+        let stopping = ask(&mut rig, true).await;
+        let entry = &rig.reactor.setups.entries["couch"];
+        assert!(entry.retiring && entry.stopping.is_some());
+        let second = ask(&mut rig, true).await;
+        assert_eq!(refusal(second.await.unwrap()).code, ErrorCode::SetupBusy);
+        assert!(!stopping.is_finished());
+
+        finish(&mut rig.reactor).await;
+        stopping.await.unwrap().unwrap();
+        assert!(rig.reactor.setups.setup("couch").is_none());
+    }
+
+    /// A pad sent for by a setup that has since gone is nothing to the
+    /// setup of that name started afresh, which sends for its own.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_sent_for_by_a_setup_that_has_gone_is_not_its_successor_s() {
+        let mut rig = rig().await;
+        follow(&mut rig.reactor, 8, Phase::Held);
+        rig.reactor.setups.entries.get_mut("couch").unwrap().slots[1].returning = true;
+        rig.reactor
+            .done(Done::Returned {
+                name: "couch".to_string(),
+                setup: SetupId(7),
+                id: PRIMARY.to_string(),
+                pad: None,
+                token: None,
+            })
+            .await;
+        assert!(rig.reactor.setups.entries["couch"].slots[1].returning);
+        finish(&mut rig.reactor).await;
+    }
+
+    /// A start that fails after the hiding service hid a pad by
+    /// re-binding its driver shows the pad again the same way. The pad
+    /// goes and comes back for each, and may not have been seen to go
+    /// for the first yet; neither is a pad plugged in, which would start
+    /// a profile that starts by itself again, and fail again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_start_that_fails_after_hiding_a_pad_is_not_started_again_by_it() {
+        let mut rig = rig().await;
+        let node = "/nowhere/event1";
+        rig.reactor.book.arrived(&connecting(PRIMARY, node), None);
+        follow(&mut rig.reactor, 7, Phase::Starting);
+        let arrival = rig.reactor.book.arrival(PRIMARY);
+        rig.reactor
+            .setups
+            .entries
+            .get_mut("couch")
+            .unwrap()
+            .arrivals = vec![None, arrival];
+        rig.reactor.hiding.rebound().insert(PRIMARY.to_string());
+        rig.reactor
+            .done(Done::Started {
+                name: "couch".to_string(),
+                outcome: Err(Unmade {
+                    reason: "making the virtual pad `virtual` (dualsense): no uhid".to_string(),
+                    tokens: vec![None, Some(Token(1))],
+                }),
+                asker: Asker::Daemon,
+            })
+            .await;
+        assert!(rig.reactor.setups.setup("couch").is_none());
+        assert_eq!(rig.reactor.book.user(PRIMARY), None);
+        let book = &mut rig.reactor.book;
+        for went in ["as it was hidden", "as it is shown again"] {
+            assert_eq!(book.left(Path::new(node)), None, "{went}");
+            book.arrived(&connecting(PRIMARY, node), None);
+            assert!(book.was_restored(PRIMARY), "{went}");
+        }
+        assert!(book.left(Path::new(node)).is_some(), "then unplugged");
+        finish(&mut rig.reactor).await;
+    }
+
+    /// A pad the hiding service doesn't show again, as when it isn't
+    /// there to ask, doesn't go and come back: its next going is told.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_the_service_does_not_show_again_is_not_expected_back() {
+        let mut rig = rig().await;
+        let node = "/nowhere/event1";
+        rig.reactor.book.arrived(&connecting(PRIMARY, node), None);
+        follow(&mut rig.reactor, 7, Phase::Running);
+        rig.reactor.setups.entries.get_mut("couch").unwrap().slots[1].token = Some(Token(1));
+        rig.reactor.book.set_hidden(PRIMARY, true);
+        rig.reactor.hiding.rebound().insert(PRIMARY.to_string());
+        rig.reactor
+            .reported(Report::Stopped(SetupId(7), handed_back()))
+            .await;
+        finish(&mut rig.reactor).await;
+        assert_eq!(
+            rig.reactor.book.left(Path::new(node)).as_deref(),
+            Some(PRIMARY)
+        );
+    }
+
+    /// How pads are hidden is said from what was last found, never
+    /// waiting on a request to the service under way.
+    #[test]
+    fn how_pads_are_hidden_is_said_without_waiting_on_the_service() {
+        let hiding = Hiding::grab();
+        let _under_way = hiding.client.lock().unwrap();
+        assert_eq!(hiding.mechanism(), payload::Hiding::Grab);
+        assert_eq!(hiding.service_release(), None);
+    }
+
+    /// Work done off the reactor comes back to it if it panics.
+    #[test]
+    fn work_that_panics_comes_back_all_the_same() {
+        assert_eq!(caught("a test", || 1, || 2), 1);
+        assert_eq!(caught("a test", || -> i32 { panic!("as a test") }, || 2), 2);
+    }
+
+    /// A pad that returns to a setup that failed while it was being
+    /// opened is let go: the failed setup isn't brought back to running.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_that_returns_to_a_setup_that_failed_meanwhile_is_let_go() {
+        const TEST: &str = "a_pad_that_returns_to_a_setup_that_failed_meanwhile_is_let_go";
+        let mut rig = rig().await;
+        follow(&mut rig.reactor, 7, Phase::Held);
+        rig.reactor.setups.entries.get_mut("couch").unwrap().slots[1].returning = true;
+        rig.reactor
+            .reported(Report::Failed(SetupId(7), handed_back()))
+            .await;
+        let Some((_fake, pad)) = a_pad(TEST, "Daemon Failed Pad") else {
+            return;
+        };
+        rig.reactor
+            .done(Done::Returned {
+                name: "couch".to_string(),
+                setup: SetupId(7),
+                id: PRIMARY.to_string(),
+                pad: Some(pad),
+                token: None,
+            })
+            .await;
+        let failed = rig.reactor.setups.setup("couch").unwrap();
+        assert_eq!(failed.phase, Phase::Failed);
+        assert!(failed.sources.iter().all(|source| !source.present));
+        finish(&mut rig.reactor).await;
+        ask(&mut rig, true).await.await.unwrap().unwrap();
+        assert!(rig.reactor.setups.setup("couch").is_none());
     }
 }

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::sync::mpsc::Receiver;
 
 use ctrlassist_device::{InputThread, Report};
@@ -74,14 +74,19 @@ async fn run(args: Args, input: InputThread, reports: Receiver<Report>) -> Resul
         },
         ..paths
     };
-    let daemon = Daemon::start(&paths, input, reports).await?;
+    let mut daemon = Daemon::start(&paths, input, reports).await?;
 
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
-    tokio::select! {
-        _ = interrupt.recv() => info!("interrupted"),
-        _ = terminate.recv() => info!("asked to stop"),
-    }
+    let ended = tokio::select! {
+        _ = interrupt.recv() => { info!("interrupted"); false }
+        _ = terminate.recv() => { info!("asked to stop"); false }
+        () = daemon.ended() => true,
+    };
     daemon.stop().await;
+    // Exiting with an error has the service manager start it afresh.
+    if ended {
+        bail!("the daemon stopped serving, and has stopped");
+    }
     Ok(())
 }
