@@ -35,7 +35,11 @@ ENV{ID_INPUT_JOYSTICK}=="1", GOTO="ctrlassist_hide_pad"
 # A pad's other nodes: its touchpad, its motion sensors, the mouse node a
 # touchpad has. Never a keyboard's or a pointer's; and only under a
 # device known for a pad's, whose uevent file the lines below have given
-# the group, which shows as the file's group-write bit.
+# the group, which shows as the file's group-write bit. At a device's
+# first enumeration, a pad plugged in, udev runs these nodes' events
+# beside the joystick's, which sets the bit, and not after it: those
+# that came too early are taken again by the change event the joystick's
+# own event has udev send them once the bit is set.
 ENV{ID_INPUT_KEYBOARD}=="1", GOTO="ctrlassist_hide_end"
 ENV{ID_INPUT_MOUSE}=="1", GOTO="ctrlassist_hide_end"
 ENV{ID_INPUT_TABLET}=="1", GOTO="ctrlassist_hide_end"
@@ -61,9 +65,15 @@ ENV{ID_INPUT_POINTINGSTICK}=="1", GOTO="ctrlassist_hide_end"
 KERNEL!="event*", GOTO="ctrlassist_hide_markers"
 ENV{ID_INPUT_KEY}=="1", GOTO="ctrlassist_hide_markers"
 ENV{ID_INPUT_TOUCHPAD}=="1", GOTO="ctrlassist_hide_markers"
+# A device whose file hasn't the bit yet is enumerated for the first
+# time; if the pad is hidden, its other nodes may have been passed over.
+SUBSYSTEMS=="hid", DRIVERS=="?*", TEST{0020}!="/sys/bus/hid/devices/%b/uevent", \
+  ENV{.CTRLASSIST_PAD_DEVICE}="/sys/bus/hid/devices/%b"
 SUBSYSTEMS=="hid", DRIVERS=="?*", \
   RUN+="/usr/bin/chgrp ctrlassist-hider /sys/bus/hid/devices/%b/uevent", \
   RUN+="/usr/bin/chmod g+w /sys/bus/hid/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
+SUBSYSTEMS=="usb", DRIVERS=="?*", TEST{0020}!="/sys/bus/usb/devices/%b/uevent", \
+  ENV{.CTRLASSIST_PAD_DEVICE}="/sys/bus/usb/devices/%b"
 SUBSYSTEMS=="usb", DRIVERS=="?*", \
   RUN+="/usr/bin/chgrp ctrlassist-hider /sys/bus/usb/devices/%b/uevent", \
   RUN+="/usr/bin/chmod g+w /sys/bus/usb/devices/%b/uevent"
@@ -109,5 +119,13 @@ GOTO="ctrlassist_hide_end"
 # hidden or not.
 LABEL="ctrlassist_hide"
 OWNER:="root", GROUP:="ctrlassist-hider", MODE:="0660", TAG-="uaccess", ENV{CTRLASSIST_HIDDEN}="1"
+# A hidden pad's joystick node, its device enumerated for the first time:
+# once its file has the bit, after the lines above, a change event for
+# every node under the device. udev runs each after any event of that
+# node before it, and a node made after the bit is set is hidden by its
+# own event, so none of the pad's other nodes is passed over. Only for
+# an add, so that no change event sends more.
+ACTION=="add", ENV{.CTRLASSIST_PAD_DEVICE}=="?*", \
+  RUN+="/usr/bin/udevadm trigger --action=change --subsystem-match=input --parent-match=$env{.CTRLASSIST_PAD_DEVICE}"
 
 LABEL="ctrlassist_hide_end"

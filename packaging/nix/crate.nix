@@ -7,6 +7,7 @@
   pkg-config,
   udev,
   coreutils,
+  systemd,
   # The crate to build, and the binary to call its main program.
   crate,
   mainProgram,
@@ -52,7 +53,9 @@ rustPlatform.buildRustPackage {
     '') systemdUnits
     + lib.concatMapStrings (rule: ''
       install -Dm644 ${rule} $out/lib/udev/rules.d/${baseNameOf rule}
-      substituteInPlace $out/lib/udev/rules.d/${baseNameOf rule} --replace-quiet /usr/bin/ ${coreutils}/bin/
+      substituteInPlace $out/lib/udev/rules.d/${baseNameOf rule} \
+        --replace-quiet /usr/bin/udevadm ${systemd}/bin/udevadm \
+        --replace-quiet /usr/bin/ ${coreutils}/bin/
     '') udevRules;
 
   meta.mainProgram = mainProgram;

@@ -770,6 +770,18 @@ pkgs.testers.runNixOSTest {
             print("hidden DualSense's other node: " + machine.succeed(f"stat -c '%n %a %U:%G' {node}").strip() + " " + machine.succeed(f"udevadm info -q property -n {node} | grep -E '^ID_INPUT_[A-Z]+=1' | tr -s '\\n' ' '"))
         assert len(others) >= 2 and not any(alice_opens(node) for node in others), f"a hidden DualSense's touchpad and motion sensors: {others}"
         assert order(control, "raw") == "ok", "the raw node of a hidden pad of the PlayStation driver"
+        # Unplugged and plugged back in while hidden, its HID device made
+        # anew: every node of it is hidden as it is made, its touchpad's
+        # and motion sensors' as well as its joystick's.
+        machine.succeed("systemctl restart pad-ds")
+        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -F {DS} | grep -q hidraw=")
+        machine.succeed("udevadm settle")
+        assert not alice_can_open(DS, "event") and not alice_can_open(DS, "hidraw"), "a DualSense hidden again as it reconnects"
+        others = other_nodes(pads()[DS]["event"][0])
+        for node in others:
+            print("reconnected DualSense's other node: " + machine.succeed(f"stat -c '%n %a %U:%G' {node}").strip())
+        assert len(others) >= 2 and not any(alice_opens(node) for node in others), f"a reconnected DualSense's touchpad and motion sensors: {others}"
+        assert order(control, "reopen").startswith("ok")
         assert order(control, "restore") == "ok"
         machine.succeed("udevadm settle")
         assert alice_can_open(DS, "event") and alice_can_open(DS, "hidraw"), "a restored DualSense"
