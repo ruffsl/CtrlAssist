@@ -8,6 +8,7 @@ mod blacklist;
 mod book;
 mod copied;
 pub mod durable;
+mod hiding;
 mod hotplug;
 pub mod logging;
 mod profiles;
@@ -34,10 +35,10 @@ use zenoh::liveliness::LivelinessToken;
 
 use blacklist::Blacklist;
 use book::Book;
+use hiding::Hiding;
 use hotplug::Watch;
 use profiles::Profiles;
 use reactor::{Reactor, Rpcs};
-use setups::Hiding;
 use store::Store;
 
 /// Where a daemon keeps what it needs.
@@ -269,10 +270,10 @@ impl Daemon {
             .await
             .context("starting the hotplug watch")?
             .context("watching udev for pads")?;
-        let hider = paths.hider.clone();
-        let hiding = tokio::task::spawn_blocking(move || Hiding::find(&hider))
-            .await
-            .context("looking for the hiding service")?;
+        // Looked for off the way to being up, once the reactor runs: a
+        // service that doesn't answer holds up nothing but the setups
+        // that need it.
+        let hiding = Hiding::new(&paths.hider);
         let mechanism = hiding.mechanism();
         let hider_version = hiding.service_release();
         let mut reactor = Reactor::new(
@@ -316,11 +317,13 @@ impl Daemon {
         published
             .await
             .map_err(|error| anyhow!("publishing the daemon's state: {error}"))?;
+        reactor.look_for_the_hiding_service();
         for pad in now {
             reactor.saw(pad).await;
         }
         // Profiles that start by themselves, now that every pad already
-        // connected is known.
+        // connected is known. One that hides its pads waits, as it
+        // starts, for the hiding service to have been looked for.
         reactor.start_what_can(None).await;
         if !realtime {
             warn!("real-time scheduling was refused; input latency under load is not dependable");

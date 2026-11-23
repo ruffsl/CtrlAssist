@@ -33,9 +33,10 @@ use zenoh_ext::{AdvancedPublisher, AdvancedPublisherBuilderExt, CacheConfig, Mis
 use crate::book::Book;
 use crate::copied::Copied;
 use crate::device_identity;
+use crate::hiding::Hiding;
 use crate::hotplug::Seen;
 use crate::profiles::Profiles;
-use crate::setups::{Done, Hiding, Setups};
+use crate::setups::{Done, Setups};
 use crate::store::Store;
 
 /// Heartbeat period for sample-miss recovery on cached publishers: a
@@ -207,6 +208,16 @@ impl Reactor {
         if let Err(error) = self.publish_daemon(state).await {
             warn!(%error, "publishing the daemon's state failed");
         }
+    }
+
+    /// Looks for the hiding service, off the reactor, as the daemon
+    /// starts: what was found is published when the look comes back.
+    pub(crate) fn look_for_the_hiding_service(&mut self) {
+        let hiding = Arc::clone(&self.hiding);
+        self.work.spawn_blocking(move || {
+            hiding.look();
+            Done::Looked
+        });
     }
 
     /// Publishes what a virtual pad can present itself as, and whether
@@ -643,6 +654,10 @@ impl Reactor {
         }
         // Pads still buzzing stop as their tasks are dropped.
         self.buzzes.shutdown().await;
+        // Nothing waits on the hiding service from here: every request
+        // under way is hung up, which ends it at once, and the service
+        // shows again what each connection hid as it closes.
+        self.hiding.close();
         // What is being made or dropped finishes; the setups themselves
         // go with the input thread.
         while self.work.join_next().await.is_some() {}

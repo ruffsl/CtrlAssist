@@ -387,12 +387,14 @@ impl DaemonClient {
 
     /// Stop the setup `name`. Returns once its virtual pads are gone and
     /// its pads shown again, which is waited for as long as the daemon is
-    /// there, for up to six hours.
+    /// there, for up to six hours. A setup that is still starting is
+    /// stopped too: what its start waits on is given up, and the start
+    /// is refused with [`ErrorCode::SetupFailed`].
     ///
     /// # Errors
     ///
     /// Refused with [`ErrorCode::UnknownSetup`], or with
-    /// [`ErrorCode::SetupBusy`] while it is starting or stopping; fails
+    /// [`ErrorCode::SetupBusy`] while it is stopping or restarting; fails
     /// with [`Error::Gone`] if the daemon goes before it answers; and
     /// fails as any rpc can.
     pub async fn stop_setup(&self, name: &str) -> Result<()> {

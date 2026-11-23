@@ -5,6 +5,7 @@ use std::fs::OpenOptions;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -28,8 +29,9 @@ pub enum Asked {
     Raw(String),
     /// For the raw HID node of a pad it has hidden.
     RawOf(String),
-    /// Nothing more: the client's connection closed, which restores
-    /// whatever it still had hidden.
+    /// Nothing more: a connection closed with a pad still hidden through
+    /// it, which restores it. One that closes with nothing hidden says
+    /// nothing.
     Closed,
 }
 
@@ -40,8 +42,11 @@ pub enum Asked {
 pub struct FakeHider {
     path: PathBuf,
     asked: Arc<Mutex<Vec<Asked>>>,
-    /// The client being served, to hang up on as the stand-in goes.
-    client: Arc<Mutex<Option<OwnedFd>>>,
+    /// The connections being served, each on a thread of its own as the
+    /// real service serves them, to hang up on as the stand-in goes.
+    clients: Arc<Mutex<Vec<OwnedFd>>>,
+    /// Set as it goes, for the accepting thread to stop.
+    stopping: Arc<AtomicBool>,
     serving: Option<JoinHandle<()>>,
 }
 
@@ -202,11 +207,14 @@ fn serve(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>) {
             break;
         }
     }
-    note(Asked::Closed);
+    if !hidden.is_empty() {
+        note(Asked::Closed);
+    }
 }
 
 impl FakeHider {
-    /// Listens at `path`, serving one client at a time.
+    /// Listens at `path`, serving each connection on a thread of its
+    /// own, as the real service does.
     ///
     /// # Errors
     ///
@@ -214,39 +222,40 @@ impl FakeHider {
     pub fn listen(path: &Path) -> io::Result<Self> {
         let listener = socket(AddressFamily::UNIX, SocketType::SEQPACKET, None)?;
         bind(&listener, &SocketAddrUnix::new(path)?)?;
-        listen(&listener, 4)?;
+        listen(&listener, 16)?;
         let asked = Arc::new(Mutex::new(Vec::new()));
-        let client = Arc::new(Mutex::new(None));
+        let clients = Arc::new(Mutex::new(Vec::new()));
+        let stopping = Arc::new(AtomicBool::new(false));
         let serving = std::thread::Builder::new()
             .name("fake-hider".into())
             .spawn({
                 let asked = Arc::clone(&asked);
-                let client = Arc::clone(&client);
+                let clients = Arc::clone(&clients);
+                let stopping = Arc::clone(&stopping);
                 move || {
                     while let Ok(connection) = accept(&listener) {
-                        // An empty message is the stand-in's own, asking
-                        // it to stop.
-                        let mut first = [0u8; 1];
-                        let stop = rustix::net::recv(
-                            &connection,
-                            &mut first,
-                            rustix::net::RecvFlags::PEEK,
-                        )
-                        .is_ok_and(|(length, _)| length == 0);
-                        if stop {
+                        // Woken by the stand-in itself, to stop.
+                        if stopping.load(Ordering::Relaxed) {
                             return;
                         }
-                        if let Ok(mut held) = client.lock() {
-                            *held = connection.try_clone().ok();
+                        if let Ok(mut held) = clients.lock()
+                            && let Ok(held_too) = connection.try_clone()
+                        {
+                            held.push(held_too);
                         }
-                        serve(&connection, &asked);
+                        let asked = Arc::clone(&asked);
+                        let served = std::thread::Builder::new()
+                            .name("fake-hider-client".into())
+                            .spawn(move || serve(&connection, &asked));
+                        drop(served);
                     }
                 }
             })?;
         Ok(Self {
             path: path.to_path_buf(),
             asked,
-            client,
+            clients,
+            stopping,
             serving: Some(serving),
         })
     }
@@ -267,20 +276,19 @@ impl FakeHider {
 
 impl Drop for FakeHider {
     fn drop(&mut self) {
-        // A connection that says nothing and closes its sending side
-        // reads as an empty first message.
+        // A connection of its own wakes the accepting thread to stop.
+        self.stopping.store(true, Ordering::Relaxed);
         if let Ok(stopper) = socket(AddressFamily::UNIX, SocketType::SEQPACKET, None)
             && let Ok(address) = SocketAddrUnix::new(&self.path)
-            && connect(&stopper, &address).is_ok()
         {
-            let _ = shutdown(&stopper, Shutdown::Write);
+            let _ = connect(&stopper, &address);
         }
-        // A service that stops hangs up on its client, which is how the
-        // client finds out.
-        if let Ok(mut held) = self.client.lock()
-            && let Some(client) = held.take()
-        {
-            let _ = shutdown(&client, Shutdown::Both);
+        // A service that stops hangs up on its clients, which is how
+        // each finds out.
+        if let Ok(mut held) = self.clients.lock() {
+            for client in held.drain(..) {
+                let _ = shutdown(&client, Shutdown::Both);
+            }
         }
         drop(self.serving.take());
         let _ = std::fs::remove_file(&self.path);
