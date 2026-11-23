@@ -929,6 +929,8 @@ pub struct InputThread {
     stop: Arc<AtomicBool>,
     tap: Arc<AtomicBool>,
     realtime: bool,
+    /// The kernel's number for the thread.
+    task: Option<i32>,
     thread: Option<JoinHandle<()>>,
     forwarder: Option<JoinHandle<()>>,
 }
@@ -1040,16 +1042,20 @@ impl InputThread {
         let thread = std::thread::Builder::new()
             .name("input".to_string())
             .spawn(move || {
-                let _ = granted_tx.send(realtime::request(PRIORITY));
+                let task = rustix::thread::gettid().as_raw_nonzero().get();
+                let _ = granted_tx.send((realtime::request(PRIORITY), task));
                 state.run();
             })?;
-        let realtime = granted.recv().unwrap_or(false);
+        let (realtime, task) = granted
+            .recv()
+            .map_or((false, None), |(realtime, task)| (realtime, Some(task)));
         Ok(Self {
             commands: Some(commands),
             wake,
             stop,
             tap,
             realtime,
+            task,
             thread: Some(thread),
             forwarder: Some(forwarder),
         })
@@ -1067,6 +1073,14 @@ impl InputThread {
     #[must_use]
     pub fn is_realtime(&self) -> bool {
         self.realtime
+    }
+
+    /// The kernel's number for the thread, as `/proc/self/task` names
+    /// it: for watching that thread alone from outside. None if it ended
+    /// before saying.
+    #[must_use]
+    pub fn task(&self) -> Option<i32> {
+        self.task
     }
 
     fn wake(&self) -> io::Result<()> {

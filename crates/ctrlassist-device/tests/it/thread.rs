@@ -703,18 +703,11 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
     );
 }
 
-/// How many times the thread named `input` in this process has been
-/// scheduled out, by its own choice or the kernel's.
-fn input_thread_switches() -> u64 {
-    let task = std::fs::read_dir("/proc/self/task")
-        .unwrap()
-        .flatten()
-        .find(|task| {
-            std::fs::read_to_string(task.path().join("comm"))
-                .is_ok_and(|name| name.trim() == "input")
-        })
-        .unwrap();
-    std::fs::read_to_string(task.path().join("status"))
+/// How many times `thread` has been scheduled out, by its own choice or
+/// the kernel's: that thread, and not another test's input thread.
+fn input_thread_switches(thread: &InputThread) -> u64 {
+    let task = thread.task().unwrap();
+    std::fs::read_to_string(format!("/proc/self/task/{task}/status"))
         .unwrap()
         .lines()
         .filter(|line| line.contains("ctxt_switches"))
@@ -738,10 +731,10 @@ fn an_idle_input_thread_never_wakes() {
     rig.primary.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
     read_until(&mut rig.game, |frames| !frames.is_empty());
 
-    let before = input_thread_switches();
+    let before = input_thread_switches(&rig.thread);
     std::thread::sleep(std::time::Duration::from_secs(1));
     assert_eq!(
-        input_thread_switches(),
+        input_thread_switches(&rig.thread),
         before,
         "the input thread woke with nothing to do"
     );
