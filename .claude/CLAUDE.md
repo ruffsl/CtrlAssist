@@ -34,7 +34,7 @@ crates/
   ctrlassist-gui-app/         # the code that drives the window, its tests and the
                               # ctrlassist-gui binary (lib name ctrlassist_gui)
   ctrlassist-hider/           # the hiding service: its wire types and client as a library,
-                              # and the root binary
+                              # and the binary, which runs as a user of its own
   ctrlassist-icons/           # freedesktop icon-theme lookup: a name, with fallbacks, to
                               # a file in the desktop's theme
   ctrlassist-protocol/        # what the daemon and its clients agree on: the profile
@@ -111,7 +111,7 @@ Anything beyond a small fix follows a plan in `docs/plans/` ([convention](../doc
 
 ## Terms
 
-One word per thing, in code, docs and messages. The table is in [the architecture](../docs/architecture.md#terms). The ones most often got wrong: a physical controller is a *pad*, never a "controller" or "device" outside crate names; the root process is the *hiding service*, and *assist* is the helping player's pad.
+One word per thing, in code, docs and messages. The table is in [the architecture](../docs/architecture.md#terms). The ones most often got wrong: a physical controller is a *pad*, never a "controller" or "device" outside crate names; the system service that hides pads is the *hiding service*, and *assist* is the helping player's pad.
 
 @../docs/conventions.md
 
