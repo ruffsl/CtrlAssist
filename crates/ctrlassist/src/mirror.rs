@@ -263,6 +263,7 @@ mod tests {
 
         let running = payload::Setup {
             name: "couch".to_string(),
+            start: 1,
             phase: payload::Phase::Running,
             reason: None,
             sources: Vec::new(),
