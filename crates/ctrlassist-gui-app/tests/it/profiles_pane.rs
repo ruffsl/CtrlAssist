@@ -402,6 +402,30 @@ fn app() -> AppWindow {
     app
 }
 
+/// A profile's name too long for the header at the window's least width
+/// wraps, whole, rather than being cut short where only a pointer could
+/// show the rest: keys and couch mode read it as it is.
+#[test]
+fn a_long_name_wraps_whole_in_the_header_at_the_least_width() {
+    const LONG: &str = "abcdefghijklmnopqrstuvwxyz-01234";
+    let app = app();
+    let mut known_now = known();
+    known_now.profiles.push(profile(LONG, COUCH));
+    profiles::show(&app, known_now);
+    app.window()
+        .set_size(slint::LogicalSize::new(720.0, 1600.0));
+    let height_of = |app: &AppWindow, name: &str| {
+        app.global::<Profiles>().invoke_select(name.into());
+        settle();
+        let shown = find_by_accessible_id(app, "profiles-name").expect("the header's name");
+        assert_eq!(shown.accessible_label().unwrap_or_default(), name);
+        shown.size().height
+    };
+    let short = height_of(&app, "couch");
+    let long = height_of(&app, LONG);
+    assert!(long > short, "the long name wraps: {long} against {short}");
+}
+
 #[test]
 fn a_new_profile_is_a_draft_that_is_named_checked_and_can_be_dropped() {
     let app = app();
@@ -925,6 +949,45 @@ fn a_dropdown_in_a_virtual_pad_s_row_lives_through_a_daemon_change() {
     crate::support::press(&app, Key::Return);
     assert!(select.get_open(), "the dropdown kept focus");
     crate::support::press(&app, Key::Escape);
+}
+
+/// A dropdown made anew while its list is open, its profile's detail
+/// rebuilt, still takes the pick: it is routed by the control's key, the
+/// same for the one made in its place, not by the button that opened it.
+#[test]
+fn a_pick_lands_on_a_dropdown_made_anew_while_its_list_was_open() {
+    use ctrlassist_gui::Select;
+    use slint::platform::Key;
+    let app = app();
+    let asked = record_set_field(&app);
+    app.global::<Profiles>().invoke_select("couch".into());
+    settle();
+    focus_by_keys(&app, "profiles-field-identity");
+    crate::support::press(&app, Key::Return);
+    let select = app.global::<Select>();
+    assert!(select.get_open());
+    // The profile goes and comes back: its row and its detail, and the
+    // dropdown in it, are made anew.
+    let mut without = known();
+    without.profiles.retain(|profile| profile.name != "couch");
+    profiles::show(&app, without);
+    settle();
+    profiles::show(&app, known());
+    app.global::<Profiles>().invoke_select("couch".into());
+    settle();
+    assert!(select.get_open());
+    let values: Vec<String> = select
+        .get_values()
+        .iter()
+        .map(|value| value.to_string())
+        .collect();
+    let at = values
+        .iter()
+        .position(|value| value == "dualsense")
+        .expect("an identity to pick");
+    select.invoke_pick(i32::try_from(at).unwrap());
+    settle();
+    assert_eq!(*asked.borrow(), ["couch identity dualsense"]);
 }
 
 /// A pad list puts connected pads first, so it may change order while

@@ -318,6 +318,7 @@ component FieldRow inherits Rectangle {
                     horizontal-stretch: 1;
                     accessible-label: root.field.label;
                     accessible-id: root.control-id;
+                    key: root.profile + "/" + root.control-id;
                     nav-row: row.row-id;
                     enabled: root.enabled;
                     model: root.field.options;
@@ -497,33 +498,18 @@ component ProfileDetailHeader inherits Rectangle {
                 alignment: start;
                 // The name alone: the default profile's mark is its
                 // row's in the list, and here it left the name cut short.
-                // A long one is still cut at the window's smallest, and
-                // then shows whole on hover.
-                name-box := Rectangle {
-                    property <bool> cut: name-text.preferred-width > self.width;
+                // A long one wraps at the window's smallest, so the whole
+                // name is there to read without a pointer, by keys and
+                // across the room as well.
+                Text {
                     min-width: Design.font-title-3;
-                    preferred-width: name-text.preferred-width;
-                    preferred-height: name-text.preferred-height;
-                    name-text := Text {
-                        width: parent.width;
-                        height: parent.height;
-                        text: root.profile.name;
-                        color: Theme.text;
-                        font-size: Design.font-title-3;
-                        font-weight: 700;
-                        overflow: elide;
-                    }
-                    TouchArea {
-                        enabled: name-box.cut;
-                        changed has-hover => {
-                            name-help.set-hover(self.has-hover);
-                        }
-                    }
-                    name-help := HelpTrigger {
-                        width: 100%;
-                        height: 100%;
-                        text: name-box.cut ? root.profile.name : "";
-                    }
+                    text: root.profile.name;
+                    color: Theme.text;
+                    font-size: Design.font-title-3;
+                    font-weight: 700;
+                    wrap: char-wrap;
+                    vertical-alignment: center;
+                    accessible-id: root.id-prefix + "profiles-name";
                 }
                 if root.profile.kept: VerticalLayout {
                     alignment: center;
@@ -824,6 +810,7 @@ component ProfileDetail inherits Rectangle {
                                 horizontal-stretch: 1;
                                 accessible-label: node-row.label;
                                 accessible-id: root.id-prefix + "profiles-select-" + node.name;
+                                key: root.setup.name + "/" + root.id-prefix + "profiles-select-" + node.name;
                                 nav-row: node-row.row-id;
                                 enabled: root.daemon-available;
                                 model: node.choices;
@@ -944,6 +931,7 @@ component ProfileDetail inherits Rectangle {
                                 horizontal-stretch: 1;
                                 accessible-label: root.profile.identity-field.label;
                                 accessible-id: root.id-prefix + "profiles-field-identity";
+                                key: root.profile.name + "/" + root.id-prefix + "profiles-field-identity";
                                 nav-row: output-row.row-id;
                                 enabled: root.daemon-available;
                                 model: root.profile.identity-field.options;
