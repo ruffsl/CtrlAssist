@@ -448,9 +448,15 @@ mod tests {
         assert_eq!((sequence, Wanted::from_words(words)), (2, wanted));
     }
 
-    /// Read while being put, what comes out is always one put whole.
+    /// Read while being put, what comes out is always one put whole, on
+    /// the machine the test runs on. On x86, which neither reorders one
+    /// thread's stores nor its loads, this can't catch a fence left out:
+    /// that the fences are right for a weaker machine rests on the
+    /// sequence lock's argument in `put` and `get`, not on this. A model
+    /// checker such as loom would show it, but is a new dependency for
+    /// one test.
     #[test]
-    fn the_mailbox_is_never_read_half_put() {
+    fn the_mailbox_is_never_read_half_put_on_this_machine() {
         let mailbox = Arc::new(Mailbox::new());
         let putting = {
             let mailbox = Arc::clone(&mailbox);

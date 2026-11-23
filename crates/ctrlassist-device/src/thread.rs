@@ -1640,7 +1640,9 @@ mod tests {
 
     /// A game asking for rumble many times a second, while the reports
     /// go unread, fills the queue with taps; the reports that hand
-    /// something back still find room.
+    /// something back still find room. This setup has no pads, which
+    /// take devices; with them, a pad's share of the room is shown with
+    /// fake pads, by the thread's tests of the whole.
     #[test]
     fn a_flood_of_taps_leaves_room_for_what_is_handed_back() {
         let mut rig = rig();
@@ -1797,13 +1799,15 @@ mod tests {
         assert!(rig.state.slot_of(FIRST).is_none());
     }
 
-    /// A setup whose handling panics is taken down alone: it is handed
-    /// back as failed, and the setup beside it carries on, its virtual
-    /// pads with it. Shipped builds unwind for this, and a build that
-    /// aborts on panic can't be made: the crate's root refuses it, since
-    /// the test harness unwinds whatever the profile says.
+    /// A setup whose handling panics is handed back as failed, and the
+    /// setup beside it stays and is handled as before. These setups have
+    /// no pads or virtual pads, which take devices; that the other's stay
+    /// follows from the setup staying, which holds them. Shipped builds
+    /// unwind for this, and a build that aborts on panic can't be made:
+    /// the crate's root refuses it, since the test harness unwinds
+    /// whatever the profile says.
     #[test]
-    fn a_setup_whose_handling_panics_is_taken_down_alone() {
+    fn a_setup_whose_handling_panics_is_handed_back_and_the_other_stays() {
         let mut rig = rig();
         rig.send(Command::Start(FIRST, setup()));
         rig.send(Command::Start(SECOND, setup()));

@@ -1033,3 +1033,82 @@ fn a_pad_behind_a_virtual_dualsense_is_sent_everything_the_games_set() {
     }
     unreachable!("no report set both: {:?}", real.outputs());
 }
+
+/// A game asking for rumble many times over while the control side reads
+/// nothing fills the input thread's queue with taps, and the reports that
+/// hand something back still find room: each pad's as it goes, and the
+/// setup's as it stops, since the room kept counts the setup's pads.
+#[test]
+fn a_flood_of_taps_leaves_room_for_the_pads_and_the_setup_handed_back() {
+    if !can_make_pads("a_flood_of_taps_leaves_room_for_the_pads_and_the_setup_handed_back") {
+        return;
+    }
+    use std::sync::{Arc, Condvar, Mutex};
+    let mut primary = FakePad::new("Thread Flood Primary", 0x1209, 0x5eed).unwrap();
+    let mut assist = FakePad::new("Thread Flood Assist", 0x1209, 0x5eed).unwrap();
+    let (sink, mut reader) = sink();
+    let node = sink.event_node().to_path_buf();
+    let setup = Setup::new(
+        mux(Mode::Priority),
+        vec![Some(read(&primary)), Some(read(&assist))],
+        vec![sink],
+    );
+    // The control side reads nothing until the gate opens.
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let (passed, reports) = std::sync::mpsc::channel();
+    let thread = {
+        let gate = Arc::clone(&gate);
+        InputThread::spawn_with(move |report| {
+            let (open, opened) = &*gate;
+            let mut open = open.lock().unwrap();
+            while !*open {
+                open = opened.wait(open).unwrap();
+            }
+            let _ = passed.send(report);
+        })
+        .unwrap()
+    };
+    thread.tap(true);
+    thread.send(Command::Start(ID, Box::new(setup))).unwrap();
+    // Both pads hold the same button, which the game sees let go only
+    // once both have gone and the thread has handled each going.
+    primary.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    assist.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    let held = PadState::NEUTRAL.with(gamepad::SOUTH, 1.0);
+    read_until(&mut reader, |frames| frames.last() == Some(&held));
+
+    let mut game = game_opens(&node);
+    for strong in 0..1000u16 {
+        let mut effect = game.upload_ff_effect(rumble(strong, 0, 1000, 0)).unwrap();
+        effect.play(1).unwrap();
+    }
+    drop(primary);
+    drop(assist);
+    let frames = read_until(&mut reader, |frames| {
+        frames.last() == Some(&PadState::NEUTRAL)
+    });
+    assert_eq!(last(&frames), PadState::NEUTRAL);
+    thread.send(Command::Stop(ID)).unwrap();
+
+    {
+        let (open, opened) = &*gate;
+        *open.lock().unwrap() = true;
+        opened.notify_all();
+    }
+    let (mut taps, mut gone) = (0, Vec::new());
+    loop {
+        match reports
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("every report that hands something back arrives")
+        {
+            Report::Tapped { .. } => taps += 1,
+            Report::PadGone { source, .. } => gone.push(source),
+            Report::Stopped(ID, _) => break,
+            other => unreachable!("{other:?}"),
+        }
+    }
+    gone.sort_by_key(|source| source.0);
+    assert_eq!(gone, [PRIMARY, ASSIST]);
+    // The queue holds 64 commands' worth beyond what may be handed back.
+    assert!(taps > 64, "the taps filled what they may: {taps}");
+}
