@@ -11,7 +11,6 @@ use std::time::Instant;
 use fake::{FakeDaemon, HOSTILE};
 
 use ctrlassist_daemon::{Daemon, Paths};
-use ctrlassist_device::InputThread;
 use ctrlassist_protocol::VERSION;
 use tempfile::TempDir;
 
@@ -25,7 +24,7 @@ fn socket() -> (TempDir, PathBuf) {
 }
 
 async fn start(socket: &Path) -> Daemon {
-    let (input, reports) = InputThread::spawn().unwrap();
+    let (input, reports) = Daemon::input_thread().unwrap();
     let paths = Paths {
         socket: socket.to_path_buf(),
         state: socket.with_file_name("state"),

@@ -24,14 +24,13 @@
 //! between the reply and the history.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ctrlassist_protocol::caller::{Caller, RpcError};
 use ctrlassist_protocol::endpoint::{daemon, tray};
 use ctrlassist_protocol::keys;
-use tokio::sync::{Notify, broadcast, mpsc};
+use tokio::sync::{Notify, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 use zenoh::Session;
@@ -98,7 +97,7 @@ pub(crate) struct LifetimeMirror<M> {
     arrived: Arc<Notify>,
     /// Whether the service's liveliness token is present, as last
     /// delivered: set as it arrives, before the follow task takes it up.
-    token: Arc<AtomicBool>,
+    token: Arc<watch::Sender<bool>>,
     /// The client copies' hold on the follow task, which ends it once the
     /// last copy drops and so releases the session it holds. The task's
     /// own copies have none, or it would keep itself alive.
@@ -204,7 +203,7 @@ impl<M: Mirror> LifetimeMirror<M> {
     /// Follow `M`'s service on `session`: its liveliness from history on,
     /// then a lifetime per token.
     pub(crate) async fn start(session: &Session, caller: &Arc<Caller>) -> Result<Self> {
-        let token = Arc::new(AtomicBool::new(false));
+        let token = Arc::new(watch::Sender::new(false));
         // Liveliness edges are few: one each way per lifetime.
         let (edges, liveliness) = mpsc::unbounded_channel();
         let subscriber = session
@@ -213,7 +212,7 @@ impl<M: Mirror> LifetimeMirror<M> {
             .callback({
                 let token = Arc::clone(&token);
                 move |sample: Sample| {
-                    token.store(sample.kind() == SampleKind::Put, Ordering::SeqCst);
+                    token.send_replace(sample.kind() == SampleKind::Put);
                     // Nobody is reading once the follow task has gone.
                     let _ = edges.send(sample);
                 }
@@ -256,10 +255,24 @@ impl<M: Mirror> LifetimeMirror<M> {
         self.lock().hydrated
     }
 
+    /// The service this mirrors.
+    pub(crate) const fn service(&self) -> Service {
+        M::SERVICE
+    }
+
     /// Whether the service's token is present, as last delivered, whether
     /// or not its keys are subscribed yet.
     pub(crate) fn token_present(&self) -> bool {
-        self.token.load(Ordering::SeqCst)
+        *self.token.borrow()
+    }
+
+    /// Returns once the service's token is absent, as delivered: at once
+    /// if it is absent now. What an untimed rpc's call waits on beside
+    /// its reply.
+    pub(crate) async fn gone(&self) {
+        let mut token = self.token.subscribe();
+        // The sender lives as long as this mirror, which is borrowed.
+        let _ = token.wait_for(|present| !present).await;
     }
 
     /// Where the mirror's events, and the release check's, go out.

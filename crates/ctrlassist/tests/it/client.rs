@@ -7,12 +7,18 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ctrlassist::{DaemonClient, Error, StateEvent, StateWatcher, StateWatcherConfig};
+use ctrlassist::{DaemonClient, Error, ErrorCode, StateEvent, StateWatcher, StateWatcherConfig};
 use ctrlassist_daemon::{Daemon, Paths};
-use ctrlassist_device::InputThread;
+use ctrlassist_protocol::caller::RPC_TIMEOUT;
+use ctrlassist_protocol::endpoint::setup;
+use ctrlassist_protocol::error::WireError;
+use ctrlassist_protocol::rpc::Ack;
+use ctrlassist_protocol::serve::Responder;
 use ctrlassist_protocol::{VERSION, keys};
 use serde_json::json;
 use tempfile::TempDir;
+use zenoh::Session;
+use zenoh::liveliness::LivelinessToken;
 
 use crate::fake::{FakeDaemon, answer_info, answer_info_from};
 
@@ -65,7 +71,7 @@ pub(crate) async fn start_daemon(socket: &std::path::Path) -> Daemon {
 /// A daemon that takes the tests' fake pads for pads, or one that
 /// doesn't, as a daemon in use doesn't.
 pub(crate) async fn start_daemon_taking(socket: &std::path::Path, test_pads: bool) -> Daemon {
-    let (input, reports) = InputThread::spawn().unwrap();
+    let (input, reports) = Daemon::input_thread().unwrap();
     let paths = Paths {
         socket: socket.to_path_buf(),
         state: socket.with_file_name("state"),
@@ -442,6 +448,133 @@ async fn a_client_dropped_as_it_subscribes_closes_its_link() {
         .await;
     }
     daemon.stop().await;
+}
+
+/// A stand-in daemon on this release with its token up, which answers
+/// `info` and hands each setup rpc to the test: the session (whose
+/// dropping takes the token, the rpcs and the link) and the setup rpcs
+/// as they arrive.
+async fn stand_in(socket: &std::path::Path) -> (Session, LivelinessToken, Queryable) {
+    let session = zenoh::open(ctrlassist_protocol::bootstrap::router_config(socket).unwrap())
+        .await
+        .unwrap();
+    // Answers for as long as the session is open.
+    drop(answer_info(&session, VERSION, &Arc::default()).await);
+    let setups = session
+        .declare_queryable(setup::Incoming::wild())
+        .await
+        .unwrap();
+    let token = session
+        .liveliness()
+        .declare_token(keys::daemon_alive())
+        .await
+        .unwrap();
+    (session, token, setups)
+}
+
+type Queryable = zenoh::query::Queryable<zenoh::handlers::FifoChannelHandler<zenoh::query::Query>>;
+
+/// The next `start` the stand-in is asked, with the responder that owes
+/// its reply.
+async fn asked_to_start(setups: &Queryable) -> Responder<setup::Start> {
+    let query = setups.recv_async().await.unwrap();
+    let start = match setup::Incoming::receive(query).await {
+        Some(((), setup::Incoming::Start(_, responder))) => Some(responder),
+        _ => None,
+    };
+    start.unwrap()
+}
+
+/// A refusal with a code that a later release of the daemon added is
+/// still a refusal to the caller, with its message and the code as it
+/// came.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_with_a_code_from_a_later_release_keeps_its_message() {
+    let (_dir, socket) = socket();
+    let (_session, _token, setups) = stand_in(&socket).await;
+    let client = DaemonClient::connect(&socket).await.unwrap();
+    let refusing = tokio::spawn(async move {
+        let newer: WireError =
+            serde_json::from_str(r#"{"code":"pad-on-fire","message":"the pad is on fire"}"#)
+                .unwrap();
+        asked_to_start(&setups).await.err(&newer).await;
+    });
+    let refused = client.start_setup("couch").await.unwrap_err();
+    assert!(
+        matches!(
+            &refused,
+            Error::Rpc {
+                code: ErrorCode::Unknown(code),
+                message,
+            } if code.as_str() == "pad-on-fire" && message == "the pad is on fire"
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(refused.to_string(), "the pad is on fire (pad-on-fire)");
+    refusing.await.unwrap();
+}
+
+/// A start answered later than a read would wait is still answered: it
+/// is waited for while the daemon's token is there, however long.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_start_is_waited_for_while_the_daemon_is_there() {
+    let (_dir, socket) = socket();
+    let (_session, _token, setups) = stand_in(&socket).await;
+    let client = DaemonClient::connect(&socket).await.unwrap();
+    let answering = tokio::spawn(async move {
+        let responder = asked_to_start(&setups).await;
+        tokio::time::sleep(RPC_TIMEOUT + Duration::from_secs(1)).await;
+        responder.ok(&Ack {}).await;
+    });
+    let asked = tokio::time::Instant::now();
+    client.start_setup("couch").await.unwrap();
+    assert!(asked.elapsed() > RPC_TIMEOUT, "answered as late as it was");
+    answering.await.unwrap();
+}
+
+/// A daemon whose token goes while it holds a start, unanswered, fails
+/// the call as the token goes, not at any time limit; and a start asked
+/// of a daemon without its token fails at once, unasked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_fails_as_the_daemon_s_token_goes() {
+    let (_dir, socket) = socket();
+    let (_session, token, setups) = stand_in(&socket).await;
+    let client = DaemonClient::connect(&socket).await.unwrap();
+    let (held, holding) = tokio::sync::oneshot::channel();
+    let holder = tokio::spawn(async move {
+        let responder = asked_to_start(&setups).await;
+        held.send(()).unwrap();
+        // Unanswered until the test lets go of it.
+        std::future::pending::<()>().await;
+        drop((responder, setups));
+    });
+    let starting = tokio::spawn({
+        let client = client.clone();
+        async move { client.start_setup("couch").await }
+    });
+    holding.await.unwrap();
+    let went = tokio::time::Instant::now();
+    token.undeclare().await.unwrap();
+    let outcome = starting.await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            Err(Error::Gone {
+                service: ctrlassist::Service::Daemon
+            })
+        ),
+        "{outcome:?}"
+    );
+    assert!(went.elapsed() < RPC_TIMEOUT, "failed as the token went");
+    assert_eq!(
+        outcome.unwrap_err().to_string(),
+        "the daemon went away before it answered"
+    );
+
+    // Without its token, the daemon isn't asked.
+    let again = client.start_setup("couch").await;
+    assert!(matches!(again, Err(Error::Gone { .. })), "{again:?}");
+    holder.abort();
 }
 
 /// `try_next` hands over a queued event without waiting, and nothing when

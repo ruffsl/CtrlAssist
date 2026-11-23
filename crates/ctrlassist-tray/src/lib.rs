@@ -228,7 +228,10 @@ pub(crate) async fn act(
             ),
             Action::Put { name, toml } => {
                 let outcome = put_and_apply(&daemon, &name, &toml).await;
-                let restarted = matches!(outcome, Ok(Applied::Restarted));
+                let restarted = match outcome {
+                    Ok(Applied::Restarted(start)) => Some(start),
+                    _ => None,
+                };
                 let refused = matches!(outcome, Err(Unapplied::Refused(_)));
                 // The answer is taken with the view caught up with the
                 // daemon as it gave it: a restart is said once, and what
@@ -279,8 +282,9 @@ pub(crate) async fn act(
 enum Applied {
     /// Kept: a setup that runs it took it as it ran, or none runs it.
     Kept,
-    /// Kept, and the setup that runs it restarted with it.
-    Restarted,
+    /// Kept, and the setup that runs it restarted with it, as the start
+    /// numbered so (0 from a daemon too old to say).
+    Restarted(u32),
 }
 
 /// Why a pick didn't come to all it asked.
@@ -306,13 +310,13 @@ async fn put_and_apply(
         .map_err(Unapplied::Refused)?;
     let taken = async {
         if daemon.setup(name)?.is_some() {
-            return daemon.update_setup(name, true).await;
+            return daemon.update_setup(name, true).await.map(Some);
         }
-        Ok(false)
+        Ok(None)
     };
     match taken.await {
-        Ok(true) => Ok(Applied::Restarted),
-        Ok(false) => Ok(Applied::Kept),
+        Ok(Some(updated)) if updated.disruptive => Ok(Applied::Restarted(updated.start)),
+        Ok(_) => Ok(Applied::Kept),
         Err(error) => Err(Unapplied::Untaken(error)),
     }
 }
@@ -341,7 +345,6 @@ mod tests {
     use std::path::Path;
 
     use ctrlassist_daemon::{Daemon, Paths};
-    use ctrlassist_device::InputThread;
     use ctrlassist_test::{FakePad, can_make_pads};
     use tokio::sync::Mutex;
 
@@ -357,7 +360,7 @@ mod tests {
     }
 
     async fn start_daemon(paths: &Paths) -> Daemon {
-        let (input, reports) = InputThread::spawn().unwrap();
+        let (input, reports) = Daemon::input_thread().unwrap();
         Daemon::start(paths, input, reports).await.unwrap()
     }
 

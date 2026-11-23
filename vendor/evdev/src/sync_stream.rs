@@ -424,9 +424,11 @@ impl Device {
 
 impl Drop for Device {
     fn drop(&mut self) {
-        if let Err(error) = self.ungrab() {
-            eprintln!("Failed to ungrab device: {error}");
-        }
+        // A grab ends with the descriptor anyway, so an ungrab that fails
+        // loses nothing: it fails for a device that has gone, which is
+        // expected. Nothing is printed, as printing panics on a closed
+        // stream, and a drop has no caller to tell.
+        let _ = self.ungrab();
     }
 }
 

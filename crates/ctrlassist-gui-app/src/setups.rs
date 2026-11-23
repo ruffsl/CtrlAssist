@@ -118,9 +118,9 @@ pub(crate) fn wire(app: &AppWindow, daemon: &DaemonClient) {
         let (weak, client, name) = (weak.clone(), client.clone(), name.to_string());
         tokio::spawn(async move {
             match client.update_setup(&name, false).await {
-                Ok(disruptive) => on_ui(&weak, move |app| {
+                Ok(cost) => on_ui(&weak, move |app| {
                     let setups = app.global::<Setups>();
-                    setups.set_pending_update_cost(SharedString::from(if disruptive {
+                    setups.set_pending_update_cost(SharedString::from(if cost.disruptive {
                         "restart"
                     } else {
                         "seamless"

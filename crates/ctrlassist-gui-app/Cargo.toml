@@ -42,7 +42,6 @@ zbus = { workspace = true }
 [dev-dependencies]
 # Pinned with slint: its API has no semver promise.
 i-slint-backend-testing = "=1.19.0"
-ctrlassist-device = { workspace = true }
 
 [lints]
 workspace = true

@@ -5,7 +5,6 @@ use ctrlassist::{
     DaemonClient, ErrorCode, NotificationSettings, NotificationSettingsPatch, TrayClient,
 };
 use ctrlassist_daemon::{Daemon, Paths};
-use ctrlassist_device::InputThread;
 use ctrlassist_protocol::VERSION;
 use ctrlassist_tray::notify::{Category, Notifier, serve_while_daemon};
 use ctrlassist_tray::state::Toast;
@@ -23,7 +22,7 @@ fn paths(dir: &Path) -> Paths {
 }
 
 async fn start_daemon(paths: &Paths) -> Daemon {
-    let (input, reports) = InputThread::spawn().unwrap();
+    let (input, reports) = Daemon::input_thread().unwrap();
     Daemon::start(paths, input, reports).await.unwrap()
 }
 

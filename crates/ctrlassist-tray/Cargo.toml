@@ -28,7 +28,6 @@ zenoh = { workspace = true }
 zenoh-ext = { workspace = true }
 
 [dev-dependencies]
-ctrlassist-device = { workspace = true }
 ctrlassist-test = { workspace = true }
 tempfile = { workspace = true }
 

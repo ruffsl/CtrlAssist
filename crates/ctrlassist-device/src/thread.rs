@@ -15,7 +15,7 @@ use std::os::fd::OwnedFd;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError, channel, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, channel, sync_channel};
 use std::thread::JoinHandle;
 
 use ctrlassist_core::{
@@ -905,15 +905,16 @@ struct Owed {
     short: AtomicBool,
 }
 
-/// Passes the input thread's reports on to the control side, counting
-/// each as read once it leaves the bounded queue, and wakes the input
-/// thread when it was waiting for room. The control side's own queue
-/// has no bound, and whatever it no longer takes is dropped here, off
-/// the input thread. Ends when the input thread does.
-fn forward(queued: Receiver<Report>, owed: &Owed, wake: &OwnedFd, reports: &Sender<Report>) {
+/// Passes the input thread's reports on to the control side through
+/// `deliver`, in order, counting each as read once it leaves the bounded
+/// queue, and wakes the input thread when it was waiting for room. The
+/// control side's own queue has no bound, and whatever it no longer
+/// takes is dropped in `deliver`, off the input thread. Ends when the
+/// input thread does.
+fn forward(queued: Receiver<Report>, owed: &Owed, wake: &OwnedFd, mut deliver: impl FnMut(Report)) {
     for report in queued {
         owed.read(wake);
-        let _ = reports.send(report);
+        deliver(report);
     }
 }
 
@@ -930,18 +931,38 @@ impl Owed {
 
 impl InputThread {
     /// Starts the input thread, and returns it with where its reports
-    /// arrive.
-    ///
-    /// Its reports pass through a thread of their own at ordinary
-    /// priority, which only counts them as read and passes them on: the
-    /// input thread neither waits for room nor allocates any, and so
-    /// takes no command until the reports that command may cause fit.
+    /// arrive, as [`spawn_with`](Self::spawn_with) does into a channel.
     ///
     /// # Errors
     ///
     /// Fails if the kernel refuses the descriptors it sleeps on, or
     /// either thread.
     pub fn spawn() -> io::Result<(Self, Receiver<Report>)> {
+        let (passed, reports) = channel();
+        let thread = Self::spawn_with(move |report| {
+            // Not taken any more: dropped here, off the input thread.
+            let _ = passed.send(report);
+        })?;
+        Ok((thread, reports))
+    }
+
+    /// Starts the input thread, handing each of its reports to `deliver`
+    /// in the order the thread sent them: into the control side's own
+    /// queue, which has no bound, so that `deliver` never waits.
+    ///
+    /// Its reports pass through a thread of their own at ordinary
+    /// priority, which only counts them as read and calls `deliver`: the
+    /// input thread neither waits for room nor allocates any, and so
+    /// takes no command until the reports that command may cause fit.
+    /// `deliver` runs on that thread, and goes with it once the input
+    /// thread has stopped and what it handed back on its way out has
+    /// been delivered.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the kernel refuses the descriptors it sleeps on, or
+    /// either thread.
+    pub fn spawn_with(deliver: impl FnMut(Report) + Send + 'static) -> io::Result<Self> {
         let epoll = epoll::create(epoll::CreateFlags::CLOEXEC)?;
         let wake = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?);
         let timer = timerfd_create(
@@ -953,13 +974,12 @@ impl InputThread {
 
         let (commands, inbox) = sync_channel(QUEUE);
         let (outbox, queued) = sync_channel(REPORTS);
-        let (passed, reports) = channel();
         let owed = Arc::new(Owed::default());
         let forwarder = {
             let (owed, wake) = (Arc::clone(&owed), Arc::clone(&wake));
             std::thread::Builder::new()
                 .name("input-reports".to_string())
-                .spawn(move || forward(queued, &owed, &wake, &passed))?
+                .spawn(move || forward(queued, &owed, &wake, deliver))?
         };
         let (granted_tx, granted) = sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
@@ -981,7 +1001,7 @@ impl InputThread {
                 state.run();
             })?;
         let realtime = granted.recv().unwrap_or(false);
-        let thread = Self {
+        Ok(Self {
             commands: Some(commands),
             wake,
             stop,
@@ -989,8 +1009,7 @@ impl InputThread {
             realtime,
             thread: Some(thread),
             forwarder: Some(forwarder),
-        };
-        Ok((thread, reports))
+        })
     }
 
     /// Has the thread report what passes through each setup's feedback,
