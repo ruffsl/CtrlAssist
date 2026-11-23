@@ -19,6 +19,7 @@ mod activation;
 mod connections;
 mod descriptor;
 mod hide;
+mod in_flight;
 mod pad;
 mod seat;
 
@@ -40,7 +41,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::connections::Connections;
 use crate::hide::Leave;
-use crate::pad::Pad;
+use crate::pad::{Device, Pad};
 
 /// Where a hidden pad is in its life.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -98,7 +99,7 @@ impl State {
     fn held(&self) -> Vec<PathBuf> {
         self.entries
             .iter()
-            .map(|entry| entry.pad.parent.clone())
+            .map(|entry| entry.pad.parent.path.clone())
             .collect()
     }
 }
@@ -133,8 +134,10 @@ fn reply(socket: BorrowedFd<'_>, reply: Reply, fd: Option<&OwnedFd>) {
     }
 }
 
+/// A refusal of a request that re-bound nothing. It says so: every reply
+/// of a service that counts carries a count, refusals included.
 fn refuse(socket: BorrowedFd<'_>, refusal: Refusal) {
-    reply(socket, Reply::refused(refusal), None);
+    reply(socket, refused(refusal, 0), None);
 }
 
 /// A reply that did as asked, saying how many times the pad was re-bound
@@ -162,10 +165,12 @@ fn refused(refusal: Refusal, rebinds: u8) -> Reply {
 /// that nothing should is shown again too. The entry stays, as showing,
 /// until the re-bind is done, so the pad can't be hidden again meanwhile;
 /// the wait for it ends when udev is done, the pad is unplugged, or
-/// `client`, the one that asked, hangs up. Returns how many times the pad
-/// was re-bound for it, which it goes and comes back for, as
+/// `client`, the one that asked, hangs up; but not before udev has
+/// answered the request, so a hide of the pad once the entry has gone is
+/// never judged on this re-bind. Returns how many times the pad was
+/// re-bound for it, which it goes and comes back for, as
 /// [`hide::Rebound::went`] counts.
-fn show(shared: &Shared, token: u32, client: Option<BorrowedFd<'_>>, rebind: bool) -> u8 {
+fn show(shared: &Arc<Shared>, token: u32, client: Option<BorrowedFd<'_>>, rebind: bool) -> u8 {
     let parent = {
         let mut state = shared.state();
         let Some(entry) = state.entries.iter_mut().find(|entry| entry.token == token) else {
@@ -173,7 +178,7 @@ fn show(shared: &Shared, token: u32, client: Option<BorrowedFd<'_>>, rebind: boo
         };
         entry.phase = Phase::Showing;
         let markers = entry.pad.markers.clone();
-        let parent = (rebind && pad::is_there(&entry.pad)).then(|| entry.pad.parent.clone());
+        let parent = (rebind && entry.pad.parent.is_there()).then(|| entry.pad.parent.clone());
         let remaining = state.markers();
         for marker in markers.difference(&remaining) {
             hide::delete(marker);
@@ -188,18 +193,65 @@ fn show(shared: &Shared, token: u32, client: Option<BorrowedFd<'_>>, rebind: boo
         if let Err(refusal) = rebound.outcome {
             warn!(
                 token,
-                device = %parent.display(),
+                device = %parent.path.display(),
                 %refusal,
                 "the pad's driver wasn't re-bound to show it again; it is shown at its next event"
             );
         }
     }
-    let mut state = shared.state();
-    state.entries.retain(|entry| entry.token != token);
-    let held = state.held();
-    let held: Vec<&Path> = held.iter().map(PathBuf::as_path).collect();
-    hide::sweep(group(), &held, &state.markers());
+    shared.state().entries.retain(|entry| entry.token != token);
+    sweep(shared);
     rebinds
+}
+
+/// Shows again what the rule hides that nothing should, each device on a
+/// thread of its own that waits for its turn, re-binds it and waits for
+/// udev's answer: tracked as every re-bind is, so the next re-bind of the
+/// device waits for this one. Doesn't wait itself.
+fn sweep(shared: &Arc<Shared>) {
+    let (held, markers) = {
+        let state = shared.state();
+        (state.held(), state.markers())
+    };
+    let held: Vec<&Path> = held.iter().map(PathBuf::as_path).collect();
+    for (device, _) in hide::unnamed(group(), &held, &markers) {
+        let theirs = Arc::clone(shared);
+        let device_theirs = device.clone();
+        let spawned = std::thread::Builder::new()
+            .name("sweep".into())
+            .spawn(move || sweep_one(&theirs, &device_theirs));
+        if let Err(error) = spawned {
+            warn!(device = %device.path.display(), %error, "couldn't start a thread to show a pad again; showing it here");
+            sweep_one(shared, &device);
+        }
+    }
+}
+
+/// Re-binds one device the sweep found, once its turn has come, if it is
+/// still hidden and named by nothing: a hide of it since would be cut off
+/// by this re-bind, and another sweep may have shown it already.
+fn sweep_one(shared: &Shared, device: &Device) {
+    let unnamed = || {
+        let (held, markers) = {
+            let state = shared.state();
+            (state.held(), state.markers())
+        };
+        let held: Vec<&Path> = held.iter().map(PathBuf::as_path).collect();
+        let still = hide::unnamed(group(), &held, &markers)
+            .iter()
+            .any(|(other, _)| other.path == device.path);
+        if still { Ok(()) } else { Err(Refusal::Busy) }
+    };
+    let rebound = hide::rebind_if(device, Leave::AsTheRuleSays, hide::Asker::Nobody, unnamed);
+    match rebound.outcome {
+        Ok(()) => debug!(device = %device.path.display(), "showed again a pad no marker names"),
+        Err(Refusal::Busy) => {}
+        Err(refusal) => warn!(
+            device = %device.path.display(),
+            %refusal,
+            "couldn't show again a pad no marker names; it stays hidden until it is plugged in again"
+        ),
+    }
 }
 
 /// The seats `user` is in front on now, as a person at the machine.
@@ -223,9 +275,9 @@ fn presented(user: Option<u32>, fd: BorrowedFd<'_>) -> Result<Pad, Refusal> {
 /// many times the pad was re-bound for it, which it goes and comes back
 /// for: once if it was hidden, and once more if it was then shown again,
 /// as it is when anything after the re-bind fails, or the client sends
-/// anything before the hide is done, as `cancel`.
+/// `cancel`, or hangs up, before the hide is done.
 fn hide_pad(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     socket: BorrowedFd<'_>,
     owner: u64,
     user: Option<u32>,
@@ -273,7 +325,7 @@ fn marked(
         if state
             .entries
             .iter()
-            .any(|entry| entry.pad.parent == pad.parent)
+            .any(|entry| entry.pad.parent.path == pad.parent.path)
         {
             return Err(Refusal::Busy);
         }
@@ -305,14 +357,23 @@ fn marked(
 }
 
 /// Opens a hidden pad's event node again, finding the pad first if it
-/// reconnected: only once the device it was checked as is gone, and only
+/// reconnected: only once the device it was checked as is gone, or is
+/// another enumeration at the same place (a pad on USB with no HID device
+/// is recorded by its USB interface, whose place is its port's), and only
 /// for a caller in front, now, on the pad's seat, since the pad found may
 /// be another the rule hides.
 fn reopen(shared: &Shared, owner: u64, user: Option<u32>, token: u32) -> Result<OwnedFd, Refusal> {
     let seats = seats_in_front(user);
     let (parent, ordinal) = {
         let mut state = shared.state();
-        let held = state.held();
+        // Every other hidden pad's device: this one's may be at the same
+        // place, enumerated afresh.
+        let taken: Vec<PathBuf> = state
+            .entries
+            .iter()
+            .filter(|entry| entry.token != token)
+            .map(|entry| entry.pad.parent.path.clone())
+            .collect();
         let entry = state
             .entries
             .iter_mut()
@@ -320,11 +381,11 @@ fn reopen(shared: &Shared, owner: u64, user: Option<u32>, token: u32) -> Result<
                 entry.token == token && entry.owner == owner && entry.phase == Phase::Hidden
             })
             .ok_or(Refusal::UnknownToken)?;
-        if !pad::is_there(&entry.pad) {
+        if !entry.pad.parent.is_there() {
             if !seats.contains(&entry.pad.identity.seat) {
                 return Err(Refusal::NotPermitted);
             }
-            let taken: Vec<&Path> = held.iter().map(PathBuf::as_path).collect();
+            let taken: Vec<&Path> = taken.iter().map(PathBuf::as_path).collect();
             let found = pad::returned(&entry.pad, group(), &taken).ok_or(Refusal::Absent)?;
             for marker in found.markers.difference(&entry.pad.markers) {
                 if let Err(error) = hide::create(marker) {
@@ -342,12 +403,12 @@ fn reopen(shared: &Shared, owner: u64, user: Option<u32>, token: u32) -> Result<
         }
         (entry.pad.parent.clone(), entry.pad.ordinal)
     };
-    let node = pad::event_node(&parent, ordinal).ok_or(Refusal::Absent)?;
+    let node = pad::event_node(&parent.path, ordinal).ok_or(Refusal::Absent)?;
     hide::open_under(&node, &parent, Some(group()))
 }
 
 /// The device of a pad connection `owner` has hidden.
-fn hidden_parent(shared: &Shared, owner: u64, token: u32) -> Result<PathBuf, Refusal> {
+fn hidden_parent(shared: &Shared, owner: u64, token: u32) -> Result<Device, Refusal> {
     shared
         .state()
         .entries
@@ -357,14 +418,14 @@ fn hidden_parent(shared: &Shared, owner: u64, token: u32) -> Result<PathBuf, Ref
         .ok_or(Refusal::UnknownToken)
 }
 
-/// Opens the raw node of the pad whose device is at `parent`.
-fn raw_of(parent: &Path) -> Result<OwnedFd, Refusal> {
-    let node = pad::raw_node(parent)?;
+/// Opens the raw node of the pad whose device is `parent`.
+fn raw_of(parent: &Device) -> Result<OwnedFd, Refusal> {
+    let node = pad::raw_node(&parent.path)?;
     hide::open_under(&node, parent, None)
 }
 
 /// Serves one client until it closes, then shows again what it hid.
-fn serve(shared: &Shared, socket: &OwnedFd, owner: u64, user: Option<u32>) {
+fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) {
     let socket = socket.as_fd();
     // A client found to be in front stays permitted: one that later
     // leaves the foreground keeps what it has.
@@ -388,6 +449,12 @@ fn serve(shared: &Shared, socket: &OwnedFd, owner: u64, user: Option<u32>) {
         // locked: closing one can block, as a FUSE file's flush does.
         fds.truncate(1);
         let fd = fds.pop();
+        let request = buffer.get(..length).and_then(Request::decode);
+        // A hide asked is the one a `cancel` gives up, whatever becomes of
+        // it: one refused, at the gate or after, leaves nothing to undo.
+        if request == Some(Request::Hide) {
+            last_hidden = None;
+        }
         if !permitted {
             permitted = user.is_some_and(seat::is_in_front);
         }
@@ -395,7 +462,7 @@ fn serve(shared: &Shared, socket: &OwnedFd, owner: u64, user: Option<u32>) {
             refuse(socket, Refusal::NotPermitted);
             continue;
         }
-        match buffer.get(..length).and_then(Request::decode) {
+        match request {
             Some(Request::Version) => {
                 // Counting nothing here, it says it counts.
                 reply(
@@ -409,7 +476,6 @@ fn serve(shared: &Shared, socket: &OwnedFd, owner: u64, user: Option<u32>) {
                     refuse(socket, Refusal::BadRequest);
                     continue;
                 };
-                last_hidden = None;
                 match hide_pad(shared, socket, owner, user, fd) {
                     (Ok((token, event)), rebinds) => {
                         info!(token, "hid a pad");
@@ -420,7 +486,8 @@ fn serve(shared: &Shared, socket: &OwnedFd, owner: u64, user: Option<u32>) {
                     }
                     (Err(refusal), rebinds) => {
                         // A cancel that ended it is read, and answered,
-                        // next: nothing is left for it to do.
+                        // next: nothing is left for it to do. A request
+                        // sent ahead of it is served first, in order.
                         reply(socket, refused(refusal, rebinds), None);
                     }
                 }
@@ -478,10 +545,20 @@ fn serve(shared: &Shared, socket: &OwnedFd, owner: u64, user: Option<u32>) {
         .filter(|entry| entry.owner == owner && entry.phase != Phase::Showing)
         .map(|entry| entry.token)
         .collect();
-    for token in mine {
-        info!(token, "a client has gone; showing the pad it hid again");
-        show(shared, token, None, true);
-    }
+    // Each on a thread of its own, so that one whose re-bind never ends
+    // holds none of the others up; none holds the lock as it waits.
+    std::thread::scope(|scope| {
+        for token in mine {
+            info!(token, "a client has gone; showing the pad it hid again");
+            let spawned = std::thread::Builder::new()
+                .name("show".into())
+                .spawn_scoped(scope, move || show(shared, token, None, true));
+            if let Err(error) = spawned {
+                warn!(token, %error, "couldn't start a thread to show a pad again; showing it here");
+                show(shared, token, None, true);
+            }
+        }
+    });
 }
 
 /// What woke the main thread.
@@ -524,16 +601,17 @@ fn wait(shared: &Shared, listener: &OwnedFd, exhausted: bool) -> Woken {
 
 /// Serves clients until none is left, or forever if `stay` is set.
 fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
-    // Nothing is connected yet, so anything still hidden was left by a
-    // service that died.
-    hide::reconcile(group());
-
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
         // Blocking: it is read only once a connection has closed, or when
         // waiting on that alone.
         closed: eventfd(0, EventfdFlags::CLOEXEC)?,
     });
+    // Nothing is connected yet, so anything still hidden was left by a
+    // service that died. Its showing again takes each device's turn, so
+    // a hide of it asked meanwhile waits for it.
+    hide::clear();
+    sweep(&shared);
     // Out of descriptors or memory, accepting is left until a connection
     // closes, which frees both.
     let mut exhausted = false;
@@ -589,8 +667,14 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
             let mut state = shared.state();
             state.served_anyone = true;
             let Some(holder) = state.connections.admit(user, seated) else {
-                // Closed at once: neither one user nor every user with no
-                // seat can take every descriptor.
+                // Closed at once, here, with no thread made and nothing
+                // read: neither one user nor every user with no seat can
+                // take every descriptor. What no cap reaches is the queue
+                // of connections not yet accepted, which is everyone's:
+                // one who connects without pause can keep it near full,
+                // and a client that connects without waiting is then
+                // refused by the kernel, but nobody holds an accepted
+                // connection over their cap longer than this.
                 debug!(user, seated, "closed a connection over the cap");
                 continue;
             };

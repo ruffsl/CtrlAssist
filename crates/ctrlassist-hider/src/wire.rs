@@ -42,9 +42,9 @@ pub enum Refusal {
     /// driver to re-bind, which it can't hide, or one whose raw node it
     /// doesn't open.
     Unsupported,
-    /// A hide given up because the client sent something before it was
-    /// done, as it sends [`Request::Cancel`]: the pad is left as it was.
-    /// Only a client that sends `cancel` is ever told this.
+    /// A hide given up because the client sent [`Request::Cancel`] before
+    /// it was done: the pad is left as it was. Only a client that sends
+    /// `cancel` is ever told this.
     Cancelled,
 }
 
@@ -113,14 +113,19 @@ pub enum Request {
     /// request refuses it as one it doesn't understand.
     Version,
     /// Give up the hide asked last on this connection, leaving the pad as
-    /// it was. Sent while the hide is still being done, it ends it: the
-    /// hide's reply is then [`Refusal::Cancelled`], with the pad shown
-    /// again, and this request's says nothing more was done. Sent after
-    /// the hide's reply, it shows the pad that hide hid again. Either way
-    /// the two replies' [`rebinds`](Reply::rebinds) together say how many
-    /// times the pad was re-bound. A service that says it counts, in its
-    /// reply to [`Request::Version`], takes this; one from before
-    /// refuses it as one it doesn't understand.
+    /// it was. Sent while the hide is still being done, and the next
+    /// message after it, it ends it: the hide's reply is then
+    /// [`Refusal::Cancelled`], with the pad shown again, and this
+    /// request's says nothing more was done. Sent after the hide's reply,
+    /// or behind another request sent during the hide, which is served in
+    /// its turn after the hide, it shows the pad that hide hid again.
+    /// Either way the two replies' [`rebinds`](Reply::rebinds) together say
+    /// how many times the pad was re-bound. Only this, or the connection
+    /// closing, ends a hide early: an empty message closes the connection
+    /// as a hang-up does. A hide refused leaves nothing for this to give
+    /// up. A service that says it counts, in its reply to
+    /// [`Request::Version`], takes this; one from before refuses it as one
+    /// it doesn't understand.
     Cancel,
 }
 
@@ -205,10 +210,13 @@ pub struct Reply {
     /// How many times the service re-bound the pad's driver in serving
     /// the request, each of which makes the pad go and come back: a
     /// re-bind it saw end without that, the pad unplugged or the rule
-    /// not acting, isn't counted, and one still under way is. Said by a
-    /// service that counts, and none by one from before; in its reply to
-    /// [`Request::Version`], `Some(0)` says the service counts and takes
-    /// [`Request::Cancel`]. At most [`Reply::MOST_REBINDS`].
+    /// not acting, isn't counted, and one still under way is. A service
+    /// that counts says it in every reply, refusals included, as `Some(0)`
+    /// where it re-bound nothing (a refusal before it looked at the pad,
+    /// a request that re-binds nothing); one from before says none in
+    /// any. In its reply to [`Request::Version`], `Some(0)` says the
+    /// service counts and takes [`Request::Cancel`]. At most
+    /// [`Reply::MOST_REBINDS`].
     pub rebinds: Option<u8>,
 }
 
@@ -219,7 +227,8 @@ impl Reply {
     /// The most re-binds a reply can say: two bits of the flags.
     pub const MOST_REBINDS: u8 = 3;
 
-    /// A refusal.
+    /// A refusal, as a service from before the count says it: with no
+    /// count.
     #[must_use]
     pub fn refused(refusal: Refusal) -> Self {
         Self {

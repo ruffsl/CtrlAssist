@@ -25,14 +25,68 @@ pub(crate) struct Identity {
     pub(crate) virtual_device: bool,
 }
 
+/// One enumeration of a device: its place in sysfs, and what tells this
+/// enumeration from a later one at the same place.
+///
+/// A HID device's place names one enumeration already: its kernel name
+/// ends in an instance number the kernel never hands out twice. A USB
+/// interface's place is its port's, and whatever is next plugged in there
+/// has the same one. So a device on USB is told by when udev first saw
+/// the USB device above it (`USEC_INITIALIZED`), a time in microseconds
+/// that udev stamps a device with once, as it first finishes with it, and
+/// keeps through every later event of that device, a re-bind of its
+/// interfaces' drivers among them; a device enumerated afresh is stamped
+/// afresh. The USB device's own number (`devnum`) would do as well but
+/// for wrapping after 127 enumerations on a bus, and the interface itself
+/// has no record in udev's database to keep a stamp in.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct Device {
+    pub(crate) path: PathBuf,
+    /// When udev first saw the USB device at or above it, if it is on
+    /// USB.
+    pub(crate) enumeration: Option<u64>,
+}
+
+impl Device {
+    /// The enumeration of the device at `path` there now.
+    pub(crate) fn at(path: &Path) -> Option<Self> {
+        let device = udev::Device::from_syspath(path).ok()?;
+        Some(Self {
+            path: path.to_path_buf(),
+            enumeration: enumeration(&device)?,
+        })
+    }
+
+    /// Whether this enumeration of the device is still there: not
+    /// unplugged, and not replaced by another plugged into the same port.
+    pub(crate) fn is_there(&self) -> bool {
+        Self::at(&self.path).is_some_and(|now| now == *self)
+    }
+}
+
+/// When udev first saw the USB device at or above `device`: `Some(None)`
+/// for a device not on USB, and `None` where udev hasn't stamped the USB
+/// device yet, which isn't then one this service has checked.
+fn enumeration(device: &udev::Device) -> Option<Option<u64>> {
+    let usb = std::iter::successors(Some(device.clone()), udev::Device::parent).find(|device| {
+        subsystem(device) == Some("usb")
+            && device.devtype().and_then(|kind| kind.to_str()) == Some("usb_device")
+    });
+    let Some(usb) = usb else {
+        return Some(None);
+    };
+    let stamp = property(&usb, "USEC_INITIALIZED")?.parse::<u64>().ok()?;
+    Some(Some(stamp))
+}
+
 /// A pad the service has checked: the device whose driver is re-bound to
 /// cut its readers off, and what names it to the rule.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Pad {
     /// The pad's HID device, or with none its USB interface: the device
     /// that was checked, which keeps its place in sysfs through a re-bind
-    /// of its driver.
-    pub(crate) parent: PathBuf,
+    /// of its driver, as the enumeration of it that was checked.
+    pub(crate) parent: Device,
     /// Which of the joystick event nodes under `parent` it is, in order.
     pub(crate) ordinal: usize,
     pub(crate) identity: Identity,
@@ -142,17 +196,13 @@ pub(crate) struct Names {
 
 /// The marker files that hide a pad, as the rule names them, from what
 /// its devices say: by address, else serial number; by HID device; by
-/// port where neither; and for its raw node, by the HID device's own
-/// unique string, and by port whenever it has one. Only what passes the
-/// checks above reaches a name, and no name has a `/` in it.
+/// port where neither; and its raw node as [`raw_markers`] says. Only
+/// what passes the checks above reaches a name, and no name has a `/` in
+/// it.
 pub(crate) fn markers(names: &Names) -> BTreeSet<String> {
-    let mut markers = BTreeSet::new();
+    let mut markers = raw_markers(names);
     let address = names.uniq.as_deref().filter(|uniq| is_address(uniq));
     let serial = names.serial.as_deref().filter(|serial| is_serial(serial));
-    let interface = names
-        .interface
-        .as_deref()
-        .filter(|interface| is_usb_interface(interface));
     if let Some(address) = address {
         markers.insert(format!("addr-{address}"));
     } else if let (Some(serial), Some(vendor), Some(product)) =
@@ -162,23 +212,43 @@ pub(crate) fn markers(names: &Names) -> BTreeSet<String> {
     }
     if address.is_none()
         && serial.is_none()
-        && let Some(interface) = interface
+        && let Some(interface) = interface(names)
     {
         markers.insert(format!("port-{interface}"));
     }
-    if let Some(hid) = names.hid.as_deref().filter(|name| is_hid_name(name)) {
-        markers.insert(format!("hid-{hid}"));
-        let uniq = names.hid_uniq.as_deref().filter(|uniq| is_uniq(uniq));
-        let id = names.hid_id.as_deref().filter(|id| is_hid_id(id));
-        if let (Some(uniq), Some(id)) = (uniq, id) {
-            markers.insert(format!("uniq-{id}-{uniq}"));
-        }
-        // Whatever the HID device says of its address: a driver can set
-        // it after the raw node is made, as a DualSense's does on USB, so
-        // the node of one that comes back may be made before it.
-        if let Some(interface) = interface {
-            markers.insert(format!("raw-{interface}"));
-        }
+    markers
+}
+
+/// The USB interface `names` hang from, if its name is the kernel's.
+fn interface(names: &Names) -> Option<&str> {
+    names
+        .interface
+        .as_deref()
+        .filter(|interface| is_usb_interface(interface))
+}
+
+/// The marker files that hide a HID device's raw node, as the rule names
+/// them: by the HID device itself; by its own unique string; and, on USB,
+/// by its port and its model together, so that only a HID device of the
+/// same bus, vendor and product plugged into that port is taken for it,
+/// never a keyboard, a headset or a security key. None without a HID
+/// device.
+pub(crate) fn raw_markers(names: &Names) -> BTreeSet<String> {
+    let mut markers = BTreeSet::new();
+    let Some(hid) = names.hid.as_deref().filter(|name| is_hid_name(name)) else {
+        return markers;
+    };
+    markers.insert(format!("hid-{hid}"));
+    let uniq = names.hid_uniq.as_deref().filter(|uniq| is_uniq(uniq));
+    let id = names.hid_id.as_deref().filter(|id| is_hid_id(id));
+    if let (Some(uniq), Some(id)) = (uniq, id) {
+        markers.insert(format!("uniq-{id}-{uniq}"));
+    }
+    // Whatever the HID device says of its address: a driver can set it
+    // after the raw node is made, as a DualSense's does on USB, so the
+    // node of one that comes back may be made before it.
+    if let (Some(interface), Some(id)) = (interface(names), id) {
+        markers.insert(format!("raw-{interface}-{id}"));
     }
     markers
 }
@@ -339,7 +409,10 @@ fn classify(event: &udev::Device, tagged: bool) -> Result<Pad, Refusal> {
         virtual_device: parent.syspath().starts_with("/sys/devices/virtual"),
     };
     Ok(Pad {
-        parent: parent.syspath().to_path_buf(),
+        parent: Device {
+            path: parent.syspath().to_path_buf(),
+            enumeration: enumeration(&parent).ok_or(Refusal::Failed)?,
+        },
         ordinal,
         identity,
         markers,
@@ -355,9 +428,9 @@ pub(crate) fn identify(fd: BorrowedFd<'_>) -> Result<Pad, Refusal> {
     let event = udev::Device::from_devnum(udev::DeviceType::Character, devnum)
         .map_err(|_| Refusal::NotAPad)?;
     let pad = classify(&event, true)?;
-    if shares_with_keyboard_or_pointer(&pad.parent) {
+    if shares_with_keyboard_or_pointer(&pad.parent.path) {
         tracing::info!(
-            device = %pad.parent.display(),
+            device = %pad.parent.path.display(),
             "refused a pad whose device has a keyboard or a pointer among its inputs: re-binding its driver would cut that off too"
         );
         return Err(Refusal::Unsupported);
@@ -370,12 +443,6 @@ pub(crate) fn event_node(parent: &Path, ordinal: usize) -> Option<PathBuf> {
     joysticks_under(parent)
         .get(ordinal)
         .and_then(|event| Some(event.devnode()?.to_path_buf()))
-}
-
-/// Whether the device the pad was checked as is still there: a pad that
-/// reconnected has another.
-pub(crate) fn is_there(pad: &Pad) -> bool {
-    pad.parent.exists()
 }
 
 /// Whether a node belongs to `group`, which only the rule that hides a
@@ -408,10 +475,65 @@ pub(crate) fn hidden(group: u32) -> Vec<Pad> {
             continue;
         }
         if let Ok(pad) = classify(&event, false)
-            && !found.iter().any(|other| other.parent == pad.parent)
+            && !found
+                .iter()
+                .any(|other| other.parent.path == pad.parent.path)
         {
             found.push(pad);
         }
+    }
+    found
+}
+
+/// What the rule sets on every node it hides, and on no other: udev keeps
+/// a node's properties from the last event it took, so this says the
+/// node was hidden then. A raw node's group can't say it, the rule giving
+/// a PlayStation pad's raw node the group whether it is hidden or not.
+const HIDDEN: &str = "CTRLASSIST_HIDDEN";
+
+/// The HID device of each raw node the rule hid when udev last took an
+/// event of it, with the markers that would hide that node now. A raw
+/// node can be hidden with its pad's event node not, as a pad of the
+/// model of one hidden, plugged into its port while it was away, is.
+pub(crate) fn hidden_raw() -> Vec<(Device, BTreeSet<String>)> {
+    let Ok(mut nodes) = udev::Enumerator::new() else {
+        return Vec::new();
+    };
+    if nodes.match_subsystem("hidraw").is_err() || nodes.match_is_initialized().is_err() {
+        return Vec::new();
+    }
+    let Ok(nodes) = nodes.scan_devices() else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for node in nodes {
+        if property(&node, HIDDEN) != Some("1") {
+            continue;
+        }
+        let ancestors = || std::iter::successors(Some(node.clone()), udev::Device::parent);
+        let Some(hid) = ancestors().find(|device| subsystem(device) == Some("hid")) else {
+            continue;
+        };
+        let interface = ancestors().find(|device| {
+            subsystem(device) == Some("usb")
+                && device.devtype().and_then(|kind| kind.to_str()) == Some("usb_interface")
+        });
+        let names = Names {
+            hid: hid.sysname().to_str().map(str::to_string),
+            hid_uniq: property(&hid, "HID_UNIQ").map(str::to_string),
+            hid_id: property(&hid, "HID_ID").map(str::to_string),
+            interface: interface
+                .and_then(|interface| interface.sysname().to_str().map(str::to_string)),
+            ..Names::default()
+        };
+        let Some(enumeration) = enumeration(&hid) else {
+            continue;
+        };
+        let device = Device {
+            path: hid.syspath().to_path_buf(),
+            enumeration,
+        };
+        found.push((device, raw_markers(&names)));
     }
     found
 }
@@ -432,7 +554,7 @@ fn rank(marker: &str) -> usize {
 fn best(was: &Pad, candidates: Vec<Pad>, taken: &[&Path]) -> Option<Pad> {
     candidates
         .into_iter()
-        .filter(|pad| pad.identity == was.identity && !taken.contains(&pad.parent.as_path()))
+        .filter(|pad| pad.identity == was.identity && !taken.contains(&pad.parent.path.as_path()))
         .filter_map(|pad| {
             let best = pad
                 .markers
@@ -451,7 +573,7 @@ fn best(was: &Pad, candidates: Vec<Pad>, taken: &[&Path]) -> Option<Pad> {
 pub(crate) fn returned(was: &Pad, group: u32, taken: &[&Path]) -> Option<Pad> {
     let candidates = hidden(group)
         .into_iter()
-        .filter(|pad| !shares_with_keyboard_or_pointer(&pad.parent))
+        .filter(|pad| !shares_with_keyboard_or_pointer(&pad.parent.path))
         .collect();
     best(was, candidates, taken)
 }
@@ -553,7 +675,7 @@ pub(crate) fn unhidden(ownership: Ownership, tags: Option<&str>, group: u32) -> 
 }
 
 /// What is wrong with a device's node for one the rule has hidden, if
-/// anything.
+/// anything, its ACL included.
 pub(crate) fn unhidden_node(node: &udev::Device, group: u32) -> Option<String> {
     let path = node.devnode()?;
     match rustix::fs::stat(path) {
@@ -565,8 +687,53 @@ pub(crate) fn unhidden_node(node: &udev::Device, group: u32) -> Option<String> {
             },
             property(node, "CURRENT_TAGS"),
             group,
-        ),
+        )
+        .or_else(|| acl_wrong(|buffer| rustix::fs::getxattr(path, ACL, buffer))),
         Err(error) => Some(format!("not to be looked at: {error}")),
+    }
+}
+
+/// The attribute a file's POSIX ACL is kept in.
+pub(crate) const ACL: &str = "system.posix_acl_access";
+
+/// Whether a POSIX ACL, as the kernel gives it from [`ACL`], grants
+/// anything beyond the file's mode: an entry for a named user or group,
+/// as logind's seat access adds, or the mask that comes with one. The
+/// owner's, the group's and everyone else's entries are the mode itself.
+/// What isn't shaped as an ACL is taken to.
+fn acl_grants_beyond_mode(acl: &[u8]) -> bool {
+    /// `ACL_USER_OBJ`, `ACL_GROUP_OBJ` and `ACL_OTHER`.
+    const MODE: [u16; 3] = [0x01, 0x04, 0x20];
+    let Some((version, entries)) = acl.split_first_chunk::<4>() else {
+        return true;
+    };
+    let (entries, rest) = entries.as_chunks::<8>();
+    if u32::from_le_bytes(*version) != 2 || !rest.is_empty() {
+        return true;
+    }
+    entries
+        .iter()
+        .any(|[tag, high, ..]| !MODE.contains(&u16::from_le_bytes([*tag, *high])))
+}
+
+/// What a node's ACL grants beyond its mode, if anything. `read` reads
+/// the node's [`ACL`] attribute into a buffer, as `fgetxattr` does.
+pub(crate) fn acl_wrong(
+    read: impl FnOnce(&mut [u8]) -> rustix::io::Result<usize>,
+) -> Option<String> {
+    // Room for the header and 31 entries; a hidden node has none.
+    let mut buffer = [0u8; 252];
+    match read(&mut buffer) {
+        Ok(length) => buffer
+            .get(..length)
+            .is_none_or(acl_grants_beyond_mode)
+            .then(|| "given access beyond its mode by an ACL".to_string()),
+        // No ACL, or a file system that keeps none.
+        Err(rustix::io::Errno::NODATA | rustix::io::Errno::OPNOTSUPP) => None,
+        Err(rustix::io::Errno::RANGE) => {
+            Some("given access beyond its mode by an ACL too long to read".to_string())
+        }
+        Err(error) => Some(format!("its ACL couldn't be read: {error}")),
     }
 }
 
@@ -581,7 +748,10 @@ mod tests {
 
     fn pad(parent: &str, seat: &str, markers: &[&str]) -> Pad {
         Pad {
-            parent: PathBuf::from(parent),
+            parent: Device {
+                path: PathBuf::from(parent),
+                enumeration: None,
+            },
             ordinal: 0,
             identity: Identity {
                 bus: 3,
@@ -628,7 +798,7 @@ mod tests {
                 "addr-0a:1b:2c:3d:4e:14",
                 "hid-0003:054C:0CE6.0017",
                 "uniq-0003:0000054C:00000CE6-0a:1b:2c:3d:4e:14",
-                "raw-1-2:1.3",
+                "raw-1-2:1.3-0003:0000054C:00000CE6",
             ])
         );
         // The same, its raw node seen before the address was set.
@@ -641,7 +811,7 @@ mod tests {
             set(&[
                 "addr-0a:1b:2c:3d:4e:14",
                 "hid-0003:054C:0CE6.0017",
-                "raw-1-2:1.3",
+                "raw-1-2:1.3-0003:0000054C:00000CE6",
             ])
         );
         // On Bluetooth: no port.
@@ -674,9 +844,10 @@ mod tests {
         };
         assert_eq!(markers(&xpad), set(&["port-2-1:1.0"]));
         // A HID pad on USB with neither: its nodes by port and HID device,
-        // its raw node by port.
+        // its raw node by port and model.
         let hid = Names {
             hid: Some("0003:1209:5EEE.0002".into()),
+            hid_id: Some("0003:00001209:00005EEE".into()),
             interface: Some("3-1.4.2:1.0".into()),
             ..names()
         };
@@ -685,7 +856,7 @@ mod tests {
             set(&[
                 "port-3-1.4.2:1.0",
                 "hid-0003:1209:5EEE.0002",
-                "raw-3-1.4.2:1.0",
+                "raw-3-1.4.2:1.0-0003:00001209:00005EEE",
             ])
         );
         // A uhid pad has no USB interface, and nothing names it by port.
@@ -694,6 +865,37 @@ mod tests {
             ..names()
         };
         assert_eq!(markers(&uhid), set(&["hid-0003:1209:5EEE.0002"]));
+    }
+
+    /// A keyboard, or any other HID device, plugged into a hidden pad's
+    /// port afterwards: no raw marker of the pad's names its raw node, and
+    /// with no model to go by none names the port alone.
+    #[test]
+    fn a_raw_node_is_named_by_its_port_only_with_its_model() {
+        let pad = Names {
+            hid: Some("0003:1209:5EF0.0004".into()),
+            hid_id: Some("0003:00001209:00005EF0".into()),
+            interface: Some("2-1:1.0".into()),
+            ..names()
+        };
+        let keyboard = Names {
+            hid: Some("0003:1209:5EFA.0005".into()),
+            hid_id: Some("0003:00001209:00005EFA".into()),
+            ..pad.clone()
+        };
+        assert!(raw_markers(&pad).is_disjoint(&raw_markers(&keyboard)));
+        // The same model in the same port is taken for it, as it is meant
+        // to be: it may be the pad itself, back.
+        let again = Names {
+            hid: Some("0003:1209:5EF0.0006".into()),
+            ..pad.clone()
+        };
+        assert!(!raw_markers(&pad).is_disjoint(&raw_markers(&again)));
+        let unknown = Names {
+            hid_id: None,
+            ..pad
+        };
+        assert_eq!(raw_markers(&unknown), set(&["hid-0003:1209:5EF0.0004"]));
     }
 
     #[test]
@@ -766,12 +968,15 @@ mod tests {
             vec![in_port.clone(), other.clone(), addressed.clone()],
             &[],
         );
-        assert_eq!(found.map(|pad| pad.parent), Some(addressed.parent.clone()));
+        assert_eq!(
+            found.map(|pad| pad.parent.path),
+            Some(addressed.parent.path.clone())
+        );
         // The one with its address is held by another hidden pad: the one
         // in its port is taken.
-        let taken = [addressed.parent.as_path()];
+        let taken = [addressed.parent.path.as_path()];
         let found = best(&was, vec![in_port.clone(), addressed.clone()], &taken);
-        assert_eq!(found.map(|pad| pad.parent), Some(in_port.parent));
+        assert_eq!(found.map(|pad| pad.parent.path), Some(in_port.parent.path));
         // Of another model, or named by nothing it was, none is.
         assert_eq!(best(&was, vec![other], &[]), None);
         let unnamed = pad("/sys/devices/d", "seat0", &["addr-02:00:00:00:00:09"]);
@@ -845,5 +1050,51 @@ mod tests {
         );
         // A tag that only contains the word isn't the tag.
         assert_eq!(unhidden(hidden, Some(":seat:not-uaccess:"), 999), None);
+    }
+
+    fn acl(entries: &[(u16, u16, u32)]) -> Vec<u8> {
+        let mut bytes = 2u32.to_le_bytes().to_vec();
+        for (tag, permissions, id) in entries {
+            bytes.extend(tag.to_le_bytes());
+            bytes.extend(permissions.to_le_bytes());
+            bytes.extend(id.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn a_hidden_node_has_no_acl_entry_beyond_its_mode() {
+        let read = |bytes: Vec<u8>| {
+            move |buffer: &mut [u8]| {
+                buffer[..bytes.len()].copy_from_slice(&bytes);
+                Ok(bytes.len())
+            }
+        };
+        // The mode as an ACL: owner, group, others.
+        let mode = acl(&[
+            (0x01, 6, u32::MAX),
+            (0x04, 6, u32::MAX),
+            (0x20, 0, u32::MAX),
+        ]);
+        assert_eq!(acl_wrong(read(mode)), None);
+        // What logind's seat access adds: the user, and the mask.
+        let seat = acl(&[
+            (0x01, 6, u32::MAX),
+            (0x02, 6, 1000),
+            (0x04, 6, u32::MAX),
+            (0x10, 6, u32::MAX),
+            (0x20, 0, u32::MAX),
+        ]);
+        assert!(acl_wrong(read(seat)).is_some());
+        // A named group alone.
+        assert!(acl_wrong(read(acl(&[(0x08, 4, 174)]))).is_some());
+        // Not shaped as an ACL.
+        assert!(acl_wrong(read(vec![1, 0, 0, 0])).is_some());
+        assert!(acl_wrong(read(vec![2, 0, 0, 0, 1])).is_some());
+        // None at all, or none kept.
+        assert_eq!(acl_wrong(|_| Err(rustix::io::Errno::NODATA)), None);
+        assert_eq!(acl_wrong(|_| Err(rustix::io::Errno::OPNOTSUPP)), None);
+        assert!(acl_wrong(|_| Err(rustix::io::Errno::RANGE)).is_some());
+        assert!(acl_wrong(|_| Err(rustix::io::Errno::IO)).is_some());
     }
 }
