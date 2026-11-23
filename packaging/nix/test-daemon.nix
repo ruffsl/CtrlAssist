@@ -90,13 +90,24 @@ pkgs.testers.runNixOSTest {
     def alice_can_open(name, kind="event"):
         return nodes(as_user="alice")[name][kind][1] == "open"
 
-    def rules():
-        return machine.succeed("ls /run/udev/rules.d 2>/dev/null | grep ctrlassist || true").split()
+    def markers():
+        """The marker files the hiding service hides pads by."""
+        return machine.succeed("cd /run/ctrlassist/hide && find . -type f | sort").split()
+
+    def no_runtime_rules():
+        """The hiding service writes no udev rule: the directory for runtime rules never comes to be."""
+        machine.succeed("test ! -e /run/udev/rules.d || test -z \"$(ls -A /run/udev/rules.d)\"")
 
     def wait_restored():
-        machine.wait_until_succeeds('test -z "$(ls /run/ctrlassist/hidden)"')
+        machine.wait_until_succeeds('test -z "$(ls -A /run/ctrlassist/hide)"')
         machine.succeed("udevadm settle")
-        assert rules() == [], rules()
+        no_runtime_rules()
+
+    def grabbed(name):
+        """Whether the seat user, who may open the pad, reads nothing from it: the daemon has it grabbed."""
+        node = nodes()[name]["event"][0]
+        heard = machine.succeed(f"su -l alice -c 'ctrlassist-fixture listen {node} --millis 1000'")
+        return int(field(r"reads=(\d+) cut_off", heard)) == 0
 
     def as_alice(command):
         return "su -l alice -c " + shlex.quote(ENV + " " + command)
@@ -112,7 +123,8 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_file("/run/user/1000/wayland-0.lock")
     machine.wait_for_unit("sockets.target")
     # One pad with a HID driver to re-bind, as a PlayStation or Bluetooth
-    # pad has, and one without, as an Xbox pad on USB has.
+    # pad has, and one without, as a uinput pad another program made has:
+    # the hiding service refuses that one, and the daemon grabs it.
     machine.succeed("systemd-run --unit pad-hid ctrlassist-fixture fake-hid --pulse 20")
     machine.succeed("systemd-run --unit pad-plain ctrlassist-fixture fake-pad --pulse 20")
     machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c '^pad ' | grep -x 2")
@@ -163,16 +175,24 @@ pkgs.testers.runNixOSTest {
         cli("profile", "put", "/tmp/couch.toml")
         assert "couch" in cli("profile", "list")
 
-    with subtest("started, its pads are hidden by the service and its virtual pad is a seat user's to read"):
+    with subtest("started, its pads are hidden by the service or grabbed, and its virtual pad is a seat user's to read"):
         cli("start", "couch")
         phase_is("running")
         pads = known()
-        assert pads[HID]["hidden"] and pads[PLAIN]["hidden"], pads
+        assert pads[HID]["hidden"] and not pads[PLAIN]["hidden"], pads
         assert pads[HID]["setup"] == "couch" and pads[PLAIN]["setup"] == "couch"
         machine.succeed("udevadm settle")
-        for name in (HID, PLAIN):
-            assert not alice_can_open(name, "event") and not alice_can_open(name, "js"), name
-        assert len(rules()) == 2, rules()
+        assert not alice_can_open(HID, "event") and not alice_can_open(HID, "js")
+        assert grabbed(PLAIN), "the pad the service refused is grabbed"
+        assert markers(), "the hidden pad has its markers"
+        no_runtime_rules()
+        # The service the daemon is connected to is the installed one: its
+        # own user, no capabilities.
+        pid = machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip()
+        status = machine.succeed(f"cat /proc/{pid}/status")
+        assert field(r"Uid:\s+(\d+)", status) != "0", status
+        assert field(r"CapEff:\s+(\w+)", status) == "0000000000000000", status
+        assert field(r"CapBnd:\s+(\w+)", status) == "0000000000000000", status
         assert alice_can_open(VIRTUAL, "event") and alice_can_open(VIRTUAL, "js")
 
     with subtest("what the hidden pads do reaches a game through the virtual pad"):
@@ -202,8 +222,8 @@ pkgs.testers.runNixOSTest {
         taken = setup()
         assert taken["phase"] == "running" and taken["sinks"][0]["node"] == node, taken
         assert node == nodes()[VIRTUAL]["event"][0], node
-        assert known()[HID]["hidden"] and known()[PLAIN]["hidden"]
-        assert len(rules()) == 2, rules()
+        assert known()[HID]["hidden"] and not known()[PLAIN]["hidden"]
+        assert markers()
 
     with subtest("its pads change parts as it runs, staying hidden"):
         machine.succeed(
@@ -218,8 +238,8 @@ pkgs.testers.runNixOSTest {
         taken = setup()
         assert taken["phase"] == "running" and taken["sinks"][0]["node"] == node, taken
         assert all(source["present"] for source in taken["sources"]), taken
-        assert known()[HID]["hidden"] and known()[PLAIN]["hidden"]
-        assert len(rules()) == 2, rules()
+        assert known()[HID]["hidden"] and not known()[PLAIN]["hidden"]
+        assert markers()
         machine.succeed(
             "printf '%s\\n' 'mode = \"priority\"' 'primary = \"02:00:00:00:00:01\"' "
             "'assist = \"model:1209:5eed\"' > /tmp/couch.toml"
@@ -230,8 +250,8 @@ pkgs.testers.runNixOSTest {
         assert setup() is None
         machine.succeed("udevadm settle")
         assert alice_can_open(HID, "event") and alice_can_open(PLAIN, "event")
-        assert rules() == [], rules()
-        machine.succeed('test -z "$(ls /run/ctrlassist/hidden)"')
+        assert markers() == [], markers()
+        no_runtime_rules()
         assert VIRTUAL not in nodes()
         pads = known()
         assert not pads[HID]["hidden"] and pads[HID].get("setup") is None, pads[HID]
@@ -281,26 +301,26 @@ pkgs.testers.runNixOSTest {
         machine.succeed("printf '%s\\n' 'managed = true' >> /tmp/couch.toml")
         cli("profile", "put", "/tmp/couch.toml")
         phase_is("running")
-        assert not alice_can_open(HID) and not alice_can_open(PLAIN)
+        assert not alice_can_open(HID) and grabbed(PLAIN)
         machine.succeed(as_alice("systemctl --user kill --signal=KILL ctrlassist-daemon.service"))
         # The hiding service restores at once; the unit brings the daemon
         # back only after its restart delay, so there is time to look.
         wait_restored()
-        assert alice_can_open(HID) and alice_can_open(PLAIN)
+        assert alice_can_open(HID) and alice_can_open(PLAIN) and not grabbed(PLAIN)
         assert VIRTUAL not in nodes()
 
     with subtest("the unit restarts the daemon, which starts the profile by itself"):
         daemon_is_up()
         phase_is("running")
-        assert known()[HID]["hidden"] and known()[PLAIN]["hidden"]
-        assert not alice_can_open(HID) and not alice_can_open(PLAIN)
+        assert known()[HID]["hidden"] and not known()[PLAIN]["hidden"]
+        assert not alice_can_open(HID) and grabbed(PLAIN)
 
     with subtest("a profile that starts by itself stays stopped when stopped by hand"):
         # Showing its pads again re-binds their drivers, so they go and
         # come back: that is not a pad plugged in, and starts nothing.
         cli("stop", "couch")
         machine.succeed("udevadm settle")
-        machine.wait_until_succeeds('test -z "$(ls /run/ctrlassist/hidden)"')
+        machine.wait_until_succeeds('test -z "$(ls -A /run/ctrlassist/hide)"')
         machine.succeed("udevadm settle")
         assert setup() is None, setup()
         assert "a profile starts by itself" not in daemon_journal().split("a setup stopped")[-1]

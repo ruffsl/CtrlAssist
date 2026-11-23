@@ -6,12 +6,16 @@
   rustPlatform,
   pkg-config,
   udev,
+  coreutils,
   # The crate to build, and the binary to call its main program.
   crate,
   mainProgram,
   # systemd units to install beside it, with their program paths pointed
   # at this package.
   systemdUnits ? [ ],
+  # udev rules to install beside it, with the programs they run pointed
+  # at the store.
+  udevRules ? [ ],
 }:
 rustPlatform.buildRustPackage {
   pname = mainProgram;
@@ -41,10 +45,15 @@ rustPlatform.buildRustPackage {
   # libudev, and libsystemd for the hiding service's session check.
   buildInputs = [ udev ];
 
-  postInstall = lib.concatMapStrings (unit: ''
-    install -Dm644 ${unit} $out/lib/systemd/system/${baseNameOf unit}
-    substituteInPlace $out/lib/systemd/system/${baseNameOf unit} --replace-quiet /usr/bin/ $out/bin/
-  '') systemdUnits;
+  postInstall =
+    lib.concatMapStrings (unit: ''
+      install -Dm644 ${unit} $out/lib/systemd/system/${baseNameOf unit}
+      substituteInPlace $out/lib/systemd/system/${baseNameOf unit} --replace-quiet /usr/bin/ $out/bin/
+    '') systemdUnits
+    + lib.concatMapStrings (rule: ''
+      install -Dm644 ${rule} $out/lib/udev/rules.d/${baseNameOf rule}
+      substituteInPlace $out/lib/udev/rules.d/${baseNameOf rule} --replace-quiet /usr/bin/ ${coreutils}/bin/
+    '') udevRules;
 
   meta.mainProgram = mainProgram;
 }

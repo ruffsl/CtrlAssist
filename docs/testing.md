@@ -58,7 +58,7 @@ Each `packaging/nix/test-*.nix` is a NixOS test exposed as a flake check and run
 
 ## Hardware checks
 
-What no virtual machine has is checked by hand on real pads, through the real service: `just hider-dev` runs the hiding service from the build tree as root, and `just hide-pad <node>` hides a pad through it and holds it hidden until Ctrl-C. `ctrlassist-hider check <node>` prints what the service makes of a node without changing anything. `just bench` times the input path. `just forward-pad <node>` puts a virtual pad in front of a real one, to see what Steam and SDL make of each identity.
+What no virtual machine has is checked by hand on real pads, through the real service: `just hider-dev` runs the hiding service from the build tree as its own user, which needs the tree's udev rule and that user installed (on NixOS, the module from the tree), and `just hide-pad <node>` hides a pad through it and holds it hidden until Ctrl-C. `ctrlassist-hider check <node>` prints what the service makes of a node without changing anything. `just bench` times the input path. `just forward-pad <node>` puts a virtual pad in front of a real one, to see what Steam and SDL make of each identity.
 
 ## GUI testing
 

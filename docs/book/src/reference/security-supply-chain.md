@@ -2,19 +2,22 @@
 
 ## What runs with privilege
 
-One piece runs as root: the hiding service, `ctrlassist-hider`. Everything else runs as you: the daemon, the tray, the settings window and the command.
+Nothing runs as root. One piece is a system service rather than yours: the hiding service, `ctrlassist-hider`, which runs as a user of its own, also named `ctrlassist-hider`, with no special capabilities. Everything else runs as you: the daemon, the tray, the settings window and the command.
 
 The hiding service is kept small so it can be read in one sitting, and is closed in on purpose:
 
+- What it can do at all is what a udev rule installed with it gives its user's group: open a controller it has hidden, ask the system to reset a game controller's driver, and mark a controller to be hidden. It writes no system rule, and it can do nothing to a keyboard or a mouse.
 - It starts only when first asked, from a socket; nothing of it runs before that.
-- It serves only the person at the machine: a graphical session at the seat, not SSH or another user.
-- It acts only on game controllers the caller could already open, proved by handing it the open controller, never a name or a path.
+- It serves only the person at the machine: a graphical session at the seat, not SSH or another user, and only for controllers on that seat.
+- It acts only on game controllers the caller could already open, proved by handing it the open controller, never a name or a path. A handle that names a controller without opening it is refused.
 - One thing it grants that you may not have had: raw access to a PlayStation controller of yours, which a virtual controller needs to be able to pass as one. It opens that for no other kind of device.
-- No text from a device reaches a system rule unchecked.
-- It is confined by its service unit: no new privileges, no home directories, and a read-only system apart from `/run`.
+- No text from a device reaches a file name unchecked.
+- It is confined by its service unit as well: no capabilities, no new privileges, no home directories, a read-only system apart from its own directory and the devices' files its rule gives it, and no device but controllers.
+- One user's programs can't stop it serving another: each connection is served on its own, and one user may hold only a few.
 - Whatever it hid is restored when its client goes away, however that happens, and when the service itself stops.
 
-What this protects is the rest of the system and other users from a program running as you. It does not protect you from your own programs: a game running as you could already read your controllers.
+What this protects is the rest of the system and other users from a program running as you. It does not protect you from your own programs: a game running as you could already read your controllers. If the hiding service itself were taken over, the most it could do is what its user's group may: read game controllers, reset them and hide them. That would disrupt play, not hand over the machine.
+
 
 ## Checking a download
 

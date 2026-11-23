@@ -1,144 +1,168 @@
-//! Hiding a pad and putting it back.
+//! Hiding a pad and showing it again.
 //!
-//! Hiding is two steps. A runtime udev rule denies the pad's nodes to
-//! everyone; then the pad's driver is unbound and bound again, which cuts
-//! off whatever already had the pad open and recreates its nodes already
-//! denied. Restoring removes the rule and re-binds once more, so the
-//! nodes come back as they were and programs see the pad arrive.
+//! A static udev rule, shipped with the package, hides the nodes of any
+//! pad named by a marker file in [`MARKERS`]: they go to the service's
+//! group alone and lose seat access. Hiding a pad is creating its markers,
+//! then asking udev to re-bind its driver, which cuts off whatever had
+//! the pad open and makes its nodes again, hidden as they are made.
+//! Showing it again is deleting the markers and asking for the same.
 //!
-//! Everything written before the rule is recorded on disk first, so that
-//! a service that dies can be cleaned up after by the next one.
+//! The service writes nothing else: no rule, no record. A marker is made
+//! before the re-bind it takes effect at, so whatever a service that died
+//! left hidden is named by a marker, and undoing it needs nothing more.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
-use std::os::fd::OwnedFd;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::fd::{BorrowedFd, OwnedFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use ctrlassist_hider::Refusal;
+use rustix::event::{PollFd, PollFlags, poll};
 use rustix::fs::OFlags;
+use rustix::rand::{GetRandomFlags, getrandom};
 
-use crate::pad::{self, Identity, Pad, Rebind};
+use crate::pad::{self, Pad};
 
-/// Where udev reads runtime rules from. Emptied at boot.
-const RULES: &str = "/run/udev/rules.d";
-/// Where the service records what it has hidden. Emptied at boot.
-const RECORDS: &str = "/run/ctrlassist/hidden";
+/// Where the markers are, as the shipped rule names it. The unit's
+/// runtime directory, kept when the service stops.
+const MARKERS: &str = "/run/ctrlassist/hide";
 
-/// A node's mode and owner before hiding, for a pad with no driver to
-/// re-bind: removing the rule doesn't put a node's mode back.
-#[derive(Clone, PartialEq, Eq, Debug)]
-struct Saved {
-    path: PathBuf,
-    mode: u32,
-    uid: u32,
-    gid: u32,
+fn marker_path(marker: &str) -> PathBuf {
+    Path::new(MARKERS).join(marker)
 }
 
-/// A pad the service has hidden.
-///
-/// It holds what the pad is, never where it is: a pad that reconnects
-/// while hidden comes back under new kernel names, so its nodes and its
-/// driver binding are looked up each time they are needed.
-#[derive(Debug)]
-pub(crate) struct Entry {
-    pub(crate) token: u32,
-    pub(crate) identity: Identity,
-    saved: Vec<Saved>,
-}
-
-fn rule_path(token: u32) -> PathBuf {
-    // Sorted after systemd's rule that grants seat access (70) and before
-    // the one that applies it (73); earlier, a returning pad is granted
-    // access again.
-    Path::new(RULES).join(format!("72-ctrlassist-{token}.rules"))
-}
-
-fn record_path(token: u32) -> PathBuf {
-    Path::new(RECORDS).join(token.to_string())
-}
-
-/// The rule that denies one pad's nodes. Built only from numbers the
-/// service parsed and strings `pad` has already checked.
-fn rule_text(identity: &Identity) -> String {
-    const DENY: &str = r#"MODE="0000", GROUP="root", TAG-="uaccess""#;
-    let mut input = format!(
-        r#"SUBSYSTEM=="input", ATTRS{{id/vendor}}=="{:04x}", ATTRS{{id/product}}=="{:04x}""#,
-        identity.vendor, identity.product
-    );
-    if let Some(uniq) = &identity.uniq {
-        let _ = write!(input, r#", ATTRS{{uniq}}=="{uniq}""#);
-    } else if let Some(serial) = &identity.serial {
-        let _ = write!(input, r#", ENV{{ID_SERIAL_SHORT}}=="{serial}""#);
+/// Creates a marker. One that names a port has a directory for its port,
+/// and a file for its interface in it.
+pub(crate) fn create(marker: &str) -> io::Result<()> {
+    let path = marker_path(marker);
+    if let Some(parent) = path.parent().filter(|parent| *parent != Path::new(MARKERS)) {
+        fs::create_dir_all(parent)?;
     }
-    let mut rule = format!(
-        "# Written by the CtrlAssist hiding service; removed when the pad is restored.\n{input}, {DENY}\n"
-    );
-    if identity.hid {
-        // A hidraw node's parent is the HID device, named for its bus,
-        // vendor and product; its address is a property of that parent.
-        let hidraw = format!(
-            r#"SUBSYSTEM=="hidraw", KERNELS=="{:04X}:{:04X}:{:04X}.*""#,
-            identity.bus, identity.vendor, identity.product
-        );
-        if let Some(uniq) = &identity.uniq {
-            // udev compares a line's ENV keys before it runs the line's
-            // IMPORT, so the address is imported on a line of its own.
-            let _ = writeln!(rule, r#"{hidraw}, IMPORT{{parent}}="HID_UNIQ""#);
-            let _ = writeln!(rule, r#"{hidraw}, ENV{{HID_UNIQ}}=="{uniq}", {DENY}"#);
+    fs::write(path, b"")
+}
+
+/// Deletes a marker, and its port's directory once that is empty.
+pub(crate) fn delete(marker: &str) {
+    let path = marker_path(marker);
+    let _ = fs::remove_file(&path);
+    if let Some(parent) = path.parent().filter(|parent| *parent != Path::new(MARKERS)) {
+        let _ = fs::remove_dir(parent);
+    }
+}
+
+/// Every marker there is, by name.
+fn markers() -> Vec<String> {
+    let mut found = Vec::new();
+    let Ok(entries) = fs::read_dir(MARKERS) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            for inner in fs::read_dir(entry.path()).into_iter().flatten().flatten() {
+                if let Some(inner) = inner.file_name().to_str() {
+                    found.push(format!("{name}/{inner}"));
+                }
+            }
         } else {
-            let _ = writeln!(rule, "{hidraw}, {DENY}");
+            found.push(name);
         }
     }
-    rule
+    found
 }
 
-fn udevadm(arguments: &[&str]) -> io::Result<()> {
-    let status = Command::new("udevadm").args(arguments).status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!(
-            "udevadm {arguments:?} failed: {status}"
-        )))
+/// A random UUID, as a synthetic event carries to say it is this one.
+fn uuid() -> io::Result<String> {
+    let mut bytes = [0u8; 16];
+    getrandom(&mut bytes, GetRandomFlags::empty())?;
+    let mut text = String::new();
+    for (index, byte) in bytes.iter().enumerate() {
+        if matches!(index, 4 | 6 | 8 | 10) {
+            text.push('-');
+        }
+        let _ = write!(text, "{byte:02x}");
     }
+    Ok(text)
 }
 
-/// Makes udev re-read its rules now, not at its next periodic check.
-fn reload() -> io::Result<()> {
-    udevadm(&["control", "--reload"])
+/// Asks udev to re-bind the driver of the device at `parent`: a change
+/// event on it, marked with the service's own argument, which the shipped
+/// rule acts on. The rule gives the service's group the `uevent` file of
+/// pads' devices only. Returns the event's UUID.
+pub(crate) fn request(parent: &Path) -> io::Result<String> {
+    let uuid = uuid()?;
+    fs::write(
+        parent.join("uevent"),
+        format!("change {uuid} CTRLASSIST=rebind"),
+    )?;
+    Ok(uuid)
 }
 
-/// Unbinds and binds the pad's driver, then waits for udev to finish with
-/// the nodes that creates.
-fn rebind(target: &Rebind) -> io::Result<()> {
-    let driver = Path::new("/sys/bus")
-        .join(target.bus)
-        .join("drivers")
-        .join(&target.driver);
-    // Unbinding a device that is already unbound fails; that is fine, the
-    // bind is what must succeed.
-    let _ = fs::write(driver.join("unbind"), &target.device);
-    fs::write(driver.join("bind"), &target.device)?;
-    udevadm(&["settle"])
-}
-
-/// Makes udev apply the current rules to nodes that already exist.
-fn retrigger(nodes: &[PathBuf]) -> io::Result<()> {
-    let mut arguments = vec!["trigger", "--action=change", "--settle"];
-    let names: Vec<String> = nodes
-        .iter()
-        .map(|node| format!("--name-match={}", node.display()))
-        .collect();
-    arguments.extend(names.iter().map(String::as_str));
-    udevadm(&arguments)
-}
-
-fn open_event(identity: &Identity) -> Result<OwnedFd, Refusal> {
-    let nodes = pad::nodes(identity);
-    open(nodes.first().ok_or(Refusal::Absent)?)
+/// Has udev re-bind the driver of the device at `parent`, and waits until
+/// it has finished with the event nodes that makes. Gives up if `client`
+/// hangs up meanwhile.
+///
+/// It waits on udev's own events, in the order udev sends them: the change
+/// it was asked for, broadcast once the rule has unbound and probed the
+/// driver; then the arrival of each event node the probe made, broadcast
+/// once the rule has hidden it or not. A probe that bound no driver, or
+/// made no event node, is a failure found at the first.
+pub(crate) fn rebind(parent: &Path, client: Option<BorrowedFd<'_>>) -> Result<(), Refusal> {
+    // Listening from before the request, so nothing it causes is missed.
+    let monitor = udev::MonitorBuilder::new()
+        .and_then(|monitor| monitor.match_subsystem("hid"))
+        .and_then(|monitor| monitor.match_subsystem("usb"))
+        .and_then(|monitor| monitor.match_subsystem("input"))
+        .and_then(udev::MonitorBuilder::listen)
+        .map_err(|_| Refusal::Failed)?;
+    let uuid = request(parent).map_err(|_| Refusal::Failed)?;
+    let mut pending: Option<BTreeSet<PathBuf>> = None;
+    loop {
+        let mut fds = vec![PollFd::new(&monitor, PollFlags::IN)];
+        if let Some(client) = client {
+            fds.push(PollFd::from_borrowed_fd(client, PollFlags::RDHUP));
+        }
+        if poll(&mut fds, None).is_err() {
+            continue;
+        }
+        if fds.get(1).is_some_and(|fd| !fd.revents().is_empty()) {
+            return Err(Refusal::Failed);
+        }
+        drop(fds);
+        for event in monitor.iter() {
+            match &mut pending {
+                None => {
+                    let ours = event.event_type() == udev::EventType::Change
+                        && event.syspath() == parent
+                        && event
+                            .property_value("SYNTH_UUID")
+                            .and_then(|value| value.to_str())
+                            == Some(uuid.as_str());
+                    if !ours {
+                        continue;
+                    }
+                    let made = pad::event_devices_under(parent);
+                    if made.is_empty() || !pad::has_driver(parent) {
+                        return Err(Refusal::Failed);
+                    }
+                    pending = Some(made);
+                }
+                Some(made) => {
+                    if event.event_type() == udev::EventType::Add {
+                        made.remove(event.syspath());
+                        if made.is_empty() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Opens a pad's node for a client, for reading and writing.
@@ -152,297 +176,59 @@ pub(crate) fn open(node: &Path) -> Result<OwnedFd, Refusal> {
         .map_err(|_| Refusal::Failed)
 }
 
-/// What a later service needs to undo an entry, one fact per line.
-fn record(identity: &Identity, saved: &[Saved]) -> String {
-    let mut record = format!(
-        "pad {:04x} {:04x} {:04x} {} {} {}\n",
-        identity.bus,
-        identity.vendor,
-        identity.product,
-        u8::from(identity.hid),
-        identity.uniq.as_deref().unwrap_or("-"),
-        identity.serial.as_deref().unwrap_or("-"),
-    );
-    for saved in saved {
-        let _ = writeln!(
-            record,
-            "node {:o} {} {} {}",
-            saved.mode,
-            saved.uid,
-            saved.gid,
-            saved.path.display()
-        );
-    }
-    record
-}
-
-/// A record's contents, if every field passes the checks that were
-/// applied before it was written. A record is read as warily as a device.
-fn parse_record(text: &str) -> Option<(Identity, Vec<Saved>)> {
-    let mut identity = None;
-    let mut saved = Vec::new();
-    for line in text.lines() {
-        let fields: Vec<&str> = line.split(' ').collect();
-        match fields.as_slice() {
-            ["pad", bus, vendor, product, hid @ ("0" | "1"), uniq, serial] => {
-                let optional = |text: &str, ok: fn(&str) -> bool| match text {
-                    "-" => Some(None),
-                    text => ok(text).then(|| Some(text.to_string())),
-                };
-                identity = Some(Identity {
-                    bus: u16::from_str_radix(bus, 16).ok()?,
-                    vendor: u16::from_str_radix(vendor, 16).ok()?,
-                    product: u16::from_str_radix(product, 16).ok()?,
-                    uniq: optional(uniq, pad::is_address)?,
-                    serial: optional(serial, pad::is_serial)?,
-                    hid: *hid == "1",
-                });
-            }
-            ["node", mode, uid, gid, path] => saved.push(Saved {
-                path: recorded_node(path)?,
-                mode: u32::from_str_radix(mode, 8).ok()? & 0o7777,
-                uid: uid.parse().ok()?,
-                gid: gid.parse().ok()?,
-            }),
-            _ => return None,
-        }
-    }
-    Some((identity?, saved))
-}
-
-/// A record line's node path, if it is one this service could have written.
-fn recorded_node(text: &str) -> Option<PathBuf> {
-    let name = text
-        .strip_prefix("/dev/input/")
-        .or_else(|| text.strip_prefix("/dev/"))?;
-    let ok = !name.is_empty()
-        && name.len() <= 32
-        && name.bytes().all(|byte| byte.is_ascii_alphanumeric());
-    ok.then(|| PathBuf::from(text))
-}
-
-/// A node's kind: its name without its number, such as `event` or `js`.
-fn kind(node: &Path) -> &str {
-    node.file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("")
-        .trim_end_matches(|character: char| character.is_ascii_digit())
-}
-
-impl Entry {
-    /// Opens the pad again after it has reconnected.
-    pub(crate) fn reopen(&self) -> Result<OwnedFd, Refusal> {
-        open_event(&self.identity)
-    }
-
-    /// Puts the pad back. Carries on past failures: each step that can
-    /// still be undone is.
-    pub(crate) fn restore(self) {
-        let _ = fs::remove_file(rule_path(self.token));
-        let _ = reload();
-        undo(&self.identity, &self.saved);
-        let _ = fs::remove_file(record_path(self.token));
-    }
-}
-
-/// Brings a pad's nodes back once its rule is gone. A pad that isn't
-/// connected needs nothing: it returns to rules that no longer name it.
-fn undo(identity: &Identity, saved: &[Saved]) {
-    let nodes = pad::nodes(identity);
-    if nodes.is_empty() {
-        return;
-    }
-    if let Some(target) = pad::rebind(identity) {
-        let _ = rebind(&target);
-        return;
-    }
-    let _ = retrigger(&nodes);
-    for node in &nodes {
-        // The node as it was; or, for a pad that has reconnected under new
-        // names, as its node of the same kind was.
-        let was = saved
-            .iter()
-            .find(|saved| saved.path == *node)
-            .or_else(|| saved.iter().find(|saved| kind(&saved.path) == kind(node)));
-        if let Some(was) = was {
-            let _ = fs::set_permissions(node, fs::Permissions::from_mode(was.mode));
-            let _ = std::os::unix::fs::chown(node, Some(was.uid), Some(was.gid));
+/// Shows again each pad the rule hides that nothing should: one that no
+/// pad in `held` is and that no marker in `markers` names, as a pad
+/// sharing an address with one that was hidden, or plugged into its port
+/// while it was away. Doesn't wait for udev.
+pub(crate) fn sweep(group: u32, held: &[&Path], markers: &BTreeSet<String>) {
+    for pad in pad::hidden(group) {
+        let named = pad.markers.intersection(markers).next().is_some();
+        if !named && !held.contains(&pad.parent.as_path()) {
+            let _ = request(&pad.parent);
         }
     }
 }
 
-/// Hides a pad. Returns its entry, a descriptor on its event node, and
-/// whether whatever had it open was cut off.
-pub(crate) fn hide(token: u32, pad: Pad) -> Result<(Entry, OwnedFd, bool), Refusal> {
-    let Pad {
-        identity,
-        rebind: target,
-    } = pad;
-    let nodes = pad::nodes(&identity);
-    if nodes.is_empty() {
-        return Err(Refusal::Absent);
+/// Undoes whatever an earlier service left hidden: run when no connection
+/// can still own anything. Every marker goes, then every pad the rule
+/// still hides is shown again.
+pub(crate) fn reconcile(group: u32) {
+    for marker in markers() {
+        delete(&marker);
     }
-    // Only a pad with no driver to re-bind keeps its nodes, so only its
-    // nodes need their modes remembered.
-    let saved = if target.is_some() {
-        Vec::new()
-    } else {
-        nodes
-            .iter()
-            .filter_map(|path| {
-                let metadata = fs::metadata(path).ok()?;
-                Some(Saved {
-                    path: path.clone(),
-                    mode: metadata.mode() & 0o7777,
-                    uid: metadata.uid(),
-                    gid: metadata.gid(),
-                })
-            })
-            .collect()
-    };
-    let entry = Entry {
-        token,
-        identity,
-        saved,
-    };
-
-    let attempt = || -> io::Result<bool> {
-        fs::create_dir_all(RECORDS)?;
-        fs::create_dir_all(RULES)?;
-        // The record first: from here on a crash leaves enough to undo.
-        fs::write(record_path(token), record(&entry.identity, &entry.saved))?;
-        fs::write(rule_path(token), rule_text(&entry.identity))?;
-        reload()?;
-        match &target {
-            Some(target) => rebind(target).map(|()| true),
-            None => retrigger(&nodes).map(|()| false),
-        }
-    };
-    match attempt() {
-        Ok(dislodged) => match open_event(&entry.identity) {
-            Ok(event) => Ok((entry, event, dislodged)),
-            Err(refusal) => {
-                entry.restore();
-                Err(refusal)
-            }
-        },
-        Err(_) => {
-            entry.restore();
-            Err(Refusal::Failed)
-        }
-    }
+    sweep(group, &[], &BTreeSet::new());
 }
 
-/// Undoes whatever an earlier service left hidden. Run when no connection
-/// can still own anything. A record that doesn't parse still has its rule
-/// removed: the rule is named by the record's own number.
-pub(crate) fn reconcile() {
-    let Ok(records) = fs::read_dir(RECORDS) else {
-        return;
-    };
-    let mut pending = Vec::new();
-    for record in records.flatten() {
-        let Some(token) = record
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        let _ = fs::remove_file(rule_path(token));
-        let parsed = parse_record(&fs::read_to_string(record.path()).unwrap_or_default());
-        pending.push((record.path(), parsed));
-    }
-    if pending.is_empty() {
-        return;
-    }
-    let _ = reload();
-    for (record, parsed) in pending {
-        if let Some((identity, saved)) = parsed {
-            undo(&identity, &saved);
-        }
-        let _ = fs::remove_file(record);
-    }
+/// Cuts off whatever has a pad open, once its markers are made: the
+/// re-bind, then a descriptor on its event node as the re-bind made it.
+/// `client` hanging up stops the wait.
+pub(crate) fn cut_off(pad: &Pad, client: BorrowedFd<'_>) -> Result<OwnedFd, Refusal> {
+    rebind(&pad.parent, Some(client))?;
+    let node = pad::event_node(&pad.parent, pad.ordinal).ok_or(Refusal::Absent)?;
+    open(&node)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn identity() -> Identity {
-        Identity {
-            bus: 3,
-            vendor: 0x054c,
-            product: 0x0ce6,
-            uniq: Some("0c:27:56:4f:bd:14".to_string()),
-            serial: None,
-            hid: true,
-        }
-    }
-
     #[test]
-    fn a_rule_names_a_pad_by_numbers_and_its_checked_address() {
-        let rule = rule_text(&identity());
-        let lines: Vec<&str> = rule.lines().collect();
-        assert_eq!(
-            lines[1],
-            r#"SUBSYSTEM=="input", ATTRS{id/vendor}=="054c", ATTRS{id/product}=="0ce6", ATTRS{uniq}=="0c:27:56:4f:bd:14", MODE="0000", GROUP="root", TAG-="uaccess""#
-        );
-        // The import has a line of its own, before the line that compares
-        // what it imported: udev compares a line's ENV keys first.
-        assert_eq!(
-            lines[2],
-            r#"SUBSYSTEM=="hidraw", KERNELS=="0003:054C:0CE6.*", IMPORT{parent}="HID_UNIQ""#
-        );
-        assert_eq!(
-            lines[3],
-            r#"SUBSYSTEM=="hidraw", KERNELS=="0003:054C:0CE6.*", ENV{HID_UNIQ}=="0c:27:56:4f:bd:14", MODE="0000", GROUP="root", TAG-="uaccess""#
-        );
-        assert_eq!(lines.len(), 4, "{rule}");
-    }
-
-    #[test]
-    fn a_hid_pad_without_an_address_has_its_hidraw_nodes_denied_by_model() {
-        let model = Identity {
-            uniq: None,
-            ..identity()
-        };
-        let rule = rule_text(&model);
-        let lines: Vec<&str> = rule.lines().collect();
-        assert_eq!(
-            lines[2],
-            r#"SUBSYSTEM=="hidraw", KERNELS=="0003:054C:0CE6.*", MODE="0000", GROUP="root", TAG-="uaccess""#
-        );
-        assert_eq!(lines.len(), 3, "{rule}");
-    }
-
-    #[test]
-    fn a_pad_without_an_address_is_named_by_its_serial_or_its_model_alone() {
-        let serial = Identity {
-            uniq: None,
-            serial: Some("7EED821FFB17".to_string()),
-            hid: false,
-            ..identity()
-        };
-        let rule = rule_text(&serial);
+    fn a_uuid_is_shaped_as_the_kernel_reads_one() {
+        let uuid = uuid().expect("the kernel's random source answers");
+        let groups: Vec<usize> = uuid.split('-').map(str::len).collect();
+        assert_eq!(groups, [8, 4, 4, 4, 12], "{uuid}");
         assert!(
-            rule.contains(r#"ENV{ID_SERIAL_SHORT}=="7EED821FFB17""#),
-            "{rule}"
+            uuid.bytes()
+                .all(|byte| byte == b'-' || byte.is_ascii_hexdigit())
         );
-        assert!(
-            !rule.contains("hidraw"),
-            "a pad with no HID device has no hidraw rule: {rule}"
+        assert_ne!(
+            uuid,
+            super::uuid().expect("the kernel's random source answers")
         );
-
-        let bare = Identity {
-            serial: None,
-            ..serial
-        };
-        assert!(!rule_text(&bare).contains("ENV{"));
     }
 
     #[test]
-    fn only_a_well_formed_address_or_serial_is_accepted() {
+    fn only_kernel_shaped_names_name_a_marker() {
         assert!(pad::is_address("0c:27:56:4f:bd:14"));
         for hostile in [
             "",
@@ -451,24 +237,22 @@ mod tests {
             "0c:27:56:4f:bd:14 ",
             "0c:27:56:4f:bd\",R",
             "0c-27-56-4f-bd-14",
+            "../../../etc/passwd",
         ] {
             assert!(!pad::is_address(hostile), "{hostile:?}");
         }
         assert!(pad::is_serial("7EED821FFB17"));
-        for hostile in ["", "a b", "a\"", "a\nb", "a,b", "é", &"x".repeat(65)] {
+        for hostile in ["", "a b", "a\"", "a\nb", "a,b", "a/b", "é", &"x".repeat(65)] {
             assert!(!pad::is_serial(hostile), "{hostile:?}");
         }
-    }
-
-    #[test]
-    fn only_kernel_shaped_names_reach_a_sysfs_path() {
+        assert!(pad::is_uniq("0c:27:56:4f:bd:14") && pad::is_uniq("7EED821FFB17"));
+        for hostile in ["", "a/b", "..", "a b"] {
+            assert!(!pad::is_uniq(hostile), "{hostile:?}");
+        }
         assert!(pad::is_hid_name("0003:054C:0CE6.0017"));
         assert!(pad::is_hid_name("0005:054C:05C4.001B"));
-        for interface in ["1-3:1.0", "3-1.4.2:1.0", "12-10:2.11"] {
-            assert!(pad::is_usb_interface(interface), "{interface:?}");
-        }
-        assert!(pad::is_driver("hid-generic"));
-        assert!(pad::is_driver("playstation"));
+        // Past 65,535 HID devices since boot the instance has five digits.
+        assert!(pad::is_hid_name("0003:054C:0CE6.10000"));
         for hostile in [
             "",
             "..",
@@ -476,92 +260,41 @@ mod tests {
             "a/b",
             "0003:054c:0ce6.0017",
             "0003:054C:0CE6.001",
-            "0003:054C:0CE6.00170",
+            "0003:054C:0CE6.0017/..",
             "0003.054C:0CE6:0017",
+            "0003:054C:0CE6:0017.0017",
             "x y",
         ] {
             assert!(!pad::is_hid_name(hostile), "{hostile:?}");
         }
+        assert!(pad::is_hid_id("0003:0000054C:00000CE6"));
         for hostile in [
             "",
-            "..",
-            ":",
-            "../x",
-            "a/b",
-            "1-3:1.0/..",
-            "usb1",
-            "1-3",
-            "1-3:",
-            ":1.0",
-            "1--3:1.0",
-            "1-3:1..0",
-            "1-3:1.0:1.0",
+            "0003:054C:0CE6",
+            "0003:0000054c:00000ce6",
+            "0003:0000054C:00000CE6/x",
         ] {
-            assert!(!pad::is_usb_interface(hostile), "{hostile:?}");
+            assert!(!pad::is_hid_id(hostile), "{hostile:?}");
         }
-        for hostile in ["", "../x", "a/b", "Playstation", "a b"] {
-            assert!(!pad::is_driver(hostile), "{hostile:?}");
-        }
-    }
-
-    #[test]
-    fn a_record_reads_back_as_it_was_written_and_not_at_all_if_tampered_with() {
-        let saved = vec![Saved {
-            path: PathBuf::from("/dev/input/event30"),
-            mode: 0o660,
-            uid: 0,
-            gid: 174,
-        }];
-        let text = record(&identity(), &saved);
-        assert_eq!(parse_record(&text), Some((identity(), saved)));
-
-        let bare = Identity {
-            uniq: None,
-            serial: Some("7EED821FFB17".to_string()),
-            hid: false,
-            ..identity()
-        };
-        assert_eq!(parse_record(&record(&bare, &[])), Some((bare, Vec::new())));
-
-        for tampered in [
-            "",
-            "node 660 0 174 /dev/input/event30\n",
-            "pad 0003 054c 0ce6 1 not-an-address -\n",
-            "pad 0003 054c 0ce6 1 - a\"b\n",
-            "pad 0003 054c 0ce6 2 - -\n",
-            "pad 0003 054c 0ce6 1 - -\nnode 660 0 174 /etc/shadow\n",
-            "pad 0003 054c 0ce6 1 - -\nrun /bin/sh\n",
+        for port in [
+            "usb-0000:00:14.0-2/input3",
+            "usb-0000:00:14.0-1.4.2/input0",
+            "usb-dummy_hcd.0-1/input0",
         ] {
-            assert_eq!(parse_record(tampered), None, "{tampered:?}");
+            assert!(pad::is_port(port), "{port:?}");
         }
-    }
-
-    #[test]
-    fn a_node_s_kind_is_its_name_without_its_number() {
-        assert_eq!(kind(Path::new("/dev/input/event30")), "event");
-        assert_eq!(kind(Path::new("/dev/input/js1")), "js");
-        assert_eq!(kind(Path::new("/dev/hidraw16")), "hidraw");
-    }
-
-    #[test]
-    fn a_recorded_node_must_be_a_plain_device_name() {
-        assert_eq!(
-            recorded_node("/dev/input/event30"),
-            Some(PathBuf::from("/dev/input/event30"))
-        );
-        assert_eq!(
-            recorded_node("/dev/hidraw16"),
-            Some(PathBuf::from("/dev/hidraw16"))
-        );
         for hostile in [
-            "/etc/shadow",
-            "/dev/input/../sda",
-            "/dev/input/",
-            "/dev/",
-            "event30",
-            "/dev/input/a b",
+            "",
+            "usb-0000:00:14.0-2",
+            "usb-0000:00:14.0-2/input",
+            "usb-0000:00:14.0-2/input3/x",
+            "usb-../input0",
+            "../../etc/input0",
+            "usb-a b/input0",
+            "02:ca:7e:00:00:01",
+            "usb-x/input1234",
         ] {
-            assert_eq!(recorded_node(hostile), None, "{hostile:?}");
+            assert!(!pad::is_port(hostile), "{hostile:?}");
         }
     }
 }

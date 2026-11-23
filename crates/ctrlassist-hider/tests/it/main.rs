@@ -1,7 +1,7 @@
 //! The client and the wire format, against a stand-in for the service.
 //!
-//! The service itself needs root and real device nodes; the `hider`
-//! virtual machine check covers it.
+//! The service itself needs its user, its udev rule and real device
+//! nodes; the `hider` virtual machine check covers it.
 
 #![expect(clippy::unwrap_used, reason = "tests fail loudly")]
 

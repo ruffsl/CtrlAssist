@@ -91,6 +91,7 @@
             ./packaging/systemd/ctrlassist-hider.socket
             ./packaging/systemd/ctrlassist-hider.service
           ];
+          udevRules = [ ./packaging/udev/72-ctrlassist-hide.rules ];
         };
 
         # slint-lsp and slint-viewer at the workspace's Slint version,

@@ -13,19 +13,51 @@ ExecStart=/usr/bin/ctrlassist-hider
 # back.
 ExecStopPost=/usr/bin/ctrlassist-hider reconcile
 
-# It must write udev rules under /run, re-bind drivers under /sys and
-# change device nodes, as root. Everything else is closed off. The network
-# namespace is left shared: udev's events arrive over a netlink socket
-# that a private one wouldn't receive.
+# A user of its own, with no capabilities. Its power is what the shipped
+# udev rule (72-ctrlassist-hide.rules) gives its group: the nodes of pads
+# it has hidden, PlayStation pads' raw nodes, and the uevent files of
+# pads' devices, through which it asks udev to re-bind a driver.
+User=ctrlassist-hider
+Group=ctrlassist-hider
+CapabilityBoundingSet=
+AmbientCapabilities=
 NoNewPrivileges=yes
+
+# The markers the rule hides pads by. Kept when the service stops, so
+# that what a service that died left hidden is still named when
+# ExecStopPost puts it back; /run is emptied at boot.
+RuntimeDirectory=ctrlassist/hide
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+UMask=0077
+
+# Everything else is closed off, as defense in depth: the user's own
+# permissions are the boundary. /run and /sys are named read-only as well
+# as protected, since on systemd 262 the protections below leave both
+# writable under ProtectSystem=strict; under /sys only the devices, whose
+# uevent files the rule gives the group, are writable. The network
+# namespace is left shared: udev's events arrive over netlink in the
+# host's.
 ProtectSystem=strict
-ReadWritePaths=/run
+ReadOnlyPaths=/run
+BindReadOnlyPaths=/sys
+ReadWritePaths=/sys/devices
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
 ProtectHome=yes
 PrivateTmp=yes
-RestrictAddressFamilies=AF_UNIX AF_NETLINK
+PrivateIPC=yes
+RemoveIPC=yes
+DevicePolicy=closed
+DeviceAllow=char-input rw
+DeviceAllow=char-hidraw rw
+# Its listener comes from systemd and its connections from accept: the
+# one socket it makes is udev's monitor.
+RestrictAddressFamilies=AF_NETLINK
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
-ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 RestrictNamespaces=yes
@@ -35,4 +67,4 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER CAP_CHOWN
+SystemCallFilter=~@privileged @resources

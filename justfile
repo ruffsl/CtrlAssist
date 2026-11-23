@@ -284,8 +284,8 @@ gui-start:
         cargo run -p ctrlassist-gui-app "${feature_arg[@]}" --profile {{ _dev_profile }} --bin ctrlassist-gui -- \
             --socket "{{ socket }}"
 
-# The hiding service from `just hider-dev` runs as root and is left
-# alone: Ctrl-C in its own terminal stops it.
+# The hiding service from `just hider-dev` runs as its own user and is
+# left alone: Ctrl-C in its own terminal stops it.
 #
 # Kill the dev daemon, tray and settings window
 [group('dev')]
@@ -431,6 +431,8 @@ _package_checks := '''
         /usr/lib/systemd/user/ctrlassist-tray.service \
         /usr/lib/systemd/system/user@.service.d/10-ctrlassist.conf \
         /usr/lib/udev/rules.d/70-ctrlassist.rules \
+        /usr/lib/udev/rules.d/72-ctrlassist-hide.rules \
+        /usr/lib/sysusers.d/ctrlassist.conf \
         /usr/lib/modules-load.d/ctrlassist.conf \
         /usr/share/bash-completion/completions/ctrlassist \
         /usr/share/zsh/site-functions/_ctrlassist \
@@ -682,16 +684,33 @@ update-controller-db:
 # Checks on real pads, which no virtual machine has. The service runs from
 # the build tree on a socket of its own, beside any installed one.
 
-hider_dev_socket := "/run/ctrlassist-dev.sock"
+hider_dev_dir := "/run/ctrlassist-dev"
+hider_dev_socket := hider_dev_dir / "hider.sock"
 
-# Asks for sudo. Leave it running and use `just hide-pad` in another
-# terminal; Ctrl-C stops it and restores whatever is hidden.
+# The service runs as its own user, ctrlassist-hider, as installed, and
+# hides pads through the installed udev rule, which names its marker
+# directory: so the machine needs this tree's rule and user installed (on
+# NixOS, the module from this tree), and the installed service must not
+# be running at the same time, the two sharing that directory. The binary
+# is copied out of the build tree, which the service's user may not be
+# able to read. Asks for sudo. Leave it running and use `just hide-pad`
+# in another terminal; Ctrl-C stops it, and whatever it hid is then shown
+# again, as the unit's ExecStopPost does.
 #
-# Run the hiding service from the build tree, as root
+# Run the hiding service from the build tree, as its own user
 [group('hardware')]
 hider-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
     cargo build --quiet --package ctrlassist-hider
-    sudo target/debug/ctrlassist-hider --listen {{ hider_dev_socket }}
+    sudo install -d -o ctrlassist-hider -g ctrlassist-hider -m 0755 {{ hider_dev_dir }}
+    sudo install -d -o ctrlassist-hider -g ctrlassist-hider -m 0700 /run/ctrlassist/hide
+    sudo install -o root -g root -m 0755 target/debug/ctrlassist-hider {{ hider_dev_dir }}/ctrlassist-hider
+    as_service=(sudo -u ctrlassist-hider -g ctrlassist-hider {{ hider_dev_dir }}/ctrlassist-hider)
+    # Ctrl-C ends the service, not this script, which then reconciles.
+    trap : INT
+    "${as_service[@]}" --listen {{ hider_dev_socket }} || true
+    "${as_service[@]}" reconcile
 
 # Pass the pad's event node, such as /dev/input/event30;
 # `ctrlassist-hider check <node>` says what the service makes of one.

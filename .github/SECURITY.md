@@ -4,7 +4,7 @@
 
 Security fixes go into the next release from `main`. Only the latest minor release is supported; earlier minors don't get backports.
 
-That covers everything this repository ships: the `.deb`, `.rpm` and Arch packages on the releases page, and the Nix package and NixOS module. The part that runs as root, the hiding service, is described in the user guide's [Security & Supply Chain](/docs/book/src/reference/security-supply-chain.md) page, with what it is meant to defend and what it isn't.
+That covers everything this repository ships: the `.deb`, `.rpm` and Arch packages on the releases page, and the Nix package and NixOS module. The one system service, the hiding service, which runs as a user of its own and not as root, is described in the user guide's [Security & Supply Chain](/docs/book/src/reference/security-supply-chain.md) page, with what it is meant to defend and what it isn't.
 
 ## Reporting a vulnerability
 

@@ -1,7 +1,8 @@
 # CtrlAssist on NixOS: the package on the path, the hiding service's
-# socket, the udev rule that gives the seat user uinput and uhid, the
-# daemon and the tray as user services, and the real-time limit the
-# daemon's input thread asks for.
+# socket and user, the udev rules that give the seat user uinput and uhid
+# and the hiding service what it hides pads with, the daemon and the tray
+# as user services, and the real-time limit the daemon's input thread
+# asks for.
 {
   config,
   lib,
@@ -33,11 +34,11 @@ in
       default = true;
       description = ''
         Whether to install the hiding service, which makes the pads of a
-        running setup absent to games. It runs as root, started on demand
-        from a socket, and serves only the user at the seat. Without it
-        the daemon grabs the pads instead, which hides them from most
-        games but not from a program that reads them some other way, as
-        Steam reads a PlayStation pad.
+        running setup absent to games. It runs as a user of its own with
+        no capabilities, started on demand from a socket, and serves only
+        the user at the seat. Without it the daemon grabs the pads
+        instead, which hides them from most games but not from a program
+        that reads them some other way, as Steam reads a PlayStation pad.
       '';
     };
 
@@ -82,10 +83,15 @@ in
     systemd.sockets.ctrlassist-hider = lib.mkIf cfg.hiding {
       wantedBy = [ "sockets.target" ];
     };
-    # For udevadm, which reloads the rules the service writes.
-    systemd.services.ctrlassist-hider = lib.mkIf cfg.hiding {
-      path = [ config.systemd.package ];
+    # The hiding service's own user, which its unit runs as, and its
+    # group, which the package's udev rule names whether or not hiding is
+    # on: the rule gives it pads' files, and needs it to exist.
+    users.users.ctrlassist-hider = {
+      isSystemUser = true;
+      group = "ctrlassist-hider";
+      description = "CtrlAssist hiding service";
     };
+    users.groups.ctrlassist-hider = { };
     systemd.user.services.ctrlassist-daemon.wantedBy = [ "default.target" ];
     systemd.user.services.ctrlassist-tray = lib.mkIf cfg.tray {
       wantedBy = [ "graphical-session.target" ];

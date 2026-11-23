@@ -81,26 +81,33 @@ fn is_remote(session: &CStr) -> bool {
     unsafe { sd_session_is_remote(session.as_ptr()) != 0 }
 }
 
-/// Whether `uid` owns the session in front on some seat, and that session
+/// The seats on which `uid` owns the session in front, where that session
 /// is a person at the machine.
-pub(crate) fn is_in_front(uid: u32) -> bool {
+pub(crate) fn seats_in_front(uid: u32) -> Vec<String> {
     // Seats are the entries of this directory; the login library's own
     // seat listing reads the same place.
     let Ok(seats) = std::fs::read_dir("/run/systemd/seats") else {
-        return false;
+        return Vec::new();
     };
-    seats.flatten().any(|seat| {
-        let Ok(seat) = CString::new(seat.file_name().as_encoded_bytes()) else {
-            return false;
-        };
-        let Some((session, owner)) = foreground(&seat) else {
-            return false;
-        };
-        let session = session.as_c_str();
-        owner == uid
-            && class(session).is_some_and(|class| class.as_c_str() == c"user")
-            && kind(session)
-                .is_some_and(|kind| matches!(kind.as_c_str().to_bytes(), b"x11" | b"wayland"))
-            && !is_remote(session)
-    })
+    seats
+        .flatten()
+        .filter_map(|seat| {
+            let name = seat.file_name().into_string().ok()?;
+            let seat = CString::new(name.as_bytes()).ok()?;
+            let (session, owner) = foreground(&seat)?;
+            let session = session.as_c_str();
+            let person = owner == uid
+                && class(session).is_some_and(|class| class.as_c_str() == c"user")
+                && kind(session)
+                    .is_some_and(|kind| matches!(kind.as_c_str().to_bytes(), b"x11" | b"wayland"))
+                && !is_remote(session);
+            person.then_some(name)
+        })
+        .collect()
+}
+
+/// Whether `uid` owns the session in front on some seat, and that session
+/// is a person at the machine.
+pub(crate) fn is_in_front(uid: u32) -> bool {
+    !seats_in_front(uid).is_empty()
 }

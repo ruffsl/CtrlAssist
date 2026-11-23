@@ -37,7 +37,9 @@ pub enum Refusal {
     Failed,
     /// The request wasn't understood.
     BadRequest,
-    /// The pad isn't of a kind whose raw node the service opens.
+    /// The pad isn't of a kind the service can do that for: one with no
+    /// driver to re-bind, which it can't hide, or one whose raw node it
+    /// doesn't open.
     Unsupported,
 }
 
@@ -77,7 +79,7 @@ impl std::fmt::Display for Refusal {
             Self::Absent => "the pad isn't connected",
             Self::Failed => "the service couldn't carry the request out",
             Self::BadRequest => "the request wasn't understood",
-            Self::Unsupported => "the service doesn't open that kind of pad's raw node",
+            Self::Unsupported => "the service can't do that for this kind of pad",
         })
     }
 }
@@ -259,6 +261,11 @@ pub fn send(
 /// Receives one message into `buffer`, with any descriptors that came
 /// beside it. A length of zero means the other end has closed.
 ///
+/// The length is the message's own, which is more than the buffer holds
+/// when the message didn't fit: what was cut off isn't to be read as a
+/// shorter message, so a caller decodes `buffer.get(..length)`, which is
+/// then nothing.
+///
 /// # Errors
 ///
 /// Fails if the socket does.
@@ -272,7 +279,7 @@ pub fn receive(
         socket,
         &mut [IoSliceMut::new(buffer)],
         &mut control,
-        RecvFlags::CMSG_CLOEXEC,
+        RecvFlags::CMSG_CLOEXEC | RecvFlags::TRUNC,
     )?;
     let mut fds = Vec::new();
     for message in control.drain() {

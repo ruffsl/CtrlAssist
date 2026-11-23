@@ -10,7 +10,7 @@ This page is for the curious. Nothing here is needed to use CtrlAssist.
 | The tray, `ctrlassist service tray` | You | Shows what the daemon reports and passes on what you click. |
 | The settings window, `ctrlassist-gui` | You | Shows every controller and profile, and edits profiles without writing a file. |
 | The command, `ctrlassist …` | You | The same, from a terminal. |
-| The hiding service, `ctrlassist-hider` | root | Makes a running arrangement's real controllers invisible to games. |
+| The hiding service, `ctrlassist-hider` | Its own system user, with no special capabilities | Makes a running arrangement's real controllers invisible to games. |
 
 The tray, the window and the command only show what the daemon reports and pass on what you ask: close any of them and nothing that runs changes. They talk to the daemon over a socket in your runtime directory that only you can open.
 
@@ -18,7 +18,7 @@ The tray, the window and the command only show what the daemon reports and pass 
 
 A game that saw both the real controllers and the virtual one would get every press twice, so the real ones are kept out of its sight while an arrangement runs.
 
-**With the hiding service**, a controller is made truly absent: nothing but the daemon can open it, and programs that already had it open, as Steam does from the moment a controller is plugged in, are cut off. When the arrangement stops the controller reappears as if just plugged in. The service is small, starts only when first asked, and serves only the person sitting at the machine. If the daemon is stopped or killed, the service restores everything it hid.
+**With the hiding service**, a controller is made truly absent: nothing but the daemon can open it, and programs that already had it open, as Steam does from the moment a controller is plugged in, are cut off. When the arrangement stops the controller reappears as if just plugged in. The service is small, starts only when first asked, and serves only the person sitting at the machine. If the daemon is stopped or killed, the service restores everything it hid. A controller that is itself a virtual one, made by another program, can't be cut off that way, so the daemon grabs it, as below.
 
 **Without it**, the daemon *grabs* each controller instead. Programs that read controllers the usual way then hear nothing from them, but a program that reads a controller some other way still sees it; Steam does this for PlayStation controllers. The tray and `ctrlassist setups` tell you which is in use.
 
