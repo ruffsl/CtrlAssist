@@ -10,11 +10,12 @@ How the workspace is tested and where a new test goes. The approach is TisVlay's
 | Device code | Against fake pads from `ctrlassist-test` | `just test` where uinput and uhid are writable; the virtual machine check otherwise |
 | The daemon | Against a live daemon on a temporary socket, with fake pads and a stand-in for the hiding service; then the built command against the real service | `just test`; `just vm daemon` |
 | The platform | What a clean machine gives a seat user | `just vm platform` |
+| The settings window | Its element tree against synthetic models, driven by keys, through Slint's testing backend; then the window as packaged | `just test`; `just vm gui` |
 | Hardware | What none of the above can reach | By hand, listed in the change that needs it |
 
 ## Rules
 
-- **nextest is the runner,** with one integration-test binary per crate (`tests/it/main.rs` and its modules), which links once instead of once per file.
+- **nextest is the runner,** with one integration-test binary per crate (`tests/it/main.rs` and its modules), which links once instead of once per file. `ctrlassist-gui` has a single test file instead, `tests/theme_breeze.rs`, which is that binary by itself.
 - **No retries.** A flaky test is quarantined with `#[ignore = "flaky: …"]` and a note of why, never retried into passing.
 - **A bug fix starts with a test that reproduces it,** where one can.
 - **Property tests check against a model written the obvious way,** not the implementation's arithmetic written twice, and assert that they are exercising real cases: a property that only ever sees refusals passes for the wrong reason.
@@ -58,3 +59,38 @@ Each `packaging/nix/test-*.nix` is a NixOS test exposed as a flake check and run
 ## Hardware checks
 
 What no virtual machine has is checked by hand on real pads, through the real service: `just hider-dev` runs the hiding service from the build tree as root, and `just hide-pad <node>` hides a pad through it and holds it hidden until Ctrl-C. `ctrlassist-hider check <node>` prints what the service makes of a node without changing anything. `just bench` times the input path. `just forward-pad <node>` puts a virtual pad in front of a real one, to see what Steam and SDL make of each identity.
+
+## GUI testing
+
+`ctrlassist-gui-app/tests/it` makes an `AppWindow` against synthetic models and queries its element tree through `i-slint-backend-testing`'s `ElementHandle`. The tests call `init_no_event_loop()`, so many `#[test]` functions share a binary with no daemon, no wire and no event loop: they answer "does the window show the right thing for this state, and do the keys go where they should?". One test, `a_snapshot_reads_a_live_daemon_and_its_going`, starts a real daemon and input thread instead, and reads the window's state from it.
+
+`ctrlassist-gui/tests/theme_breeze.rs` reads `ui/theme.slint` as text and checks each fixed color token against the Breeze role it is taken from ([gui/theme-breeze.md](gui/theme-breeze.md)).
+
+### Required build setting
+
+Slint's compiler writes element ids into the generated code only when told to at build time, and without them `find_by_element_id` and `accessible_id()` silently find nothing, so a test looks as if the window were empty. `crates/ctrlassist-gui/build.rs` turns them on for every profile but the release-derived ones, so `just build`, a bare `cargo test`, rust-analyzer and CI all have them with no environment variable, and the packages ship without. The build script's setting overrides `SLINT_EMIT_DEBUG_INFO`.
+
+### Naming
+
+- `accessible-label`, translated with `@tr(…)`, is what a screen reader announces; on buttons it defaults to the visible text. Tests find it with `ElementHandle::find_by_accessible_label`.
+- `accessible-id`, a literal `<pane>-<element>` (`pads-row-…`, `settings-couch-mode`, `sidebar-about`), is the stable selector. The testing backend has no finder for it, so `tests/it/support.rs` has `find_by_accessible_id`, which takes the first match, and `find_all_by_accessible_id`: Slint passes accessibility properties down to descendants, so one widget answers several times, and a pane that makes a detail per row has a control of that id in each. `activate_shown` presses the one of them that is showing and enabled.
+
+### Driving keys
+
+The testing backend has no event loop and no key helper, but `slint::Window::dispatch_event` needs neither: a pressed and released pair runs Slint's capture and bubble handlers and its own Tab traversal at once. `tests/it/support.rs` wraps it as `press(&app, Key::Tab)`, `press_text` for typed characters, `press_shift_tab`, which holds Shift around a Tab as a keyboard or a gamepad's shoulder button does (`Key::Backtab` never arrives from a real window), and `press_with_alt`. Each ends with `settle()`, which advances the mock clock a frame and fires the timers due, so deferred focus and synthesized keys have run before the assertion; `elapse` advances further, for an animation such as a wheel scroll. A control is observed through what it does: Return on a switch fires its callback and flips `accessible_checked()`, typed text lands in a field's `accessible_value()`. Prefer effects on state the test set up itself. The key navigation itself is described in [gui/remote-navigation.md](gui/remote-navigation.md).
+
+### Not done on purpose
+
+- **No pixel snapshots.** Slint ships none in its testing backend, and pixel comparisons are the most flake-prone kind of test; the alternative (the software renderer, bundled fonts and a tolerance) is heavy upkeep for little signal.
+- **No tests through Slint's MCP server.** It is for looking at the window while developing (`.claude/slint.md` has its quirks); tests use the in-process testing backend only.
+
+### Pin
+
+`i-slint-backend-testing` is pinned exactly to Slint's release, since its API carries no semver promise and moves helpers between modules across minor releases. A Slint bump re-pins it deliberately.
+
+## zenoh in tests
+
+- **A multi-threaded runtime.** zenoh refuses Tokio's current-thread scheduler, so every test that opens a session is `#[tokio::test(flavor = "multi_thread")]`.
+- **No ordering across keys.** Samples on different keys may arrive in any order, so a test waits on one subscription for everything it needs rather than on several in turn.
+- **History only through the advanced subscriber.** What the daemon publishes reaches a late joiner only through an `AdvancedSubscriber` with history, as the SDK's mirror uses; a plain subscriber sees only live samples, and a `get` doesn't read the cache.
+- **Deadlines, not sleeps.** A wait for a sample or a state is bounded and fails with what it saw, so a hang is a failure that says why, not a stalled run.

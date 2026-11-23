@@ -10,3 +10,5 @@ Things the design depends on that have not been observed, or risks accepted for 
 - [`realtime-refused.md`](realtime-refused.md) — without real-time scheduling the latency tail is not dependable under load.
 - [`identity-unverified-input.md`](identity-unverified-input.md) — virtual pad identities were detected, not played.
 - [`lz4-flex-advisory.md`](lz4-flex-advisory.md) — zenoh pins an lz4_flex with a decompression advisory, unreachable while compression is off.
+- [`slint-unstable-winit-030.md`](slint-unstable-winit-030.md) — the window reaches winit through a Slint feature outside its stability promise, so Slint is pinned exactly. After TisVlay's.
+- [`slint-combobox-popup-clipped.md`](slint-combobox-popup-clipped.md) — Slint's stock dropdown clips at the window's edge; the window uses TisVlay's flip-up `ThemedSelect` until native popups land.
