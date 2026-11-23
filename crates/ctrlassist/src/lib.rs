@@ -303,14 +303,17 @@ impl DaemonClient {
     }
 
     /// Keep `toml` as the profile `name`: a new one, or in place of the
-    /// one that has the name.
+    /// one that has the name. The daemon writes it to disk before it
+    /// answers, which is waited for as long as the daemon is there, with
+    /// no time limit.
     ///
     /// # Errors
     ///
     /// Refused with [`ErrorCode::InvalidProfile`], whose message says
     /// where the profile is wrong and what, or with
     /// [`ErrorCode::BadRequest`] for a name that isn't 1 to 32 lowercase
-    /// letters, digits and hyphens; and fails as any rpc can.
+    /// letters, digits and hyphens; fails with [`Error::Gone`] if the
+    /// daemon goes before it answers; and fails as any rpc can.
     pub async fn put_profile(&self, name: &str, toml: &str) -> Result<()> {
         let request = rpc::PutProfileRequest {
             name: name.to_string(),
@@ -319,12 +322,15 @@ impl DaemonClient {
         self.call::<profile::Put>(&request).await.map(|_| ())
     }
 
-    /// Stop keeping the profile `name`.
+    /// Stop keeping the profile `name`. Its file is removed before the
+    /// daemon answers, which is waited for as long as the daemon is
+    /// there, with no time limit.
     ///
     /// # Errors
     ///
-    /// Refused with [`ErrorCode::UnknownProfile`]; and fails as any rpc
-    /// can.
+    /// Refused with [`ErrorCode::UnknownProfile`]; fails with
+    /// [`Error::Gone`] if the daemon goes before it answers; and fails as
+    /// any rpc can.
     pub async fn delete_profile(&self, name: &str) -> Result<()> {
         let request = rpc::ProfileRequest {
             name: name.to_string(),
@@ -359,14 +365,18 @@ impl DaemonClient {
 
     /// Run the kept profile `name` as a setup of the same name. Returns
     /// once its virtual pads exist; it is then running, or held if a pad
-    /// it needs isn't connected, which its state says.
+    /// it needs isn't connected, which its state says. Hiding its pads
+    /// and making its virtual pads can take a while (the hiding service
+    /// waits on udev, a DualSense on its driver), so the answer is waited
+    /// for as long as the daemon is there, with no time limit.
     ///
     /// # Errors
     ///
     /// Refused with [`ErrorCode::UnknownProfile`],
     /// [`ErrorCode::InvalidProfile`], [`ErrorCode::SetupExists`],
     /// [`ErrorCode::PadInUse`], or [`ErrorCode::SetupFailed`] with why;
-    /// and fails as any rpc can.
+    /// fails with [`Error::Gone`] if the daemon goes before it answers,
+    /// the start's outcome then unknown; and fails as any rpc can.
     pub async fn start_setup(&self, name: &str) -> Result<()> {
         let request = rpc::SetupRequest {
             name: name.to_string(),
@@ -374,12 +384,15 @@ impl DaemonClient {
         self.call::<setup::Start>(&request).await.map(|_| ())
     }
 
-    /// Stop the setup `name`. Returns once its virtual pads are gone.
+    /// Stop the setup `name`. Returns once its virtual pads are gone and
+    /// its pads shown again, which is waited for as long as the daemon is
+    /// there, with no time limit.
     ///
     /// # Errors
     ///
     /// Refused with [`ErrorCode::UnknownSetup`], or with
-    /// [`ErrorCode::SetupBusy`] while it is starting or stopping; and
+    /// [`ErrorCode::SetupBusy`] while it is starting or stopping; fails
+    /// with [`Error::Gone`] if the daemon goes before it answers; and
     /// fails as any rpc can.
     pub async fn stop_setup(&self, name: &str) -> Result<()> {
         let request = rpc::SetupRequest {
@@ -398,7 +411,8 @@ impl DaemonClient {
     /// returns once the setup runs again, with the [`Updated::start`] it
     /// runs as: after a restart, the number its new start is published
     /// under, which tells that start from any other of the name whatever
-    /// this client's mirror has seen of it.
+    /// this client's mirror has seen of it. Like a start, the answer is
+    /// waited for as long as the daemon is there, with no time limit.
     ///
     /// # Errors
     ///
@@ -406,7 +420,8 @@ impl DaemonClient {
     /// [`ErrorCode::InvalidProfile`] or [`ErrorCode::UnknownProfile`] if
     /// what is kept now can't be run, the setup then carrying on as it
     /// was; with [`ErrorCode::SetupBusy`] while it is starting or
-    /// stopping; or as [`Self::start_setup`] is; and fails as any rpc can.
+    /// stopping; or as [`Self::start_setup`] is, [`Error::Gone`]
+    /// included; and fails as any rpc can.
     pub async fn update_setup(&self, name: &str, apply: bool) -> Result<Updated> {
         let request = rpc::UpdateRequest {
             name: name.to_string(),
@@ -466,12 +481,15 @@ impl DaemonClient {
     }
 
     /// Stop remembering a pad that isn't connected. `pad` names it as for
-    /// [`Self::identify_pad`], a virtual pad aside.
+    /// [`Self::identify_pad`], a virtual pad aside. The daemon writes the
+    /// pads it remembers to disk before it answers, which is waited for
+    /// as long as the daemon is there, with no time limit.
     ///
     /// # Errors
     ///
     /// Refused with [`ErrorCode::UnknownPad`], [`ErrorCode::AmbiguousPad`]
-    /// or [`ErrorCode::PadConnected`]; and fails as any rpc can.
+    /// or [`ErrorCode::PadConnected`]; fails with [`Error::Gone`] if the
+    /// daemon goes before it answers; and fails as any rpc can.
     pub async fn forget_pad(&self, pad: &str) -> Result<()> {
         let request = rpc::PadRequest {
             pad: pad.to_string(),
@@ -494,11 +512,13 @@ impl DaemonClient {
     /// way than through it, and bring what runs up to them. Says what
     /// it found changed and which setups it set about updating; those
     /// are still changing when this returns, and their state says how
-    /// they fare.
+    /// they fare. The files are read before the daemon answers, which is
+    /// waited for as long as the daemon is there, with no time limit.
     ///
     /// # Errors
     ///
-    /// Fails as any rpc can.
+    /// Fails with [`Error::Gone`] if the daemon goes before it answers;
+    /// and fails as any rpc can.
     pub async fn reload(&self) -> Result<Reloaded> {
         self.call::<daemon::Reload>(&()).await
     }
@@ -534,10 +554,7 @@ impl DaemonClient {
     /// Call a daemon rpc, once the daemon's release is known to match.
     async fn call<R: Unary<Target = ()>>(&self, request: &R::Request) -> Result<R::Response> {
         self.check_release().await?;
-        self.caller
-            .call::<R>(&(), request)
-            .await
-            .map_err(|e| Error::from_rpc(Service::Daemon, e))
+        call_while_there::<R>(&self.caller, &self.mirror, request).await
     }
 
     /// Fail when the daemon is already known to run another release: the
@@ -683,10 +700,7 @@ impl TrayClient {
 
     async fn call<R: Unary<Target = ()>>(&self, request: &R::Request) -> Result<R::Response> {
         self.handshake.ensure(&self.events, || self.info()).await?;
-        self.caller
-            .call::<R>(&(), request)
-            .await
-            .map_err(|e| Error::from_rpc(Service::Tray, e))
+        call_while_there::<R>(&self.caller, &self.mirror, request).await
     }
 
     async fn info(&self) -> Result<ServiceInfo> {
@@ -694,6 +708,41 @@ impl TrayClient {
             .call::<tray::Info>(&(), &())
             .await
             .map_err(|e| Error::from_rpc(Service::Tray, e))
+    }
+}
+
+/// Calls `R` on `mirror`'s service. An [`untimed`](Unary::UNTIMED) rpc
+/// waits for its answer for as long as the service's liveliness token is
+/// there, and fails with [`Error::Gone`] once it isn't, at once and
+/// without asking if it isn't now: the service answers every rpc once,
+/// or drops it as it ends, which ends the call too; a stopping service
+/// withdraws its token before anything else, and a service whose link
+/// drops is seen without its token, so nothing else ends the wait. Every
+/// other rpc waits as long as the protocol's caller does.
+async fn call_while_there<R: Unary<Target = ()>>(
+    caller: &Caller,
+    mirror: &LifetimeMirror<impl lifetime::Mirror>,
+    request: &R::Request,
+) -> Result<R::Response> {
+    let service = mirror.service();
+    let call = async {
+        caller
+            .call::<R>(&(), request)
+            .await
+            .map_err(|e| Error::from_rpc(service, e))
+    };
+    if !R::UNTIMED {
+        return call.await;
+    }
+    // A service already going isn't asked what it may not finish.
+    if !mirror.token_present() {
+        return Err(Error::Gone { service });
+    }
+    tokio::select! {
+        // An answer that is there with the token's going is the answer.
+        biased;
+        outcome = call => outcome,
+        () = mirror.gone() => Err(Error::Gone { service }),
     }
 }
 

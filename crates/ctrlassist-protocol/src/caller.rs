@@ -20,8 +20,15 @@ use zenoh::query::Querier;
 use crate::endpoint::Unary;
 use crate::error::WireError;
 
-/// Per-call timeout once a matched queryable holds the query.
+/// Per-call timeout once a matched queryable holds the query, for every
+/// rpc but an [`untimed`](crate::endpoint::Unary::UNTIMED) one.
 pub const RPC_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What an untimed rpc's query is declared with, zenoh having no query
+/// without a time limit: the longest a query's limit can be on the wire,
+/// which carries it as a count of milliseconds, and which zenoh and tokio
+/// take as never. Its caller ends the wait by the service going instead.
+const UNLIMITED: Duration = Duration::from_millis(u64::MAX);
 
 /// How long a call waits for a matching queryable to become routable
 /// before failing [`RpcError::Unavailable`]. Route propagation on a
@@ -120,6 +127,12 @@ impl Caller {
     /// the reply channel closes empty only if `R::REISSUE` (reads) —
     /// a write that minted state before a lost reply must surface as
     /// an error rather than mint twice.
+    ///
+    /// An [`untimed`](Unary::UNTIMED) rpc's call waits for its reply with
+    /// no time limit: until the service answers, drops the query, or the
+    /// link to it goes. A caller that must not outwait a service that is
+    /// still there but going drops the call when the service's
+    /// liveliness token goes, as the SDK's clients do.
     pub async fn call<R: Unary>(
         &self,
         target: &R::Target,
@@ -127,7 +140,8 @@ impl Caller {
     ) -> Result<R::Response, RpcError> {
         let key = R::key(target);
         let body = encode(request);
-        let querier = self.querier(&key).await?;
+        let timeout = if R::UNTIMED { UNLIMITED } else { RPC_TIMEOUT };
+        let querier = self.querier(&key, timeout).await?;
         self.await_matching(&querier).await?;
         let bytes = match issue(&querier, &body).await {
             Err(RpcError::NoReply { .. }) if R::REISSUE => {
@@ -139,8 +153,14 @@ impl Caller {
         decode(&key, &bytes)
     }
 
-    /// The cached single-reply querier for `key`.
-    async fn querier(&self, key: &str) -> Result<Arc<Querier<'static>>, RpcError> {
+    /// The cached single-reply querier for `key`, whose queries wait
+    /// `timeout` for a reply. A key is one rpc's, so its timeout is
+    /// always the same.
+    async fn querier(
+        &self,
+        key: &str,
+        timeout: Duration,
+    ) -> Result<Arc<Querier<'static>>, RpcError> {
         if let Some(querier) = self
             .queriers
             .lock()
@@ -152,7 +172,7 @@ impl Caller {
         let declared = Arc::new(
             self.session
                 .declare_querier(key.to_string())
-                .timeout(RPC_TIMEOUT)
+                .timeout(timeout)
                 .await
                 .map_err(|source| transport(key, source))?,
         );

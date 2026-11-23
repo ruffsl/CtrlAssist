@@ -613,7 +613,19 @@ impl Reactor {
                 Ok(query) = rpcs.pad.recv_async() => self.pad_rpc(query).await,
                 Ok(query) = rpcs.profile.recv_async() => self.profile_rpc(query).await,
                 Ok(query) = rpcs.setup.recv_async() => self.setup_rpc(query).await,
-                Some(report) = reports.recv() => self.reported(report).await,
+                report = reports.recv() => match report {
+                    Some(report) => self.reported(report).await,
+                    // The input thread ended though nothing stopped it:
+                    // nothing it was asked will be reported, so a stop or
+                    // an update waiting on it would hold its caller for as
+                    // long as the daemon lives. The daemon ends instead,
+                    // as when its reactor panics: every rpc held is
+                    // dropped, which ends its call.
+                    None => {
+                        error!("the input thread ended by itself; no setup can run");
+                        break;
+                    }
+                },
                 Some(joined) = self.work.join_next() => match joined {
                     Ok(done) => self.done(done).await,
                     // Each piece catches its own panics and comes back

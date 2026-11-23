@@ -32,6 +32,14 @@ pub trait Unary: Rpc {
     /// Safe to re-issue when a matched query closes without a reply:
     /// reads, which neither mint state nor apply a relative effect.
     const REISSUE: bool;
+    /// A write whose reply waits on work no fixed limit fits: the hiding
+    /// service, the kernel making or dropping a virtual pad, the input
+    /// thread handing a setup back, or the disk. Its call waits for the
+    /// reply with no time limit, the service answering every rpc once,
+    /// so its caller ends the wait when the service goes away, which the
+    /// service's liveliness token says. Every other rpc's call gives up
+    /// after [`RPC_TIMEOUT`](crate::caller::RPC_TIMEOUT).
+    const UNTIMED: bool;
 }
 
 /// A family key parser's result: the verb, plus the target for a family
@@ -59,7 +67,9 @@ fn decode_body<T: DeserializeOwned>(payload: &[u8]) -> Result<T, WireError> {
 }
 
 /// Declare one family of verb-shaped rpcs: a marker type per rpc
-/// implementing [`Rpc`] and [`Unary`] (`read` or `write`); the family's
+/// implementing [`Rpc`] and [`Unary`] (`read`, `write`, or `untimed` for
+/// a write whose call waits on the service's presence and not on a time
+/// limit, see [`Unary::UNTIMED`]); the family's
 /// `Call` enum carrying each rpc's decoded request; and its `Incoming`
 /// enum pairing that request with the rpc's
 /// [`Responder`](crate::serve::Responder).
@@ -171,11 +181,19 @@ macro_rules! family {
     (@kind $name:ident read) => {
         impl $crate::endpoint::Unary for $name {
             const REISSUE: bool = true;
+            const UNTIMED: bool = false;
         }
     };
     (@kind $name:ident write) => {
         impl $crate::endpoint::Unary for $name {
             const REISSUE: bool = false;
+            const UNTIMED: bool = false;
+        }
+    };
+    (@kind $name:ident untimed) => {
+        impl $crate::endpoint::Unary for $name {
+            const REISSUE: bool = false;
+            const UNTIMED: bool = true;
         }
     };
 }
@@ -195,7 +213,7 @@ pub mod daemon {
             Info = "info" (()) -> rpc::ServiceInfo, read;
             /// Reread the daemon's files from disk, and bring what runs
             /// up to them.
-            Reload = "reload" (()) -> rpc::Reloaded, write;
+            Reload = "reload" (()) -> rpc::Reloaded, untimed;
         }
     }
 }
@@ -242,9 +260,9 @@ pub mod profile {
             /// A preset's fields, for a client's form.
             Schema = "schema" (()) -> rpc::PresetForm, read;
             /// Keep a profile, durably, once it is found to be right.
-            Put = "put" (rpc::PutProfileRequest) -> rpc::Ack, write;
+            Put = "put" (rpc::PutProfileRequest) -> rpc::Ack, untimed;
             /// Stop keeping a profile.
-            Delete = "delete" (rpc::ProfileRequest) -> rpc::Ack, write;
+            Delete = "delete" (rpc::ProfileRequest) -> rpc::Ack, untimed;
         }
     }
 }
@@ -262,12 +280,12 @@ pub mod setup {
         rpcs: {
             /// Run a kept profile. Replies once its virtual pads exist
             /// and it is running or held, or with why it couldn't start.
-            Start = "start" (rpc::SetupRequest) -> rpc::Ack, write;
+            Start = "start" (rpc::SetupRequest) -> rpc::Ack, untimed;
             /// Stop a setup. Replies once its virtual pads are gone.
-            Stop = "stop" (rpc::SetupRequest) -> rpc::Ack, write;
+            Stop = "stop" (rpc::SetupRequest) -> rpc::Ack, untimed;
             /// Have a setup take up its profile as it is kept now, or say
             /// what that would cost. Replies once the setup runs again.
-            Update = "update" (rpc::UpdateRequest) -> rpc::Updated, write;
+            Update = "update" (rpc::UpdateRequest) -> rpc::Updated, untimed;
             /// Have a node select another input or output. Replies once
             /// the input thread has been asked; the setup's state says
             /// when it has.
@@ -291,7 +309,7 @@ pub mod pad {
             /// once the buzz has started.
             Identify = "identify" (rpc::IdentifyRequest) -> rpc::Ack, write;
             /// Drop a remembered pad that isn't connected.
-            Forget = "forget" (rpc::PadRequest) -> rpc::Ack, write;
+            Forget = "forget" (rpc::PadRequest) -> rpc::Ack, untimed;
         }
     }
 }

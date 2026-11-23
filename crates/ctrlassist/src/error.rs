@@ -37,6 +37,14 @@ pub enum Error {
         /// The service the call went to.
         service: Service,
     },
+    /// The service went away while a call that waits for as long as it
+    /// is there waited: its liveliness token went before its answer
+    /// came, or wasn't there when the call was made. For a write, the
+    /// outcome is unknown.
+    Gone {
+        /// The service the call went to.
+        service: Service,
+    },
     /// The local link failed: opening the session, a subscription, or a
     /// stream that ended early.
     Transport {
@@ -96,6 +104,7 @@ impl fmt::Display for Error {
             Self::Rpc { code, message } => write!(f, "{message} ({code})"),
             Self::Unavailable { service } => write!(f, "the {service} is unavailable"),
             Self::Timeout { service } => write!(f, "the {service} didn't answer"),
+            Self::Gone { service } => write!(f, "the {service} went away before it answered"),
             Self::Transport { what, .. } => f.write_str(what),
             Self::VersionMismatch {
                 service,
@@ -209,6 +218,10 @@ mod tests {
         assert_eq!(dropped.to_string(), "the daemon didn't answer");
         let slow = from_rpc(RpcError::Timeout { key: key() });
         assert!(matches!(slow, Error::Timeout { .. }));
+        let gone = Error::Gone {
+            service: Service::Daemon,
+        };
+        assert_eq!(gone.to_string(), "the daemon went away before it answered");
 
         let absent = from_rpc(RpcError::Unavailable { key: key() });
         assert_eq!(absent.rpc_code(), None);

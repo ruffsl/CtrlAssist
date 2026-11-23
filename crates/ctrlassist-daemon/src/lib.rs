@@ -311,9 +311,9 @@ impl Daemon {
     }
 
     /// Waits for the daemon's reactor to end by itself, which it does
-    /// only if something in it panicked: the daemon serves nothing from
-    /// then on, though clients still see it there, and is to be stopped.
-    /// Never returns while the reactor runs.
+    /// only if something in it panicked or the input thread ended: the
+    /// daemon serves nothing from then on, though clients still see it
+    /// there, and is to be stopped. Never returns while the reactor runs.
     pub async fn ended(&mut self) {
         let Some(reactor) = &mut self.reactor else {
             return std::future::pending().await;

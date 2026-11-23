@@ -10,8 +10,10 @@ use std::time::Duration;
 use ctrlassist::{DaemonClient, Error, ErrorCode, StateEvent, StateWatcher, StateWatcherConfig};
 use ctrlassist_daemon::{Daemon, Paths};
 use ctrlassist_device::InputThread;
+use ctrlassist_protocol::caller::RPC_TIMEOUT;
 use ctrlassist_protocol::endpoint::setup;
 use ctrlassist_protocol::error::WireError;
+use ctrlassist_protocol::rpc::Ack;
 use ctrlassist_protocol::serve::Responder;
 use ctrlassist_protocol::{VERSION, keys};
 use serde_json::json;
@@ -511,6 +513,69 @@ async fn a_refusal_with_a_code_from_a_later_release_keeps_its_message() {
     );
     assert_eq!(refused.to_string(), "the pad is on fire (pad-on-fire)");
     refusing.await.unwrap();
+}
+
+/// A start answered later than a read would wait is still answered: it
+/// is waited for while the daemon's token is there, however long.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_start_is_waited_for_while_the_daemon_is_there() {
+    let (_dir, socket) = socket();
+    let (_session, _token, setups) = stand_in(&socket).await;
+    let client = DaemonClient::connect(&socket).await.unwrap();
+    let answering = tokio::spawn(async move {
+        let responder = asked_to_start(&setups).await;
+        tokio::time::sleep(RPC_TIMEOUT + Duration::from_secs(1)).await;
+        responder.ok(&Ack {}).await;
+    });
+    let asked = tokio::time::Instant::now();
+    client.start_setup("couch").await.unwrap();
+    assert!(asked.elapsed() > RPC_TIMEOUT, "answered as late as it was");
+    answering.await.unwrap();
+}
+
+/// A daemon whose token goes while it holds a start, unanswered, fails
+/// the call as the token goes, not at any time limit; and a start asked
+/// of a daemon without its token fails at once, unasked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_fails_as_the_daemon_s_token_goes() {
+    let (_dir, socket) = socket();
+    let (_session, token, setups) = stand_in(&socket).await;
+    let client = DaemonClient::connect(&socket).await.unwrap();
+    let (held, holding) = tokio::sync::oneshot::channel();
+    let holder = tokio::spawn(async move {
+        let responder = asked_to_start(&setups).await;
+        held.send(()).unwrap();
+        // Unanswered until the test lets go of it.
+        std::future::pending::<()>().await;
+        drop((responder, setups));
+    });
+    let starting = tokio::spawn({
+        let client = client.clone();
+        async move { client.start_setup("couch").await }
+    });
+    holding.await.unwrap();
+    let went = tokio::time::Instant::now();
+    token.undeclare().await.unwrap();
+    let outcome = starting.await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            Err(Error::Gone {
+                service: ctrlassist::Service::Daemon
+            })
+        ),
+        "{outcome:?}"
+    );
+    assert!(went.elapsed() < RPC_TIMEOUT, "failed as the token went");
+    assert_eq!(
+        outcome.unwrap_err().to_string(),
+        "the daemon went away before it answered"
+    );
+
+    // Without its token, the daemon isn't asked.
+    let again = client.start_setup("couch").await;
+    assert!(matches!(again, Err(Error::Gone { .. })), "{again:?}");
+    holder.abort();
 }
 
 /// `try_next` hands over a queued event without waiting, and nothing when
