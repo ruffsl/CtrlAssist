@@ -375,6 +375,11 @@ Two reviewers read the hiding service, and the daemon's handling of pads and of 
 
 **Could still go, by the reviewers:** `Phase::Hiding`; the client watched during a show; the service's overrun path, by taking an overrun for a failed hide; in the daemon, the handling of a request given up on a held pad's connection, and the cap of sixteen readings, which frees nothing until the service answers; `dislodged`.
 
+### From the first run on real pads
+
+- [ ] **6R-1. A pad plugged in while hidden has only its joystick and raw nodes hidden.** A DualSense on USB, unplugged and plugged back in while its setup ran, came back with its motion sensors' event and js nodes, its touchpad's event and mouse nodes and its switch node left to `root:input`, not hidden; a DualShock 4 on Bluetooth, switched off and on, came back with its touchpad's mouse node the same. After a re-bind every node is hidden. The rule hides a pad's other nodes only under a device whose uevent file already has the group's write bit, which the joystick node's own event sets with `RUN`; at a first plug-in the other nodes' events are likely handled before that has run, where a re-bind finds the bit kept from before. The cause is reasoned from the rule and not confirmed. What is exposed is small: of those nodes only the motion sensors' js node is readable by the seat user. **Low to medium.**
+- [ ] **6R-2. The log says "a pad connected" for a pad back from a re-bind.** On each hide and each show, for each pad. Nothing else is wrong: the pad stays connected to clients and no profile is started. **Low.**
+
 ## The hiding service without root
 
 From the security review's inventory and the research on dropping root. Evidence labels from the research: **V** verified on the maintainer's machine (Linux 7.3.4, systemd 262, NixOS), **D** documented (source given), **U** unverified.
@@ -670,6 +675,7 @@ Each area is fixed on a branch of its own and merged here as it comes back; a fi
 - *Not reviewed by anyone but its author:* the fixes of the fifth review, above all the book's marks and its reconcile after an overrun, and the hiding service's closer thread.
 - *Planned and not begun:* `docs/plans/motion-and-touch.md`, whose first step is a spike.
 - *To tidy:* the fix batches' worktrees under `.claude/worktrees/`, which git ignores, and their branches, all merged.
+- **First run on real pads, from the NixOS module (2026-11-23), tree `67d6beb`.** A DualSense on USB and a DualShock 4 on Bluetooth, in a priority profile hidden in full. Seen to work: the hide and the show, each re-bind answered by its marked request, every node of both pads going to the hiding service's group and coming back with seat access; the service exiting by itself after the show; both pads staying connected to clients throughout; the USB cable pulled and put back, and the DualShock 4 switched off and on, each holding the setup, publishing the pad disconnected and then connected, and returning it to its setup hidden; the daemon stopped as the setup ran, the service showing both pads as its client went. The desktop pointer still follows both touchpads while the pads are hidden, the compositor having its descriptors from logind, which the nodes' group doesn't stop; this answers the motion plan's question of the pointer. Found: 6R-1, 6R-2. Not yet run: an Xbox pad, a wireless receiver, a trigger effect left on by a game.
 
 ## Deviations
 
