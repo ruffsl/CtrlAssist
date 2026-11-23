@@ -534,6 +534,8 @@ Each area is fixed on a branch of its own and merged here as it comes back; a fi
 
 - **A hide given up says what it did: merged.** The wire has a `cancel` request, and every reply counts the re-binds its request made, in two bits of the flags; sizes are as they were. A setup stopped inside a hide sends the cancel and is answered at once; a task of its own reads what the service says it did, and the book is put right by it. The book expects a hide's going and coming back before the request is sent, so the flicker is closed too. A service from before the change is known by its release's answer and is hung up on as before. The plan for the service without root had said the wire stays; the change is in its Deviations. Verified by tests of each outcome on the stand-in service and a VM subtest that holds a re-bind on a FIFO. Left: a pad unplugged during a re-bind still under way when the service answered can be published as connected until plugged in again; a hide refused after its re-bind is shown again before its reply. And from before: a hide refused after its re-bind is grabbed through a descriptor the re-bind has made dead. The whole suite after: 577 of 577, and the doc tests.
 - **Motion sensors and the touchpad have a plan,** `docs/plans/motion-and-touch.md`, a first position that waits on research: hiding every node of a pad has taken a PlayStation pad's gyro, tilt and touchpad from games while a setup runs.
+- **All five VM checks pass on the tree with the second review's fixes** (platform, device, hider, daemon, gui), at `62181de`, with the whole suite at 577 of 577. A third review, of those fixes, is next: the daemon's connections to the hiding service, the service's wait and its wire, and the device crate's writers.
+
 
 ## Deviations
 
