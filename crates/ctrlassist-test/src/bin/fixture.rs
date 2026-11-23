@@ -132,7 +132,13 @@ enum Command {
     /// device crate's monitor, and print each change it reports, one per
     /// line in the order it reports them, until killed. Prints
     /// `watching` once it listens.
-    Watch,
+    Watch {
+        /// Ask this receive buffer of the kernel, in bytes, for the
+        /// monitor's socket, which the kernel doubles and raises to its
+        /// least, so that a few events overrun it.
+        #[arg(long)]
+        receive_buffer: Option<usize>,
+    },
 }
 
 /// One line for each change the monitor reports.
@@ -158,7 +164,9 @@ fn said(change: Change) -> String {
                 |anchor| anchor.path.display().to_string()
             )
         ),
-        Change::Left(node) => format!("left {}", node.display()),
+        Change::Left { node, syspath } => {
+            format!("left {} {}", node.display(), syspath.display())
+        }
         Change::Unplugged(device) => format!("unplugged {}", device.display()),
         Change::Rebinding { anchor, present } => {
             format!(
@@ -498,8 +506,12 @@ fn main() -> Result<()> {
             println!("reads={} cut_off={}", reads.count, reads.cut_off);
             Ok(())
         }
-        Command::Watch => {
+        Command::Watch { receive_buffer } => {
             let mut monitor = Monitor::new().context("listening to udev")?;
+            if let Some(bytes) = receive_buffer {
+                rustix::net::sockopt::set_socket_recv_buffer_size(&monitor, bytes)
+                    .context("setting the monitor's receive buffer")?;
+            }
             println!("watching");
             loop {
                 poll(&mut [PollFd::new(&monitor, PollFlags::IN)], None)?;

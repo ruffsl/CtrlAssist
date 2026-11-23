@@ -95,10 +95,13 @@ fn a_pad_is_seen_arriving_listed_while_connected_and_seen_leaving() {
     let listed = connected().unwrap();
     assert!(listed.contains(&arrived), "{listed:?}");
 
-    let node = fake.event_node().to_path_buf();
     drop((fake, opened));
-    wait_for(&mut monitor, |change| {
-        (*change == Change::Left(node.clone())).then_some(())
+    wait_for(&mut monitor, |change| match change {
+        Change::Left { node, syspath } if *syspath == arrived.syspath => {
+            assert_eq!(*node, arrived.node);
+            Some(())
+        }
+        _ => None,
     });
     // By name: another test's pad may already have the node's number.
     let still = connected().unwrap();

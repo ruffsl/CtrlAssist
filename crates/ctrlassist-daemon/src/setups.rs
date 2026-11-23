@@ -3617,7 +3617,7 @@ mod tests {
         let address = id.strip_prefix("address:").unwrap();
         Found {
             node: PathBuf::from(node),
-            syspath: anchor_of(id).path.join(node.trim_start_matches('/')),
+            syspath: place(id, node),
             identifiers: ctrlassist_device::Identifiers {
                 name: "Wireless Controller".to_string(),
                 bus: 3,
@@ -3630,6 +3630,12 @@ mod tests {
             },
             anchor: Some(anchor_of(id)),
         }
+    }
+
+    /// The place in sysfs of the pad `id`'s node at `node`, as it
+    /// [connects](connecting) on it.
+    fn place(id: &str, node: &str) -> PathBuf {
+        anchor_of(id).path.join(node.trim_start_matches('/'))
     }
 
     /// A start's making, done with no pads opened and no virtual pads.
@@ -3693,7 +3699,7 @@ mod tests {
         let slots = rig.reactor.bind("couch", &both).unwrap();
         assert_eq!(pads_of(&slots), [Some(PRIMARY), Some(OTHER)]);
         rig.reactor.book.release("couch");
-        rig.reactor.book.left(Path::new("/nowhere/event2"));
+        rig.reactor.book.left(&place(OTHER, "/nowhere/event2"));
         assert!(!rig.reactor.ready(&both));
         let slots = rig.reactor.bind("couch", &both).unwrap();
         assert_eq!(pads_of(&slots), [Some(PRIMARY), None]);
@@ -3920,7 +3926,7 @@ mod tests {
             let anchor = anchor_of(PRIMARY).path;
             let present = Vec::new();
             rig.reactor.saw(Seen::Rebinding { anchor, present }).await;
-            rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
+            rig.reactor.saw(Seen::Left(place(PRIMARY, node))).await;
             assert!(
                 rig.reactor.book.pad(PRIMARY).unwrap().connected,
                 "going {time}"
@@ -3939,7 +3945,7 @@ mod tests {
     /// re-bind asked, which is when it is published as gone, and then its
     /// anchor.
     async fn unplugged(rig: &mut Rig, node: &str) {
-        rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
+        rig.reactor.saw(Seen::Left(place(PRIMARY, node))).await;
         assert!(!rig.reactor.book.pad(PRIMARY).unwrap().connected, "gone");
         rig.reactor
             .saw(Seen::Unplugged(anchor_of(PRIMARY).path))
@@ -4031,7 +4037,7 @@ mod tests {
         let anchor = anchor_of(PRIMARY).path;
         let present = Vec::new();
         rig.reactor.saw(Seen::Rebinding { anchor, present }).await;
-        rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
+        rig.reactor.saw(Seen::Left(place(PRIMARY, node))).await;
         let refused = rig.reactor.book.forget(PRIMARY).unwrap_err();
         assert_eq!(refused.code, ErrorCode::PadConnected);
         let request = rpc::IdentifyRequest {
@@ -4067,7 +4073,7 @@ mod tests {
         let present = Vec::new();
         rig.reactor.saw(Seen::Rebinding { anchor, present }).await;
         for gone in [node, second] {
-            rig.reactor.saw(Seen::Left(PathBuf::from(gone))).await;
+            rig.reactor.saw(Seen::Left(place(PRIMARY, gone))).await;
             assert!(rig.reactor.book.pad(PRIMARY).unwrap().connected, "{gone}");
         }
         for back in [node, second] {
@@ -4116,7 +4122,7 @@ mod tests {
         const TEST: &str = "a_pad_back_on_its_receiver_starts_a_profile_that_starts_by_itself";
         let mut rig = rig().await;
         let [_, node] = managed_with_both_pads(&mut rig);
-        rig.reactor.saw(Seen::Left(PathBuf::from(node))).await;
+        rig.reactor.saw(Seen::Left(place(PRIMARY, node))).await;
         assert!(!rig.reactor.book.pad(PRIMARY).unwrap().connected, "left");
         if !ctrlassist_test::can_make_pads(TEST) {
             return;

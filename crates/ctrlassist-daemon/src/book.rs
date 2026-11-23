@@ -280,12 +280,15 @@ impl Book {
         }
     }
 
-    /// The pad on `node` has gone. Returns its id if it has left; it
-    /// stays remembered. Nothing for a node gone for a re-bind the
-    /// hiding service asked, which leaves the pad away.
-    pub(crate) fn left(&mut self, node: &Path) -> Option<String> {
+    /// The pad on the event node at `syspath` has gone. Returns its id if
+    /// it has left; it stays remembered. Nothing for a node gone for a
+    /// re-bind the hiding service asked, which leaves the pad away. The
+    /// node is told by its place, not its name: a removal can be heard
+    /// after another node has taken the name, at start, where what was
+    /// queued as the list was made is heard after it.
+    pub(crate) fn left(&mut self, syspath: &Path) -> Option<String> {
         self.rows.iter_mut().find_map(|(id, row)| {
-            let at = row.nodes.iter().position(|held| held.node == node)?;
+            let at = row.nodes.iter().position(|held| held.syspath == syspath)?;
             match row.nodes.remove(at) {
                 Held {
                     anchor: Some(anchor),
@@ -555,10 +558,20 @@ mod tests {
 
     /// The place in sysfs of a node at `node`. A re-bind makes nodes
     /// anew, and a node it makes may take an old node's name but never
-    /// its place; these tests' nodes that come back under the same name
-    /// have the same place, which tells nothing apart that matters here.
+    /// its place; most of these tests' nodes that come back under the
+    /// same name have the same place, which tells nothing apart that
+    /// matters there, and those that need it are [elsewhere](elsewhere).
     fn syspath(node: &str) -> PathBuf {
         Path::new("/sys/devices/test").join(Path::new(node).file_name().unwrap())
+    }
+
+    /// `found` on a node made since, which has taken its name.
+    fn elsewhere(found: Found) -> Found {
+        let name = found.syspath.file_name().unwrap().to_owned();
+        Found {
+            syspath: Path::new("/sys/devices/since").join(name),
+            ..found
+        }
     }
 
     fn found(node: &str, name: &str, address: Option<&str>, port: Option<&str>) -> Found {
@@ -618,8 +631,8 @@ mod tests {
         // The same report again changes nothing.
         assert_eq!(book.arrived(&dualsense("/dev/input/event5")), []);
 
-        assert_eq!(book.left(Path::new("/dev/input/event5")), Some(id.clone()));
-        assert_eq!(book.left(Path::new("/dev/input/event5")), None);
+        assert_eq!(book.left(&syspath("/dev/input/event5")), Some(id.clone()));
+        assert_eq!(book.left(&syspath("/dev/input/event5")), None);
         assert!(!book.pad(&id).unwrap().connected);
         assert_eq!(book.node(&id), None);
         assert_eq!(book.known().len(), 1);
@@ -686,10 +699,10 @@ mod tests {
             }]
         );
         assert_eq!(book.known().len(), 1);
-        book.left(Path::new("/dev/input/event5"));
+        book.left(&syspath("/dev/input/event5"));
         assert!(book.pad(&id).unwrap().connected, "one of the two is left");
         assert_eq!(book.node(&id), Some(Path::new("/dev/input/event6")));
-        book.left(Path::new("/dev/input/event6"));
+        book.left(&syspath("/dev/input/event6"));
         assert!(!book.pad(&id).unwrap().connected);
     }
 
@@ -798,7 +811,7 @@ mod tests {
         book.set_hidden("address:aa:bb:cc:dd:ee:02", true);
         book.set_hidden("address:never-seen", true);
         assert!(book.pad("address:aa:bb:cc:dd:ee:02").unwrap().hidden);
-        book.left(Path::new("/dev/input/event6"));
+        book.left(&syspath("/dev/input/event6"));
         let refused = book.forget("aa:bb:cc:dd:ee:02").unwrap_err();
         assert_eq!(refused.code, ErrorCode::PadInUse);
 
@@ -819,7 +832,7 @@ mod tests {
         book.arrived(&dualsense("/dev/input/event5"));
         let refused = book.forget(ADDRESS).unwrap_err();
         assert_eq!(refused.code, ErrorCode::PadConnected);
-        book.left(Path::new("/dev/input/event5"));
+        book.left(&syspath("/dev/input/event5"));
         assert_eq!(book.forget(ADDRESS), Ok(format!("address:{ADDRESS}")));
         assert!(book.known().is_empty());
         assert_eq!(
@@ -861,7 +874,7 @@ mod tests {
             // As the request is heard, the new node is there already.
             let node = format!("/dev/input/{back}");
             book.rebinding(&hid.path, &[syspath(&node)]);
-            assert_eq!(book.left(&Path::new("/dev/input").join(went)), None);
+            assert_eq!(book.left(&syspath(&format!("/dev/input/{went}"))), None);
             let away = book.pad(&id).unwrap();
             assert!(away.connected && away.bus.is_some());
             assert_eq!(book.node(&id), None, "not there to be used meanwhile");
@@ -873,7 +886,7 @@ mod tests {
         // Unplugged in the moment of a re-bind: its node goes first, and
         // then its anchor, which unplugs it, away as it is.
         book.rebinding(&hid.path, &[]);
-        assert_eq!(book.left(Path::new("/dev/input/event5")), None);
+        assert_eq!(book.left(&syspath("/dev/input/event5")), None);
         assert_eq!(book.unplugged(&hid.path), std::slice::from_ref(&id));
         assert!(!book.pad(&id).unwrap().connected);
         assert!(book.unplugged(&hid.path).is_empty(), "once");
@@ -901,7 +914,7 @@ mod tests {
             .arrived(&on("/dev/input/event5", &receiver))
             .remove(0)
             .id;
-        assert_eq!(book.left(Path::new("/dev/input/event5")), Some(id.clone()));
+        assert_eq!(book.left(&syspath("/dev/input/event5")), Some(id.clone()));
         let gone = book.pad(&id).unwrap();
         assert!(!gone.connected && gone.bus.is_none());
         book.arrived(&on("/dev/input/event6", &receiver));
@@ -934,19 +947,19 @@ mod tests {
             .id;
         // A request the rule didn't act on: the node is still there.
         book.rebinding(&receiver.path, &[syspath("/dev/input/event5")]);
-        assert_eq!(book.left(Path::new("/dev/input/event5")), Some(id.clone()));
+        assert_eq!(book.left(&syspath("/dev/input/event5")), Some(id.clone()));
         // Another device's request leaves this one's nodes unmarked.
         book.rebinding(&receiver.path, &[]);
-        assert_eq!(book.left(Path::new("/dev/input/event6")), Some(next));
+        assert_eq!(book.left(&syspath("/dev/input/event6")), Some(next));
 
         // A mark used goes with its node: the node made by the re-bind,
         // switched off later, has left.
         book.arrived(&pad("/dev/input/event5", &receiver, "aa:00:00:00:00:01"));
         book.rebinding(&receiver.path, &[syspath("/dev/input/event7")]);
-        assert_eq!(book.left(Path::new("/dev/input/event5")), None, "away");
+        assert_eq!(book.left(&syspath("/dev/input/event5")), None, "away");
         book.arrived(&pad("/dev/input/event7", &receiver, "aa:00:00:00:00:01"));
         assert!(book.was_restored(&id));
-        assert_eq!(book.left(Path::new("/dev/input/event7")), Some(id.clone()));
+        assert_eq!(book.left(&syspath("/dev/input/event7")), Some(id.clone()));
         assert!(!book.pad(&id).unwrap().connected);
     }
 
@@ -964,9 +977,9 @@ mod tests {
         let last = syspath("/dev/input/event7");
         book.rebinding(&hid.path, std::slice::from_ref(&last));
         book.rebinding(&hid.path, std::slice::from_ref(&last));
-        assert_eq!(book.left(Path::new("/dev/input/event5")), None, "away");
+        assert_eq!(book.left(&syspath("/dev/input/event5")), None, "away");
         // The first re-bind's node, never taken in, goes.
-        assert_eq!(book.left(Path::new("/dev/input/event6")), None);
+        assert_eq!(book.left(&syspath("/dev/input/event6")), None);
         assert!(book.pad(&id).unwrap().connected);
         book.arrived(&on("/dev/input/event7", &hid));
         assert!(book.was_restored(&id), "back");
@@ -975,7 +988,7 @@ mod tests {
         for (went, back) in [("event7", "event8"), ("event8", "event9")] {
             let node = format!("/dev/input/{back}");
             book.rebinding(&hid.path, &[syspath(&node)]);
-            assert_eq!(book.left(&Path::new("/dev/input").join(went)), None);
+            assert_eq!(book.left(&syspath(&format!("/dev/input/{went}"))), None);
             assert!(book.pad(&id).unwrap().connected);
             book.arrived(&on(&node, &hid));
             assert!(book.was_restored(&id), "back from {went}");
@@ -994,7 +1007,7 @@ mod tests {
             .remove(0)
             .id;
         book.rebinding(&interface.path, &[]);
-        book.left(Path::new("/dev/input/event5"));
+        book.left(&syspath("/dev/input/event5"));
         assert_eq!(
             book.unplugged(Path::new("/sys/devices/usb1/1-1")),
             std::slice::from_ref(&id)
@@ -1004,14 +1017,14 @@ mod tests {
         // Away, and then a pad at its port that is another enumeration.
         book.arrived(&on("/dev/input/event5", &interface));
         book.rebinding(&interface.path, &[]);
-        book.left(Path::new("/dev/input/event5"));
+        book.left(&syspath("/dev/input/event5"));
         book.arrived(&on(
             "/dev/input/event6",
             &anchor(&interface.path.to_string_lossy(), 2),
         ));
         assert!(!book.was_restored(&id), "plugged in");
         book.rebinding(&interface.path, &[]);
-        assert_eq!(book.left(Path::new("/dev/input/event6")), None);
+        assert_eq!(book.left(&syspath("/dev/input/event6")), None);
         assert_eq!(book.unplugged(&interface.path), [id]);
     }
 
@@ -1021,7 +1034,7 @@ mod tests {
     fn a_pad_without_an_anchor_is_unplugged_with_its_node() {
         let mut book = Book::default();
         let id = book.arrived(&dualsense("/dev/input/event5")).remove(0).id;
-        assert_eq!(book.left(Path::new("/dev/input/event5")), Some(id.clone()));
+        assert_eq!(book.left(&syspath("/dev/input/event5")), Some(id.clone()));
         assert!(!book.pad(&id).unwrap().connected);
         book.arrived(&dualsense("/dev/input/event5"));
         assert!(!book.was_restored(&id));
@@ -1042,14 +1055,14 @@ mod tests {
         book.arrived(&pad("/dev/input/event6", &other));
         book.rebinding(&one.path, &[]);
         book.rebinding(&other.path, &[]);
-        assert_eq!(book.left(Path::new("/dev/input/event5")), None, "away");
-        assert_eq!(book.left(Path::new("/dev/input/event6")), None, "away");
+        assert_eq!(book.left(&syspath("/dev/input/event5")), None, "away");
+        assert_eq!(book.left(&syspath("/dev/input/event6")), None, "away");
         assert_eq!(book.unplugged(&other.path), std::slice::from_ref(&id));
         assert!(book.pad(&id).unwrap().connected, "the one away is there");
         book.arrived(&pad("/dev/input/event7", &one));
         assert!(book.was_restored(&id), "back, not plugged in");
         book.rebinding(&one.path, &[]);
-        book.left(Path::new("/dev/input/event7"));
+        book.left(&syspath("/dev/input/event7"));
         assert_eq!(book.unplugged(&one.path), std::slice::from_ref(&id));
         assert!(!book.pad(&id).unwrap().connected);
     }
@@ -1071,8 +1084,8 @@ mod tests {
         book.was_restored(&id);
         let new = [syspath("/dev/input/event7"), syspath("/dev/input/event8")];
         book.rebinding(&hid.path, &new);
-        assert_eq!(book.left(Path::new("/dev/input/event5")), None);
-        assert_eq!(book.left(Path::new("/dev/input/event6")), None);
+        assert_eq!(book.left(&syspath("/dev/input/event5")), None);
+        assert_eq!(book.left(&syspath("/dev/input/event6")), None);
         for node in ["/dev/input/event7", "/dev/input/event8"] {
             book.arrived(&pad(node));
             assert!(book.was_restored(&id), "{node} back");
@@ -1096,8 +1109,8 @@ mod tests {
         let one = book.arrived(&pad("/dev/input/event5", a)).remove(0).id;
         let two = book.arrived(&pad("/dev/input/event6", b)).remove(0).id;
         book.rebinding(&hid.path, &[]);
-        assert_eq!(book.left(Path::new("/dev/input/event5")), None);
-        assert_eq!(book.left(Path::new("/dev/input/event6")), None);
+        assert_eq!(book.left(&syspath("/dev/input/event5")), None);
+        assert_eq!(book.left(&syspath("/dev/input/event6")), None);
         let changed = book.arrived(&pad("/dev/input/event7", a));
         assert_eq!(
             changed,
@@ -1134,7 +1147,7 @@ mod tests {
         let id = book.arrived(&pad("/dev/input/event5")).remove(0).id;
         book.arrived(&pad("/dev/input/event6"));
         book.rebinding(&hid.path, &[syspath("/dev/input/event5")]);
-        assert_eq!(book.left(Path::new("/dev/input/event6")), None);
+        assert_eq!(book.left(&syspath("/dev/input/event6")), None);
         assert_eq!(book.arrived(&pad("/dev/input/event5")), []);
         assert!(!book.was_restored(&id));
         book.arrived(&pad("/dev/input/event7"));
@@ -1146,7 +1159,10 @@ mod tests {
     /// is one away whose anchor is another enumeration now; a pad whose
     /// node went for a re-bind is away, and back as its new node is taken
     /// in; a receiver's pad switched off has left; a pad still there is
-    /// as it was. Only what is no longer connected is told.
+    /// as it was. Only what is no longer connected is told. What was
+    /// queued before the loss is heard before the look, the request for
+    /// the re-bind among it; what is heard after it came after the loss,
+    /// and may be in the look already, which changes nothing.
     #[test]
     fn an_overrun_is_put_right_by_what_is_connected() {
         let mut book = Book::default();
@@ -1161,17 +1177,24 @@ mod tests {
         let rebound = id("/dev/input/event3", 3);
         let switched_off = id("/dev/input/event4", 4);
         let kept = id("/dev/input/event5", 5);
+        // Queued before the loss.
         book.rebinding(&at(2).path, &[]);
-        assert_eq!(book.left(Path::new("/dev/input/event2")), None);
+        assert_eq!(book.left(&syspath("/dev/input/event2")), None);
         book.rebinding(&at(3).path, &[syspath("/dev/input/event6")]);
 
-        // The rest went unheard.
-        let connected = [pad("/dev/input/event5", 5), pad("/dev/input/event6", 3)];
+        // The rest went unheard, and a pad plugged in since has the
+        // unplugged one's node.
+        let newcomer = elsewhere(pad("/dev/input/event1", 6));
+        let connected = [
+            pad("/dev/input/event5", 5),
+            pad("/dev/input/event6", 3),
+            newcomer.clone(),
+        ];
         let replaced = Anchor {
             enumeration: Some(2),
             ..at(2)
         };
-        let anchors = [replaced, at(3), at(4), at(5)];
+        let anchors = [replaced, at(3), at(4), at(5), at(6)];
         let mut gone = book.reconcile(&connected, &anchors);
         gone.sort();
         let mut told = vec![unplugged.clone(), replugged, switched_off.clone()];
@@ -1187,16 +1210,51 @@ mod tests {
         assert!(!book.was_restored(&kept));
         assert_eq!(book.node(&kept), Some(Path::new("/dev/input/event5")));
         assert!(!book.pad(&switched_off).unwrap().connected);
+        let newcomer_id = newcomer.identifiers.id().to_string();
+        assert!(!book.was_restored(&newcomer_id), "plugged in");
+
+        // Heard after the look, which has them already: the unplugged
+        // pad's going leaves the newcomer on its node, and the arrivals
+        // are of pads taken in.
+        assert_eq!(book.left(&syspath("/dev/input/event1")), None);
+        assert_eq!(book.left(&syspath("/dev/input/event4")), None);
+        for found in &connected {
+            assert_eq!(book.arrived(found), [], "{}", found.node.display());
+        }
+        assert!(book.pad(&newcomer_id).unwrap().connected);
+        assert_eq!(
+            book.node(&newcomer_id),
+            Some(Path::new("/dev/input/event1"))
+        );
+        assert!(!book.was_restored(&rebound), "back once");
 
         // Switched on again, its anchor never gone: a pad plugged in.
         book.arrived(&pad("/dev/input/event4", 4));
         assert!(!book.was_restored(&switched_off));
         assert_eq!(
             book.reconcile(&[], &anchors).len(),
-            3,
+            4,
             "each that was connected"
         );
         assert!(!book.pad(&unplugged).unwrap().connected);
+    }
+
+    /// A removal heard after another pad's node has taken the name, as at
+    /// start, where what was queued as the list was made is heard after
+    /// it, leaves the pad on the node now as it is.
+    #[test]
+    fn a_late_removal_leaves_the_pad_on_the_node_now() {
+        let mut book = Book::default();
+        let now = elsewhere(found(
+            "/dev/input/event5",
+            "Other",
+            Some("aa:bb:cc:dd:ee:ff"),
+            None,
+        ));
+        let id = book.arrived(&now).remove(0).id;
+        assert_eq!(book.left(&syspath("/dev/input/event5")), None);
+        assert!(book.pad(&id).unwrap().connected);
+        assert_eq!(book.left(&now.syspath), Some(id));
     }
 
     /// A pad away that comes back reporting another name, as one whose
@@ -1208,7 +1266,7 @@ mod tests {
         let hid = anchor(HID, 1);
         let id = book.arrived(&on("/dev/input/event5", &hid)).remove(0).id;
         book.rebinding(&hid.path, &[]);
-        book.left(Path::new("/dev/input/event5"));
+        book.left(&syspath("/dev/input/event5"));
         let early = Found {
             anchor: Some(hid),
             ..found("/dev/input/event5", "DualSense", None, Some("usb-1/input0"))

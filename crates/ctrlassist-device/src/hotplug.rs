@@ -4,9 +4,12 @@
 //! reported once its nodes and their permissions are in place, so it can
 //! be opened at once.
 
+use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use crate::anchor::{self, Anchor};
 use crate::pad::Identifiers;
@@ -40,8 +43,14 @@ impl Found {
 pub enum Change {
     /// A pad has connected, or one already connected changed.
     Arrived(Found),
-    /// The pad whose event node this was has gone.
-    Left(PathBuf),
+    /// The pad on an event node has gone.
+    Left {
+        /// The event node, whose name a node made since may have.
+        node: PathBuf,
+        /// Its place in sysfs, which no node made since has: what tells
+        /// which pad this was, the node's name being handed on.
+        syspath: PathBuf,
+    },
     /// The device at this place in sysfs, which a pad can be
     /// [anchored](Anchor) to, has gone: after every node under it, udev
     /// sending a device's removal after its children's.
@@ -52,7 +61,11 @@ pub enum Change {
     /// comes once the kernel has removed the device's nodes and made new
     /// ones, and before udev sends any of that: `present` is the place in
     /// sysfs of each event node under the device now, and a node of the
-    /// device's that isn't among them is going for the re-bind.
+    /// device's that isn't among them is going for the re-bind. A request
+    /// whose nodes udev can't list is not said: taking a node still there
+    /// for one going would leave it marked, and its going later, for no
+    /// re-bind, taken for one. Unsaid, the re-bind is taken for the pad
+    /// leaving and one connecting, as one by anyone but the service is.
     Rebinding {
         /// The device re-bound.
         anchor: PathBuf,
@@ -60,8 +73,12 @@ pub enum Change {
         present: Vec<PathBuf>,
     },
     /// Changes were lost, the monitor not read in time: what is connected
-    /// is to be looked at again, with [`connected`] and [`anchors`]. What
-    /// is read after this came after the loss.
+    /// is to be looked at again, with [`connected`] and [`anchors`]. Said
+    /// once the queue has been read to its end. The kernel keeps what was
+    /// queued before the loss, drops each change that comes after until
+    /// the queue has been read empty, and says so before the first of
+    /// those kept is read; so what was kept is passed on before this, in
+    /// order, and what is passed on after this came after the loss.
     Overran,
 }
 
@@ -83,9 +100,9 @@ fn is_rebind(device: &udev::Device) -> bool {
             .is_some_and(|value| value == REBIND.1)
 }
 
-/// The place in sysfs of each event node under `device` now; none if
+/// The place in sysfs of each event node under `device` now; `None` if
 /// udev can't be asked.
-fn event_nodes_under(device: &udev::Device) -> Vec<PathBuf> {
+fn event_nodes_under(device: &udev::Device) -> Option<Vec<PathBuf>> {
     let listed = udev::Enumerator::new().and_then(|mut nodes| {
         nodes.match_parent(device)?;
         nodes.match_subsystem("input")?;
@@ -95,7 +112,7 @@ fn event_nodes_under(device: &udev::Device) -> Vec<PathBuf> {
             .map(|node| node.syspath().to_path_buf())
             .collect())
     });
-    listed.unwrap_or_default()
+    listed.ok()
 }
 
 fn attribute(device: &udev::Device, name: &str) -> Option<String> {
@@ -172,6 +189,30 @@ pub fn connected() -> io::Result<Vec<Found>> {
         .collect())
 }
 
+/// Opens the event node `node` for reading, as the node at `syspath` in
+/// sysfs. A node's name is handed on: one opened a while after it was
+/// found may be another pad's by then, which is refused. Opened first and
+/// then looked up, it is the one at `syspath` if that is still there with
+/// the opened file's number, a number being one device's for as long as
+/// it is there.
+///
+/// # Errors
+///
+/// Fails if the node can't be opened, or is no longer the one at
+/// `syspath`.
+pub fn open_node(node: &Path, syspath: &Path) -> io::Result<File> {
+    let file = File::open(node)?;
+    let opened = rustix::fs::fstat(&file)?.st_rdev;
+    let there = udev::Device::from_syspath(syspath)?.devnum();
+    if there != Some(opened) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{} is no longer {}", node.display(), syspath.display()),
+        ));
+    }
+    Ok(file)
+}
+
 /// Every device a pad can be anchored to now, each as the enumeration it
 /// is.
 ///
@@ -235,6 +276,7 @@ impl Monitor {
         drain(
             || socket.iter().next(),
             || io::Error::last_os_error().raw_os_error(),
+            || readable(socket),
             |event| match event {
                 Some(event) => changed(&event.device(), event.event_type(), &mut change),
                 None => change(Change::Overran),
@@ -243,21 +285,42 @@ impl Monitor {
     }
 }
 
+/// Whether something is queued on `socket` now.
+fn readable(socket: &impl AsFd) -> bool {
+    let mut fds = [PollFd::new(socket, PollFlags::IN)];
+    let now = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    poll(&mut fds, Some(&now)).is_ok_and(|ready| ready > 0)
+}
+
 /// Reads what `next` gives until it gives nothing, passing each to
 /// `each`. udev's library says why it had nothing in `errno`: once after
 /// the kernel dropped events for a socket not read in time, it is
-/// `ENOBUFS`, which is passed on as `None`, and what was queued after the
-/// loss is read still.
+/// `ENOBUFS`. The kernel says that before the first event still queued,
+/// and those queued were sent before the loss, so the loss is passed on,
+/// as `None`, only once the socket has been read to its end, `readable`
+/// saying when: udev's library has nothing for an event it sets aside as
+/// well, an event from a sender it doesn't trust, with more queued.
 fn drain<T>(
     mut next: impl FnMut() -> Option<T>,
     errno: impl Fn() -> Option<i32>,
+    readable: impl Fn() -> bool,
     mut each: impl FnMut(Option<T>),
 ) {
+    let mut overran = false;
     loop {
         match next() {
             Some(item) => each(Some(item)),
-            None if errno() == Some(libc::ENOBUFS) => each(None),
-            None => return,
+            None if errno() == Some(libc::ENOBUFS) => overran = true,
+            None if overran && readable() => {}
+            None => {
+                if overran {
+                    each(None);
+                }
+                return;
+            }
         }
     }
 }
@@ -270,10 +333,12 @@ fn changed(device: &udev::Device, kind: udev::EventType, change: &mut impl FnMut
             change(Change::Unplugged(device.syspath().to_path_buf()));
         }
         udev::EventType::Change if is_rebind(device) => {
-            change(Change::Rebinding {
-                anchor: device.syspath().to_path_buf(),
-                present: event_nodes_under(device),
-            });
+            if let Some(present) = event_nodes_under(device) {
+                change(Change::Rebinding {
+                    anchor: device.syspath().to_path_buf(),
+                    present,
+                });
+            }
         }
         udev::EventType::Add | udev::EventType::Change => {
             if let Some(found) = found(device) {
@@ -281,14 +346,17 @@ fn changed(device: &udev::Device, kind: udev::EventType, change: &mut impl FnMut
             }
         }
         udev::EventType::Remove => {
-            // What it was is gone with it; only its node is left
-            // to say which pad this was.
+            // What it was is gone with it; only its node and its place
+            // are left to say which pad this was.
             let is_event = device
                 .sysname()
                 .to_str()
                 .is_some_and(|name| name.starts_with("event"));
             if let (true, Some(node)) = (is_event, device.devnode()) {
-                change(Change::Left(node.to_path_buf()));
+                change(Change::Left {
+                    node: node.to_path_buf(),
+                    syspath: device.syspath().to_path_buf(),
+                });
             }
         }
         _ => {}
@@ -315,8 +383,9 @@ mod tests {
         Nothing(i32),
     }
 
-    /// Drains `script` as the monitor drains its socket, and says what
-    /// was passed on, an overrun as `None`, and how much is left unread.
+    /// Drains `script` as the monitor drains its socket, the socket
+    /// readable while any of the script is left, and says what was passed
+    /// on, an overrun as `None`, and how much is left unread.
     fn drained(script: Vec<Read>) -> (Vec<Option<u32>>, usize) {
         let script = RefCell::new(VecDeque::from(script));
         let errno = Cell::new(0);
@@ -330,30 +399,62 @@ mod tests {
                 }
             },
             || Some(errno.get()),
+            || !script.borrow().is_empty(),
             |event| passed.borrow_mut().push(event),
         );
         (passed.into_inner(), script.into_inner().len())
     }
 
-    /// Events lost to a socket not read in time are said, once each time
-    /// the kernel says so, and what was queued after is still read.
+    /// The kernel says it dropped events before the first of those it
+    /// kept, which were sent before the loss: the loss is said once they
+    /// are read, so that what is connected is looked at again after them
+    /// and not before. An event set aside by udev's library, with more
+    /// queued, isn't the queue's end; once every event queued is read, it
+    /// is.
     #[test]
-    fn an_overrun_is_said_and_what_follows_is_read() {
+    fn an_overrun_is_said_once_what_was_kept_is_read() {
         let (passed, left) = drained(vec![
             Read::Event(1),
             Read::Nothing(libc::ENOBUFS),
             Read::Event(2),
             Read::Nothing(libc::EAGAIN),
             Read::Event(3),
+            Read::Nothing(libc::EAGAIN),
         ]);
-        assert_eq!(passed, [Some(1), None, Some(2)]);
-        assert_eq!(left, 1, "read at the socket's next wake");
+        assert_eq!(passed, [Some(1), Some(2), Some(3), None]);
+        assert_eq!(left, 0);
     }
 
-    /// Nothing for any other reason ends the read without an overrun.
+    /// A node opened by name is the one at the place it was found, or is
+    /// refused: here `/dev/null`, which is no other device's place.
+    #[test]
+    fn a_node_is_opened_only_as_the_device_it_was_found_as() {
+        let null = Path::new("/dev/null");
+        open_node(null, Path::new("/sys/devices/virtual/mem/null")).unwrap();
+        let refused = open_node(null, Path::new("/sys/devices/virtual/mem/zero")).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::NotFound, "{refused}");
+        assert!(open_node(null, Path::new("/sys/devices/virtual/mem/gone")).is_err());
+    }
+
+    /// A socket is readable while something is queued on it, and asking
+    /// waits for nothing.
+    #[test]
+    fn a_socket_is_readable_while_something_is_queued() {
+        let (one, other) = std::os::unix::net::UnixDatagram::pair().unwrap();
+        assert!(!readable(&other));
+        one.send(b"queued").unwrap();
+        assert!(readable(&other));
+        other.recv(&mut [0; 8]).unwrap();
+        assert!(!readable(&other));
+    }
+
+    /// Without an overrun, nothing for whatever reason ends the read,
+    /// what is left read at the socket's next wake.
     #[test]
     fn nothing_else_is_an_overrun() {
-        let (passed, left) = drained(vec![Read::Nothing(libc::EINVAL), Read::Event(1)]);
-        assert_eq!((passed, left), (Vec::new(), 1));
+        for error in [libc::EINVAL, libc::EAGAIN] {
+            let (passed, left) = drained(vec![Read::Nothing(error), Read::Event(1)]);
+            assert_eq!((passed, left), (Vec::new(), 1));
+        }
     }
 }

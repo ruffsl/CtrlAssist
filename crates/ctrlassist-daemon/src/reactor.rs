@@ -432,8 +432,8 @@ impl Reactor {
             // A pad whose node went for a re-bind the hiding service
             // asked is away, and nothing is said of it unless its anchor
             // goes.
-            Seen::Left(node) => {
-                let gone = self.book.left(&node).into_iter().collect();
+            Seen::Left(syspath) => {
+                let gone = self.book.left(&syspath).into_iter().collect();
                 self.gone(gone).await;
             }
             Seen::Unplugged(device) => {
