@@ -4,9 +4,10 @@
 //! reported once its nodes and their permissions are in place, so it can
 //! be opened at once.
 
+use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
@@ -60,7 +61,11 @@ pub enum Change {
     /// comes once the kernel has removed the device's nodes and made new
     /// ones, and before udev sends any of that: `present` is the place in
     /// sysfs of each event node under the device now, and a node of the
-    /// device's that isn't among them is going for the re-bind.
+    /// device's that isn't among them is going for the re-bind. A request
+    /// whose nodes udev can't list is not said: taking a node still there
+    /// for one going would leave it marked, and its going later, for no
+    /// re-bind, taken for one. Unsaid, the re-bind is taken for the pad
+    /// leaving and one connecting, as one by anyone but the service is.
     Rebinding {
         /// The device re-bound.
         anchor: PathBuf,
@@ -95,9 +100,9 @@ fn is_rebind(device: &udev::Device) -> bool {
             .is_some_and(|value| value == REBIND.1)
 }
 
-/// The place in sysfs of each event node under `device` now; none if
+/// The place in sysfs of each event node under `device` now; `None` if
 /// udev can't be asked.
-fn event_nodes_under(device: &udev::Device) -> Vec<PathBuf> {
+fn event_nodes_under(device: &udev::Device) -> Option<Vec<PathBuf>> {
     let listed = udev::Enumerator::new().and_then(|mut nodes| {
         nodes.match_parent(device)?;
         nodes.match_subsystem("input")?;
@@ -107,7 +112,7 @@ fn event_nodes_under(device: &udev::Device) -> Vec<PathBuf> {
             .map(|node| node.syspath().to_path_buf())
             .collect())
     });
-    listed.unwrap_or_default()
+    listed.ok()
 }
 
 fn attribute(device: &udev::Device, name: &str) -> Option<String> {
@@ -182,6 +187,30 @@ pub fn connected() -> io::Result<Vec<Found>> {
         .scan_devices()?
         .filter_map(|device| found(&device))
         .collect())
+}
+
+/// Opens the event node `node` for reading, as the node at `syspath` in
+/// sysfs. A node's name is handed on: one opened a while after it was
+/// found may be another pad's by then, which is refused. Opened first and
+/// then looked up, it is the one at `syspath` if that is still there with
+/// the opened file's number, a number being one device's for as long as
+/// it is there.
+///
+/// # Errors
+///
+/// Fails if the node can't be opened, or is no longer the one at
+/// `syspath`.
+pub fn open_node(node: &Path, syspath: &Path) -> io::Result<File> {
+    let file = File::open(node)?;
+    let opened = rustix::fs::fstat(&file)?.st_rdev;
+    let there = udev::Device::from_syspath(syspath)?.devnum();
+    if there != Some(opened) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{} is no longer {}", node.display(), syspath.display()),
+        ));
+    }
+    Ok(file)
 }
 
 /// Every device a pad can be anchored to now, each as the enumeration it
@@ -304,10 +333,12 @@ fn changed(device: &udev::Device, kind: udev::EventType, change: &mut impl FnMut
             change(Change::Unplugged(device.syspath().to_path_buf()));
         }
         udev::EventType::Change if is_rebind(device) => {
-            change(Change::Rebinding {
-                anchor: device.syspath().to_path_buf(),
-                present: event_nodes_under(device),
-            });
+            if let Some(present) = event_nodes_under(device) {
+                change(Change::Rebinding {
+                    anchor: device.syspath().to_path_buf(),
+                    present,
+                });
+            }
         }
         udev::EventType::Add | udev::EventType::Change => {
             if let Some(found) = found(device) {
@@ -392,6 +423,17 @@ mod tests {
         ]);
         assert_eq!(passed, [Some(1), Some(2), Some(3), None]);
         assert_eq!(left, 0);
+    }
+
+    /// A node opened by name is the one at the place it was found, or is
+    /// refused: here `/dev/null`, which is no other device's place.
+    #[test]
+    fn a_node_is_opened_only_as_the_device_it_was_found_as() {
+        let null = Path::new("/dev/null");
+        open_node(null, Path::new("/sys/devices/virtual/mem/null")).unwrap();
+        let refused = open_node(null, Path::new("/sys/devices/virtual/mem/zero")).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::NotFound, "{refused}");
+        assert!(open_node(null, Path::new("/sys/devices/virtual/mem/gone")).is_err());
     }
 
     /// A socket is readable while something is queued on it, and asking

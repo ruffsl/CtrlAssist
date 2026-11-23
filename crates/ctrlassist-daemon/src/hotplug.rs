@@ -12,7 +12,6 @@
 //! the monitor's thread reading udev meanwhile, so that the daemon's
 //! first state says what they can do.
 
-use std::fs::File;
 use std::io;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
@@ -58,10 +57,10 @@ pub(crate) enum Seen {
     },
 }
 
-/// Whether the pad on `node` can rumble; `None` when it can't be opened
-/// to ask.
-fn can_rumble(node: &Path) -> Option<bool> {
-    let file = File::open(node).ok()?;
+/// Whether the pad on `node`, at `syspath`, can rumble; `None` when it
+/// can't be opened to ask, or `node` is another pad's by now.
+fn can_rumble(node: &Path, syspath: &Path) -> Option<bool> {
+    let file = ctrlassist_device::open_node(node, syspath).ok()?;
     Some(Pad::from_fd(OwnedFd::from(file)).ok()?.can_rumble())
 }
 
@@ -74,7 +73,7 @@ fn opener(seen: UnboundedSender<Seen>) -> io::Result<Sender<(PathBuf, PathBuf)>>
         .name("rumble".into())
         .spawn(move || {
             for (node, syspath) in opening {
-                let Some(rumble) = can_rumble(&node) else {
+                let Some(rumble) = can_rumble(&node, &syspath) else {
                     continue;
                 };
                 let learned = Seen::Rumble {
@@ -103,7 +102,10 @@ fn looked_again() -> Option<(Vec<Found>, Vec<Anchor>)> {
     match looked {
         Ok(looked) => Some(looked),
         Err(error) => {
-            warn!(%error, "udev's events overran the hotplug watch, and what is connected couldn't be looked at again");
+            warn!(
+                %error,
+                "udev's events overran the hotplug watch, and what is connected couldn't be looked at again; the pads may be published wrong until udev next sends something, when it is looked at again"
+            );
             None
         }
     }
@@ -151,6 +153,11 @@ impl Watch {
                         return;
                     }
                 };
+                // Whether an overrun is still to be looked at: one that
+                // couldn't be is looked at once udev sends something else,
+                // with what that says applied before it, as it came after
+                // the loss.
+                let mut overran = false;
                 loop {
                     let mut fds = [
                         PollFd::new(&monitor, PollFlags::IN),
@@ -177,17 +184,18 @@ impl Watch {
                         Change::Rebinding { anchor, present } => {
                             let _ = seen.send(Seen::Rebinding { anchor, present });
                         }
-                        Change::Overran => {
-                            if let Some((connected, anchors)) = looked_again() {
-                                let opened = connected.iter().map(to_open).collect();
-                                let _ = seen.send(Seen::Overran { connected, anchors });
-                                learn(opened);
-                            }
-                        }
+                        // Said once the monitor has been read to its end.
+                        Change::Overran => overran = true,
                         // A change this release doesn't know says nothing
                         // it can act on.
                         _ => {}
                     });
+                    if overran && let Some((connected, anchors)) = looked_again() {
+                        overran = false;
+                        let opened = connected.iter().map(to_open).collect();
+                        let _ = seen.send(Seen::Overran { connected, anchors });
+                        learn(opened);
+                    }
                 }
             })?;
         let now: Vec<Found> = start
@@ -197,7 +205,7 @@ impl Watch {
             .iter()
             .filter_map(|found| {
                 let (node, syspath) = to_open(found);
-                let rumble = can_rumble(&node)?;
+                let rumble = can_rumble(&node, &syspath)?;
                 Some(Seen::Rumble {
                     node,
                     syspath,

@@ -33,7 +33,7 @@ mod thread;
 pub use anchor::Anchor;
 pub use database::Database;
 pub use dualsense::DualSenseData;
-pub use hotplug::{Change, Found, Monitor, anchors, connected};
+pub use hotplug::{Change, Found, Monitor, anchors, connected, open_node};
 pub use layout::{AxisRange, Mapping};
 pub use output::{Rested, Writes};
 pub use pad::{Identifiers, Pad, PadError, PadId};
