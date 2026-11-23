@@ -15,6 +15,7 @@ mod fonts;
 mod icon_theme;
 mod icons;
 pub mod keys;
+mod lanes;
 mod models;
 pub mod nav;
 pub mod pads;
@@ -91,7 +92,7 @@ pub fn run() -> Result<()> {
     // claim, and the window opens all the same.
     let gui_config_path = couch::default_config_path();
     let claimed = rt.block_on(dbus::try_claim_and_serve(Some(gui_config_path.clone())));
-    let (_gui_dbus, activation) = match claimed {
+    let (gui_dbus, activation) = match claimed {
         Ok((dbus::ClaimResult::Primary(connection), activation)) => {
             (Some(connection), Some(activation))
         }
@@ -184,7 +185,7 @@ pub fn run() -> Result<()> {
     about::wire(&app, &daemon);
     pads::wire(&app, &daemon, &nav);
     setups::wire(&app, &daemon);
-    profiles::wire(&app, &daemon, &nav);
+    let profile_writer = profiles::wire(&app, &daemon, &nav);
     rt.spawn(state::follow(daemon, tray, app.as_weak()));
     // The desktop's accent color, from the settings portal: with no
     // portal the theme's own stays.
@@ -395,11 +396,25 @@ pub fn run() -> Result<()> {
     // any that remain.
     app.run()?;
 
+    // The window is gone: its name goes before anything is waited for,
+    // so that a launch from now on opens a window of its own rather than
+    // handing over to this one, which has none to raise.
+    if let Some(connection) = gui_dbus {
+        rt.block_on(dbus::release(connection));
+    }
+
     // A preference changed just before the window closed may still be
-    // on its way to the disk: wait for the writer to reach the last
-    // change, briefly.
-    if !rt.block_on(writer.flush(std::time::Duration::from_secs(2))) {
+    // on its way to the disk, and a profile's change, start, copy or
+    // delete on its way to the daemon: wait for both writers to reach
+    // the last, briefly, the two waits side by side under the one bound.
+    let flush = std::time::Duration::from_secs(2);
+    let (couch_flushed, profiles_flushed) =
+        rt.block_on(async { tokio::join!(writer.flush(flush), profile_writer.flush(flush)) });
+    if !couch_flushed {
         warn!("couch preference write didn't finish before exit");
+    }
+    if !profiles_flushed {
+        warn!("a request about a profile wasn't answered before exit");
     }
 
     info!("ctrlassist-gui shutting down");

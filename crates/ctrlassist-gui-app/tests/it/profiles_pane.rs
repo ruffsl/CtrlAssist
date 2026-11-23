@@ -402,6 +402,30 @@ fn app() -> AppWindow {
     app
 }
 
+/// A profile's name too long for the header at the window's least width
+/// wraps, whole, rather than being cut short where only a pointer could
+/// show the rest: keys and couch mode read it as it is.
+#[test]
+fn a_long_name_wraps_whole_in_the_header_at_the_least_width() {
+    const LONG: &str = "abcdefghijklmnopqrstuvwxyz-01234";
+    let app = app();
+    let mut known_now = known();
+    known_now.profiles.push(profile(LONG, COUCH));
+    profiles::show(&app, known_now);
+    app.window()
+        .set_size(slint::LogicalSize::new(720.0, 1600.0));
+    let height_of = |app: &AppWindow, name: &str| {
+        app.global::<Profiles>().invoke_select(name.into());
+        settle();
+        let shown = find_by_accessible_id(app, "profiles-name").expect("the header's name");
+        assert_eq!(shown.accessible_label().unwrap_or_default(), name);
+        shown.size().height
+    };
+    let short = height_of(&app, "couch");
+    let long = height_of(&app, LONG);
+    assert!(long > short, "the long name wraps: {long} against {short}");
+}
+
 #[test]
 fn a_new_profile_is_a_draft_that_is_named_checked_and_can_be_dropped() {
     let app = app();
@@ -727,6 +751,94 @@ fn a_profile_s_pad_and_a_pad_s_profile_are_a_click_apart_and_back_returns() {
     assert_eq!(pad_shown(), "DualSense");
 }
 
+/// The cases the tray's picks and the window's both meet, kept with the
+/// tray's.
+const SWAP_CASES: &str = include_str!("../../../ctrlassist-tray/src/swap_cases.txt");
+
+/// Each case of the tray's `swap_cases.txt`, run through the window's
+/// own rule for what a pick moves.
+#[test]
+fn a_pick_moves_the_other_parts_as_the_shared_cases_say() {
+    let mut ran = 0;
+    for case in SWAP_CASES.split("\ncase: ").skip(1) {
+        let mut lines = case.lines();
+        let title = lines.next().unwrap_or_default();
+        let mut given = BTreeMap::new();
+        for line in lines {
+            if let Some((key, rest)) = line.split_once(": ") {
+                given.insert(key, rest);
+            }
+        }
+        let pads: Vec<Pad> = given["pads"]
+            .split(' ')
+            .map(|entry| {
+                let (id, rest) = entry.split_once('=').unwrap();
+                let (rest, setup) = rest
+                    .split_once('@')
+                    .map_or((rest, None), |(rest, setup)| (rest, Some(setup)));
+                let connected = !rest.ends_with('~');
+                let (vendor, product) = rest.trim_end_matches('~').split_once(':').unwrap();
+                Pad {
+                    vendor: u16::from_str_radix(vendor, 16).unwrap(),
+                    product: u16::from_str_radix(product, 16).unwrap(),
+                    setup: setup.map(str::to_string),
+                    ..pad(id, id, connected)
+                }
+            })
+            .collect();
+        let pairs = |line: &str| -> Vec<(String, String)> {
+            line.split(' ')
+                .filter(|pair| !pair.is_empty())
+                .map(|pair| {
+                    let (key, value) = pair.split_once('=').unwrap();
+                    (key.to_string(), value.to_string())
+                })
+                .collect()
+        };
+        let mut toml = "mode = \"toggle\"\n".to_string();
+        for (key, value) in pairs(given["before"]) {
+            toml.push_str(&format!("{key} = \"{value}\"\n"));
+        }
+        let setups = given
+            .get("running")
+            .map(|running| Setup {
+                name: "couch".to_string(),
+                start: 1,
+                phase: Phase::Running,
+                reason: None,
+                sources: pairs(running)
+                    .into_iter()
+                    .map(|(name, pad)| SetupSource {
+                        name,
+                        pad: Some(pad),
+                        present: true,
+                    })
+                    .collect(),
+                sinks: Vec::new(),
+                nodes: Vec::new(),
+                stale: false,
+            })
+            .into_iter()
+            .collect();
+        let known = Known {
+            profiles: vec![profile("couch", &toml)],
+            setups,
+            pads,
+            fields: form::fields(),
+        };
+        let mut values = form::from_toml(&known.fields, &toml).unwrap();
+        let (key, value) = pairs(given["pick"]).remove(0);
+        profiles::change_places(&known, "couch", &mut values, &key, &value);
+        values.insert(key, value);
+        for (key, value) in pairs(given["after"]) {
+            let held = values.get(&key).map_or("-", String::as_str);
+            assert_eq!(held, value, "{title}: {key}");
+        }
+        ran += 1;
+    }
+    assert_eq!(ran, 10, "every case was read");
+}
+
 /// Picking the pad another part has makes the two change places, so two
 /// pads can change parts without the profile ever naming one twice.
 #[test]
@@ -735,19 +847,26 @@ fn picking_the_other_part_s_pad_changes_the_two_places() {
     let two = "mode = \"toggle\"\nprimary = \"address:0a:1b:2c:3d:4e:14\"\nassist = \"address:1a:2b:3c:4d:5e:da\"\n";
     let mut values = form::from_toml(&known.fields, two).unwrap();
     let (primary, assist) = (values["primary"].clone(), values["assist"].clone());
-    profiles::change_places(&known, &mut values, "primary", &assist);
+    profiles::change_places(&known, "den", &mut values, "primary", &assist);
     assert_eq!(values["assist"], primary);
     // Nothing changes places for a pad no other part has, a pad that
     // isn't known, or a field that isn't a pad.
     let before = values.clone();
     profiles::change_places(
         &known,
+        "den",
         &mut values,
         "primary",
         "serial:045e:02dd:7EED821FFB17",
     );
-    profiles::change_places(&known, &mut values, "primary", "address:00:00:00:00:00:00");
-    profiles::change_places(&known, &mut values, "identity", "xbox");
+    profiles::change_places(
+        &known,
+        "den",
+        &mut values,
+        "primary",
+        "address:00:00:00:00:00:00",
+    );
+    profiles::change_places(&known, "den", &mut values, "identity", "xbox");
     assert_eq!(values, before);
     // A part with no pad yet takes the other's, which is left to choose.
     let mut one = form::from_toml(
@@ -755,7 +874,13 @@ fn picking_the_other_part_s_pad_changes_the_two_places() {
         "mode = \"priority\"\nassist = \"address:0a:1b:2c:3d:4e:14\"\n",
     )
     .unwrap();
-    profiles::change_places(&known, &mut one, "primary", "address:0a:1b:2c:3d:4e:14");
+    profiles::change_places(
+        &known,
+        "den",
+        &mut one,
+        "primary",
+        "address:0a:1b:2c:3d:4e:14",
+    );
     assert!(!one.contains_key("assist"));
 }
 
@@ -824,6 +949,45 @@ fn a_dropdown_in_a_virtual_pad_s_row_lives_through_a_daemon_change() {
     crate::support::press(&app, Key::Return);
     assert!(select.get_open(), "the dropdown kept focus");
     crate::support::press(&app, Key::Escape);
+}
+
+/// A dropdown made anew while its list is open, its profile's detail
+/// rebuilt, still takes the pick: it is routed by the control's key, the
+/// same for the one made in its place, not by the button that opened it.
+#[test]
+fn a_pick_lands_on_a_dropdown_made_anew_while_its_list_was_open() {
+    use ctrlassist_gui::Select;
+    use slint::platform::Key;
+    let app = app();
+    let asked = record_set_field(&app);
+    app.global::<Profiles>().invoke_select("couch".into());
+    settle();
+    focus_by_keys(&app, "profiles-field-identity");
+    crate::support::press(&app, Key::Return);
+    let select = app.global::<Select>();
+    assert!(select.get_open());
+    // The profile goes and comes back: its row and its detail, and the
+    // dropdown in it, are made anew.
+    let mut without = known();
+    without.profiles.retain(|profile| profile.name != "couch");
+    profiles::show(&app, without);
+    settle();
+    profiles::show(&app, known());
+    app.global::<Profiles>().invoke_select("couch".into());
+    settle();
+    assert!(select.get_open());
+    let values: Vec<String> = select
+        .get_values()
+        .iter()
+        .map(|value| value.to_string())
+        .collect();
+    let at = values
+        .iter()
+        .position(|value| value == "dualsense")
+        .expect("an identity to pick");
+    select.invoke_pick(i32::try_from(at).unwrap());
+    settle();
+    assert_eq!(*asked.borrow(), ["couch identity dualsense"]);
 }
 
 /// A pad list puts connected pads first, so it may change order while
@@ -921,11 +1085,15 @@ fn leaving_an_unfinished_draft_asks_and_discarding_it_does_not() {
 }
 
 /// Managed follows the profile as the daemon keeps it, after a toggle
-/// as before: the switch asks, and shows what is kept.
+/// as before. Through the window's own path: a toggle is held and shown
+/// at once, says it is on its way and asks for the change; what the
+/// daemon then keeps is what it shows, and a change from elsewhere
+/// reaches it.
 #[test]
 fn the_managed_switch_follows_the_profile_after_a_toggle() {
     let app = app();
-    let asked = record_set_field(&app);
+    let (writer, mut asked) = profiles::Writer::detached();
+    profiles::bind_edits(&app, &writer);
     app.global::<Profiles>().invoke_select("couch".into());
     settle();
     let checked = |app: &AppWindow| {
@@ -951,10 +1119,20 @@ fn the_managed_switch_follows_the_profile_after_a_toggle() {
         settle();
     };
     assert!(!checked(&app));
+    let word = |app: &AppWindow| {
+        let rows: Vec<ProfileRow> = app.global::<Profiles>().get_rows().iter().collect();
+        row(&rows, "couch").word.to_string()
+    };
     activate_shown(&app, "profiles-managed");
-    assert_eq!(*asked.borrow(), ["couch managed true"]);
-    // Asked, not kept: as it was.
-    assert!(!checked(&app));
+    let put = match asked.try_recv() {
+        Ok(profiles::Op::Put(change)) => change,
+        other => unreachable!("a toggle asks for the change, not {other:?}"),
+    };
+    assert_eq!(put.name, "couch");
+    assert!(put.toml.contains("managed = true"), "{}", put.toml);
+    // Held and shown at once, and said to be on its way.
+    assert!(checked(&app));
+    assert_eq!(word(&app), "Saving…");
     kept(&app, true);
     assert!(checked(&app));
     assert_eq!(chip(&app), "Managed");

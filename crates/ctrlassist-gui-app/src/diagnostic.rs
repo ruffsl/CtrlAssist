@@ -8,7 +8,9 @@
 //! text. A pad's address is masked throughout: its vendor half stays,
 //! which tells a maker's pad from a clone, and the half that names the
 //! one unit is replaced, with a number so two pads of one maker can
-//! still be told apart. No file path goes in: one under the home
+//! still be told apart. A pad's USB serial number, in the ids of pads
+//! with no address, names one unit too and is masked the same way, its
+//! model kept. No file path goes in: one under the home
 //! directory names the user, so the daemon's section says only whether
 //! the daemon named the directory it keeps the user's files in.
 
@@ -120,12 +122,13 @@ fn steam_runs() -> bool {
         })
 }
 
-/// The bundle, as JSON laid out to be read, with addresses masked.
+/// The bundle, as JSON laid out to be read, with addresses and serial
+/// numbers masked.
 #[must_use]
 pub fn bundle(inputs: &Inputs) -> String {
     let value = render(inputs);
     let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
-    mask_addresses(&text)
+    mask_serials(&mask_addresses(&text))
 }
 
 fn render(inputs: &Inputs) -> Value {
@@ -255,9 +258,103 @@ pub fn mask_addresses(text: &str) -> String {
     out
 }
 
+/// Whether `byte` may be in a USB serial number as udev gives it, which
+/// keeps letters, digits and a few marks and replaces the rest.
+fn in_serial(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"#+-.:=@_".contains(&byte)
+}
+
+/// The serial number a pad's id carries at the start of `bytes`, after
+/// its `serial` and model: `serial:045e:0b12:` or, as a marker for the
+/// hiding service names it, `serial-045e-0b12-`. The length of what
+/// comes before the number, and the number's.
+fn serial_at(bytes: &[u8]) -> Option<(usize, usize)> {
+    let rest = bytes.strip_prefix(b"serial")?;
+    let (&separator, rest) = rest.split_first()?;
+    if separator != b':' && separator != b'-' {
+        return None;
+    }
+    let model = rest.get(..10)?;
+    let fits = model.iter().enumerate().all(|(at, byte)| match at {
+        4 | 9 => *byte == separator,
+        _ => byte.is_ascii_hexdigit(),
+    });
+    if !fits {
+        return None;
+    }
+    let head = "serial".len() + 1 + model.len();
+    let mut length = bytes[head..]
+        .iter()
+        .take_while(|byte| in_serial(**byte))
+        .count();
+    // A mark that ends it ends a sentence, or a field.
+    while length > 0 && matches!(bytes[head + length - 1], b'.' | b':' | b'-') {
+        length -= 1;
+    }
+    (length > 0).then_some((head, length))
+}
+
+/// Masks every USB serial number a pad's id carries in `text`:
+/// `serial:045e:0b12:3033363030` becomes `serial:045e:0b12:xxxx#1`, the
+/// model kept and the number standing for the serial's place among those
+/// met, so the same pad reads the same everywhere and two of one model
+/// don't read alike. A serial number names one unit as an address does.
+#[must_use]
+pub fn mask_serials(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut seen: Vec<&str> = Vec::new();
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let starts = bytes[..at]
+            .last()
+            .is_none_or(|before| !before.is_ascii_alphanumeric());
+        if starts && let Some((head, length)) = serial_at(&bytes[at..]) {
+            // All ASCII, by `serial_at`, so the slices are on boundaries.
+            let serial = &text[at + head..at + head + length];
+            let number = match seen.iter().position(|known| *known == serial) {
+                Some(place) => place + 1,
+                None => {
+                    seen.push(serial);
+                    seen.len()
+                }
+            };
+            out.push_str(&text[at..at + head]);
+            out.push_str("xxxx#");
+            out.push_str(&number.to_string());
+            at += head + length;
+            continue;
+        }
+        let width = text[at..].chars().next().map_or(1, char::len_utf8);
+        out.push_str(&text[at..at + width]);
+        at += width;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_serial_keeps_its_model_and_a_number_tells_units_apart() {
+        let text = "pad = \"serial:045e:0b12:3033363030303435\"\nassist = \"serial:045E:0b12:AB-12.c\"; again serial:045e:0b12:3033363030303435, and serial-045e-0b12-AB-12.c.";
+        assert_eq!(
+            mask_serials(text),
+            "pad = \"serial:045e:0b12:xxxx#1\"\nassist = \"serial:045E:0b12:xxxx#2\"; again serial:045e:0b12:xxxx#1, and serial-045e-0b12-xxxx#2."
+        );
+        // What isn't a pad's serial is left alone.
+        for text in [
+            "serial:045e:0b12:",
+            "serial:45e:0b12:abc",
+            "serial:045e-0b12:abc",
+            "deserial:045e:0b12:abc",
+            "serial number 12",
+            "",
+        ] {
+            assert_eq!(mask_serials(text), text);
+        }
+    }
 
     #[test]
     fn an_address_keeps_its_vendor_half_and_a_number_tells_units_apart() {
@@ -282,6 +379,61 @@ mod tests {
         ] {
             assert_eq!(mask_addresses(text), text);
         }
+    }
+
+    /// A serial number is masked wherever a pad's id can be: the pads,
+    /// a setup's sources and the reason it failed, a profile's text.
+    #[test]
+    fn the_bundle_holds_no_whole_serial_number() {
+        const ID: &str = "serial:045e:0b12:3033363030303435";
+        let setup: Setup = serde_json::from_value(json!({
+            "name": "couch",
+            "start": 1,
+            "phase": "failed",
+            "reason": format!("couldn't open {ID}: gone"),
+            "sources": [{ "name": "primary", "pad": ID, "present": false }],
+            "sinks": [],
+            "nodes": [],
+        }))
+        .expect("a setup as the daemon publishes one");
+        let inputs = Inputs {
+            pads: vec![Pad {
+                id: ID.into(),
+                name: "Xbox Wireless Controller".into(),
+                vendor: 0x045e,
+                product: 0x0b12,
+                connected: true,
+                hidden: false,
+                setup: Some("couch".into()),
+                rumble: Some(true),
+                bus: None,
+            }],
+            setups: vec![setup],
+            profiles: vec![Profile {
+                name: "couch".into(),
+                toml: format!("mode = \"unicast\"\npad = \"{ID}\"\n"),
+                unset: Vec::new(),
+                problem: None,
+            }],
+            ..Inputs::default()
+        };
+        let text = bundle(&inputs);
+        assert!(!text.contains("3033363030303435"), "{text}");
+        let value: Value = serde_json::from_str(&text).unwrap();
+        let masked = "serial:045e:0b12:xxxx#1";
+        assert_eq!(value["pads"][0]["id"], masked);
+        assert_eq!(value["setups"][0]["sources"][0]["pad"], masked);
+        assert_eq!(
+            value["setups"][0]["reason"],
+            format!("couldn't open {masked}: gone")
+        );
+        assert!(
+            value["profiles"][0]["toml"]
+                .as_str()
+                .unwrap()
+                .contains(masked),
+            "{text}"
+        );
     }
 
     #[test]

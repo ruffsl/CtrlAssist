@@ -258,7 +258,7 @@ pub fn rows(parts: &Parts) -> Vec<AboutComponentRow> {
             "hider",
             "Hiding",
             String::new(),
-            "Runs as root to make a setup's pads absent to games.".to_string(),
+            "Runs as its own system user, with no special capabilities, to make a setup's pads absent to games.".to_string(),
             hider,
         ),
         (

@@ -3,6 +3,7 @@
 //! mirror that a person should know of becomes a notification.
 
 mod desktop;
+mod lanes;
 pub mod menu;
 pub mod notify;
 pub mod service;
@@ -11,10 +12,12 @@ pub mod state;
 pub mod tip;
 pub mod tray;
 
+use std::ops::ControlFlow;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use ctrlassist::{DaemonClient, StateWatcher, StateWatcherConfig};
+use ctrlassist::{DaemonClient, StateEvent, StateWatcher, StateWatcherConfig};
 use tokio::sync::{Notify, mpsc};
 use tracing::{info, warn};
 
@@ -46,11 +49,13 @@ impl Handle {
     }
 }
 
-/// What the client mirrors right now.
-fn snapshot(daemon: &DaemonClient) -> View {
+/// What the client mirrors right now, in the daemon's `lifetime` as the
+/// loop that follows it counts them.
+fn snapshot(daemon: &DaemonClient, lifetime: u64) -> View {
     View {
         alive: daemon.is_available(),
         hydrated: daemon.is_hydrated(),
+        lifetime,
         mismatch: daemon
             .service_info()
             .map(|info| info.version)
@@ -75,6 +80,11 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
     // first, so a tray started without a daemon has nothing to say of it.
     let mut was_alive: Option<bool> = None;
     let mut started = false;
+    // The daemon's lifetimes, counted by its coming: one that goes and
+    // comes back between two looks is another all the same. A watcher
+    // that falls more than its queue behind loses the events, and with
+    // them a restart in that gap.
+    let mut lifetime = 0;
     // A preset's fields, asked once of each daemon that comes.
     let mut fields = Vec::new();
     loop {
@@ -90,7 +100,7 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
         // it too: the views it takes are in the order they were read.
         let (news, alive) = handle
             .update(|tray| {
-                let mut view = snapshot(&daemon);
+                let mut view = snapshot(&daemon, lifetime);
                 view.fields.clone_from(&fields);
                 let alive = view.alive;
                 let mut news = view.news_for(&tray.view, &mut tray.asked);
@@ -111,8 +121,10 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
             was_alive = Some(alive);
         }
         started = true;
-        if watcher.next().await.is_none() {
-            return;
+        match watcher.next().await {
+            None => return,
+            Some(StateEvent::DaemonAppeared) => lifetime += 1,
+            Some(_) => {}
         }
     }
 }
@@ -121,7 +133,7 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
 /// what changed: as the loop that follows the daemon does, for a daemon
 /// that is there and whose state has arrived. That loop says the rest.
 fn catch_up(tray: &mut PadTray, daemon: &DaemonClient) -> Vec<Toast> {
-    let mut view = snapshot(daemon);
+    let mut view = snapshot(daemon, tray.view.lifetime);
     if !(view.alive && view.hydrated) {
         return Vec::new();
     }
@@ -141,42 +153,31 @@ fn refused(what: String, error: &ctrlassist::Error) -> Toast {
     }
 }
 
-/// Does what the menu's clicks ask, one at a time, as rpcs. One that
-/// fails is said as a notification: a menu has nowhere else to say it.
+/// Does what the menu's clicks ask, as rpcs: each profile's and each
+/// pad's in turn, and beside the others'. One that fails is said as a
+/// notification: a menu has nowhere else to say it.
 pub(crate) async fn act(
     daemon: DaemonClient,
-    mut clicked: mpsc::UnboundedReceiver<Action>,
+    clicked: mpsc::UnboundedReceiver<Action>,
     notifier: Notifier,
     quit: Arc<Notify>,
     config: Option<std::path::PathBuf>,
     handle: Handle,
 ) {
-    let opening = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    while let Some(action) = clicked.recv().await {
-        // Said as it is taken up, so that a click that led nowhere can
-        // be told from one that was never made. An aim isn't a click,
-        // and comes with every notch of the wheel.
-        if !matches!(action, Action::Aim(_)) {
+    let opening = Arc::new(AtomicBool::new(false));
+    let now = {
+        let notifier = notifier.clone();
+        move |action: Action| {
             info!(action = action.named(), "an action from the menu");
-        }
-        let (what, outcome) = match action {
-            Action::Quit => {
-                quit.notify_one();
-                return;
-            }
-            // Kept, and nothing said of it.
-            Action::Aim(name) => {
-                if let Some(config) = &config {
-                    notify::save_target(config, name).await;
+            match action {
+                Action::Quit => {
+                    quit.notify_one();
+                    return ControlFlow::Break(());
                 }
-                continue;
-            }
-            Action::Settings => {
-                // On a task of its own: a window that is starting takes
-                // a while to answer, and the menu's other clicks don't
-                // wait for it. One opening at a time: clicks while one
-                // is under way are that one's.
-                if !opening.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                // A window that is starting takes a while to answer, and
+                // the menu's other clicks don't wait for it. One opening
+                // at a time: clicks while one is under way are that one's.
+                Action::Settings if !opening.swap(true, Ordering::AcqRel) => {
                     let (opening, notifier) = (Arc::clone(&opening), notifier.clone());
                     tokio::spawn(async move {
                         if let Err(error) = settings::open().await {
@@ -191,90 +192,131 @@ pub(crate) async fn act(
                                 icon: "dialog-error",
                             });
                         }
-                        opening.store(false, std::sync::atomic::Ordering::Release);
+                        opening.store(false, Ordering::Release);
                     });
                 }
-                continue;
+                _ => {}
             }
-            Action::Start(name) => {
-                let outcome = daemon.start_setup(&name).await;
-                if outcome.is_err() {
-                    unask(&handle, &name, |asked| asked.start = false).await;
-                }
-                (format!("Couldn't start {name}"), outcome)
+            ControlFlow::Continue(())
+        }
+    };
+    let job = move |action: Action| {
+        let (daemon, notifier, config, handle) = (
+            daemon.clone(),
+            notifier.clone(),
+            config.clone(),
+            handle.clone(),
+        );
+        async move {
+            // Said as it is taken up, so that a click that led nowhere
+            // can be told from one that was never made. An aim isn't a
+            // click, and comes with every notch of the wheel.
+            if !matches!(action, Action::Aim(_)) {
+                info!(action = action.named(), "an action from the menu");
             }
-            Action::Stop(name) => {
-                let outcome = daemon.stop_setup(&name).await;
-                if outcome.is_err() {
-                    unask(&handle, &name, |asked| asked.stop = false).await;
-                }
-                (format!("Couldn't stop {name}"), outcome)
+            if let Some((what, Err(error))) =
+                perform(&daemon, &notifier, config, &handle, action).await
+            {
+                warn!(%error, what, "an action from the menu failed");
+                notifier.notify(refused(what, &error));
             }
-            Action::Select {
-                setup,
-                node,
-                choice,
-            } => (
-                format!("Couldn't hand {setup} over to {choice}"),
-                daemon.select(&setup, &node, Some(&choice)).await,
-            ),
-            Action::Identify(pad) => (
-                "Couldn't buzz the pad".to_string(),
-                daemon.identify_pad(&pad, BUZZ).await,
-            ),
-            Action::Forget(pad) => (
-                "Couldn't forget the pad".to_string(),
-                daemon.forget_pad(&pad).await,
-            ),
-            Action::Put { name, toml } => {
-                let outcome = put_and_apply(&daemon, &name, &toml).await;
-                let restarted = match outcome {
-                    Ok(Applied::Restarted(start)) => Some(start),
-                    _ => None,
-                };
-                let refused = matches!(outcome, Err(Unapplied::Refused(_)));
-                // The answer is taken with the view caught up with the
-                // daemon as it gave it: a restart is said once, and what
-                // was seen meanwhile that wasn't the restart is said too.
-                let (news, running) = handle
-                    .update(|tray| {
-                        // The tray showed the pick as made. Refused, it
-                        // shows what is kept again.
-                        if refused {
-                            tray.unpick(&name, daemon.profile(&name).ok().flatten());
-                        }
-                        let mut news = catch_up(tray, &daemon);
+        }
+    };
+    lanes::dispatch(clicked, now, job).await;
+}
+
+/// Does one action from a lane, and says what came of it that is news.
+/// What it asked and how that went, for one whose failure is said.
+async fn perform(
+    daemon: &DaemonClient,
+    notifier: &Notifier,
+    config: Option<std::path::PathBuf>,
+    handle: &Handle,
+    action: Action,
+) -> Option<(String, ctrlassist::Result<()>)> {
+    Some(match action {
+        // Kept, and nothing said of it.
+        Action::Aim(name) => {
+            if let Some(config) = &config {
+                notify::save_target(config, name).await;
+            }
+            return None;
+        }
+        Action::Start(name) => {
+            let outcome = daemon.start_setup(&name).await;
+            answered_mark(handle, daemon, notifier, &name, state::Mark::Start).await;
+            (format!("Couldn't start {name}"), outcome)
+        }
+        Action::Stop(name) => {
+            let outcome = daemon.stop_setup(&name).await;
+            answered_mark(handle, daemon, notifier, &name, state::Mark::Stop).await;
+            (format!("Couldn't stop {name}"), outcome)
+        }
+        Action::Select {
+            setup,
+            node,
+            choice,
+        } => (
+            format!("Couldn't hand {setup} over to {choice}"),
+            daemon.select(&setup, &node, Some(&choice)).await,
+        ),
+        Action::Identify(pad) => (
+            "Couldn't buzz the pad".to_string(),
+            daemon.identify_pad(&pad, BUZZ).await,
+        ),
+        Action::Forget(pad) => (
+            "Couldn't forget the pad".to_string(),
+            daemon.forget_pad(&pad).await,
+        ),
+        Action::Put { name, toml } => {
+            // The daemon the change is asked of: one that comes after
+            // has nothing of it to answer.
+            let asked_in = handle.update(|tray| tray.view.lifetime).await;
+            let outcome = put_and_apply(daemon, &name, &toml).await;
+            let restarted = match outcome {
+                Ok(Applied::Restarted(start)) => Some(start),
+                _ => None,
+            };
+            let refused = matches!(outcome, Err(Unapplied::Refused(_)));
+            // The answer is taken with the view caught up with the
+            // daemon as it gave it: a restart is said once, and what
+            // was seen meanwhile that wasn't the restart is said too.
+            let (news, running) = handle
+                .update(|tray| {
+                    // The tray showed the pick as made. Refused, it
+                    // shows what is kept again.
+                    if refused {
+                        tray.unpick(&name, daemon.profile(&name).ok().flatten());
+                    }
+                    let mut news = catch_up(tray, daemon);
+                    if asked_in == Some(tray.view.lifetime) {
                         news.extend(state::answered(
                             &mut tray.asked,
                             &tray.view,
                             &name,
                             restarted,
                         ));
-                        (news, tray.view.setup(&name).is_some())
-                    })
-                    .await
-                    .unwrap_or_default();
-                for toast in news {
-                    notifier.notify(toast);
-                }
-                match outcome {
-                    Ok(_) => continue,
-                    Err(Unapplied::Refused(error)) => {
-                        (format!("Couldn't change {name}"), Err(error))
                     }
-                    Err(Unapplied::Untaken(error)) => {
-                        warn!(%error, setup = name, "a change was kept but not taken");
-                        notifier.notify(state::untaken(&name, &error, running));
-                        continue;
-                    }
+                    (news, tray.view.setup(&name).is_some())
+                })
+                .await
+                .unwrap_or_default();
+            for toast in news {
+                notifier.notify(toast);
+            }
+            match outcome {
+                Ok(_) => return None,
+                Err(Unapplied::Refused(error)) => (format!("Couldn't change {name}"), Err(error)),
+                Err(Unapplied::Untaken(error)) => {
+                    warn!(%error, setup = name, "a change was kept but not taken");
+                    notifier.notify(state::untaken(&name, &error, running));
+                    return None;
                 }
             }
-        };
-        if let Err(error) = outcome {
-            warn!(%error, what, "an action from the menu failed");
-            notifier.notify(refused(what, &error));
         }
-    }
+        // Taken up at once, never on a lane.
+        Action::Settings | Action::Quit => return None,
+    })
 }
 
 /// What came of a pick that was kept.
@@ -321,19 +363,28 @@ async fn put_and_apply(
     }
 }
 
-/// Changes what was asked of `name` from the tray: an rpc that failed
-/// has nothing to be seen of it.
-async fn unask(handle: &Handle, name: &str, change: impl FnOnce(&mut state::Asked)) {
-    handle
+/// Takes the answer to a start or a stop of `name` asked from here,
+/// whatever it was: the view caught up with the daemon as it answered,
+/// and what that says, said; the start or the stop no longer marked as
+/// asked, as what was to be seen of it has been or never will be.
+async fn answered_mark(
+    handle: &Handle,
+    daemon: &DaemonClient,
+    notifier: &Notifier,
+    name: &str,
+    mark: state::Mark,
+) {
+    let news = handle
         .update(|tray| {
-            if let Some(asked) = tray.asked.get_mut(name) {
-                change(asked);
-                if asked.is_empty() {
-                    tray.asked.remove(name);
-                }
-            }
+            let news = catch_up(tray, daemon);
+            state::unmark(&mut tray.asked, name, mark);
+            news
         })
-        .await;
+        .await
+        .unwrap_or_default();
+    for toast in news {
+        notifier.notify(toast);
+    }
 }
 
 #[cfg(test)]

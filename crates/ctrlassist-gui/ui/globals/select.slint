@@ -13,10 +13,11 @@
 // to the `Select` global and opens; the single `SelectOverlay` at the
 // AppWindow root reads it and draws the list — below the anchor, flipped
 // above when there's no room, clamped into the window. Picking routes
-// back to the owning button by id, with the value of the row picked as
-// the list was when it opened: the button's own model may have changed
-// order since (a pad list sorts connected pads first), and an index
-// into it would name another option.
+// back to the owning button by its key, which a button made again in its
+// place has too (a pane rebuilt while the list is open), with the value
+// of the row picked as the list was when it opened: the button's own
+// model may have changed order since (a pad list sorts connected pads
+// first), and an index into it would name another option.
 //
 // Drop-in for `ComboBox` on the `model` / `current-value` / `selected`
 // subset the panes use, with `values` beside `model` for options whose
@@ -38,8 +39,9 @@ export global Select {
     in-out property <[string]> values;
     in-out property <string> current-value;
     in-out property <OverlayAnchor> anchor;
-    // Which button owns the open list (routes the pick back to it).
-    in-out property <int> owner;
+    // Which button owns the open list, by its key (routes the pick back
+    // to it, or to the button made again in its place).
+    in-out property <string> owner;
     // Keyboard cursor within the open list.
     in-out property <int> highlight;
     // Bumped on a pick; the owning button reads `picked-value` in its
@@ -47,7 +49,7 @@ export global Select {
     in-out property <int> pick-tick;
     in-out property <string> picked-value;
 
-    public function open-for(id: int, opts: [string], vals: [string], current: string, a: OverlayAnchor) {
+    public function open-for(id: string, opts: [string], vals: [string], current: string, a: OverlayAnchor) {
         root.owner = id;
         root.options = opts;
         root.values = vals;
@@ -257,6 +259,12 @@ export component ThemedSelect inherits Rectangle {
     callback selected(value: string);
     in property <bool> enabled: true;
 
+    // What a pick is routed back by: the same for a button made again in
+    // this one's place, as a pane does when its rows are made anew while
+    // the list is open, so the pick lands on it; another button's never.
+    // A pane names it where its accessible id alone could be another's;
+    // by default the accessible id, and with none the id claimed here.
+    in property <string> key: root.accessible-id != "" ? root.accessible-id : "#" + root.id;
     property <int> id;
     init => {
         self.id = OverlayIds.claim();
@@ -291,7 +299,7 @@ export component ThemedSelect inherits Rectangle {
         root.open-list();
     }
 
-    property <bool> is-open: Select.open && Select.owner == root.id;
+    property <bool> is-open: Select.open && Select.owner == root.key;
 
     // Read absolute-position only inside event handlers (post-layout) —
     // an eager binding trips Slint's layout-cache reentrancy panic (same
@@ -301,7 +309,7 @@ export component ThemedSelect inherits Rectangle {
             return;
         }
         Select.open-for(
-            root.id,
+            root.key,
             root.model,
             root.values.length == root.model.length ? root.values : root.model,
             root.current-value,
@@ -394,10 +402,10 @@ export component ThemedSelect inherits Rectangle {
         }
     }
 
-    // A pick from the overlay routes back here by owner id.
+    // A pick from the overlay routes back here by its key.
     property <int> pick-mirror: Select.pick-tick;
     changed pick-mirror => {
-        if (Select.owner == root.id) {
+        if (Select.owner == root.key) {
             root.selected(Select.picked-value);
         }
     }
