@@ -12,6 +12,9 @@ locale = "en-us"
 claud = "claud"
 # The terminal UI crate.
 ratatui = "ratatui"
+# The kernel's name for the inheritable capability set in
+# /proc/<pid>/status, CapInh, which the hider check reads.
+Inh = "Inh"
 
 [files]
 # Scan the dotted directories too: .claude/ holds the project instructions.

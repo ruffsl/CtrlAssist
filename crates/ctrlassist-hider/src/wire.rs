@@ -37,7 +37,9 @@ pub enum Refusal {
     Failed,
     /// The request wasn't understood.
     BadRequest,
-    /// The pad isn't of a kind whose raw node the service opens.
+    /// The pad isn't of a kind the service can do that for: one with no
+    /// driver to re-bind, which it can't hide, or one whose raw node it
+    /// doesn't open.
     Unsupported,
 }
 
@@ -77,7 +79,7 @@ impl std::fmt::Display for Refusal {
             Self::Absent => "the pad isn't connected",
             Self::Failed => "the service couldn't carry the request out",
             Self::BadRequest => "the request wasn't understood",
-            Self::Unsupported => "the service doesn't open that kind of pad's raw node",
+            Self::Unsupported => "the service can't do that for this kind of pad",
         })
     }
 }

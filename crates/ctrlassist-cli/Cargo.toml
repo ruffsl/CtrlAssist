@@ -29,9 +29,13 @@ contents = [
     { src = "target/nfpm-dist/ctrlassist-gui", dst = "/usr/bin/ctrlassist-gui" },
     { src = "packaging/freedesktop/io.github.ctrlassist.Gui.desktop", dst = "/usr/share/applications/io.github.ctrlassist.Gui.desktop" },
     { src = "packaging/systemd/io.github.ctrlassist.Gui.service", dst = "/usr/share/dbus-1/services/io.github.ctrlassist.Gui.service" },
-    # The hiding service: root, started on demand from its socket.
+    # The hiding service: a user of its own with no capabilities, started
+    # on demand from its socket, and the rule that gives its group what it
+    # hides pads with.
     { src = "packaging/systemd/ctrlassist-hider.socket", dst = "/usr/lib/systemd/system/ctrlassist-hider.socket" },
     { src = "packaging/systemd/ctrlassist-hider.service", dst = "/usr/lib/systemd/system/ctrlassist-hider.service" },
+    { src = "packaging/sysusers/ctrlassist.conf", dst = "/usr/lib/sysusers.d/ctrlassist.conf" },
+    { src = "packaging/udev/72-ctrlassist-hide.rules", dst = "/usr/lib/udev/rules.d/72-ctrlassist-hide.rules" },
     # The daemon and the tray, each user's own services.
     { src = "packaging/systemd/ctrlassist-daemon.service", dst = "/usr/lib/systemd/user/ctrlassist-daemon.service" },
     { src = "packaging/systemd/ctrlassist-tray.service", dst = "/usr/lib/systemd/user/ctrlassist-tray.service" },

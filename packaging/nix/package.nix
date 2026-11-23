@@ -12,6 +12,7 @@
   copyDesktopItems,
   makeDesktopItem,
   cargo-about,
+  coreutils,
   # Cargo profile for the shipped binaries. `release` builds fastest, for
   # hosts that compile it themselves (the module's default package); the
   # flake's own package passes `dist`, the smaller profile (Cargo.toml has
@@ -43,6 +44,7 @@ rustPlatform.buildRustPackage {
       ../../packaging/licensing
       ../../packaging/systemd
       ../../packaging/udev
+      ../../packaging/sysusers
     ];
   };
   cargoLock.lockFile = ../../Cargo.lock;
@@ -133,6 +135,16 @@ rustPlatform.buildRustPackage {
       --replace-fail 'Exec=/usr/bin/ctrlassist-gui' "Exec=$out/bin/ctrlassist-gui"
 
     install -Dm0644 packaging/udev/70-ctrlassist.rules -t $out/lib/udev/rules.d/
+    # The hiding service's rule runs chgrp and chmod, named by their
+    # /usr/bin paths for the other packages.
+    install -Dm0644 packaging/udev/72-ctrlassist-hide.rules -t $out/lib/udev/rules.d/
+    substituteInPlace $out/lib/udev/rules.d/72-ctrlassist-hide.rules \
+      --replace-fail /usr/bin/chgrp ${coreutils}/bin/chgrp \
+      --replace-fail /usr/bin/chmod ${coreutils}/bin/chmod
+    # The hiding service's user, for systemd-sysusers where the package
+    # is installed by other means than the NixOS module, which makes the
+    # user itself.
+    install -Dm0644 packaging/sysusers/ctrlassist.conf -t $out/lib/sysusers.d/
 
     install -Dm0644 packaging/licensing/NOTICE -t $out/share/doc/ctrlassist/
     install -Dm0644 packaging/licensing/THIRD-PARTY-LICENSES.html -t $out/share/doc/ctrlassist/

@@ -1,4 +1,0 @@
-# What Steam's 60-steam-input.rules does for a DualSense, so that a seat
-# user can open its hidraw node as on a machine with Steam installed: by
-# its HID device's name, which covers USB and Bluetooth alike.
-KERNEL=="hidraw*", KERNELS=="*054C:0CE6*", MODE="0660", TAG+="uaccess"

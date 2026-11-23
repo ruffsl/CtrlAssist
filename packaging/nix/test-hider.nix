@@ -1,11 +1,98 @@
 # The hiding service, end to end, on a clean machine with one user at a
-# graphical session: hide a pad, lose and regain it, restore it, and every
-# way of ending that isn't a polite restore.
+# graphical session: hide a pad, lose and regain it, show it again, and
+# every way of ending that isn't a polite restore. The service runs as it
+# is installed: its own user, no capabilities, the shipped rule.
 {
   pkgs,
   fixture,
   hider,
 }:
+let
+  # A wired Xbox 360 pad on the USB bus, for the xpad driver: a USB gadget
+  # made through configfs and FunctionFS, plugged into the dummy host
+  # controller. It enumerates and holds; it sends no input.
+  xpad = pkgs.writers.writePython3Bin "xpad-gadget" { doCheck = false; } ''
+    import os
+    import struct
+    import subprocess
+    import sys
+
+    GADGET = "/sys/kernel/config/usb_gadget/xpad"
+    FFS = "/dev/ffs-xpad"
+
+
+    def write(path, value):
+        with open(path, "w") as file:
+            file.write(value)
+
+
+    def descriptors():
+        # One vendor-specific interface, which is what xpad matches an
+        # Xbox 360 pad by, with an interrupt endpoint each way.
+        interface = struct.pack("<BBBBBBBBB", 9, 4, 0, 0, 2, 0xFF, 0x5D, 0x01, 1)
+
+        def endpoint(address, interval):
+            return struct.pack("<BBBBHB", 7, 5, address, 3, 32, interval)
+
+        full = interface + endpoint(0x81, 4) + endpoint(0x02, 8)
+        high = interface + endpoint(0x81, 4) + endpoint(0x02, 4)
+        body = struct.pack("<III", 1 | 2, 3, 3) + full + high
+        # FUNCTIONFS_DESCRIPTORS_MAGIC_V2, then the length of the whole.
+        return struct.pack("<II", 3, 8 + len(body)) + body
+
+
+    def strings():
+        text = b"xpad\0"
+        body = struct.pack("<IIH", 1, 1, 0x0409) + text
+        return struct.pack("<II", 2, 8 + len(body)) + body
+
+
+    def main(serial):
+        for module in ["dummy_hcd", "libcomposite", "usb_f_fs", "xpad"]:
+            subprocess.run(["${pkgs.kmod}/bin/modprobe", module], check=True)
+        os.makedirs(GADGET, exist_ok=True)
+        for name, value in [
+            ("idVendor", "0x045e"),
+            ("idProduct", "0x028e"),
+            ("bcdDevice", "0x0114"),
+            ("bcdUSB", "0x0200"),
+            ("bDeviceClass", "0xff"),
+            ("bDeviceSubClass", "0xff"),
+            ("bDeviceProtocol", "0xff"),
+        ]:
+            write(f"{GADGET}/{name}", value)
+        os.makedirs(f"{GADGET}/strings/0x409", exist_ok=True)
+        write(f"{GADGET}/strings/0x409/serialnumber", serial)
+        write(f"{GADGET}/strings/0x409/manufacturer", "Fixture")
+        write(f"{GADGET}/strings/0x409/product", "Controller")
+        os.makedirs(f"{GADGET}/configs/c.1/strings/0x409", exist_ok=True)
+        write(f"{GADGET}/configs/c.1/strings/0x409/configuration", "xpad")
+        os.makedirs(f"{GADGET}/functions/ffs.xpad", exist_ok=True)
+        link = f"{GADGET}/configs/c.1/ffs.xpad"
+        if not os.path.exists(link):
+            os.symlink(f"{GADGET}/functions/ffs.xpad", link)
+        os.makedirs(FFS, exist_ok=True)
+        subprocess.run(["${pkgs.util-linux}/bin/mount", "-t", "functionfs", "xpad", FFS], check=True)
+        ep0 = os.open(f"{FFS}/ep0", os.O_RDWR)
+        os.write(ep0, descriptors())
+        os.write(ep0, strings())
+        write(f"{GADGET}/UDC", sorted(os.listdir("/sys/class/udc"))[0])
+        print("bound", flush=True)
+        # Answer the host: an event is twelve bytes, a setup request then
+        # its type. A request this function doesn't know is answered empty.
+        while True:
+            event = os.read(ep0, 12)
+            request_type, _, _, _, length, kind = struct.unpack("<BBHHHB3x", event)
+            if kind == 4:
+                if request_type & 0x80:
+                    os.write(ep0, b"")
+                else:
+                    os.read(ep0, length)
+
+
+    main(sys.argv[1])
+  '';
+in
 pkgs.testers.runNixOSTest {
   name = "ctrlassist-hider";
 
@@ -20,6 +107,9 @@ pkgs.testers.runNixOSTest {
       isNormalUser = true;
       uid = 1000;
       password = "alice";
+      # In the input group as well, as some distributions and guides
+      # have gamers be: hiding must close a pad to her all the same.
+      extraGroups = [ "input" ];
     };
 
     # A graphical session for alice on the seat: the service serves only
@@ -32,16 +122,21 @@ pkgs.testers.runNixOSTest {
     # The default display adapter has no driver cage can use.
     virtualisation.qemu.options = [ "-vga none -device virtio-gpu-pci" ];
 
-    # The units as packaged, hardening included.
+    # The units and the rule as packaged, hardening included, and the
+    # user the unit runs as, as the module makes it.
     systemd.packages = [ hider ];
     systemd.sockets.ctrlassist-hider.wantedBy = [ "sockets.target" ];
-    # For udevadm.
-    systemd.services.ctrlassist-hider.path = [ pkgs.systemd ];
+    users.users.ctrlassist-hider = {
+      isSystemUser = true;
+      group = "ctrlassist-hider";
+    };
+    users.groups.ctrlassist-hider = { };
 
-    # What Steam's 60-steam-input.rules does for a DualSense: opens its
-    # hidraw node to the seat user, by its HID device's name, which covers
-    # USB and Bluetooth alike. Hiding must close it all the same.
     services.udev.packages = [
+      hider
+      # What Steam's 60-steam-input.rules does for a DualSense: opens its
+      # hidraw node to the seat user, by its HID device's name, which
+      # covers USB and Bluetooth alike. Hiding must close it all the same.
       (pkgs.writeTextDir "lib/udev/rules.d/60-steam-input.rules" ''
         KERNEL=="hidraw*", KERNELS=="*054C:0CE6*", MODE="0660", TAG+="uaccess"
       '')
@@ -50,6 +145,7 @@ pkgs.testers.runNixOSTest {
     environment.systemPackages = [
       fixture
       hider
+      xpad
     ];
   };
 
@@ -58,6 +154,7 @@ pkgs.testers.runNixOSTest {
     import shlex
 
     SOCKET = "/run/ctrlassist/hider.sock"
+    MARKERS = "/run/ctrlassist/hide"
 
     def field(pattern, text):
         """The first group of a pattern that must match."""
@@ -100,19 +197,32 @@ pkgs.testers.runNixOSTest {
         machine.wait_for_file(f"{control}/{what}.done")
         return machine.succeed(f"cat {control}/{what}.done")
 
-    def wait_restored():
-        """Waits until nothing is hidden. The record is the last thing the service removes."""
-        machine.wait_until_succeeds('test -z "$(ls /run/ctrlassist/hidden)"')
-        machine.succeed("udevadm settle")
-        assert rules() == [], rules()
+    def markers():
+        return machine.succeed(f"cd {MARKERS} && find . -type f | sort").split()
 
-    def rules():
-        return machine.succeed("ls /run/udev/rules.d 2>/dev/null | grep ctrlassist || true").split()
+    def no_runtime_rules():
+        """The service writes no udev rule: the directory for runtime rules never comes to be."""
+        machine.succeed("test ! -e /run/udev/rules.d || test -z \"$(ls -A /run/udev/rules.d)\"")
+
+    def wait_restored():
+        """Waits until nothing is hidden: no marker left, and udev done."""
+        machine.wait_until_succeeds(f"test -z \"$(ls -A {MARKERS})\"")
+        machine.succeed("udevadm settle")
+        no_runtime_rules()
+
+    def listening(unit, node):
+        machine.succeed(f"systemd-run --unit {unit} --uid alice ctrlassist-fixture listen {node} --millis 60000")
+        machine.wait_until_succeeds(f"journalctl -u {unit} | grep 't=1s'")
+
+    def cut_off(unit):
+        machine.wait_until_fails(f"systemctl is-active {unit}")
+        return "cut_off=true" in machine.succeed(f"journalctl -u {unit} -o cat")
 
     A, B = "02:00:00:00:00:01", "02:00:00:00:00:02"
 
     machine.wait_for_file("/run/user/1000/wayland-0.lock")
     machine.wait_for_unit("sockets.target")
+    print("versions: kernel " + machine.succeed("uname -r").strip() + ", udev " + machine.succeed("udevadm --version").strip())
     # Two pads of the same model, told apart only by their addresses.
     fake("pad-a", "fake-hid", "--uniq", A, "--pulse", "20")
     fake("pad-b", "fake-hid", "--uniq", B, "--pulse", "20")
@@ -126,16 +236,37 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"ctrlassist-hider check {keyboard} | grep 'refused'")
         machine.succeed("ctrlassist-hider check /dev/null | grep 'refused'")
 
+    with subtest("the service won't run as root"):
+        out = machine.fail("ctrlassist-hider reconcile 2>&1")
+        assert "not as root" in out, out
+
     with subtest("the service says its release to the user in front, and nobody else"):
         version = f"ctrlassist-fixture version --socket {SOCKET}"
         told = machine.succeed(f"su -l alice -c '{version}'").strip()
         assert told == "version: ${hider.version}", told
         assert "isn't the user in front" in machine.succeed(version)
 
+    with subtest("it runs as its own user, with no capabilities"):
+        # A client that holds a pad hidden keeps the service running.
+        control, told = hide("holder", pads()[B]["event"][0])
+        assert told.startswith("ok"), told
+        pid = machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip()
+        assert pid != "0", "the service is running for the client"
+        status = machine.succeed(f"cat /proc/{pid}/status")
+        machine.succeed("systemctl stop holder")
+        wait_restored()
+        uids = field(r"Uid:\s+([0-9\s]+)\n", status).split()
+        gids = field(r"Gid:\s+([0-9\s]+)\n", status).split()
+        user = machine.succeed("id -u ctrlassist-hider").strip()
+        assert uids == [user] * 4 and "0" not in gids, status
+        for capabilities in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):
+            assert field(capabilities + r":\s+(\w+)", status) == "0000000000000000", status
+        print(f"the service: uid {uids[0]}, " + ", ".join(line for line in status.splitlines() if line.startswith("Cap")))
+
     with subtest("a raw node is opened only for the kinds of pad the service names"):
         raw = f"ctrlassist-fixture raw {pads()[A]['event'][0]} --socket {SOCKET}"
         told = machine.succeed(f"su -l alice -c '{raw}'")
-        assert "doesn't open that kind of pad's raw node" in told, told
+        assert "can't do that for this kind of pad" in told, told
         assert "isn't the user in front" in machine.succeed(raw)
         # A pad of the PlayStation driver: a virtual DualSense with an
         # address a real one could have.
@@ -156,6 +287,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("udevadm settle")
         assert not alice_can_open(DS, "event"), "a hidden DualSense's event node"
         assert not alice_can_open(DS, "hidraw"), "a hidden DualSense's raw node, which a 60- rule opens"
+        print("hidden DualSense: " + machine.succeed(f"stat -c '%n %a %U:%G' {pads()[DS]['event'][0]} {pads()[DS]['hidraw'][0]}"))
         assert order(control, "raw") == "ok", "the raw node of a hidden pad of the PlayStation driver"
         assert order(control, "restore") == "ok"
         machine.succeed("udevadm settle")
@@ -163,7 +295,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl stop hide-ds")
         control, told = hide("hide-plain", pads()[A]["event"][0])
         assert told.startswith("ok"), told
-        assert "doesn't open that kind of pad's raw node" in order(control, "raw")
+        assert "can't do that for this kind of pad" in order(control, "raw")
         assert order(control, "restore") == "ok"
         machine.succeed("systemctl stop hide-plain")
         wait_restored()
@@ -177,16 +309,17 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_fails("systemctl is-active as-root")
         assert alice_can_open(A)
 
-    with subtest("hiding denies the pad and cuts off whoever had it open"):
+    with subtest("hiding re-binds the driver, closes the pad to the seat user and cuts off whoever had it open"):
         node = pads()[A]["event"][0]
-        machine.succeed(f"systemd-run --unit early --uid alice ctrlassist-fixture listen {node} --millis 60000")
-        machine.wait_until_succeeds("journalctl -u early | grep 't=1s'")
+        listening("early", node)
         control, told = hide("client", node)
         assert told.startswith("ok") and "dislodged=true" in told, told
-        machine.wait_until_fails("systemctl is-active early")
-        assert "cut_off=true" in machine.succeed("journalctl -u early -o cat"), "the early reader kept reading"
+        assert cut_off("early"), "the early reader kept reading"
         assert not alice_can_open(A, "event") and not alice_can_open(A, "js")
-        assert len(rules()) == 1, rules()
+        found = markers()
+        assert f"./addr-{A}" in found and any(marker.startswith("./hid-") for marker in found), found
+        print("markers: " + " ".join(found))
+        no_runtime_rules()
 
     with subtest("the other pad of the same model is untouched"):
         assert alice_can_open(B, "event") and alice_can_open(B, "js")
@@ -201,16 +334,17 @@ pkgs.testers.runNixOSTest {
         assert not alice_can_open(A, "event") and not alice_can_open(A, "js")
         assert order(control, "reopen").startswith("ok")
         assert int(field(r"reads=(\d+)", order(control, "count"))) > 0
+        no_runtime_rules()
 
-    with subtest("restoring gives the pad back and leaves nothing behind"):
+    with subtest("showing it again gives the pad back and leaves nothing behind"):
         assert order(control, "restore").startswith("ok")
         machine.succeed("udevadm settle")
         assert alice_can_open(A, "event") and alice_can_open(A, "js")
-        assert rules() == [], rules()
-        machine.succeed("test -z \"$(ls /run/ctrlassist/hidden)\"")
+        assert markers() == [], markers()
+        no_runtime_rules()
         machine.succeed("systemctl stop client")
 
-    with subtest("a client that is killed gets its pads restored"):
+    with subtest("a client that is killed gets its pads shown again"):
         control, told = hide("doomed", pads()[A]["event"][0])
         assert told.startswith("ok"), told
         assert not alice_can_open(A)
@@ -226,33 +360,53 @@ pkgs.testers.runNixOSTest {
         assert alice_can_open(A)
         machine.succeed("systemctl stop orphaned; systemctl reset-failed ctrlassist-hider.service || true")
 
-    with subtest("a pad's own name and address can't reach a rule"):
-        evil = 'evil", RUN+="/bin/touch /tmp/pwned'
+    with subtest("a pad's own name and address can't reach a marker's name"):
+        evil = 'evil/../../x", RUN+="/bin/touch /tmp/pwned'
         fake("pad-evil", "fake-hid", "--name", evil, "--uniq", evil, "--product", "0bad", "--pulse", "20")
         machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c '^pad ' | grep -x 3")
         machine.succeed("udevadm settle")
         control, told = hide("hostile", pads()[evil]["event"][0])
         assert told.startswith("ok"), told
         assert not alice_can_open(evil)
-        machine.succeed("! grep -r RUN /run/udev/rules.d/")
+        found = markers()
+        assert not any("evil" in marker or ".." in marker for marker in found), found
         machine.succeed("test ! -e /tmp/pwned")
         assert order(control, "restore").startswith("ok")
         machine.succeed("systemctl stop hostile pad-evil")
+        wait_restored()
 
-    with subtest("a pad with no driver is hidden from new readers and restored exactly"):
+    with subtest("a pad with no driver to re-bind is refused, for the daemon to grab"):
         fake("pad-plain", "fake-pad", "--pulse", "20")
         machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 'Fixture Fake Pad'")
         machine.succeed("udevadm settle")
         plain = "Fixture Fake Pad"
-        node = pads()[plain]["event"][0]
-        before = machine.succeed(f"stat -c '%a %U:%G' {node}")
-        control, told = hide("plain", node)
-        assert told.startswith("ok") and "dislodged=false" in told, told
-        assert not alice_can_open(plain, "event") and not alice_can_open(plain, "js")
-        assert int(field(r"reads=(\d+)", order(control, "count"))) > 0
+        _, told = hide("plain", pads()[plain]["event"][0])
+        assert "can't do that for this kind of pad" in told, told
+        assert alice_can_open(plain, "event")
+        assert markers() == [], markers()
+        machine.succeed("systemctl stop pad-plain")
+
+    with subtest("an Xbox 360 pad on USB under xpad is hidden and shown again by re-binding its USB interface"):
+        machine.succeed("systemd-run --unit xpad-gadget xpad-gadget XPADFIXTURE1")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c X-Box", timeout=60)
+        machine.succeed("udevadm settle")
+        key = [key for key in pads() if "X-Box" in key][0]
+        node = pads()[key]["event"][0]
+        sysname = node.split("/")[-1]
+        print("xpad pad: " + machine.succeed(
+            f"udevadm info -q property -n {node} | grep -E '^(ID_SERIAL_SHORT|ID_BUS|CURRENT_TAGS)='"
+        ).replace("\n", " ") + " driver=" + machine.succeed(f"basename $(readlink -f /sys/class/input/{sysname}/device/device/driver)").strip())
+        assert alice_can_open(key, "event")
+        listening("early-xpad", node)
+        control, told = hide("xpad", node)
+        assert told.startswith("ok") and "dislodged=true" in told, told
+        assert cut_off("early-xpad"), "the early reader kept reading"
+        assert not alice_can_open(key, "event") and not alice_can_open(key, "js")
+        assert "./serial-045e-028e-XPADFIXTURE1" in markers(), markers()
         assert order(control, "restore").startswith("ok")
         machine.succeed("udevadm settle")
-        assert alice_can_open(plain, "event") and alice_can_open(plain, "js")
-        assert machine.succeed(f"stat -c '%a %U:%G' {node}") == before
+        assert alice_can_open(key, "event") and alice_can_open(key, "js")
+        machine.succeed("systemctl stop xpad")
+        wait_restored()
   '';
 }

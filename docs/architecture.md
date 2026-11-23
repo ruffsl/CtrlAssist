@@ -28,7 +28,7 @@ This document describes the design and the reasons for it. [What the platform do
 | feedback | What flows from game to pad: rumble, LEDs, trigger effects. |
 | mirror | A pad's live state, published for a client to draw. |
 | daemon | The user service that owns pads, virtual pads, setups and profiles. |
-| hiding service | The root process that hides and restores pads for the daemon. |
+| hiding service | The system service that hides and restores pads for the daemon. |
 
 ## Processes
 
@@ -41,7 +41,7 @@ flowchart LR
         daemon["daemon<br>input thread + control side"]
     end
     subgraph system["System"]
-        hider["hiding service (root)"]
+        hider["hiding service (own user)"]
         udev["udev rules"]
     end
     pads["pads<br>evdev, hidraw"] --> daemon
@@ -57,10 +57,10 @@ flowchart LR
 | Process | Runs as | Does |
 |---|---|---|
 | daemon | the user, as a systemd user service | Owns the pads, the virtual pads, the running setups and the profiles. |
-| hiding service | root, started on demand by a system socket | Hides and restores pads, and hands the daemon open descriptors for them. Nothing else. |
+| hiding service | its own user, `ctrlassist-hider`, with no capabilities, started on demand by a system socket | Hides and restores pads, and hands the daemon open descriptors for them. Nothing else. |
 | clients | the user | The CLI, the tray and the settings window. They hold no state the daemon doesn't. |
 
-The daemon, the CLI and the tray are verbs of one binary, `ctrlassist`. The settings window is a binary of its own, `ctrlassist-gui`, so that neither the daemon nor the CLI links a GUI toolkit. The hiding service is a separate, small binary with no async runtime and no zenoh, so that the code running as root is short enough to read in one sitting.
+The daemon, the CLI and the tray are verbs of one binary, `ctrlassist`. The settings window is a binary of its own, `ctrlassist-gui`, so that neither the daemon nor the CLI links a GUI toolkit. The hiding service is a separate, small binary with no async runtime and no zenoh, so that the one process every user's daemon trusts with their pads is short enough to read in one sitting.
 
 These are separate processes because a client crash must not drop a virtual pad mid-game, a GUI toolkit should not share a process with the input thread, and a gamescope session may have no tray at all. The separation does not extend to the daemon itself: when the daemon stops, its virtual pads go with it and the hidden pads are restored, so a game falls back to the real pads.
 
@@ -76,7 +76,7 @@ One workspace, one shared version.
 | `ctrlassist-protocol` | The key space, wire payloads, the rpc table, the profile schema, typed wire errors, session configuration. |
 | `ctrlassist` | The client SDK: a daemon client and a state watcher. |
 | `ctrlassist-device` | Everything that touches the kernel: pads from descriptors, uinput and uhid virtual pads, the controller database, hotplug, the input thread, and the grab that is the unprivileged hiding fallback. |
-| `ctrlassist-hider` | The hiding service: a library holding its wire types and its client, which the daemon uses, and the root binary. |
+| `ctrlassist-hider` | The hiding service: a library holding its wire types and its client, which the daemon uses, and the service's binary. |
 | `ctrlassist-daemon` | The control side: profile store, setup lifecycle, the zenoh bridge. A library that the CLI's `service daemon` verb runs. |
 | `ctrlassist-cli` | The `ctrlassist` binary and its clap tree as a library. |
 | `ctrlassist-tray` | The ksni tray and notifications. |
@@ -229,11 +229,37 @@ A pinned snapshot of the community database's Linux entries is built in, and a f
 
 ## Hiding
 
-No unprivileged mechanism makes a pad absent to games ([what the platform does](#hiding-mechanisms)), so hiding is the hiding service's job.
+No unprivileged mechanism makes a pad absent to games ([what the platform does](#hiding-mechanisms)), so hiding is the hiding service's job. The service is a system service, but not root: it runs as a user of its own, `ctrlassist-hider`, with no capabilities, and what it may do is what a udev rule shipped with it gives that user's group.
 
-**Hiding a pad is two steps.** A runtime udev rule denies the pad's event, js and hidraw nodes to everyone. Then the pad's driver is re-bound, which cuts off every program that already had the pad open, as Steam does from the moment a pad is plugged in, and recreates the nodes already denied. Restoring is the same in reverse, and because programs see the pad arrive again, Steam picks it up without a restart.
+**Hiding a pad is two steps.** The service creates marker files naming the pad, and the static rule hides the nodes of any pad a marker names: they go to the service's group alone, mode 0660, and lose the seat-access tag. Then the service asks udev to re-bind the pad's driver, which cuts off every program that already had the pad open, as Steam does from the moment a pad is plugged in, and makes the nodes again, hidden as they are made. Showing the pad again is the same in reverse, and because programs see the pad arrive again, Steam picks it up without a restart.
 
 **Access arrives as descriptors, not permissions,** because the daemon and the games are the same user: anything that denies the games denies the daemon. After the re-bind, the only descriptors open on the pad are the ones the hiding service opened and passed on.
+
+### The rule and its markers
+
+The rule, `72-ctrlassist-hide.rules`, never changes, and udev is never asked to reload it: a line can test for a file named after the device's own attributes, and the test is made at every event. It sorts after systemd's `70-uaccess.rules` and any `60-*` rule that opens hidraw, and before `73-seat-late.rules`, which grants what the tag asks for. Its hiding assignments are final (`:=`), so a later rule can't open a hidden node again. It does three other things: it gives the group the `uevent` file of each pad's HID device, or with none its USB interface, which is how the service asks for a re-bind; it does the re-bind when asked; and it gives the group the raw nodes of PlayStation pads, for the `raw` request.
+
+The markers are in `/run/ctrlassist/hide`, the unit's runtime directory, owned by the service's user and kept when the service stops. Each name has a prefix and says how the rule finds the pad:
+
+| Marker | Written for a pad | Hides |
+|---|---|---|
+| `addr-<uniq>` | whose input device's `uniq` is an address | its event and js nodes, wherever it reconnects |
+| `serial-<vendor>-<product>-<serial>` | with no address and a USB serial number | its event and js nodes, wherever it reconnects |
+| `hid-<HID device>` | with a HID device | all its nodes, through the re-bind, which keeps the HID device |
+| `uniq-<HID_ID>-<HID_UNIQ>` | whose HID device has its own unique string, as one on Bluetooth has its address from its creation | its hidraw nodes, wherever it reconnects |
+| `port-<phys>` | with neither address nor serial, or a HID device without a unique string | its nodes, when it reconnects to the same USB port |
+
+- **A hidraw node is hidden by its HID device, not by an address.** A HID pad on USB has no address among its HID device's properties, and a DualSense on USB has its hidraw node made before its driver sets the address; the HID device's name is there from the start and lasts through a re-bind. So a hidden pad's hidraw node is hidden whatever the pad is, and no other pad's is. **A HID pad on USB that reconnects to another port while hidden has its hidraw node open to whatever opens hidraw to the seat user** (Steam's rules) until it is shown again: its HID device is new, its port is another, and it has no address there.
+- **No string from a device reaches a marker's name unchecked.** A pad's name and address are chosen by whoever created it, and a seat user can create devices. A marker is named only from numbers the service parsed itself, and strings of exactly the expected shape; one that isn't is left out. A value carrying `/` or `..` names no marker the service made, and a match changes only the group of the matching device's own nodes.
+- **A marker can name more than the pad it was made for:** a twin with its address, clones sharing a serial, a pad plugged into its port while it is away. Their nodes are hidden at their next event. Once no marker names them, the service has them re-bound too.
+
+### Asking udev to re-bind
+
+The service writes `change <uuid> CTRLASSIST=rebind` to the `uevent` file of the pad's HID device or USB interface. The kernel turns it into a change event carrying the UUID and the argument, and the rule, run by udev as root, unbinds the driver and has the kernel probe the device again, so whichever driver a plug-in would bind takes it. The service can only ask this of pads, the rule having given it no other device's `uevent` file, and needs no list of drivers. [Why this way and not group-writable driver files](ideas/hider-rebind-options.md).
+
+**The service waits on udev's own events,** with no time limit. Listening to udev's monitor from before it writes the request, it waits for the change it asked for, which udev broadcasts once the rule has unbound and probed; then for the arrival of each event node the probe made, which udev broadcasts once the rule has hidden it. A probe that bound no driver or made no event node is a failure, seen at the first. A client that hangs up ends the wait.
+
+**A pad with no driver to re-bind is refused,** as a uinput pad another program made is: nothing could cut off whoever already has it open. The daemon grabs it, as it grabs any pad the service refuses, which at least silences them.
 
 ### The hiding service's protocol
 
@@ -241,29 +267,30 @@ The service listens on a system Unix socket, `/run/ctrlassist/hider.sock`, that 
 
 | Request | Carries | Does |
 |---|---|---|
-| hide | an open descriptor on the pad's event node | Checks the pad, installs the rule, re-binds the driver, opens the new event node, returns its descriptor and a token. |
-| reopen | a token | After the pad has reconnected: returns a fresh descriptor. The rule already covered the new nodes. |
-| restore | a token | Removes the rule, re-binds the driver. |
-| raw | an open descriptor on the pad's event node | Checks the pad and its driver, opens the pad's hidraw node, returns its descriptor. Nothing is hidden and nothing is remembered. |
+| hide | an open descriptor on the pad's event node | Checks the pad, creates its markers, has its driver re-bound, opens the new event node, returns its descriptor and a token. |
+| reopen | a token | After the pad has reconnected: returns a fresh descriptor. The markers already hid the new nodes. |
+| restore | a token | Deletes the markers no other hidden pad has, has the driver re-bound. |
+| raw | an open descriptor on the pad's event node | Checks the pad and its driver, opens the hidraw node of that pad's HID device, returns its descriptor. Nothing is hidden and nothing is remembered. |
 | raw of | a token | The same for a pad this connection has hidden, which its event node no longer names to the service: the driver is checked as it is now. |
 | version | nothing | Returns the service's release, packed into the reply's token: twelve bits of major and ten each of minor and patch. |
 | (connection closes) | | Restores everything that connection hid. |
 
-- **A pad shown again goes and comes back, and the daemon doesn't publish that.** Re-binding a driver makes the kernel remove the pad and add it back. The service says in its reply to `hide` whether it re-bound the driver, and shows the pad again the same way; the daemon remembers that for the pad, expects one going and coming back when it lets the pad go, and publishes the pad as connected throughout, where its clients would otherwise be told of a pad leaving and one connecting after every stop. Nothing prompts a start from that arrival either.
+- **A pad shown again goes and comes back, and the daemon doesn't publish that.** Re-binding a driver makes the kernel remove the pad and add it back. The service says in its reply to `hide` that it re-bound the driver, as it now always does, and shows the pad again the same way; the daemon remembers that for the pad, expects one going and coming back when it lets the pad go, and publishes the pad as connected throughout, where its clients would otherwise be told of a pad leaving and one connecting after every stop. Nothing prompts a start from that arrival either.
 - **Its release is the daemon's to pass on.** The daemon is the service's only client, so it asks the release on finding the service and publishes it in its own state, where the window's About and anything else can judge it against their own, as they judge the daemon's and the tray's by the `info` each serves. A service left running from before an upgrade is then seen for what it is; one too old to be asked refuses the request, and is shown as running with no release. The reply stays the one fixed size, which is why the release is packed and anything after the patch doesn't travel.
 - **A pad is named by a descriptor the caller already holds, never a path or a name.** The service takes the device number from the descriptor and finds the pad from that. Possession proves the caller could already read that pad, so for event nodes the service grants nothing new.
 - **It refuses anything that isn't a pad the seat user could open:** the device must be classified as a joystick, must not be classified as a keyboard or mouse, and must carry the seat-access tag.
-- **No string from a device reaches a rule unchecked.** A pad's name and address are chosen by whoever created it, and a seat user can create devices. Rule text is built only from numbers the service parsed itself, plus an address or a serial number that has exactly the expected shape; one that doesn't is left out, and the rule matches the model alone. The kernel names written to sysfs for a re-bind are checked the same way.
-- **It remembers what a pad is, never where.** A pad that reconnects while hidden comes back under new kernel names, so its nodes and its driver binding are looked up each time they are needed.
+- **It acts on the device it checked.** It records the pad's HID device or USB interface, which keeps its place through a re-bind, and finds the new event node under it. A pad that reconnects while hidden comes back under another device; only once the recorded one is gone is the pad looked for again, among the pads the rule has hidden, by its markers, its numbers, its seat, and whether its device is a virtual one.
 - **A hidraw node is opened only for a pad whose kernel driver is on a short built-in list.** On a stock machine hidraw is closed to users, so this is the one thing the service grants that the user didn't have; the list is the PlayStation driver alone, which the DualSense identity needs. The caller names the pad as for hiding, by a descriptor on its event node, and the same checks apply before the driver is looked at; a pad of any other driver is refused.
 - **One user at a time.** A pad hidden for one user is refused to another.
 - **Who is served:** the user whose session is in front on a seat, where that session is a person at the machine: class `user`, graphical, not remote. This is TisVlay's rule, and it never asks whether a session is "active", because an SSH login reports that it is. Anyone may connect; the check is made as a client connects and, for one not yet found in front, again at each request, by the peer's user ID, against logind through its login library, with no D-Bus connection. A user's daemon starts with their services, which can be before their session is in front, and it keeps the one connection. A client that later leaves the foreground, as on a user switch, keeps what it has hidden.
 
-What this defends: another user's session, and the rest of the system, against a process of the seat user. It does not defend the seat user against their own processes; a game running as that user can already read the pads and talk to the daemon.
+What this defends: another user's session, and the rest of the system, against a process of the seat user. It does not defend the seat user against their own processes; a game running as that user can already read the pads and talk to the daemon. What a compromise of the service yields is the group's power and nothing more: opening hidden pads and PlayStation pads' raw nodes, having any pad's driver re-bound or sending its device any synthetic event, and hiding pads. Denial of service on pads; not root, and no keyboard or mouse.
 
-**Cleanup hangs on the connection.** The kernel reports the daemon's connection closing even when the daemon is killed. For the service's own failure, what each rule hides is recorded under `/run/ctrlassist/hidden` before the rule is written: the pad's identity, and for a pad with no driver to re-bind, its nodes' modes and owners. The records are reconciled when the service starts and by its unit when it stops, however it stopped, and are read back as warily as a device is. `/run` is emptied at boot, which bounds the worst case.
+**Cleanup hangs on the connection.** The kernel reports the daemon's connection closing even when the daemon is killed. For the service's own failure, the markers are the record: each is made before the re-bind it takes effect at. When the service starts, and from its unit's `ExecStopPost=` however it stopped, every marker is deleted and every pad the rule still hides, known by its event node belonging to the service's group, has its driver re-bound. `/run` is emptied at boot, which bounds the worst case.
 
 **Reconnects are driven by the daemon.** Its udev monitor sees the pad return and asks for `reopen`, so the service has no event loop of its own.
+
+**The unit's sandbox is defense in depth,** the user's permissions being the boundary: no capabilities and no new privileges, the file system read-only but for the marker directory and `/sys/devices`, the device cgroup closed but for input and hidraw nodes, netlink the only socket it may make, and the rest of the usual set. The network namespace is shared, since udev's events arrive over netlink in the host's.
 
 ### Without the hiding service
 
@@ -435,7 +462,7 @@ Groups appear only when a pad isn't laid out as a gamepad; the schema has no key
 
 ## Permissions
 
-A stock machine gives a seat user a pad's event and js nodes and nothing else this needs: not uinput, not uhid, not hidraw. The packages install a udev rule granting the seat user `/dev/uinput` and `/dev/uhid`, the hiding service with its socket and service units, and the daemon's user unit. The real-time priority limit has to be raised from the system side, since a user unit cannot raise its own. hidraw is never opened to users; the hiding service hands out descriptors for it. How each channel is built is in the packaging notes.
+A stock machine gives a seat user a pad's event and js nodes and nothing else this needs: not uinput, not uhid, not hidraw. The packages install a udev rule granting the seat user `/dev/uinput` and `/dev/uhid`, the hiding service with its socket and service units, its user and group from a `sysusers.d` file, and its static rule, and the daemon's user unit. The real-time priority limit has to be raised from the system side, since a user unit cannot raise its own. hidraw is never opened to users; the hiding service hands out descriptors for it. How each channel is built is in the packaging notes.
 
 ## Errors, logging and testing
 
@@ -466,6 +493,17 @@ What each consumer still sees of a pad under each mechanism:
 - After removing the rule and re-binding, Steam found the DualSense again within seconds, with no restart.
 - The re-bind was observed for three pads under two drivers: a DualSense on USB and a DualShock 4 over Bluetooth (the `playstation` HID driver, re-bound at the HID device) and an Xbox One pad on USB (the `xpad` driver, re-bound at the USB interface). The result was the same each time: the open reader was cut off, Steam closed the pad, and after restoring Steam found it again six or seven seconds later. Every pad stayed connected and kept its node numbers. An Xbox pad over Bluetooth, which uses another driver, is [not yet observed](concerns/README.md).
 - A rule that names the pad's HID device hid one of two connected PlayStation pads and left the other untouched.
+
+Observed in NixOS virtual machines on Linux 6.18 and udev 262, for a hiding service without root:
+
+- **`TEST` substitutes before it looks,** so a static line can test for a file named after the device: in `src/udev/udev-rules.c`, `TK_M_TEST` passes its value through `apply_format_value()` first, though `udev(7)` says only that it tests a file's existence. `%s{attr}` falls back to the parent an `ATTRS` match on the same line selected (`src/udev/udev-format.c`), and a line's parent matches are made before its `TEST`.
+- **udev sorts a line's tokens by type, and `ENV` matches come before `IMPORT{parent}`** (`sort_tokens()`): on one line, an imported value is compared before it is imported, and the line matches nothing. The import needs a line of its own.
+- **A node of the service's group, mode 0660 and without the seat-access tag, is closed to a seat user who is also in `input`,** and stays closed through a VT switch and a user switch: logind sends a change event only to devices that still have the tag (`seat_trigger_devices()` in `src/login/logind-seat.c`), and udev's builtin grants the ACL. A user with no capabilities in that group opens such a node and passes the descriptor on.
+- **A node that is only changed, not made again, keeps a seat user's ACL** when the tag is removed: the builtin only ever adds. A node a re-bind makes has none, which is why hiding re-binds rather than sending a change event.
+- **A pad's js node is world-readable on a stock machine** (`50-udev-default.rules`, mode 0664); a hidden one isn't.
+- **A synthetic event with an argument (`change <uuid> KEY=value` written to a `uevent` file, Linux 4.13 or later) reaches udev as `SYNTH_UUID` and `SYNTH_ARG_KEY`,** and a rule that unbinds and probes on it doesn't deadlock: the unbind queues the children's remove events behind the parent's change. Shown on a uhid DualSense at its HID device and on an Xbox 360 pad made as a USB gadget, under `xpad`, at its USB interface; the open reader was cut off each time.
+- **Writing a driver's `bind` and `unbind` needs only the files' permissions,** no capability (`drivers/base/bus.c`).
+- **On systemd 262, `ProtectKernelTunables=`, `ProtectControlGroups=` and `ProtectProc=` each leave `/run` and `/sys` writable under `ProtectSystem=strict`:** they imply `MountAPIVFS=`, whose entries for both outrank the read-only ones (`src/core/namespace.c`). `ReadOnlyPaths=/run` and `BindReadOnlyPaths=/sys` put it right. And a root with no capabilities still reaches PID 1's private socket and `StartUnit` on the system bus, unless it may make no Unix socket at all.
 
 ### Permissions on a clean machine
 

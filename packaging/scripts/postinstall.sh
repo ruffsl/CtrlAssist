@@ -13,12 +13,19 @@ set -e
 # limit until that user logs in again.
 systemctl daemon-reload || true
 
-# The modules now, as modules-load.d will at each boot; then the rule
-# that gives their nodes to the user at the seat. Guarded so image builds
+# The hiding service's user and group, before anything names them: the
+# hiding rule gives the group pads' files.
+systemd-sysusers /usr/lib/sysusers.d/ctrlassist.conf 2>/dev/null || true
+
+# The modules now, as modules-load.d will at each boot; then the rules:
+# the one that gives their nodes to the user at the seat, and the hiding
+# service's, applied to pads already connected. Guarded so image builds
 # without a kernel of their own stay quiet.
 modprobe -a uinput uhid hid-playstation 2>/dev/null || true
 udevadm control --reload 2>/dev/null || true
 udevadm trigger --subsystem-match=misc --sysname-match=uinput --sysname-match=uhid 2>/dev/null || true
+udevadm trigger --action=change --subsystem-match=input --property-match=ID_INPUT_JOYSTICK=1 2>/dev/null || true
+udevadm trigger --action=change --subsystem-match=hidraw 2>/dev/null || true
 
 # The hiding service starts on demand from its socket, so only the socket
 # is enabled and started. On an upgrade a running service is restarted

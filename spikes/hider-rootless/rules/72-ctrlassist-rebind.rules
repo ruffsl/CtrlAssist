@@ -1,8 +1,0 @@
-# The other way to re-bind without privilege: the service's group may send
-# a HID device a synthetic event, and udev, as root, re-binds the device's
-# driver when that event carries the service's argument.
-SUBSYSTEM=="hid", ACTION=="add", \
-  RUN+="@coreutils@/bin/chgrp ctrlassist-hider %S%p/uevent", \
-  RUN+="@coreutils@/bin/chmod g+w %S%p/uevent"
-SUBSYSTEM=="hid", ACTION=="change", ENV{SYNTH_ARG_CTRLASSIST}=="rebind", DRIVER=="playstation", \
-  ATTR{driver/unbind}="%k", ATTR{subsystem/drivers_probe}="%k"

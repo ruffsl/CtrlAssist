@@ -23,6 +23,12 @@ systemctl daemon-reload 2>/dev/null || true
 # software may use them; modules-load.d no longer loads them at boot.
 udevadm control --reload 2>/dev/null || true
 udevadm trigger --subsystem-match=misc --sysname-match=uinput --sysname-match=uhid 2>/dev/null || true
+# The hiding service's rule is gone too: PlayStation pads' raw nodes go
+# back to root alone. The hiding service's user stays, as system users
+# do when their package goes, owning nothing; a pad's uevent file keeps
+# its group until the pad is unplugged, and nothing acts on what is
+# written there any more.
+udevadm trigger --action=change --subsystem-match=hidraw 2>/dev/null || true
 
 # The settings window's entry is gone from the launcher. Redundant where
 # the package manager's own triggers do this, harmless where they don't.

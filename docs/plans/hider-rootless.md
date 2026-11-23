@@ -8,7 +8,7 @@ This plan makes the service an unprivileged process: a dedicated user with no ca
 
 ## Decisions
 
-Made by the maintainer on 2026-11-22 (review.md's Decisions), after the spikes in `spikes/hider-rootless/`.
+Made by the maintainer on 2026-11-22 (review.md's Decisions), after the spikes in `spikes/hider-rootless/`, which this plan replaced (in the history at `934c482`).
 
 - **The service drops root.** It runs as the user and group `ctrlassist-hider`, with no capabilities at all. A root kept and shrunk was set aside: on systemd 262 three of the hardening settings it would lean on (`ProtectKernelTunables=`, `ProtectControlGroups=`, `ProtectProc=`) silently leave `/run` and `/sys` writable under `ProtectSystem=strict`, and a root with no capabilities still started a unit through systemd's private socket and over the system bus. A dedicated user doesn't need the sandbox to keep its uid from mattering. Both designs, and why, are in [the idea doc](../ideas/hider-rebind-options.md).
 - **One static rule, shipped with the package, keyed on marker files** the service creates and deletes, in place of rules written at runtime. udev's `TEST` substitutes before it calls `stat()` (`TK_M_TEST` passes its value through `apply_format_value()` in udev 262), so a line can test for a file named after the device's own attributes; the rule is evaluated at every event, so no reload is needed. The service writes only file names, built from strings it has checked.
@@ -153,8 +153,10 @@ What only hardware can show, after the VM checks:
 
 ## State
 
-Plan written; nothing built.
+- **The plan and the idea doc: done.**
+- **The static rule, the user and the unit, and the service on them: done.** The hider check passes with the service as its own user (uid 999, every capability set empty, read from `/proc`); no runtime rule directory ever appears; a uhid pad is hidden and shown again through the re-bind request and through a reconnect, with its event, js and hidraw nodes closed to a seat user who is also in `input`; a DualSense's raw node, which a Steam-like rule opens, is closed while it is hidden; the Xbox 360 pad made as a USB gadget is hidden and shown again by the request at its USB interface, its open reader cut off; a uinput pad is refused; a killed client and a killed service leave nothing hidden. The daemon check passes with the module's user and rule: its uhid pad hidden, its uinput pad grabbed, through a reconnect, a live update, a stop, a kill and a start by itself, and the DualSense copied through the service's raw request. The hider crate's unit tests pass; its tests against a stand-in service can't bind their socket in this worktree, whose path is longer than a socket address allows, and weren't run.
 
 ## Deviations
 
-None yet.
+- **Finding a pad again after a reconnect landed with the mechanism,** not with H-1 and H-2's step: the reconnect is part of what the mechanism's checks show, and the service acts on the recorded device from the start. H-1 and H-2's step keeps the descriptor checks, the seat, and the forged-twin check.
+- **The architecture's hiding section, and the spike's findings moved into its platform notes, changed with the mechanism,** so that it says what the code does at each commit; the docs step keeps the guide and the packaging README.
