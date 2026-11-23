@@ -108,6 +108,11 @@ let
   #       sends up to <count> requests and never reads a reply; holds
   #   hider-probe idle <socket> <count>
   #       opens up to <count> connections and sends nothing; holds
+  #   hider-probe uids <socket> <first> <count> <each> [hold]
+  #       as each of <count> user IDs from <first>, as a user's
+  #       subordinate IDs would, opens <each> connections and asks each
+  #       the release; says how many were answered and how many closed at
+  #       once; with hold, holds them
   probe = pkgs.writers.writePython3Bin "hider-probe" { doCheck = false; } ''
     import array
     import os
@@ -186,8 +191,41 @@ let
                     break
             print(f"connected={len(peers)}", flush=True)
             time.sleep(3600)
+        case ["uids", path, first, count, each, *hold]:
+            reader, writer = os.pipe()
+            for uid in range(int(first), int(first) + int(count)):
+                if os.fork() == 0:
+                    os.close(reader)
+                    os.setgroups([])
+                    os.setgid(uid)
+                    os.setuid(uid)
+                    peers, closed = [], 0
+                    for _ in range(int(each)):
+                        try:
+                            peer = connect(path)
+                            peer.send(struct.pack("<BI", 6, 0))
+                            if peer.recv(6):
+                                peers.append(peer)
+                            else:
+                                closed += 1
+                        except OSError:
+                            closed += 1
+                    os.write(writer, f"{len(peers)} {closed}\n".encode())
+                    if hold:
+                        time.sleep(3600)
+                    os._exit(0)
+            os.close(writer)
+            answered = closed = 0
+            with os.fdopen(reader) as lines:
+                for _ in range(int(count)):
+                    one, other = lines.readline().split()
+                    answered += int(one)
+                    closed += int(other)
+            print(f"answered={answered} closed={closed}", flush=True)
+            if hold:
+                time.sleep(3600)
         case _:
-            sys.exit("usage: hider-probe opath|hide|silent|idle ...")
+            sys.exit("usage: hider-probe opath|hide|long|silent|idle|uids ...")
   '';
 in
 pkgs.testers.runNixOSTest {
@@ -631,6 +669,57 @@ pkgs.testers.runNixOSTest {
         machine.succeed("udevadm settle")
         assert alice_can_open(key, "event") and alice_can_open(key, "js")
         machine.succeed("systemctl stop xpad")
+        wait_restored()
+
+    with subtest("a user who has switched away can't have a pad found again for her"):
+        control, told = hide("switched", pads()[A]["event"][0])
+        assert told.startswith("ok"), told
+        machine.succeed("chvt 3")
+        machine.wait_until_succeeds("[ -z \"$(loginctl show-seat seat0 -p ActiveSession --value)\" ]")
+        machine.succeed("systemctl restart pad-a")
+        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -cF {A}")
+        machine.succeed("udevadm settle")
+        assert not alice_can_open(A)
+        told = order(control, "reopen")
+        assert "isn't the user in front" in told, told
+        machine.succeed("chvt 1")
+        machine.wait_until_succeeds("[ \"$(loginctl show-session $(loginctl show-seat seat0 -p ActiveSession --value) -p Name --value)\" = alice ]")
+        assert order(control, "reopen").startswith("ok")
+        assert order(control, "restore").startswith("ok")
+        machine.succeed("systemctl stop switched")
+        wait_restored()
+        assert alice_can_open(A)
+
+    with subtest("users with no seat share one cap however many user IDs they connect as, and leave room for the user at the seat"):
+        control, told = hide("keeper-again", pads()[B]["event"][0])
+        assert told.startswith("ok"), told
+        pid = machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip()
+        # As one user's subordinate IDs would: forty of them, with eight
+        # connections each.
+        machine.succeed(f"systemd-run --unit many-uids hider-probe uids {SOCKET} 200000 40 8 hold")
+        machine.wait_until_succeeds("journalctl -u many-uids -o cat | grep -q answered=")
+        told = machine.succeed("journalctl -u many-uids -o cat | grep answered=").strip()
+        print(f"forty user IDs with no seat, eight connections each: {told}")
+        assert told == "answered=32 closed=288", told
+        # Another user with no seat finds no room; the user at the seat
+        # does: her release told, a pad hidden and shown again.
+        told = machine.succeed(f"hider-probe uids {SOCKET} 1001 1 1").strip()
+        assert told == "answered=0 closed=1", told
+        told = machine.succeed(f"su -l alice -c 'ctrlassist-fixture version --socket {SOCKET}'").strip()
+        assert told == "version: ${hider.version}", told
+        other, told = hide("served-again", pads()[A]["event"][0])
+        assert told.startswith("ok"), told
+        assert order(other, "restore").startswith("ok")
+        machine.succeed("systemctl stop served-again")
+        descriptors = int(machine.succeed(f"ls /proc/{pid}/fd | wc -l"))
+        print(f"the service holds {descriptors} descriptors, with its limit at " + machine.succeed(f"grep 'Max open files' /proc/{pid}/limits").strip())
+        assert descriptors < 100
+        # Once they have gone there is room again.
+        machine.succeed("systemctl stop many-uids")
+        machine.wait_until_succeeds(f"hider-probe uids {SOCKET} 1001 1 1 | grep -x answered=1.closed=0")
+        assert machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip() == pid, "the service didn't restart"
+        assert order(control, "restore").startswith("ok")
+        machine.succeed("systemctl stop keeper-again")
         wait_restored()
   '';
 }

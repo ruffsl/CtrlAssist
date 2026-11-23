@@ -16,12 +16,13 @@
 //! reason, they are shown again.
 
 mod activation;
+mod connections;
 mod descriptor;
 mod hide;
 mod pad;
 mod seat;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
@@ -36,10 +37,8 @@ use rustix::net::{
     AddressFamily, SocketAddrUnix, SocketFlags, SocketType, accept_with, bind, listen, socket,
 };
 
+use crate::connections::Connections;
 use crate::pad::Pad;
-
-/// The most connections one user may hold at once. The daemon holds one.
-const CONNECTIONS_PER_USER: usize = 8;
 
 /// Where a hidden pad is in its life.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -67,8 +66,7 @@ struct State {
     entries: Vec<Entry>,
     next_token: u32,
     next_connection: u64,
-    /// Open connections, by user; `u32::MAX` for one whose user isn't known.
-    connections: BTreeMap<u32, usize>,
+    connections: Connections,
     /// Whether anyone has connected since the service started.
     served_anyone: bool,
 }
@@ -100,10 +98,6 @@ impl State {
             .iter()
             .map(|entry| entry.pad.parent.clone())
             .collect()
-    }
-
-    fn open(&self) -> usize {
-        self.connections.values().sum()
     }
 }
 
@@ -252,8 +246,11 @@ fn hide_pad(
 }
 
 /// Opens a hidden pad's event node again, finding the pad first if it
-/// reconnected: only once the device it was checked as is gone.
-fn reopen(shared: &Shared, owner: u64, token: u32) -> Result<OwnedFd, Refusal> {
+/// reconnected: only once the device it was checked as is gone, and only
+/// for a caller in front, now, on the pad's seat, since the pad found may
+/// be another the rule hides.
+fn reopen(shared: &Shared, owner: u64, user: Option<u32>, token: u32) -> Result<OwnedFd, Refusal> {
+    let seats = user.map(seat::seats_in_front).unwrap_or_default();
     let mut state = shared.state();
     let held = state.held();
     let entry = state
@@ -262,6 +259,9 @@ fn reopen(shared: &Shared, owner: u64, token: u32) -> Result<OwnedFd, Refusal> {
         .find(|entry| entry.token == token && entry.owner == owner && entry.phase == Phase::Hidden)
         .ok_or(Refusal::UnknownToken)?;
     if !pad::is_there(&entry.pad) {
+        if !seats.contains(&entry.pad.identity.seat) {
+            return Err(Refusal::NotPermitted);
+        }
         let taken: Vec<&Path> = held.iter().map(PathBuf::as_path).collect();
         let found = pad::returned(&entry.pad, group(), &taken).ok_or(Refusal::Absent)?;
         for marker in found.markers.difference(&entry.pad.markers) {
@@ -336,7 +336,7 @@ fn serve(shared: &Shared, socket: &OwnedFd, owner: u64, user: Option<u32>) {
                     Err(refusal) => refuse(socket, refusal),
                 }
             }
-            Some(Request::Reopen(Token(token))) => match reopen(shared, owner, token) {
+            Some(Request::Reopen(Token(token))) => match reopen(shared, owner, user, token) {
                 Ok(event) => reply(socket, ok(token, true), Some(&event)),
                 Err(refusal) => refuse(socket, refusal),
             },
@@ -418,7 +418,7 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
         }
         if !waiting {
             let state = shared.state();
-            if state.open() == 0 && state.served_anyone && !stay {
+            if state.connections.open() == 0 && state.served_anyone && !stay {
                 // Started on demand, and nobody needs it now. A client
                 // that connects from here on waits on the socket systemd
                 // holds, which starts the service again.
@@ -438,20 +438,17 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
             }
         };
         let user = socket_peercred(&socket).ok().map(|peer| peer.uid.as_raw());
-        let owner = {
+        let seated = user.is_some_and(seat::has_seat);
+        let (owner, holder) = {
             let mut state = shared.state();
             state.served_anyone = true;
-            let count = state
-                .connections
-                .entry(user.unwrap_or(u32::MAX))
-                .or_default();
-            if *count >= CONNECTIONS_PER_USER {
-                // Closed at once: one user can't take every descriptor.
+            let Some(holder) = state.connections.admit(user, seated) else {
+                // Closed at once: neither one user nor every user with no
+                // seat can take every descriptor.
                 continue;
-            }
-            *count += 1;
+            };
             state.next_connection += 1;
-            state.next_connection
+            (state.next_connection, holder)
         };
         let client = Arc::clone(&shared);
         let spawned = std::thread::Builder::new()
@@ -459,22 +456,11 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
             .spawn(move || {
                 serve(&client, &socket, owner, user);
                 drop(socket);
-                let mut state = client.state();
-                let key = user.unwrap_or(u32::MAX);
-                if let Some(count) = state.connections.get_mut(&key) {
-                    *count -= 1;
-                    if *count == 0 {
-                        state.connections.remove(&key);
-                    }
-                }
-                drop(state);
+                client.state().connections.release(holder);
                 let _ = rustix::io::write(&client.closed, &1u64.to_ne_bytes());
             });
         if spawned.is_err() {
-            let mut state = shared.state();
-            if let Some(count) = state.connections.get_mut(&user.unwrap_or(u32::MAX)) {
-                *count -= 1;
-            }
+            shared.state().connections.release(holder);
             log("couldn't start a thread for a connection");
         }
     }

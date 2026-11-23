@@ -81,14 +81,14 @@ A pad whose event node has no HID device and no USB interface with a driver (a u
 
 ### Who is served, and when
 
-- **A connection is permitted** once its user is found in front on a seat, as today, and stays so. A permitted connection may always restore, say the version, and `reopen` and `raw of` what it has hidden: a user who leaves the foreground keeps what they have, as the architecture says.
+- **A connection is permitted** once its user is found in front on a seat, as today, and stays so. A permitted connection may always restore, say the version, and `reopen` and `raw of` what it has hidden: a user who leaves the foreground keeps what they have, as the architecture says. But a `reopen` that has to find a pad again, its recorded device gone, needs the caller in front now on the pad's seat: what it finds may be a pad someone else plugged in.
 - **`hide` and `raw` need the caller in front now,** on the pad's seat. A user switched away from can take nothing new. (H-3)
 
 ### Connections
 
 - **One thread per connection,** each receiving, checking and replying for its own client, with the shared state (the hidden pads, the markers) behind one lock that no thread holds while it waits on a client or on udev. A client that never reads its replies blocks only its own thread at `sendmsg`; one that passes a descriptor whose last close blocks (a FUSE file's flush, a lingering TCP socket) blocks only its own thread, since every descriptor received is closed there, the checked ones included. (H-4, H-5)
 - **Unpermitted clients are still answered,** so a daemon that started before its session was in front keeps its connection and is served once it is, as today; it costs them only their own thread.
-- **At most eight connections per user.** A ninth is accepted and closed at once. The daemon holds one. (H-6)
+- **At most eight connections per user, and 32 between every user with no session on a seat.** A connection over a cap is accepted and closed at once. The daemon holds one. A user can connect as many user IDs, the subordinate ones a user namespace maps, but logs in at a seat only as their own, so the second cap leaves room for the users at seats. The unit sets `LimitNOFILE=8192`. (H-6)
 - **`accept` failing is not fatal.** Out of descriptors, the service stops accepting until a connection closes, instead of exiting and showing every hidden pad mid-session. (H-6)
 - **Started on demand, it exits when the last connection closes,** as today; the main thread decides, so a client waiting to be accepted is accepted rather than dropped.
 
@@ -168,3 +168,6 @@ What only hardware can show, after the VM checks:
 - **Finding a pad again after a reconnect landed with the mechanism,** not with H-1 and H-2's step: the reconnect is part of what the mechanism's checks show, and the service acts on the recorded device from the start. H-1 and H-2's step keeps the descriptor checks, the seat, and the forged-twin check.
 - **The architecture's hiding section, and the spike's findings moved into its platform notes, changed with the mechanism,** so that it says what the code does at each commit; the docs step keeps the guide and the packaging README.
 - **H-3 closed with H-1's seat check,** not with the robustness step: asking that the caller be in front, now, on the pad's seat is the same check as asking it for new requests only.
+- **After the second review ([review.md](review.md), its "Second review, of the fixes"),** these depart from the design as first written, each said in place above:
+  - **The cap on connections is across users with no seat as well as per user,** and the unit raises `LimitNOFILE`.
+  - **`reopen` that has to find the pad again needs the caller in front.**

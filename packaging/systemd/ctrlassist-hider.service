@@ -23,6 +23,13 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 NoNewPrivileges=yes
 
+# Anyone may connect, and each connection is a descriptor and a thread.
+# The service caps them: eight per user, and 32 between every user with
+# no session on a seat, so users logged in at a seat always have room.
+# With a few descriptors to a connection, this leaves room for more such
+# users than a machine has.
+LimitNOFILE=8192
+
 # The markers the rule hides pads by. Kept when the service stops, so
 # that what a service that died left hidden is still named when
 # ExecStopPost puts it back; /run is emptied at boot.
