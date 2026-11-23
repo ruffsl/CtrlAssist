@@ -299,11 +299,16 @@ pub fn to_toml(fields: &[Field], values: &Values) -> String {
         if !field.applies_to(preset) || (field.key != PRESET && *value == field.default) {
             continue;
         }
-        let written = match field.kind {
-            // Digits and the two words stand bare; anything else that
-            // came in under those kinds is left for the check to refuse.
-            Kind::Number { .. } | Kind::Switch => value.clone(),
-            _ => toml::Value::String(value.clone()).to_string(),
+        // A number and the two words stand bare; anything else, under any
+        // kind, is written as a string, which the check then refuses where
+        // a string doesn't belong. So no value can add to the TOML.
+        let quoted = || toml::Value::String(value.clone()).to_string();
+        let written = match (&field.kind, value.as_str()) {
+            (Kind::Number { .. }, _) => value
+                .parse::<u32>()
+                .map_or_else(|_| quoted(), |number| number.to_string()),
+            (Kind::Switch, "true" | "false") => value.clone(),
+            _ => quoted(),
         };
         text.push_str(&format!("{} = {written}\n", field.key));
     }

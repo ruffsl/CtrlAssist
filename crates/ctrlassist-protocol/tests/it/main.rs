@@ -672,17 +672,11 @@ fn text_that_is_not_a_profile_is_refused_with_its_line() {
 }
 
 #[test]
-fn a_profile_written_out_reads_back_the_same() {
-    for text in [PRESET, FULL] {
-        let profile = Profile::from_toml(text).unwrap();
-        let written = profile.to_toml().unwrap();
-        assert_eq!(Profile::from_toml(&written).unwrap(), profile, "{written}");
-        // The schema version is left out while it is the current one.
-        assert!(!written.contains("schema"), "{written}");
-    }
-    let older =
+fn a_profile_may_say_its_schema_and_is_the_current_one_if_not() {
+    let said =
         Profile::from_toml("schema = 1\nmode = \"unicast\"\npad = \"model:0001:0001\"\n").unwrap();
-    assert_eq!(older.schema, 1);
+    assert_eq!(said.schema, 1);
+    assert_eq!(Profile::from_toml(PRESET).unwrap().schema, 1);
 }
 
 #[test]
@@ -879,6 +873,34 @@ mod form {
         assert_eq!(read["rumble"], "both");
         assert_eq!(read["managed"], "false");
         assert_eq!(read.get("outputs"), None);
+    }
+
+    /// A value that isn't what its field holds is written as a string,
+    /// so it can add nothing to the profile and the check refuses it.
+    #[test]
+    fn a_value_can_add_nothing_to_what_a_form_writes() {
+        let fields = form::fields();
+        let mut values = Values::new();
+        for (key, value) in [
+            ("mode", "unicast"),
+            ("pad", "model:0001:0001"),
+            ("outputs", "3\n[source.x]\npad = \"model:0002:0002\""),
+            ("managed", "yes\nprimary = \"x\""),
+        ] {
+            values.insert(key.to_string(), value.to_string());
+        }
+        let toml = form::to_toml(&fields, &values);
+        let table: toml::Table = toml.parse().unwrap();
+        let keys: Vec<&str> = table.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["managed", "mode", "outputs", "pad"], "{toml}");
+        assert!(Profile::check(&toml).is_err(), "{toml}");
+        // A number is written as one, however it came.
+        values.insert("outputs".to_string(), "+3".to_string());
+        values.insert("managed".to_string(), "true".to_string());
+        let toml = form::to_toml(&fields, &values);
+        assert!(toml.contains("outputs = 3\n"), "{toml}");
+        assert!(toml.contains("managed = true\n"), "{toml}");
+        Profile::check(&toml).unwrap();
     }
 
     #[test]

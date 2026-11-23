@@ -25,73 +25,57 @@ pub const SCHEMA: u32 = 1;
 const DEADZONE: f32 = 0.1;
 
 /// A profile as written.
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Profile {
     /// The schema version the file was written for.
-    #[serde(default = "schema", skip_serializing_if = "is_current")]
+    #[serde(default = "schema")]
     pub schema: u32,
     /// Whether the daemon manages when this profile runs: it starts a
     /// managed one once the daemon is up and its pads are connected.
     /// One that isn't is started by hand.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub managed: bool,
 
     /// The preset, for a profile in the short form: the mode its pads
     /// and virtual pads are arranged in, which the file writes as `mode`.
-    #[serde(default, rename = "mode", skip_serializing_if = "Option::is_none")]
+    #[serde(default, rename = "mode")]
     pub preset: Option<Preset>,
     /// A mux preset's first pad.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub primary: Option<String>,
     /// A mux preset's second pad, which outranks the first.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub assist: Option<String>,
     /// A demux preset's pad.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub pad: Option<String>,
     /// How many virtual pads a demux preset makes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub outputs: Option<usize>,
     /// What a preset's virtual pads present themselves as.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub identity: Option<Identity>,
     /// Who feels what a game rumbles, for a mux preset.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub rumble: Option<Rumble>,
     /// How the setup's pads are kept from games.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub hide: Option<Hide>,
 
     /// The pads, by name, for a profile in the full form.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub source: BTreeMap<String, Source>,
     /// The nodes, by name.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub node: BTreeMap<String, Node>,
     /// The virtual pads, by name.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub sink: BTreeMap<String, Sink>,
 }
 
 fn schema() -> u32 {
     SCHEMA
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "the signature serde calls"
-)]
-fn is_current(version: &u32) -> bool {
-    *version == SCHEMA
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "the signature serde calls"
-)]
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// Who feels what a game rumbles, in a preset of two pads.
@@ -233,56 +217,56 @@ impl Identity {
 }
 
 /// A pad in the full form.
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Source {
     /// Which pad; see [`PadRef`].
     pub pad: String,
     /// Sticks resting inside this are read as at rest.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub deadzone: Option<f32>,
 }
 
 /// A node in the full form: a mux or a demux, by which key it has.
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Node {
     /// The mode, for a mux.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub mux: Option<MuxMode>,
     /// The mode, for a demux.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub demux: Option<Fanout>,
     /// A mux's inputs. Later inputs outrank earlier ones.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub inputs: Vec<String>,
     /// A demux's input.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub input: Option<String>,
     /// How many outputs a demux has.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub outputs: Option<usize>,
     /// A mux input becomes active on a group at or above this.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub engage: Option<f32>,
     /// An active mux input stops being active on a group below this.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub release: Option<f32>,
     /// A mux's rule for a kind of group, where it differs from its mode's.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub rules: BTreeMap<GroupKind, RuleName>,
     /// Where feedback goes: `"active"`, `"none"`, or for a mux a list of
     /// its inputs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub feedback: Option<Feedback>,
     /// The button that switches the node: a button's name, or `false` for
     /// none. A mux may say whose button it is with a table.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub switch: Option<SwitchSpec>,
 }
 
 /// A mux's modes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MuxMode {
     /// The later input overrides what it touches.
@@ -294,7 +278,7 @@ pub enum MuxMode {
 }
 
 /// A demux's modes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Fanout {
     /// One output at a time.
@@ -304,7 +288,7 @@ pub enum Fanout {
 }
 
 /// The kinds of group a rule can be set for.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GroupKind {
     /// Sticks.
@@ -318,7 +302,7 @@ pub enum GroupKind {
 }
 
 /// How a group's output is chosen from a mux's inputs.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuleName {
     /// The highest active input owns the whole group.
@@ -332,7 +316,7 @@ pub enum RuleName {
 }
 
 /// Where a node's feedback goes.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum Feedback {
     /// `"active"` or `"none"`.
@@ -342,7 +326,7 @@ pub enum Feedback {
 }
 
 /// The named feedback settings.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FeedbackName {
     /// To whatever currently reaches the output.
@@ -352,7 +336,7 @@ pub enum FeedbackName {
 }
 
 /// What switches a node.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum SwitchSpec {
     /// `false`: no button; only a client can switch it.
@@ -369,7 +353,7 @@ pub enum SwitchSpec {
 }
 
 /// A virtual pad in the full form.
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Sink {
     /// The source or node output it follows.
@@ -459,6 +443,7 @@ impl PadRef {
 
 /// What is wrong with a profile, and where.
 #[derive(Clone, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub struct ProfileError {
     /// Where, in the file's own terms, such as `node.second.inputs[1]`.
     /// Empty for a problem with the file as a whole.
@@ -668,19 +653,6 @@ impl Profile {
             return error("schema", "the schema starts at 1");
         }
         Ok(profile)
-    }
-
-    /// Writes the profile as TOML.
-    ///
-    /// # Errors
-    ///
-    /// Fails if a value has no TOML form, which a number that isn't one
-    /// doesn't.
-    pub fn to_toml(&self) -> Result<String, ProfileError> {
-        toml::to_string(self).map_err(|error| ProfileError {
-            at: String::new(),
-            problem: error.to_string(),
-        })
     }
 
     /// Works the profile out into a graph and what its parts are.
