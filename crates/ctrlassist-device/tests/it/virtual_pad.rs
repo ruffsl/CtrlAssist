@@ -571,20 +571,24 @@ fn a_dualsense_on_bluetooth_is_sent_whole_output_reports() {
             && sent[2] == 0x10
             && sent[74..] == ctrlassist_test::playstation_crc32(0xa2, &sent[..74]).to_le_bytes()
     };
-    // The driver's own, from binding the pad: the shape to match. Its
-    // worker may write them after the pad's node is there, and the
-    // stand-in notes them as it reads them.
+    // The driver's own, from binding the pad: the shape to match. It
+    // writes one as it binds the pad, after the pad's node is there, and
+    // its worker then writes the lightbar's color and the player LEDs,
+    // in one report or two, as late as the machine lets it: the player
+    // LEDs are the last thing it sets. Those that came first can't be
+    // taken for all of them, or a late one is taken for ours.
+    let players = |sent: &Vec<u8>| sent.get(4).is_some_and(|flags| flags & 0x10 != 0);
     let mut theirs = real.outputs();
     for _ in 0..400 {
-        if !theirs.is_empty() {
+        if theirs.iter().any(players) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
         theirs = real.outputs();
     }
     assert!(
-        !theirs.is_empty(),
-        "the driver set the pad's lights as it bound it"
+        theirs.iter().any(players),
+        "the driver set the pad's player LEDs as it bound it: {theirs:?}"
     );
     assert!(theirs.iter().all(|sent| whole(sent)), "{theirs:?}");
 
