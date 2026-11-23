@@ -1,6 +1,8 @@
 //! What the tray shows: a snapshot of the SDK's mirror, and what changed
 //! between two of them that a person should be told.
 
+use std::collections::BTreeMap;
+
 use ctrlassist::form::Field;
 use ctrlassist::{DaemonState, Hiding, Identity, Pad, Phase, Profile, Setup};
 
@@ -87,6 +89,15 @@ impl View {
     /// rumble; and a pad that no setup uses connecting or leaving.
     #[must_use]
     pub fn news(&self, before: &Self) -> Vec<Toast> {
+        self.news_for(before, &mut BTreeMap::new())
+    }
+
+    /// As [`news`](Self::news), less what was asked for from this tray:
+    /// a start or a stop a person has just clicked is no news to them,
+    /// nor are the stop and the start a change they picked restarts the
+    /// setup with. What is seen of each is taken off `asked`.
+    #[must_use]
+    pub fn news_for(&self, before: &Self, asked: &mut BTreeMap<String, Asked>) -> Vec<Toast> {
         let mut news = Vec::new();
         // Nothing is compared until both are complete: a state still
         // arriving looks like things appearing one by one.
@@ -141,16 +152,25 @@ impl View {
             if !started {
                 continue;
             }
-            news.push(toast(
-                Category::SetupStarted,
-                format!("{name} started"),
-                if setup.phase == Phase::Held {
-                    "Its virtual pad is there; a pad it needs isn't connected yet."
-                } else {
-                    "Games see its virtual pad in place of the pads it uses."
-                },
-                GOOD,
-            ));
+            // Asked for here: seen, and not said. What a start finds
+            // wrong is said all the same; a restart finds what the
+            // start before it did, which was said then.
+            let asked = asked.remove(name);
+            if asked == Some(Asked::Change) {
+                continue;
+            }
+            if asked != Some(Asked::Start) {
+                news.push(toast(
+                    Category::SetupStarted,
+                    format!("{name} started"),
+                    if setup.phase == Phase::Held {
+                        "Its virtual pad is there; a pad it needs isn't connected yet."
+                    } else {
+                        "Games see its virtual pad in place of the pads it uses."
+                    },
+                    GOOD,
+                ));
+            }
             if self
                 .daemon
                 .as_ref()
@@ -181,6 +201,15 @@ impl View {
         }
         for setup in &before.setups {
             if self.setup(&setup.name).is_none() {
+                match asked.get(&setup.name) {
+                    Some(Asked::Stop) => {
+                        asked.remove(&setup.name);
+                        continue;
+                    }
+                    // Its start is still to come.
+                    Some(Asked::Change) => continue,
+                    _ => {}
+                }
                 news.push(toast(
                     Category::SetupStarted,
                     format!("{} stopped", setup.name),
@@ -218,6 +247,29 @@ impl View {
     }
 }
 
+/// What was asked of a setup from this tray, and isn't news when seen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Asked {
+    /// A start.
+    Start,
+    /// A stop.
+    Stop,
+    /// A change to its profile, which may restart it.
+    Change,
+}
+
+/// What to say of a setup that a change picked here restarted: one
+/// notification, where a stop and a start would be two.
+#[must_use]
+pub fn restarted(name: &str) -> Toast {
+    toast(
+        Category::SetupStarted,
+        format!("{name} restarted"),
+        "That change needed a new virtual pad: a game saw its controller disconnect and another connect.",
+        GOOD,
+    )
+}
+
 /// What to say of the daemon going away or coming back. `was` is whether
 /// it was there at the last look, or nothing at the first: a tray that
 /// starts without a daemon has no news of one.
@@ -237,7 +289,7 @@ pub fn daemon_news(was: Option<bool>, alive: bool, had_setups: bool) -> Option<T
         (false, true) => Some(toast(
             Category::SetupTrouble,
             "The CtrlAssist daemon is back".to_string(),
-            "Profiles that start by themselves will.",
+            "Managed profiles start again by themselves.",
             GOOD,
         )),
         _ => None,
@@ -354,6 +406,57 @@ pub(crate) mod tests {
 
     fn summaries(news: &[Toast]) -> Vec<&str> {
         news.iter().map(|toast| toast.summary.as_str()).collect()
+    }
+
+    /// What a person asked for from the tray isn't news to them: a
+    /// start, a stop, or the stop and start a change of theirs restarts
+    /// a setup with. From anywhere else, each is.
+    #[test]
+    fn what_was_asked_from_the_tray_is_not_news() {
+        let running = view(Some(Phase::Running), Hiding::Service);
+        let stopped = view(None, Hiding::Service);
+        let asked = |what| BTreeMap::from([("couch".to_string(), what)]);
+
+        let mut start = asked(Asked::Start);
+        assert!(running.news_for(&stopped, &mut start).is_empty());
+        assert!(start.is_empty(), "seen, and taken off");
+        let mut stop = asked(Asked::Stop);
+        assert!(stopped.news_for(&running, &mut stop).is_empty());
+        assert!(stop.is_empty());
+        // A change that restarts it: neither its stop nor its start.
+        let mut change = asked(Asked::Change);
+        assert!(stopped.news_for(&running, &mut change).is_empty());
+        assert_eq!(change.len(), 1, "its start is still to come");
+        assert!(running.news_for(&stopped, &mut change).is_empty());
+        assert!(change.is_empty());
+        // Nor what the restart finds wrong, which its first start said.
+        let mut change = asked(Asked::Change);
+        let grabbed = view(Some(Phase::Running), Hiding::Grab);
+        assert!(
+            grabbed
+                .news_for(&view(None, Hiding::Grab), &mut change)
+                .is_empty()
+        );
+        assert_eq!(restarted("couch").summary, "couch restarted");
+
+        // Asked of another setup, or the other way about, it is news.
+        let mut other = BTreeMap::from([("desk".to_string(), Asked::Start)]);
+        assert_eq!(
+            summaries(&running.news_for(&stopped, &mut other)),
+            ["couch started"]
+        );
+        let mut wrong = asked(Asked::Start);
+        assert_eq!(
+            summaries(&stopped.news_for(&running, &mut wrong)),
+            ["couch stopped"]
+        );
+        // What a start finds wrong is said, asked for or not.
+        let grabbed = view(Some(Phase::Running), Hiding::Grab);
+        let mut start = asked(Asked::Start);
+        assert_eq!(
+            summaries(&grabbed.news_for(&view(None, Hiding::Grab), &mut start)),
+            ["couch: its pads are grabbed, not hidden"]
+        );
     }
 
     #[test]

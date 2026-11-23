@@ -91,7 +91,7 @@ pub(crate) async fn follow(daemon: DaemonClient, handle: Handle, notifier: Notif
         let alive = view.alive;
         let news = handle
             .update(move |tray| {
-                let mut news = view.news(&tray.view);
+                let mut news = view.news_for(&tray.view, &mut tray.asked);
                 news.extend(state::daemon_news(
                     was_alive,
                     alive,
@@ -183,14 +183,16 @@ pub(crate) async fn act(
                 }
                 continue;
             }
-            Action::Start(name) => (
-                format!("Couldn't start {name}"),
-                daemon.start_setup(&name).await,
-            ),
-            Action::Stop(name) => (
-                format!("Couldn't stop {name}"),
-                daemon.stop_setup(&name).await,
-            ),
+            Action::Start(name) => {
+                let outcome = daemon.start_setup(&name).await;
+                unasked(&handle, &name, outcome.is_err()).await;
+                (format!("Couldn't start {name}"), outcome)
+            }
+            Action::Stop(name) => {
+                let outcome = daemon.stop_setup(&name).await;
+                unasked(&handle, &name, outcome.is_err()).await;
+                (format!("Couldn't stop {name}"), outcome)
+            }
             Action::Select {
                 setup,
                 node,
@@ -216,7 +218,16 @@ pub(crate) async fn act(
                     let name = name.clone();
                     handle.update(move |tray| tray.unpick(&name, kept)).await;
                 }
-                (format!("Couldn't change {name}"), outcome)
+                // A change that restarted the setup is said once. Its
+                // stop and start, which may be seen before or after
+                // this, are left for the start to take off the list;
+                // anything else has neither to wait for.
+                let restarted = matches!(outcome, Ok(true));
+                unasked(&handle, &name, !restarted).await;
+                if restarted {
+                    notifier.notify(state::restarted(&name));
+                }
+                (format!("Couldn't change {name}"), outcome.map(|_| ()))
             }
         };
         if let Err(error) = outcome {
@@ -229,12 +240,22 @@ pub(crate) async fn act(
 /// Keeps `toml` as the profile `name`, and has a setup that runs it
 /// take the change: as it runs where it can, and by a restart where it
 /// can't. One that doesn't run is only kept.
-async fn put_and_apply(daemon: &DaemonClient, name: &str, toml: &str) -> ctrlassist::Result<()> {
+/// Says whether that restarted it.
+async fn put_and_apply(daemon: &DaemonClient, name: &str, toml: &str) -> ctrlassist::Result<bool> {
     daemon.put_profile(name, toml).await?;
     if daemon.setup(name)?.is_some() {
-        daemon.update_setup(name, true).await?;
+        return daemon.update_setup(name, true).await;
     }
-    Ok(())
+    Ok(false)
+}
+
+/// Takes `name` off what was asked from the tray, if `done`: what was
+/// asked failed, or has nothing more to be seen of it.
+async fn unasked(handle: &Handle, name: &str, done: bool) {
+    if done {
+        let name = name.to_string();
+        handle.update(move |tray| tray.asked.remove(&name)).await;
+    }
 }
 
 #[cfg(test)]
@@ -342,6 +363,25 @@ mod tests {
             self.tray.lock().await.activate(command);
         }
 
+        /// The summaries of the notifications up to the one that has
+        /// `wanted` in it.
+        async fn heard_until(&mut self, wanted: &str) -> Vec<String> {
+            let mut heard = Vec::new();
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    let toast = self.toasts.recv().await.expect("the notifier is open");
+                    let found = toast.summary.contains(wanted);
+                    heard.push(toast.summary);
+                    if found {
+                        return;
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| unreachable!("never told {wanted:?}"));
+            heard
+        }
+
         /// The next notification whose summary has `wanted` in it.
         async fn told(&mut self, wanted: &str) -> Toast {
             tokio::time::timeout(Duration::from_secs(20), async {
@@ -437,6 +477,15 @@ mod tests {
         rig.shows("Identity: Xbox >").await;
         eventually_pad(&rig, "Microsoft Xbox Series S|X Controller (in default)").await;
         rig.shows("default ✓ (Running) >").await;
+        // Said once, as a restart: not as a stop and a start, and
+        // nothing was said of the start and the picks before it either.
+        let heard = rig.heard_until("default restarted").await;
+        assert!(
+            !heard
+                .iter()
+                .any(|said| said.ends_with(" started") || said.ends_with(" stopped")),
+            "{heard:?}"
+        );
         rig.click(pick("identity", "generic")).await;
         eventually_pad(&rig, "CtrlAssist Virtual Pad (in default)").await;
         // Stopped, a pick is kept, and Start runs the profile as kept.
@@ -463,11 +512,10 @@ mod tests {
         // The assist leaves: the setup is held, the menu and a
         // notification say so, and it can't be handed to a pad that is gone.
         drop(assist);
-        let menu = rig.shows("default ✓ (Held) >").await;
-        assert!(
-            menu.contains("Assist: Tray Assist (disconnected) >"),
-            "{menu}"
-        );
+        rig.shows("default ✓ (Held) >").await;
+        // The pad's own leaving is published apart from its setup's
+        // being held, and may be seen a moment after.
+        rig.shows("Assist: Tray Assist (disconnected) >").await;
         let held = rig.told("default is held").await;
         assert!(
             held.body.starts_with("Tray Assist disconnected"),

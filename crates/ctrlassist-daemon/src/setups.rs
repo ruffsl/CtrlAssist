@@ -25,7 +25,7 @@ use ctrlassist_protocol::payload::{self, Phase};
 use ctrlassist_protocol::profile::{Hide, Identity, PadRef, Plan, Profile};
 use ctrlassist_protocol::serve::Responder;
 use ctrlassist_protocol::{keys, rpc};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use zenoh::query::Query;
 
 use crate::blacklist::Blacklist;
@@ -380,6 +380,10 @@ pub(crate) struct Hiding {
     /// The found service's release, as it said on being found; none
     /// from one too old to be asked.
     release: Mutex<Option<String>>,
+    /// The pads whose driver the service re-bound to hide them, as it
+    /// said: it re-binds it again to show them, so each goes and comes
+    /// back then.
+    rebound: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl Hiding {
@@ -390,6 +394,7 @@ impl Hiding {
             socket: Some(socket.to_path_buf()),
             client: Mutex::new(None),
             release: Mutex::new(None),
+            rebound: Mutex::default(),
         };
         if hiding.mechanism() == payload::Hiding::Grab {
             info!(socket = %socket.display(), "the hiding service isn't there; a setup's pads will be grabbed, which hides them from most games but not from a program that reads them some other way. It is looked for again each time it is needed");
@@ -404,6 +409,7 @@ impl Hiding {
             socket: None,
             client: Mutex::new(None),
             release: Mutex::new(None),
+            rebound: Mutex::default(),
         }
     }
 
@@ -432,6 +438,18 @@ impl Hiding {
             .expect("nothing panics while the hiding service's release is held")
     }
 
+    fn rebound(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeSet<String>> {
+        self.rebound
+            .lock()
+            .expect("nothing panics while the re-bound pads are held")
+    }
+
+    /// Whether showing the pad again re-binds its driver, as hiding it
+    /// last did.
+    pub(crate) fn rebinds(&self, pad: &str) -> bool {
+        self.rebound().contains(pad)
+    }
+
     /// The found service's release, for the daemon's state: none with
     /// no service, or from one too old to say.
     pub(crate) fn service_release(&self) -> Option<String> {
@@ -452,8 +470,14 @@ impl Hiding {
     fn ask<T>(&self, ask: impl FnOnce(&Client) -> Result<T, ctrlassist_hider::Error>) -> Option<T> {
         let mut client = self.client();
         let outcome = ask(client.as_ref()?);
-        if let Err(error) = &outcome {
-            warn!(%error, "the hiding service didn't do as asked");
+        match &outcome {
+            // A pad that has just left can't be opened again yet: the
+            // usual case of a pad leaving a setup, and nothing wrong.
+            Err(ctrlassist_hider::Error::Refused(ctrlassist_hider::Refusal::Absent)) => {
+                debug!("the hiding service has nothing to open: the pad isn't connected");
+            }
+            Err(error) => warn!(%error, "the hiding service didn't do as asked"),
+            Ok(_) => {}
         }
         // A connection that broke is given up: the service restores what
         // was hidden through it, and it is looked for again when next
@@ -625,6 +649,12 @@ fn take(
     if hide == Hide::Full
         && let Some(hidden) = hiding.ask(|client| client.hide(fd.as_fd()))
     {
+        // Hidden by re-binding its driver, it is shown again the same way.
+        if hidden.dislodged {
+            hiding.rebound().insert(wanted.id.clone());
+        } else {
+            hiding.rebound().remove(&wanted.id);
+        }
         drop(opened);
         drop(fd);
         return match read(hidden.event, node, database) {
@@ -879,6 +909,9 @@ impl Reactor {
     /// Gives up a setup's pads, and says so.
     async fn release(&mut self, name: &str) {
         for pad in self.book.release(name) {
+            if self.hiding.rebinds(&pad) {
+                self.book.expect_back(&pad);
+            }
             self.publish_pad_logged(&pad).await;
         }
     }
@@ -1344,6 +1377,9 @@ impl Reactor {
             }
             for pad in freed {
                 self.book.let_go(&pad);
+                if self.hiding.rebinds(&pad) {
+                    self.book.expect_back(&pad);
+                }
                 self.publish_pad_logged(&pad).await;
             }
             taking.responder.err(refusal).await;
@@ -1385,6 +1421,9 @@ impl Reactor {
                 tokens.extend(slot.token);
                 if let Some(pad) = &slot.pad {
                     self.book.let_go(pad);
+                    if self.hiding.rebinds(pad) {
+                        self.book.expect_back(pad);
+                    }
                     changed.push(pad.clone());
                 }
             }

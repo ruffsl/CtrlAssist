@@ -269,6 +269,15 @@ Found while building it, for review:
 - **`quick` as already kept** on a machine is left as an ordinary profile; nothing renames it.
 - **Run and not run:** the daemon VM check passes, on the installed package with the real hiding service. The whole suite has not run, with Steam open.
 
+**The tray's notifications, audited** (2026-11-22, with the maintainer, from a recording of them over the session bus and the daemon's journal). Forty were sent in two and a half minutes of ordinary use; twenty-four were one artifact.
+
+- **A pad the hiding service shows again doesn't leave.** Showing a pad again re-binds its driver, so the kernel removes it and adds it back, and the daemon published that as a pad disconnecting and connecting: two notifications a pad after every stop, and a row that flickered in the window. The service says, as it hides a pad, whether it re-bound its driver (`dislodged`, which the daemon had no use for); the daemon remembers that for the pad, and when it lets such a pad go it expects it to go and come back once. Its going is then not published, and it is published as connected throughout. No time limit is involved. Two things it doesn't cover: the same go-and-return as a pad is hidden, at a start, which the tray says nothing of since the pad is its setup's by then, but the window's row may still flicker; and a pad unplugged in the instant between being let go and its driver being re-bound, whose going is taken for the expected one and which then reads as connected until it is plugged in again.
+- **A start or a stop asked for from the tray isn't said.** The person clicked it, and the menu shows it. One the daemon makes by itself, for a managed profile, or that the window or the command asks for, is said as before. What a start finds wrong (pads only grabbed, no rumble) is said either way.
+- **A change that restarts a setup is said once,** as "restarted", where it was a stop and a start; and what the restart finds wrong, which its first start said, isn't said again. A change the setup takes as it runs says nothing, as before.
+- **"The CtrlAssist daemon is back"** says managed profiles start again, where it said profiles that start by themselves.
+- **A pad that has just left its setup** was logged as the hiding service not doing as asked, a warning, each time: it can't be opened again until it is back. That is logged at debug.
+- **Not exercised in the recording, and unchanged:** failed, pads only grabbed, no rumble, and the refusals.
+
 **To carry to TisVlay,** noted here and not done there: its architecture note and zenoh audit say a serving leaf needs a client-mode link *into a router*, where the link alone decides; and its tray's supervised retry loop could give way to the hub's presence token as the event, which its tray's first session already sees. Beside these, the SDK's 256-deep queue fix.
 
 ## Steps

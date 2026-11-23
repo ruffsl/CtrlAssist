@@ -235,6 +235,15 @@ pkgs.testers.runNixOSTest {
         assert VIRTUAL not in nodes()
         pads = known()
         assert not pads[HID]["hidden"] and pads[HID].get("setup") is None, pads[HID]
+        # Shown again, the pad with a driver went and came back as the
+        # driver was re-bound. It never left, as far as anyone is told:
+        # it comes back, and nothing says it went.
+        machine.wait_until_succeeds(
+            "journalctl _SYSTEMD_USER_UNIT=ctrlassist-daemon.service -o cat | tac | sed '/a setup stopped/q' | grep -q 'a pad connected'"
+        )
+        since_stop = daemon_journal().split("a setup stopped")[-1]
+        assert "a pad disconnected" not in since_stop, since_stop
+        assert known()[HID]["connected"] and known()[PLAIN]["connected"], known()
 
     with subtest("a connected DualSense is copied through the service, and virtual ones are made from it"):
         # A stand-in for a real one: a pad of the kernel's PlayStation

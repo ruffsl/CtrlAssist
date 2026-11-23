@@ -15,7 +15,7 @@ use tracing::info;
 
 use crate::menu::{self, Command, Entry};
 
-use crate::state::View;
+use crate::state::{Asked, View};
 use crate::tip;
 
 /// What a click asks of the daemon, or of the tray itself.
@@ -93,6 +93,9 @@ pub struct PadTray {
     /// The profiles picked at whose pick the daemon hasn't published
     /// yet, each with its text as it was kept and as picked.
     picked: BTreeMap<String, (String, String)>,
+    /// What was asked of each setup from here and hasn't been seen
+    /// done yet: it isn't news to the person who asked.
+    pub asked: BTreeMap<String, Asked>,
     wheel: i32,
     /// When the wheel last turned.
     turned: Option<Instant>,
@@ -122,6 +125,7 @@ impl PadTray {
 
             target: None,
             picked: BTreeMap::new(),
+            asked: BTreeMap::new(),
             wheel: 0,
             turned: None,
             actions,
@@ -258,13 +262,23 @@ impl PadTray {
                 kept.toml.clone_from(&toml);
                 kept.unset = ctrlassist_protocol::profile::Profile::unchosen(&toml);
                 self.picked.insert(profile.clone(), (was, toml.clone()));
+                // A setup that runs it may be restarted by this.
+                if self.view.setup(&profile).is_some() {
+                    self.asked.insert(profile.clone(), Asked::Change);
+                }
                 Action::Put {
                     name: profile,
                     toml,
                 }
             }
-            Command::Start(name) => Action::Start(name),
-            Command::Stop(name) => Action::Stop(name),
+            Command::Start(name) => {
+                self.asked.insert(name.clone(), Asked::Start);
+                Action::Start(name)
+            }
+            Command::Stop(name) => {
+                self.asked.insert(name.clone(), Asked::Stop);
+                Action::Stop(name)
+            }
             Command::Select {
                 setup,
                 node,
