@@ -181,10 +181,11 @@ let
   #       subordinate IDs would, opens <each> connections and asks each
   #       the release; says how many were answered and how many closed at
   #       once; with hold, holds them
-  #   hider-probe lingering <socket> <count>
+  #   hider-probe lingering <socket> <count> [<more>]
   #       opens <count> connections and sends nothing, then one more that
   #       passes a TCP socket whose close lingers, its data never read;
-  #       says how many it holds and whether the last was closed; holds
+  #       says how many it holds and whether the last was closed; then
+  #       opens <more> connections, sending nothing; holds
   #   hider-probe churn <socket> <count>
   #       <count> times without pause: connects, asks the release,
   #       closes, and waits for the service to exit; says how many were
@@ -324,7 +325,7 @@ let
             print(f"answered={answered} closed={closed}", flush=True)
             if hold:
                 time.sleep(3600)
-        case ["lingering", path, count]:
+        case ["lingering", path, count, *more]:
             peers = [connect(path) for _ in range(int(count))]
             # A TCP connection whose other end never reads: once its window
             # is full, a close that lingers waits for data that can't go.
@@ -348,6 +349,9 @@ let
             except ConnectionResetError:
                 closed = True
             print(f"held={len(peers)} closed={closed}", flush=True)
+            if more:
+                after = [connect(path) for _ in range(int(more[0]))]
+                print(f"more={len(after)}", flush=True)
             time.sleep(3600)
         case ["churn", path, count]:
             answered = refused = 0
@@ -1298,6 +1302,36 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl stop past-lingering lingering")
         machine.wait_until_fails(f"{closer} | grep -q tcp_close")
         wait_restored()
+
+    with subtest("a user with no seat who holds the closer in a lingering close and fills its queue stops the service accepting, for as long as the close lingers"):
+        # What the service does today, not what it should. Eight held, a
+        # ninth passing a lingering socket before it is accepted, then 64
+        # that fill the closer's queue behind it and one more, which the
+        # main thread keeps for want of room.
+        machine.succeed(f"systemd-run --unit flood --uid bob hider-probe lingering {SOCKET} 8 65")
+        machine.wait_until_succeeds("journalctl -u flood -o cat | grep -q more=")
+        told = " ".join(machine.succeed("journalctl -u flood -o cat | grep -E 'held=|more='").split())
+        assert told == "held=8 closed=True more=65", told
+        pid = machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip()
+        closer = f"for task in /proc/{pid}/task/*; do if grep -qx closer $task/comm; then cat $task/stack; fi; done"
+        machine.wait_until_succeeds(f"{closer} | grep -q tcp_close")
+        # The main thread then waits on the closings alone: a ppoll of one
+        # descriptor, the listener left out.
+        machine.wait_until_succeeds(f"test \"$(cut -d' ' -f1,3 /proc/{pid}/syscall)\" = '271 0x1'")
+        # So the user at the seat waits in the backlog, unanswered.
+        machine.succeed(f"systemd-run --unit waiting --uid alice ctrlassist-fixture version --socket {SOCKET}")
+        machine.wait_until_succeeds(f"ss -xlH | grep -F {SOCKET} | awk '{{print $3}}' | grep -x 1")
+        assert machine.succeed(f"cut -d' ' -f1,3 /proc/{pid}/syscall").strip() == "271 0x1"
+        machine.succeed(f"{closer} | grep -q tcp_close")
+        machine.succeed("systemctl is-active waiting")
+        assert "version:" not in machine.succeed("journalctl -u waiting -o cat")
+        print("held in a lingering close, its queue full: the main thread " + machine.succeed(f"cut -d' ' -f1-3 /proc/{pid}/syscall").strip() + "; the listener's backlog " + machine.succeed(f"ss -xlH | grep -F {SOCKET}").strip())
+        # Until the close ends: the probe gone, the queue is closed and the
+        # user at the seat answered.
+        machine.succeed("systemctl stop flood")
+        machine.wait_until_fails("systemctl is-active waiting")
+        told = machine.succeed("journalctl -u waiting -o cat | grep version:").strip()
+        assert told == "version: ${hider.version}", told
 
     with subtest("a user with no seat who connects and closes without pause while nothing is hidden doesn't put the socket out of service"):
         # Each connection starts the service afresh: two hundred is ten
