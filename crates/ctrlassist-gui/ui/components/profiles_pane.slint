@@ -500,12 +500,33 @@ component ProfileDetailHeader inherits Rectangle {
                 alignment: start;
                 // The name alone: the default profile's mark is its
                 // row's in the list, and here it left the name cut short.
-                Text {
-                    text: root.profile.name;
-                    color: Theme.text;
-                    font-size: Design.font-title-3;
-                    font-weight: 700;
-                    overflow: elide;
+                // A long one is still cut at the window's smallest, and
+                // then shows whole on hover.
+                name-box := Rectangle {
+                    property <bool> cut: name-text.preferred-width > self.width;
+                    min-width: Design.font-title-3;
+                    preferred-width: name-text.preferred-width;
+                    preferred-height: name-text.preferred-height;
+                    name-text := Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: root.profile.name;
+                        color: Theme.text;
+                        font-size: Design.font-title-3;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    TouchArea {
+                        enabled: name-box.cut;
+                        changed has-hover => {
+                            name-help.set-hover(self.has-hover);
+                        }
+                    }
+                    name-help := HelpTrigger {
+                        width: 100%;
+                        height: 100%;
+                        text: name-box.cut ? root.profile.name : "";
+                    }
                 }
                 if root.profile.kept: VerticalLayout {
                     alignment: center;
@@ -671,7 +692,7 @@ component ProfileDetail inherits Rectangle {
                 // an update to take, its pads, who has control.
                 Group {
                     title: @tr("STATUS");
-                    help: @tr("How the profile is, as its header says. Running: started, with its virtual pad there. Held: a pad it uses has left, and it waits for it. Failed: it stopped working, and Stop clears it. Ready: its pads are connected and free. Waiting: a pad it names is away or in use. Not set up: its pads are still to choose.");
+                    help: @tr("How the profile is, as its header says. Starting: on its way to running. Running: started, with its virtual pad there. Held: a pad it uses has left, and it waits for it. Failed: it stopped working, and Stop clears it. Ready: its pads are connected and free. Waiting: a pad it names is away or in use. Not set up: its pads are still to choose. Unfinished: a change made here isn't a profile yet, so it isn't kept. Wrong: the daemon can't run it as it is written.");
                     help-id: root.id-prefix + "profiles-help-status";
 
                     HorizontalLayout {
@@ -1050,22 +1071,19 @@ export component ProfilesPane {
 
     // A profile left with a change the window holds and the daemon
     // doesn't: ask before it is dropped. `shown` is the row the detail
-    // was on; when the selection moves off an unfinished one, the
-    // dialog offers to drop it or go back to it.
+    // was on; when the selection moves off one that is unfinished now,
+    // the dialog offers to drop it or go back to it. Asked as the
+    // selection moves, not remembered from before, so a draft just
+    // discarded (which moves the selection too) isn't asked about.
     property <string> shown: root.has-selection ? Profiles.rows[Profiles.selected-index].name : "";
     property <string> was-shown;
-    property <bool> was-unfinished;
     property <string> pending-leave: "";
     changed shown => {
-        if (root.was-unfinished && root.was-shown != "" && root.was-shown != root.shown && root.pending-leave == "") {
+        if (root.was-shown != "" && root.was-shown != root.shown && root.pending-leave == ""
+                && Profiles.unfinished(root.was-shown)) {
             root.pending-leave = root.was-shown;
         }
         root.was-shown = root.shown;
-        root.was-unfinished = root.has-selection && Profiles.rows[Profiles.selected-index].unfinished;
-    }
-    property <bool> unfinished-now: root.has-selection && Profiles.rows[Profiles.selected-index].unfinished;
-    changed unfinished-now => {
-        root.was-unfinished = root.unfinished-now;
     }
 
     VerticalLayout {

@@ -218,6 +218,32 @@ fn a_switch_shows_the_tray_s_setting_and_not_what_was_asked() {
     assert_eq!(switch_is(&app, id), (true, true));
 }
 
+/// Right from the sidebar lands on the pane's first control: the first
+/// notification switch, or couch mode while there is no tray to set
+/// the switches.
+#[test]
+fn keys_into_the_pane_land_on_its_first_control() {
+    use ctrlassist_gui::{Nav, keys, nav};
+    use slint::platform::Key;
+
+    use crate::support::press;
+    let app = app();
+    let _ = nav::wire(&app);
+    keys::bind_key_router(&app);
+    app.show().expect("the testing backend shows a window");
+    let focus = app.global::<Nav>();
+    for (tray, first) in [
+        (true, "settings-notify-setup-started"),
+        (false, "settings-couch-mode"),
+    ] {
+        app.global::<Tray>().set_available(tray);
+        app.invoke_focus_active_sidebar_item();
+        settle();
+        press(&app, Key::RightArrow);
+        assert_eq!(focus.get_focus_id(), first, "with a tray: {tray}");
+    }
+}
+
 /// Couch mode's two controls are in the pane, with where the
 /// preference is kept.
 #[test]

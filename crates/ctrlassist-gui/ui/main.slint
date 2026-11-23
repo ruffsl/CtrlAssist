@@ -587,9 +587,9 @@ export component AppWindow inherits Window {
                     Rectangle { vertical-stretch: 1; }
 
                     // Reload config — power-user action. The daemon rereads
-                    // its files from disk; useful only when someone edited
-                    // one outside the GUI. Sits above
-                    // the service status block it acts on.
+                    // its profiles from disk, and the tray its settings;
+                    // useful only when someone edited one outside the GUI.
+                    // Sits above the service status block it acts on.
                     reload := Focusable {
                         height: 28px;
                         column: 0;
@@ -642,7 +642,7 @@ export component AppWindow inherits Window {
                         reload-help := HelpTrigger {
                             width: 100%;
                             height: 100%;
-                            text: @tr("Reload the daemon's files from disk — applies edits made outside the app.");
+                            text: @tr("Reread the daemon's profiles and the tray's settings from disk — applies edits made outside the app.");
                         }
                     }
 

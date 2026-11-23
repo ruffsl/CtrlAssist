@@ -22,7 +22,11 @@ component NotificationRow inherits SettingRow {
     in property <string> switch-id;
     callback toggled(bool);
 
-    ThemedSwitch {
+    public function focus-switch() {
+        switch.focus();
+    }
+
+    switch := ThemedSwitch {
         accessible-label: root.label;
         accessible-id: root.switch-id;
         checked: root.checked;
@@ -39,15 +43,20 @@ export component SettingsPane inherits Rectangle {
     property <[string]> couch-modes: [@tr("Follow the session"), @tr("On"), @tr("Off")];
     property <int> mode-index: Couch.mode == "on" ? 1 : Couch.mode == "off" ? 2 : 0;
 
-    // A column request lands on the pane's first control; one for the
-    // sidebar is the shell's.
+    // A column request lands on the pane's first control: the first
+    // notification switch, or with no tray to set them, couch mode. One
+    // for the sidebar is the shell's.
     property <int> column-mirror: Nav.column-tick;
     changed column-mirror => {
         if (Nav.column-target == 0) {
             return;
         }
         Nav.column-served = Nav.column-tick;
-        couch-select.focus();
+        if (Tray.available) {
+            first-switch.focus-switch();
+        } else {
+            couch-select.focus();
+        }
     }
 
     // A scroll view, not a plain column: couch mode's scale makes this
@@ -90,7 +99,7 @@ export component SettingsPane inherits Rectangle {
             help: @tr("Desktop notifications, sent by the tray: they need it running, and are kept with it. What you start or stop from the tray itself isn't announced, since you can see it there.");
             help-id: "settings-help-notify";
 
-            NotificationRow {
+            first-switch := NotificationRow {
                 label: @tr("A setup starts or stops");
                 helper: @tr("Each time a profile is started or stopped, by you or by itself.");
                 switch-id: "settings-notify-setup-started";

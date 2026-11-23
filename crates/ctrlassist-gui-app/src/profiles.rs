@@ -145,14 +145,12 @@ fn field_row(field: &Field, value: &str, pads: &[Pad], profile: &str) -> Profile
                 None => {}
             }
             // Nothing picked has nothing to say of. Any pad of a model
-            // is spoken for by a pad of that model, if one is known.
+            // is spoken for by the pad of that model a start would take,
+            // as the profile's word judges it.
             if !value.is_empty() {
                 let meant = chosen.or_else(|| {
                     let wanted = ctrlassist_protocol::profile::PadRef::parse(value)?;
-                    sorted
-                        .iter()
-                        .find(|pad| crate::status::names(&wanted, pad))
-                        .copied()
+                    crate::status::meant(&wanted, pads, profile)
                 });
                 let (word, tone) = connection(meant, profile);
                 row.status_word = SharedString::from(word);
@@ -242,10 +240,7 @@ fn use_row(
         .and_then(|setup| setup.sources.iter().find(|taken| taken.name == source.name))
         .and_then(|taken| taken.pad.as_deref())
         .and_then(|id| pads.iter().find(|pad| pad.id == id));
-    let pad = taken.or_else(|| {
-        pads.iter()
-            .find(|pad| crate::status::names(&source.pad, pad))
-    });
+    let pad = taken.or_else(|| crate::status::meant(&source.pad, pads, profile));
     let (word, tone) = connection(pad, profile);
     ProfileUseRow {
         word: SharedString::from(word),
@@ -402,10 +397,8 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
             };
             let (word, word_tone) = if why.is_some() || (kept.is_none() && !gone) {
                 ("Unfinished", "warn")
-            } else if unset && setup.is_none() {
-                ("Not set up", "neutral")
             } else {
-                crate::status::of(name, plan.as_ref(), &known.setups, &known.pads)
+                crate::status::of(name, plan.as_ref(), unset, &known.setups, &known.pads)
             };
             // How many pads it takes and makes: as the profile says, or
             // as its setup has them when the profile is gone.
@@ -922,6 +915,13 @@ where
 pub fn bind_local(app: &AppWindow, nav: &NavHandles) {
     let profiles = app.global::<Profiles>();
     profiles.on_name_problem(|name| SharedString::from(name_problem(&name)));
+    profiles.on_unfinished(|name| {
+        HELD.with_borrow(|held| {
+            held.get(name.as_str()).is_some_and(|values| {
+                KNOWN.with_borrow(|known| unfinished_why(&known.fields, values).is_some())
+            })
+        })
+    });
 
     let weak = app.as_weak();
     profiles.on_create(move |name| {

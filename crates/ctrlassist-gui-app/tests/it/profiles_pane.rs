@@ -860,6 +860,65 @@ fn a_pick_is_the_pad_shown_when_the_list_opened() {
     );
 }
 
+/// A pad named by its model is said by the pad of that model a start
+/// would take: a free one before one another profile has.
+#[test]
+fn any_pad_of_a_model_is_said_by_the_one_a_start_would_take() {
+    let mut known_now = known();
+    let of_model = |id: &str, setup: Option<&str>| Pad {
+        product: 0x09cc,
+        setup: setup.map(str::to_string),
+        ..pad(id, "Wireless Controller", true)
+    };
+    known_now
+        .pads
+        .push(of_model("address:aa:aa:aa:aa:aa:01", Some("quick")));
+    known_now
+        .pads
+        .push(of_model("address:aa:aa:aa:aa:aa:02", None));
+    let rows = profiles::rows(&known_now, &BTreeMap::new());
+    let couch = row(&rows, "couch");
+    let assist = field(couch, "assist");
+    assert_eq!(
+        (assist.status_word.as_str(), assist.status_tone.as_str()),
+        ("Connected", "success")
+    );
+    let used = couch
+        .uses
+        .iter()
+        .find(|used| used.part == "Assist")
+        .unwrap();
+    assert_eq!(used.pad, "address:aa:aa:aa:aa:aa:02");
+}
+
+/// Leaving a draft that isn't a profile yet asks first; discarding it
+/// asks nothing, though the selection moves off it too.
+#[test]
+fn leaving_an_unfinished_draft_asks_and_discarding_it_does_not() {
+    let app = app();
+    let pane = app.global::<Profiles>();
+    // The pane is made as the tree is first walked, as a window shown
+    // makes it at once; what it follows starts from then.
+    assert!(find_by_accessible_id(&app, "profiles-new").is_some());
+    pane.invoke_create("den".into());
+    settle();
+    assert!(find_by_accessible_id(&app, "profiles-discard").is_some());
+    pane.invoke_select("couch".into());
+    settle();
+    assert!(find_by_accessible_id(&app, "dialog-confirm").is_some());
+    // Back to it, to finish it.
+    activate_shown(&app, "dialog-cancel");
+    let rows: Vec<ProfileRow> = pane.get_rows().iter().collect();
+    assert_eq!(
+        rows[usize::try_from(pane.get_selected_index()).unwrap()].name,
+        "den"
+    );
+    pane.invoke_discard("den".into());
+    settle();
+    assert!(find_by_accessible_id(&app, "dialog-confirm").is_none());
+    assert_eq!(pane.get_selected_index(), -1);
+}
+
 /// Managed follows the profile as the daemon keeps it, after a toggle
 /// as before: the switch asks, and shows what is kept.
 #[test]

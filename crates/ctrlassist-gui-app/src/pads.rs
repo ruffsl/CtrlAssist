@@ -99,7 +99,8 @@ fn virtual_rows(setups: &[Setup], identities: &[ctrlassist::Identity]) -> Vec<Pa
             // It goes by the name a game sees it under, as a real pad
             // does; which profile's it is, is said under that.
             let name = known.map_or_else(|| identity.clone(), |known| known.name.clone());
-            let (word, tone) = status::of(&setup.name, None, std::slice::from_ref(setup), &[]);
+            let (word, tone) =
+                status::of(&setup.name, None, false, std::slice::from_ref(setup), &[]);
             PadRow {
                 is_virtual: true,
                 key: SharedString::from(key_of(&id)),
@@ -139,13 +140,14 @@ fn virtual_rows(setups: &[Setup], identities: &[ctrlassist::Identity]) -> Vec<Pa
 
 /// The real pads' rows: connected ones first, then the remembered ones.
 fn real_rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow> {
-    // Each profile worked out once; one the daemon finds wrong names no
-    // pad that can be told.
-    let plans: Vec<(&str, Plan)> = profiles
+    // Each profile worked out once, one with its pads still to choose
+    // among them; one the daemon finds wrong names no pad that can be
+    // told.
+    let plans: Vec<(&str, Plan, bool)> = profiles
         .iter()
         .filter_map(|profile| {
-            let plan = ctrlassist_protocol::profile::Profile::check(&profile.toml).ok()?;
-            Some((profile.name.as_str(), plan))
+            let (plan, unset) = status::plan_of(profile)?;
+            Some((profile.name.as_str(), plan, unset))
         })
         .collect();
     let mut sorted: Vec<&Pad> = pads.iter().collect();
@@ -174,12 +176,12 @@ fn real_rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow
                 .unwrap_or_default();
             let named: Vec<PadProfileRow> = plans
                 .iter()
-                .filter_map(|(name, plan)| {
+                .filter_map(|(name, plan, unset)| {
                     let source = plan
                         .sources
                         .iter()
                         .find(|source| status::names(&source.pad, pad))?;
-                    let (word, tone) = status::of(name, Some(plan), setups, pads);
+                    let (word, tone) = status::of(name, Some(plan), *unset, setups, pads);
                     Some(PadProfileRow {
                         name: SharedString::from(*name),
                         part: SharedString::from(status::capitalized(&source.name)),
@@ -197,8 +199,8 @@ fn real_rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow
             let asked = pad.setup.as_deref().and_then(|setup| {
                 plans
                     .iter()
-                    .find(|(name, _)| *name == setup)
-                    .map(|(_, plan)| plan.hide)
+                    .find(|(name, ..)| *name == setup)
+                    .map(|(_, plan, _)| plan.hide)
             });
             let games = match (pad.setup.is_some(), pad.hidden, asked) {
                 (false, ..) | (true, false, Some(Hide::None)) => "See this pad",

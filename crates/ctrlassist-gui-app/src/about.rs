@@ -360,8 +360,19 @@ fn diagnostic_bundle(app: &AppWindow, daemon: &DaemonClient) -> String {
     })
 }
 
+/// The toast for a Copy that failed: what wasn't copied, and why.
+#[must_use]
+pub fn copy_failed(label: &str, why: &str) -> String {
+    if label.is_empty() {
+        format!("Couldn't copy: {why}")
+    } else {
+        format!("Couldn't copy {label}: {why}")
+    }
+}
+
 /// Binds the clipboard every Copy button goes through: the text onto
-/// the Wayland clipboard, then a toast naming what was copied.
+/// the Wayland clipboard, then a toast naming what was copied, or
+/// saying it wasn't.
 fn wire_clipboard(app: &AppWindow) {
     let weak = app.as_weak();
     app.global::<Clipboard>().on_copy(move |value, label| {
@@ -369,6 +380,7 @@ fn wire_clipboard(app: &AppWindow) {
         let source = Source::Bytes(value.as_bytes().to_vec().into_boxed_slice());
         if let Err(error) = Options::new().copy(source, MimeType::Text) {
             warn!(%error, "the clipboard couldn't be written");
+            show_toast(weak.clone(), &copy_failed(&label, &error.to_string()));
             return;
         }
         let message = if label.is_empty() {
