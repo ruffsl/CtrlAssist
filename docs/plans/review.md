@@ -289,7 +289,7 @@ Five reviewers read the day's changes (`8edd729..98183fa`, about 11,200 lines ad
 
 ### Third review, of the second's fixes
 
-Three reviewers read the changes since `1f7ba85` to the hiding service, to the daemon with the protocol and the SDK, and to the device crate, without editing. None found anything critical or high. Ids begin with 3. Most of what they found is in two places written that night: the count the daemon keeps of a pad's goings and comings back, and what the service takes for a re-bind done.
+Three reviewers read the changes made for the second review's findings to the hiding service, to the daemon with the protocol and the SDK, and to the device crate, without editing. None found anything critical or high. Ids begin with 3. Most of what they found is in two places written that night: the count the daemon keeps of a pad's goings and comings back, and what the service takes for a re-bind done.
 
 **Hiding service.**
 
