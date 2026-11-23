@@ -95,7 +95,9 @@ impl View {
     /// As [`news`](Self::news), less what was asked for from this tray:
     /// a start or a stop a person has just clicked is no news to them,
     /// nor are the stop and the start a change they picked restarts the
-    /// setup with. What is seen of each is taken off `asked`.
+    /// setup with. What is seen of each is taken off `asked`; a stop or a
+    /// start seen while a change is unanswered is held there, for
+    /// [`answered`] to say or not.
     #[must_use]
     pub fn news_for(&self, before: &Self, asked: &mut BTreeMap<String, Asked>) -> Vec<Toast> {
         let mut news = Vec::new();
@@ -125,10 +127,7 @@ impl View {
                     news.push(toast(
                         Category::SetupTrouble,
                         format!("{name} is held"),
-                        format!(
-                            "{} disconnected. The virtual pad stays, and the rest plays on.",
-                            missing.join(" and ")
-                        ),
+                        held_body(setup, &missing),
                         WARNING,
                     ));
                 }
@@ -152,72 +151,48 @@ impl View {
             if !started {
                 continue;
             }
-            // Asked for here: seen, and not said. What a start finds
-            // wrong is said all the same; a restart finds what the
-            // start before it did, which was said then.
-            let asked = asked.remove(name);
-            if asked == Some(Asked::Change) {
-                continue;
-            }
-            if asked != Some(Asked::Start) {
-                news.push(toast(
-                    Category::SetupStarted,
-                    format!("{name} started"),
-                    if setup.phase == Phase::Held {
-                        "Its virtual pad is there; a pad it needs isn't connected yet."
-                    } else {
-                        "Games see its virtual pad in place of the pads it uses."
-                    },
-                    GOOD,
-                ));
-            }
-            if self
-                .daemon
-                .as_ref()
-                .is_some_and(|daemon| daemon.hiding == Hiding::Grab)
-            {
-                news.push(toast(
-                    Category::SetupTrouble,
-                    format!("{name}: its pads are grabbed, not hidden"),
-                    "The hiding service isn't there. A program that reads a pad some other way, as Steam reads a PlayStation pad, still sees it beside the virtual pad.",
-                    WARNING,
-                ));
-            }
-            let silent: Vec<&str> = setup
-                .sources
-                .iter()
-                .filter_map(|source| self.pad(source.pad.as_deref()?))
-                .filter(|pad| pad.rumble == Some(false))
-                .map(|pad| pad.name.as_str())
-                .collect();
-            if !silent.is_empty() {
-                news.push(toast(
-                    Category::SetupTrouble,
-                    format!("{name}: no rumble on {}", silent.join(" or ")),
-                    "What a game rumbles won't be felt there.",
-                    WARNING,
-                ));
+            let mut said = self.start_news(setup);
+            match asked.get_mut(name) {
+                // Asked for here: seen, and not said. What a start finds
+                // wrong is said all the same.
+                Some(asked) if asked.start => {
+                    asked.start = false;
+                    said.remove(0);
+                    news.extend(said);
+                }
+                // A restart's, which finds what the start before it did,
+                // said then.
+                Some(asked) if asked.restarting => asked.restarting = false,
+                Some(asked) if asked.changes > 0 => asked.held.push(Seen::Started(said)),
+                _ => news.extend(said),
             }
         }
         for setup in &before.setups {
-            if self.setup(&setup.name).is_none() {
-                match asked.get(&setup.name) {
-                    Some(Asked::Stop) => {
-                        asked.remove(&setup.name);
-                        continue;
+            if self.setup(&setup.name).is_some() {
+                continue;
+            }
+            let said = vec![toast(
+                Category::SetupStarted,
+                format!("{} stopped", setup.name),
+                "Its virtual pad is gone and its pads are visible to games again.",
+                GOOD,
+            )];
+            match asked.get_mut(&setup.name) {
+                Some(asked) if asked.stop => asked.stop = false,
+                Some(asked) => {
+                    // A restart's start is seen before it stops again: a
+                    // stop now means that start went unseen.
+                    asked.restarting = false;
+                    if asked.changes > 0 {
+                        asked.held.push(Seen::Stopped(said));
+                    } else {
+                        news.extend(said);
                     }
-                    // Its start is still to come.
-                    Some(Asked::Change) => continue,
-                    _ => {}
                 }
-                news.push(toast(
-                    Category::SetupStarted,
-                    format!("{} stopped", setup.name),
-                    "Its virtual pad is gone and its pads are visible to games again.",
-                    GOOD,
-                ));
+                None => news.extend(said),
             }
         }
+        asked.retain(|_, asked| !asked.is_empty());
         for pad in &self.pads {
             let was = before.pad(&pad.id);
             // A setup speaks for its pads: held, and running again.
@@ -245,17 +220,147 @@ impl View {
         }
         news
     }
+
+    /// What to say of `setup` starting: that it did, then what it
+    /// couldn't do for its pads.
+    fn start_news(&self, setup: &Setup) -> Vec<Toast> {
+        let name = &setup.name;
+        let mut news = vec![toast(
+            Category::SetupStarted,
+            format!("{name} started"),
+            if setup.phase == Phase::Held {
+                "Its virtual pad is there; a pad it needs isn't connected yet."
+            } else {
+                "Games see its virtual pad in place of the pads it uses."
+            },
+            GOOD,
+        )];
+        if self
+            .daemon
+            .as_ref()
+            .is_some_and(|daemon| daemon.hiding == Hiding::Grab)
+        {
+            news.push(toast(
+                Category::SetupTrouble,
+                format!("{name}: its pads are grabbed, not hidden"),
+                "The hiding service isn't there. A program that reads a pad some other way, as Steam reads a PlayStation pad, still sees it beside the virtual pad.",
+                WARNING,
+            ));
+        }
+        let silent: Vec<&str> = setup
+            .sources
+            .iter()
+            .filter_map(|source| self.pad(source.pad.as_deref()?))
+            .filter(|pad| pad.rumble == Some(false))
+            .map(|pad| pad.name.as_str())
+            .collect();
+        if !silent.is_empty() {
+            news.push(toast(
+                Category::SetupTrouble,
+                format!("{name}: no rumble on {}", silent.join(" or ")),
+                "What a game rumbles won't be felt there.",
+                WARNING,
+            ));
+        }
+        news
+    }
 }
 
-/// What was asked of a setup from this tray, and isn't news when seen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Asked {
-    /// A start.
-    Start,
-    /// A stop.
-    Stop,
-    /// A change to its profile, which may restart it.
-    Change,
+/// What a held setup's notification says: the pads that left, by name,
+/// that its virtual pads stay, and whether the pads still there play on
+/// or the setup waits for the ones that left.
+fn held_body(setup: &Setup, missing: &[&str]) -> String {
+    let stay = if setup.sinks.len() == 1 {
+        "The virtual pad stays"
+    } else {
+        "The virtual pads stay"
+    };
+    let present = setup.sources.iter().filter(|source| source.present).count();
+    let rest = match (present, missing.len()) {
+        (0, 1) => " until it is back",
+        (0, _) => " until they are back",
+        (1, _) => ", and the other pad plays on",
+        _ => ", and the other pads play on",
+    };
+    format!("{} disconnected. {stay}{rest}.", missing.join(" and "))
+}
+
+/// What was asked of a setup from this tray and isn't news when seen,
+/// and what was seen of it that waits on an answer.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Asked {
+    /// A start, not seen yet.
+    pub start: bool,
+    /// A stop, not seen yet.
+    pub stop: bool,
+    /// Changes to its profile picked here and not answered yet, each of
+    /// which may restart it.
+    pub changes: usize,
+    /// The setup seen to stop or to start while a change was unanswered:
+    /// news held until the answer says whether that was its restart.
+    held: Vec<Seen>,
+    /// A change was answered with a restart whose start is still to be
+    /// seen.
+    restarting: bool,
+}
+
+impl Asked {
+    /// Whether nothing is asked, held or awaited: an entry that has
+    /// served what it was for.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        !(self.start || self.stop || self.restarting) && self.changes == 0 && self.held.is_empty()
+    }
+}
+
+/// A setup seen to stop or to start, with what that says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Seen {
+    Stopped(Vec<Toast>),
+    Started(Vec<Toast>),
+}
+
+/// Takes the answer to a change picked at `name`: whether it restarted
+/// the setup, with `view` caught up with the daemon as it answered. Says
+/// what is news now: the restart, once, and anything held that wasn't
+/// it. The tray asks for one change at a time, so what was held is this
+/// change's restart or no change's at all.
+#[must_use]
+pub fn answered(
+    asked: &mut BTreeMap<String, Asked>,
+    view: &View,
+    name: &str,
+    restarted: bool,
+) -> Vec<Toast> {
+    let mut news: Vec<Toast> = restarted
+        .then(|| self::restarted(name))
+        .into_iter()
+        .collect();
+    let Some(entry) = asked.get_mut(name) else {
+        return news;
+    };
+    entry.changes = entry.changes.saturating_sub(1);
+    let (mut stopped, mut started) = (false, false);
+    for seen in std::mem::take(&mut entry.held) {
+        match seen {
+            // The restart's stop, then its start: neither is news.
+            Seen::Stopped(_) if restarted && !stopped && !started => stopped = true,
+            Seen::Started(_) if restarted && !started => started = true,
+            Seen::Stopped(said) | Seen::Started(said) => news.extend(said),
+        }
+    }
+    // Its start is still to come while the setup is seen gone or
+    // starting. Seen running, it was there to see, or its stop and its
+    // start both came and went between two looks.
+    entry.restarting = restarted
+        && !started
+        && view
+            .setup(name)
+            .is_none_or(|setup| setup.phase == Phase::Starting);
+    if entry.is_empty() {
+        asked.remove(name);
+    }
+    news
 }
 
 /// What to say of a setup that a change picked here restarted: one
@@ -267,6 +372,24 @@ pub fn restarted(name: &str) -> Toast {
         format!("{name} restarted"),
         "That change needed a new virtual pad: a game saw its controller disconnect and another connect.",
         GOOD,
+    )
+}
+
+/// What to say of a change that was kept and that the setup running it
+/// didn't take: why, and whether the setup is still `running`, since a
+/// restart that couldn't start again leaves it stopped.
+#[must_use]
+pub fn untaken(name: &str, error: &dyn std::fmt::Display, running: bool) -> Toast {
+    let stopped = if running {
+        String::new()
+    } else {
+        format!("\n{name} is stopped; starting it runs the profile as kept.")
+    };
+    toast(
+        Category::Refused,
+        format!("Couldn't apply the change to {name}"),
+        format!("The change is kept, but couldn't be applied: {error}{stopped}"),
+        ERROR,
     )
 }
 
@@ -408,55 +531,200 @@ pub(crate) mod tests {
         news.iter().map(|toast| toast.summary.as_str()).collect()
     }
 
+    /// `couch` asked for from the tray as `asked` says.
+    fn asked(asked: Asked) -> BTreeMap<String, Asked> {
+        BTreeMap::from([("couch".to_string(), asked)])
+    }
+
+    fn start() -> Asked {
+        Asked {
+            start: true,
+            ..Asked::default()
+        }
+    }
+
+    /// `n` changes picked at `couch` and not answered yet.
+    fn changes(n: usize) -> BTreeMap<String, Asked> {
+        asked(Asked {
+            changes: n,
+            ..Asked::default()
+        })
+    }
+
     /// What a person asked for from the tray isn't news to them: a
-    /// start, a stop, or the stop and start a change of theirs restarts
-    /// a setup with. From anywhere else, each is.
+    /// start or a stop. From anywhere else, each is.
     #[test]
     fn what_was_asked_from_the_tray_is_not_news() {
         let running = view(Some(Phase::Running), Hiding::Service);
         let stopped = view(None, Hiding::Service);
-        let asked = |what| BTreeMap::from([("couch".to_string(), what)]);
 
-        let mut start = asked(Asked::Start);
-        assert!(running.news_for(&stopped, &mut start).is_empty());
-        assert!(start.is_empty(), "seen, and taken off");
-        let mut stop = asked(Asked::Stop);
+        let mut started = asked(start());
+        assert!(running.news_for(&stopped, &mut started).is_empty());
+        assert!(started.is_empty(), "seen, and taken off");
+        let mut stop = asked(Asked {
+            stop: true,
+            ..Asked::default()
+        });
         assert!(stopped.news_for(&running, &mut stop).is_empty());
         assert!(stop.is_empty());
-        // A change that restarts it: neither its stop nor its start.
-        let mut change = asked(Asked::Change);
-        assert!(stopped.news_for(&running, &mut change).is_empty());
-        assert_eq!(change.len(), 1, "its start is still to come");
-        assert!(running.news_for(&stopped, &mut change).is_empty());
-        assert!(change.is_empty());
-        // Nor what the restart finds wrong, which its first start said.
-        let mut change = asked(Asked::Change);
-        let grabbed = view(Some(Phase::Running), Hiding::Grab);
-        assert!(
-            grabbed
-                .news_for(&view(None, Hiding::Grab), &mut change)
-                .is_empty()
-        );
-        assert_eq!(restarted("couch").summary, "couch restarted");
 
         // Asked of another setup, or the other way about, it is news.
-        let mut other = BTreeMap::from([("desk".to_string(), Asked::Start)]);
+        let mut other = BTreeMap::from([("desk".to_string(), start())]);
         assert_eq!(
             summaries(&running.news_for(&stopped, &mut other)),
             ["couch started"]
         );
-        let mut wrong = asked(Asked::Start);
+        let mut wrong = asked(start());
         assert_eq!(
             summaries(&stopped.news_for(&running, &mut wrong)),
             ["couch stopped"]
         );
         // What a start finds wrong is said, asked for or not.
         let grabbed = view(Some(Phase::Running), Hiding::Grab);
-        let mut start = asked(Asked::Start);
+        let mut started = asked(start());
         assert_eq!(
-            summaries(&grabbed.news_for(&view(None, Hiding::Grab), &mut start)),
+            summaries(&grabbed.news_for(&view(None, Hiding::Grab), &mut started)),
             ["couch: its pads are grabbed, not hidden"]
         );
+    }
+
+    /// A change picked here that restarts a setup is said once, as a
+    /// restart, however much of its stop and start the views show: all
+    /// of it, none of it, or its stop before the answer and its start
+    /// after. Nothing is left to silence what comes after.
+    #[test]
+    fn a_restart_is_said_once_however_much_of_it_is_seen() {
+        let running = view(Some(Phase::Running), Hiding::Service);
+        let starting = view(Some(Phase::Starting), Hiding::Service);
+        let stopped = view(None, Hiding::Service);
+
+        // All of it seen before the answer, and nothing after.
+        let mut asked = changes(1);
+        assert!(stopped.news_for(&running, &mut asked).is_empty());
+        assert!(running.news_for(&stopped, &mut asked).is_empty());
+        assert_eq!(
+            summaries(&answered(&mut asked, &running, "couch", true)),
+            ["couch restarted"]
+        );
+        assert!(asked.is_empty());
+
+        // None of it: its stop and its start came between two looks.
+        // What is done elsewhere afterwards is news.
+        let mut asked = changes(1);
+        assert!(running.news_for(&running, &mut asked).is_empty());
+        assert_eq!(
+            summaries(&answered(&mut asked, &running, "couch", true)),
+            ["couch restarted"]
+        );
+        assert!(asked.is_empty(), "nothing is left to wait for");
+        assert_eq!(
+            summaries(&stopped.news_for(&running, &mut asked)),
+            ["couch stopped"]
+        );
+        assert_eq!(
+            summaries(&running.news_for(&stopped, &mut asked)),
+            ["couch started"]
+        );
+
+        // Its stop seen before the answer, its start after.
+        let mut asked = changes(1);
+        assert!(stopped.news_for(&running, &mut asked).is_empty());
+        assert_eq!(
+            summaries(&answered(&mut asked, &stopped, "couch", true)),
+            ["couch restarted"]
+        );
+        assert!(running.news_for(&stopped, &mut asked).is_empty());
+        assert!(asked.is_empty());
+        // Or seen starting at the answer, its stop not seen at all.
+        let mut asked = changes(1);
+        assert!(starting.news_for(&running, &mut asked).is_empty());
+        assert_eq!(
+            summaries(&answered(&mut asked, &starting, "couch", true)),
+            ["couch restarted"]
+        );
+        assert!(running.news_for(&starting, &mut asked).is_empty());
+        assert!(asked.is_empty());
+        // Its start went unseen after all: a stop is someone else's.
+        let mut asked = changes(1);
+        assert!(stopped.news_for(&running, &mut asked).is_empty());
+        let _ = answered(&mut asked, &stopped, "couch", true);
+        assert!(running.news_for(&running, &mut asked).is_empty());
+        assert_eq!(
+            summaries(&stopped.news_for(&running, &mut asked)),
+            ["couch stopped"]
+        );
+        assert!(asked.is_empty());
+
+        // Nor is what the restart finds wrong said, which its first
+        // start said.
+        let mut asked = changes(1);
+        let grabbed = view(Some(Phase::Running), Hiding::Grab);
+        let none = view(None, Hiding::Grab);
+        assert!(none.news_for(&grabbed, &mut asked).is_empty());
+        assert!(grabbed.news_for(&none, &mut asked).is_empty());
+        assert_eq!(
+            summaries(&answered(&mut asked, &grabbed, "couch", true)),
+            ["couch restarted"]
+        );
+    }
+
+    /// Two changes picked in a row are two answers: each restart is said
+    /// as one, and a change taken as the setup ran has nothing to say.
+    #[test]
+    fn changes_picked_in_a_row_are_answered_each_on_its_own() {
+        let running = view(Some(Phase::Running), Hiding::Service);
+        let stopped = view(None, Hiding::Service);
+        let mut asked = changes(2);
+        for _ in 0..2 {
+            assert!(stopped.news_for(&running, &mut asked).is_empty());
+            assert!(running.news_for(&stopped, &mut asked).is_empty());
+            assert_eq!(
+                summaries(&answered(&mut asked, &running, "couch", true)),
+                ["couch restarted"]
+            );
+        }
+        assert!(asked.is_empty());
+        // A pick taken as it ran, then one that restarts it.
+        let mut asked = changes(2);
+        assert!(answered(&mut asked, &running, "couch", false).is_empty());
+        assert!(stopped.news_for(&running, &mut asked).is_empty());
+        assert!(running.news_for(&stopped, &mut asked).is_empty());
+        assert_eq!(
+            summaries(&answered(&mut asked, &running, "couch", true)),
+            ["couch restarted"]
+        );
+        assert!(asked.is_empty());
+    }
+
+    /// What is seen while a change is unanswered and turns out not to be
+    /// its restart is said once the answer comes: a stop from elsewhere,
+    /// or the stop of a restart whose new start failed.
+    #[test]
+    fn a_stop_that_was_not_a_restart_is_said_at_the_answer() {
+        let running = view(Some(Phase::Running), Hiding::Service);
+        let stopped = view(None, Hiding::Service);
+        let mut asked = changes(1);
+        assert!(stopped.news_for(&running, &mut asked).is_empty());
+        assert_eq!(
+            summaries(&answered(&mut asked, &stopped, "couch", false)),
+            ["couch stopped"]
+        );
+        assert!(asked.is_empty());
+        // The change is kept and said so, with the setup now stopped.
+        let said = untaken("couch", &"setup-failed: no pad", false);
+        assert_eq!(said.summary, "Couldn't apply the change to couch");
+        assert_eq!(
+            said.body,
+            "The change is kept, but couldn't be applied: setup-failed: no pad\ncouch is stopped; starting it runs the profile as kept."
+        );
+        assert_eq!(said.category, Category::Refused);
+        let said = untaken("couch", &"setup-busy: starting", true);
+        assert_eq!(
+            said.body,
+            "The change is kept, but couldn't be applied: setup-busy: starting"
+        );
+        // An answer for a profile nothing was asked of says only that.
+        assert!(answered(&mut BTreeMap::new(), &running, "couch", false).is_empty());
     }
 
     #[test]
@@ -467,9 +735,20 @@ pub(crate) mod tests {
 
         let news = held.news(&running);
         assert_eq!(summaries(&news), ["couch is held"]);
-        assert!(
-            news[0].body.starts_with("Xbox pad disconnected"),
-            "{news:?}"
+        assert_eq!(
+            news[0].body,
+            "Xbox pad disconnected. The virtual pad stays, and the other pad plays on."
+        );
+        // A setup of one pad, with two virtual pads, waits for it.
+        let (mut alone, mut was) = (held.clone(), running.clone());
+        for view in [&mut alone, &mut was] {
+            view.setups[0].sources.truncate(1);
+            let sink = view.setups[0].sinks[0].clone();
+            view.setups[0].sinks.push(sink);
+        }
+        assert_eq!(
+            alone.news(&was)[0].body,
+            "Xbox pad disconnected. The virtual pads stay until it is back."
         );
         assert_eq!(summaries(&running.news(&held)), ["couch is running again"]);
         let news = failed.news(&running);

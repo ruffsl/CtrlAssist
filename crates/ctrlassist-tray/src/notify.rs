@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use ctrlassist::{DaemonClient, StateWatcher, StateWatcherConfig};
+use ctrlassist::{DaemonClient, StateEvent, StateWatcher, StateWatcherConfig};
 use ctrlassist_protocol::endpoint::tray;
 use ctrlassist_protocol::error::{ErrorCode, WireError};
 pub use ctrlassist_protocol::rpc::NotificationSettings;
@@ -100,6 +100,23 @@ impl Notifier {
     }
 }
 
+/// `text` as a notification server that reads a body as markup shows it
+/// as written: a pad's name or a daemon's reason with `&` or `<` in it
+/// is otherwise taken for markup, and mangled or dropped.
+#[must_use]
+pub(crate) fn as_markup(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
+}
+
 /// `tray.toml`: the switches and the profile last used, under a schema
 /// number.
 #[derive(Serialize, Deserialize)]
@@ -131,11 +148,24 @@ pub fn load_target(path: &Path) -> Option<String> {
 }
 
 /// Keeps `target` as the profile last used, beside the switches the
-/// file holds.
+/// file holds. A file that isn't settings is left as it is, for a
+/// reload to say what is wrong with it: written over, its switches
+/// would be lost.
 pub(crate) async fn save_target(path: &Path, target: String) {
     let _one = WRITING.lock().await;
-    let settings = load_settings(path).unwrap_or_default();
-    write_persisted(path, settings, Some(target)).await;
+    let settings = match load_settings(path) {
+        Ok(settings) => settings,
+        Err(error) => {
+            warn!(
+                error = format!("{error:#}"),
+                "the profile last used isn't kept, so as not to write over the file"
+            );
+            return;
+        }
+    };
+    if let Err(error) = write_persisted(path, settings, Some(target)).await {
+        warn!(error, "the profile last used couldn't be kept");
+    }
 }
 
 fn schema() -> u32 {
@@ -193,20 +223,46 @@ fn read_for_reload(
 }
 
 /// Writes the switches to `path`, beside the profile last used that it
-/// holds. Says whether the file now holds them.
-async fn save_settings(path: &Path, settings: NotificationSettings) -> bool {
+/// holds.
+///
+/// # Errors
+///
+/// Says why, where the file doesn't hold them now.
+async fn save_settings(path: &Path, settings: NotificationSettings) -> Result<(), String> {
     let _one = WRITING.lock().await;
     let target = load_target(path);
     write_persisted(path, settings, target).await
 }
 
+/// Takes a change to the switches from another client: written to
+/// `config` first, so that what is answered and published is what the
+/// file holds. A write that fails changes nothing, and is answered so;
+/// held in memory alone, the change would be undone when the file is
+/// next read.
+async fn update(
+    config: &Path,
+    held: NotificationSettings,
+    patch: &rpc::NotificationSettingsPatch,
+) -> Result<NotificationSettings, WireError> {
+    let wanted = held.merged_with(patch);
+    save_settings(config, wanted).await.map_err(|why| {
+        warn!(error = why, "the tray's settings couldn't be written");
+        WireError::internal(format!("writing {}: {why}", config.display()))
+    })?;
+    Ok(wanted)
+}
+
 /// Writes `tray.toml`, off the runtime's threads since the write waits
-/// for the disk. Says whether the file now holds what was given.
+/// for the disk.
+///
+/// # Errors
+///
+/// Says why, where the file doesn't hold what was given now.
 async fn write_persisted(
     path: &Path,
     settings: NotificationSettings,
     target: Option<String>,
-) -> bool {
+) -> Result<(), String> {
     let persisted = Persisted {
         schema: schema(),
         target,
@@ -219,15 +275,9 @@ async fn write_persisted(
     })
     .await;
     match written {
-        Ok(Ok(())) => true,
-        Ok(Err(error)) => {
-            warn!(%error, "the tray's settings couldn't be written");
-            false
-        }
-        Err(error) => {
-            warn!(%error, "writing the tray's settings failed");
-            false
-        }
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(format!("the write didn't finish: {error}")),
     }
 }
 
@@ -295,11 +345,15 @@ pub async fn serve_settings(link: Session, config: PathBuf, notifier: Notifier) 
         match incoming {
             tray::Incoming::Get((), responder) => responder.ok(&settings).await,
             tray::Incoming::Update(patch, responder) => {
-                settings = settings.merged_with(&patch);
-                notifier.set_enabled(settings);
-                save_settings(&config, settings).await;
-                publish(settings).await;
-                responder.ok(&settings).await;
+                match update(&config, settings, &patch).await {
+                    Ok(updated) => {
+                        settings = updated;
+                        notifier.set_enabled(settings);
+                        publish(settings).await;
+                        responder.ok(&settings).await;
+                    }
+                    Err(refusal) => responder.err(&refusal).await,
+                }
             }
             tray::Incoming::Test((), responder) => {
                 notifier.notify_test();
@@ -356,13 +410,13 @@ pub async fn serve_while_daemon(
     quiet.fallback_poll_interval = Duration::ZERO;
     let mut watcher = StateWatcher::new(&daemon, None, quiet);
     let mut serving: Option<tokio::task::JoinHandle<()>> = None;
+    let mut event = None;
     loop {
         let wanted = daemon.is_available();
-        // One that ended by itself is done with, whatever the daemon.
         let ended = serving
             .as_ref()
             .is_some_and(tokio::task::JoinHandle::is_finished);
-        if (ended || !wanted)
+        if link_goes(event.as_ref(), wanted, ended)
             && let Some(served) = serving.take()
         {
             // Its session goes with it, and the token with that.
@@ -371,10 +425,25 @@ pub async fn serve_while_daemon(
         if wanted && serving.is_none() {
             serving = open_and_serve(&socket, &config, &notifier).await;
         }
-        if watcher.next().await.is_none() {
+        event = watcher.next().await;
+        if event.is_none() {
             return;
         }
     }
+}
+
+/// Whether the link the settings are served on goes, woken by `event`
+/// with the daemon `available` or not: when the daemon isn't there, and
+/// when it went, though another may be there by now, since the link was
+/// to the one that went. Events lost on the way may have been its going.
+/// A link whose task `ended` by itself is done with, whatever the daemon.
+fn link_goes(event: Option<&StateEvent>, available: bool, ended: bool) -> bool {
+    ended
+        || !available
+        || matches!(
+            event,
+            Some(StateEvent::DaemonDisappeared | StateEvent::FallbackPoll)
+        )
 }
 
 /// Opens a link in client mode to the daemon on `socket` and serves the
@@ -434,7 +503,7 @@ mod tests {
             pad_connection: false,
             ..NotificationSettings::default()
         };
-        assert!(save_settings(&path, quieter).await);
+        assert_eq!(save_settings(&path, quieter).await, Ok(()));
         assert_eq!(load_target(&path).as_deref(), Some("couch"));
 
         save_target(&path, "desk".to_string()).await;
@@ -444,5 +513,69 @@ mod tests {
         // A file from before the profile was kept has none.
         std::fs::write(&path, "schema = 1\nsetup_started = false\n").unwrap();
         assert_eq!(load_target(&path), None);
+    }
+
+    /// A daemon that went and came back between two looks is served
+    /// through a new link: the old one was to the daemon that went.
+    #[test]
+    fn the_link_goes_with_the_daemon_it_was_to() {
+        let gone = Some(&StateEvent::DaemonDisappeared);
+        assert!(link_goes(gone, true, false), "another is there already");
+        assert!(link_goes(gone, false, false));
+        assert!(link_goes(None, false, false));
+        assert!(link_goes(Some(&StateEvent::FallbackPoll), true, false));
+        assert!(link_goes(Some(&StateEvent::DaemonAppeared), true, true));
+        // The daemon it is to, still there.
+        assert!(!link_goes(Some(&StateEvent::DaemonAppeared), true, false));
+        assert!(!link_goes(
+            Some(&StateEvent::DaemonStateChanged),
+            true,
+            false
+        ));
+        assert!(!link_goes(None, true, false));
+    }
+
+    #[test]
+    fn a_body_read_as_markup_shows_what_was_written() {
+        assert_eq!(
+            as_markup("Mad Catz <Pro> & 8BitDo disconnected"),
+            "Mad Catz &lt;Pro&gt; &amp; 8BitDo disconnected"
+        );
+        assert_eq!(as_markup("plain"), "plain");
+    }
+
+    /// A hand edit that isn't settings is left for a reload to refuse
+    /// with a reason: keeping the profile last used doesn't write the
+    /// defaults over it.
+    #[tokio::test]
+    async fn a_file_that_is_not_settings_is_not_written_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tray.toml");
+        let broken = "schema = 1\nsetup_started = \"no\"\n";
+        std::fs::write(&path, broken).unwrap();
+        save_target(&path, "couch".to_string()).await;
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+        assert!(read_for_reload(&path, NotificationSettings::default()).is_err());
+    }
+
+    /// A switch set from another client is kept before it is taken:
+    /// one that can't be written is answered as a failure.
+    #[tokio::test]
+    async fn a_switch_that_cannot_be_written_is_answered_as_not_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let patch = rpc::NotificationSettingsPatch {
+            refused: Some(false),
+            ..rpc::NotificationSettingsPatch::default()
+        };
+        let held = NotificationSettings::default();
+        let path = dir.path().join("tray.toml");
+        let set = update(&path, held, &patch).await.unwrap();
+        assert!(!set.refused);
+        assert_eq!(load_settings(&path).unwrap(), set);
+        // Where a file stands in for the directory, nothing is written.
+        let blocked = dir.path().join("tray.toml").join("tray.toml");
+        let refused = update(&blocked, held, &patch).await.unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Internal);
+        assert!(refused.message.starts_with("writing "), "{refused:?}");
     }
 }

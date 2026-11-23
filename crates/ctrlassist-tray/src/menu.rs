@@ -9,8 +9,10 @@
 //! all come from the fields the daemon serves, as they do for the
 //! window's form.
 
+use std::collections::BTreeMap;
+
 use ctrlassist::form::{self, Field, Kind, PRESET, Values};
-use ctrlassist::{Phase, Profile, Setup};
+use ctrlassist::{Pad, Phase, Profile, Setup};
 use ctrlassist_protocol::profile::{DEFAULT, PadRef};
 use ctrlassist_protocol::rpc;
 
@@ -213,11 +215,12 @@ pub(crate) fn virtual_name(view: &View, identity: &str) -> String {
 /// What a running setup's nodes select between: who has control.
 fn control_entries(setup: &Setup, entries: &mut Vec<Entry>) {
     for node in &setup.nodes {
-        // A preset's one node needs no name; any other is called by its.
-        let label = if node.name == "mux" {
+        // One node needs no name, and of several each is called by its
+        // own, as the window has them.
+        let label = if setup.nodes.len() == 1 {
             "Has control".to_string()
         } else {
-            format!("{} selects", node.name)
+            node.name.clone()
         };
         let choices = node
             .choices
@@ -292,43 +295,83 @@ pub(crate) fn phase_label(phase: Phase) -> (&'static str, Icon) {
     }
 }
 
-/// The known pad a profile's value for a pad field means, if one does.
-fn pad_meant<'a>(pads: &'a [ctrlassist::Pad], value: &str) -> Option<&'a ctrlassist::Pad> {
-    // By its id as it stands, or as any of the ways a profile names one.
-    pads.iter().find(|pad| pad.id == value).or_else(|| {
-        let wanted = PadRef::parse(value)?;
-        pads.iter().find(|pad| crate::tip::names(&wanted, pad))
-    })
+/// What a profile's value for a pad field names: a pad by its id as it
+/// stands, or by any of the ways a profile names one.
+fn wanted(view: &View, value: &str) -> Option<PadRef> {
+    if view.pad(value).is_some() {
+        return Some(PadRef::Exact(value.to_string()));
+    }
+    PadRef::parse(value)
 }
 
-/// Works a pick into a profile's values. A pad picked for one part that
-/// another part has changes places with it: the other part takes the
-/// pad this one had. Without that, two pads could never change parts,
-/// each being the other's and so not to be picked.
-pub(crate) fn pick(
-    fields: &[Field],
-    pads: &[ctrlassist::Pad],
-    values: &mut Values,
-    key: &str,
-    value: &str,
-) {
+/// The known pad each pad field of the profile `name` means, by its key.
+/// One named by its id is that pad. One named by model is, while a setup
+/// runs the profile, the pad that setup has for it; otherwise the pad a
+/// start would take now, or with none free, one of the model that is
+/// connected, or any that is known.
+fn pads_meant<'a>(view: &'a View, name: &str, values: &Values) -> BTreeMap<&'a str, &'a Pad> {
+    let preset = values.get(PRESET).map(String::as_str).unwrap_or_default();
+    // In the order of their keys, as a start takes a profile's pads.
+    let mut parts: Vec<(&str, PadRef)> = view
+        .fields
+        .iter()
+        .filter(|field| field.kind == Kind::Pad && field.applies_to(preset))
+        .filter_map(|field| Some((field.key.as_str(), wanted(view, values.get(&field.key)?)?)))
+        .collect();
+    parts.sort_by_key(|(key, _)| *key);
+    let refs: Vec<&PadRef> = parts.iter().map(|(_, wanted)| wanted).collect();
+    let bound = crate::tip::bind(view, &refs);
+    let setup = view.setup(name);
+    let of_model = |wanted: &PadRef| {
+        let mut fitting = view
+            .pads
+            .iter()
+            .filter(|pad| crate::tip::names(wanted, pad));
+        let first = fitting.clone().next();
+        fitting.find(|pad| pad.connected).or(first)
+    };
+    parts
+        .iter()
+        .zip(bound)
+        .filter_map(|((key, wanted), bound)| {
+            let pad = match wanted {
+                PadRef::Exact(_) => bound,
+                PadRef::Model(..) => setup
+                    .and_then(|setup| {
+                        let source = setup.sources.iter().find(|source| source.name == *key)?;
+                        view.pad(source.pad.as_deref()?)
+                    })
+                    .filter(|pad| crate::tip::names(wanted, pad))
+                    .or(bound)
+                    .or_else(|| of_model(wanted)),
+            };
+            Some((*key, pad?))
+        })
+        .collect()
+}
+
+/// Works a pick at the profile `name` into its values. A pad picked for
+/// one part that another part has changes places with it: the other part
+/// takes the pad this one had. Without that, two pads could never change
+/// parts, each being the other's and so not to be picked.
+pub(crate) fn pick(view: &View, name: &str, values: &mut Values, key: &str, value: &str) {
     let is_pad = |key: &str| {
-        fields
+        view.fields
             .iter()
             .any(|field| field.key == key && field.kind == Kind::Pad)
     };
     let had = values.get(key).cloned();
+    let picked = wanted(view, value).and_then(|wanted| match wanted {
+        PadRef::Exact(id) => view.pad(&id),
+        PadRef::Model(..) => None,
+    });
     if is_pad(key)
-        && let Some(picked) = pad_meant(pads, value)
+        && let Some(picked) = picked
     {
-        let other = values
-            .iter()
-            .find(|(other, held)| {
-                other.as_str() != key
-                    && is_pad(other)
-                    && pad_meant(pads, held).is_some_and(|pad| pad.id == picked.id)
-            })
-            .map(|(other, _)| other.clone());
+        let other = pads_meant(view, name, values)
+            .into_iter()
+            .find(|(other, pad)| *other != key && pad.id == picked.id)
+            .map(|(other, _)| other.to_string());
         if let Some(other) = other {
             match had {
                 Some(had) => values.insert(other, had),
@@ -345,16 +388,16 @@ pub(crate) fn pick(
 /// can: the two change places.
 fn pad_entry(view: &View, name: &str, values: &Values, field: &Field) -> Entry {
     let picked = values.get(&field.key).map(String::as_str);
-    let meant = picked.and_then(|value| pad_meant(&view.pads, value));
+    let pads = pads_meant(view, name, values);
+    let meant = pads.get(field.key.as_str()).copied();
     // The pads this profile's other parts have, each with its part.
     let taken: Vec<(&str, &str)> = view
         .fields
         .iter()
         .filter(|other| other.kind == Kind::Pad && other.key != field.key)
-        .filter_map(|other| Some((other, values.get(&other.key)?)))
-        .filter_map(|(other, value)| {
+        .filter_map(|other| {
             Some((
-                pad_meant(&view.pads, value)?.id.as_str(),
+                pads.get(other.key.as_str())?.id.as_str(),
                 other.label.as_str(),
             ))
         })
@@ -706,7 +749,8 @@ pub fn menu(view: &View) -> Vec<Entry> {
     entries
 }
 
-/// can't talk to.
+/// What the menu and the tooltip say of a daemon on release `theirs`,
+/// which this tray can't talk to.
 #[must_use]
 pub fn mismatch_text(theirs: &str) -> String {
     format!(
@@ -996,7 +1040,9 @@ default ✓ (Not set up) >
         odd.setups[0].sinks[0].node = None;
         let menu = outline(&menu(&odd));
         assert!(menu.starts_with("couch (Running) >\n"), "{menu}");
-        assert!(menu.contains("share selects >"), "{menu}");
+        // Its one node has control, whatever it is called, as the window
+        // says.
+        assert!(menu.contains("  Has control >\n"), "{menu}");
         assert!(
             menu.contains("- Assist: waiting for a pad that fits"),
             "{menu}"
@@ -1004,6 +1050,14 @@ default ✓ (Not set up) >
         assert!(menu.contains("- Primary: DualSense\n"), "{menu}");
         assert!(menu.contains("- Virtual: Generic (not made)"), "{menu}");
         assert!(!menu.contains("Mode:"), "{menu}");
+        // Of several, each goes by its name.
+        let mut second = odd.setups[0].nodes[0].clone();
+        second.name = "route".to_string();
+        odd.setups[0].nodes.push(second);
+        let menu = outline(&super::menu(&odd));
+        assert!(menu.contains("  share >\n"), "{menu}");
+        assert!(menu.contains("  route >\n"), "{menu}");
+        assert!(!menu.contains("Has control"), "{menu}");
         // Not running, it has Start and nothing else.
         let mut kept = view(None, Hiding::Service);
         kept.profiles[1].toml = "[source.a]\npad = \"model:0001:0001\"\n".to_string();
@@ -1061,6 +1115,42 @@ default ✓ (Not set up) >
             menu.starts_with("- Version mismatch: daemon 9.0.0, tray "),
             "{menu}"
         );
+    }
+
+    /// A part named by model shows the pad it has while its setup runs,
+    /// and otherwise the pad a start would take: connected and free, not
+    /// merely the first of the model the daemon knows.
+    #[test]
+    fn a_part_named_by_model_shows_the_pad_it_has_or_would_have() {
+        // Every pad of the fixture is of one model.
+        let mut away = view(None, Hiding::Service);
+        away.pads[0].connected = false;
+        away.profiles[1].toml = "mode = \"unicast\"\npad = \"model:054c:0ce6\"\n".to_string();
+        let menu = outline(&menu(&away));
+        assert!(
+            of(&menu, "desk >").contains(
+                "  Pad: 8BitDo Pro 2 >\n    ( ) - DualSense (disconnected)\n    (o) 8BitDo Pro 2\n"
+            ),
+            "{menu}"
+        );
+        // Running, each part shows the pad the setup took for it.
+        let mut running = view(Some(Phase::Running), Hiding::Service);
+        running.profiles[0].toml =
+            "mode = \"toggle\"\nprimary = \"model:054c:0ce6\"\nassist = \"model:054c:0ce6\"\n"
+                .to_string();
+        let menu = outline(&super::menu(&running));
+        let couch = of(&menu, "couch (Running) >");
+        assert!(couch.contains("  Primary: DualSense >\n"), "{couch}");
+        assert!(couch.contains("  Assist: Xbox pad >\n"), "{couch}");
+        // Stopped, two parts of one model are two pads of it.
+        let mut stopped = view(None, Hiding::Service);
+        stopped.profiles[0]
+            .toml
+            .clone_from(&running.profiles[0].toml);
+        let menu = outline(&super::menu(&stopped));
+        let couch = of(&menu, "couch >");
+        assert!(couch.contains("  Primary: 8BitDo Pro 2 >\n"), "{couch}");
+        assert!(couch.contains("  Assist: DualSense >\n"), "{couch}");
     }
 
     #[test]
