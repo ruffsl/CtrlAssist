@@ -247,7 +247,10 @@ async fn update(
     let wanted = held.merged_with(patch);
     save_settings(config, wanted).await.map_err(|why| {
         warn!(error = why, "the tray's settings couldn't be written");
-        WireError::internal(format!("writing {}: {why}", config.display()))
+        WireError::refusal(
+            ErrorCode::SettingsUnwritable,
+            format!("{}: {why}", config.display()),
+        )
     })?;
     Ok(wanted)
 }
@@ -575,7 +578,11 @@ mod tests {
         // Where a file stands in for the directory, nothing is written.
         let blocked = dir.path().join("tray.toml").join("tray.toml");
         let refused = update(&blocked, held, &patch).await.unwrap_err();
-        assert_eq!(refused.code, ErrorCode::Internal);
-        assert!(refused.message.starts_with("writing "), "{refused:?}");
+        assert_eq!(refused.code, ErrorCode::SettingsUnwritable);
+        assert_eq!(refused.code.as_str(), "settings-unwritable");
+        // Which file, then why.
+        let file = format!("{}: ", blocked.display());
+        assert!(refused.message.starts_with(&file), "{refused:?}");
+        assert!(refused.message.len() > file.len(), "{refused:?}");
     }
 }

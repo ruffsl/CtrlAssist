@@ -3,7 +3,7 @@
 //! the tray. Couch mode, the pane's other group, is wired with the rest
 //! of couch mode.
 
-use ctrlassist::{NotificationSettings, NotificationSettingsPatch, TrayClient};
+use ctrlassist::{ErrorCode, NotificationSettings, NotificationSettingsPatch, TrayClient};
 use slint::ComponentHandle;
 use tracing::warn;
 
@@ -37,6 +37,22 @@ pub fn patch(key: &str, enabled: bool) -> Option<NotificationSettingsPatch> {
     Some(patch)
 }
 
+/// What the toast says of a switch the tray didn't set. A settings file
+/// it couldn't write is said plainly, with where the file is and why,
+/// which the tray's refusal holds; anything else as the tray said it.
+#[must_use]
+pub fn not_set(error: &ctrlassist::Error) -> String {
+    match error {
+        ctrlassist::Error::Rpc {
+            code: ErrorCode::SettingsUnwritable,
+            message,
+        } => format!(
+            "The tray couldn't write its settings file, so the switch is as it was: {message}"
+        ),
+        _ => format!("The tray didn't take that: {error}"),
+    }
+}
+
 /// Binds the pane's requests to the tray's rpcs. A switch only asks:
 /// what it shows is what the tray publishes, which comes back through
 /// the state loop, so nothing is set here ahead of the tray's own word.
@@ -57,7 +73,7 @@ pub(crate) fn wire(app: &AppWindow, tray: Option<&TrayClient>) {
         tokio::spawn(async move {
             if let Err(error) = client.update_notification_settings(patch).await {
                 warn!(%error, "a notification switch wasn't set");
-                show_toast(weak, &format!("The tray didn't take that: {error}"));
+                show_toast(weak, &not_set(&error));
             }
         });
     });

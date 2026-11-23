@@ -342,7 +342,7 @@ zenoh over a Unix socket at `$XDG_RUNTIME_DIR/ctrlassist/zenoh.sock`, with the d
 | `ctrlassist/daemon` | state | version; whether real-time scheduling was granted; the hiding mechanism in use, `service` or `grab` |
 | `ctrlassist/alive/tray` | liveliness | the tray's settings service is running. Declared by the tray, on its client-mode link, and relayed by the daemon: a tray is seen only while a daemon runs |
 | `ctrlassist/tray/settings` | state | the tray's notification switches, published by the tray |
-| `ctrlassist/rpc/tray/{get,update,test,info,reload}` | rpc | served by the tray: read the switches; set some of them; show a test notification; the tray's release and its settings file; take up a hand edit of that file |
+| `ctrlassist/rpc/tray/{get,update,test,info,reload}` | rpc | served by the tray: read the switches; set some of them, which is refused with `settings-unwritable` and changes nothing when the settings file can't be written; show a test notification; the tray's release and its settings file; take up a hand edit of that file, refused with `settings-unreadable` when it can't be read as settings |
 | `ctrlassist/rpc/daemon/info` | rpc | the daemon's release, for the version check; its reply's shape is frozen |
 | `ctrlassist/rpc/daemon/reload` | rpc | read the profiles directory again, for files changed some other way than through the daemon; says what changed, what is gone and what is wrong, and sets the running setups whose profiles changed to taking them up, live or by a restart |
 | `ctrlassist/identity/<id>` | state | each identity a virtual pad can take, and whether it is available now |

@@ -4,8 +4,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ctrlassist::{NotificationSettings, NotificationSettingsPatch};
-use ctrlassist_gui::settings::{patch, shown};
+use ctrlassist::{ErrorCode, NotificationSettings, NotificationSettingsPatch};
+use ctrlassist_gui::settings::{not_set, patch, shown};
 use ctrlassist_gui::state::Snapshot;
 use ctrlassist_gui::{AppWindow, Couch, Pane, Tray};
 use slint::ComponentHandle;
@@ -81,6 +81,30 @@ fn each_switch_asks_for_its_own_change_and_nothing_else() {
     let shown = shown(all_but_one);
     assert!(shown.setup_started && shown.setup_trouble && shown.refused);
     assert!(!shown.pad_connection);
+}
+
+/// A switch the tray couldn't keep, its file being unwritable, is said
+/// plainly with where the file is and why; another refusal as the tray
+/// gave it.
+#[test]
+fn a_switch_the_tray_could_not_write_says_so_and_where() {
+    let unwritable = ctrlassist::Error::Rpc {
+        code: ErrorCode::SettingsUnwritable,
+        message: "/home/someone/.config/ctrlassist/tray.toml: Permission denied (os error 13)"
+            .to_string(),
+    };
+    assert_eq!(
+        not_set(&unwritable),
+        "The tray couldn't write its settings file, so the switch is as it was: /home/someone/.config/ctrlassist/tray.toml: Permission denied (os error 13)"
+    );
+    let other = ctrlassist::Error::Rpc {
+        code: ErrorCode::BadRequest,
+        message: "not a patch".to_string(),
+    };
+    assert_eq!(
+        not_set(&other),
+        "The tray didn't take that: not a patch (bad-request)"
+    );
 }
 
 /// With no tray the switches are there, as last known and disabled,

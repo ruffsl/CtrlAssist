@@ -68,6 +68,9 @@ error_codes! {
     /// A settings file is missing or can't be read as settings; the
     /// message says why.
     SettingsUnreadable = "settings-unreadable",
+    /// A settings file couldn't be written, so the change asked for
+    /// wasn't made; the message says which file and why.
+    SettingsUnwritable = "settings-unwritable",
     /// The daemon stopped before it could answer.
     DaemonShuttingDown = "daemon-shutting-down",
     /// The daemon failed on its side; the request itself may be fine.
