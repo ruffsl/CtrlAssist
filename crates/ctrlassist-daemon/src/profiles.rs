@@ -23,7 +23,7 @@ use crate::durable;
 const MOST_BYTES: usize = 64 * 1024;
 
 /// The kept profiles, by name.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Profiles {
     directory: PathBuf,
     kept: BTreeMap<String, String>,

@@ -2171,7 +2171,16 @@ impl Reactor {
                 match data {
                     Some(data) => {
                         self.candidates.clear();
-                        self.copied.keep(data);
+                        // Kept on disk off the async runtime's workers.
+                        let mut copied = self.copied.clone();
+                        let kept = tokio::task::spawn_blocking(move || {
+                            copied.keep(data);
+                            copied
+                        });
+                        match kept.await {
+                            Ok(copied) => self.copied = copied,
+                            Err(error) => error!(%error, "keeping a copied DualSense panicked"),
+                        }
                         if let Err(error) = self.publish_identities().await {
                             warn!(%error, "publishing the identities failed");
                         }

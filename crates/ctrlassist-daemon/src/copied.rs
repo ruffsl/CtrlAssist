@@ -56,7 +56,7 @@ fn parse(text: &str) -> Option<DualSenseData> {
 }
 
 /// What has been copied, as kept on disk.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Copied {
     path: PathBuf,
     dualsense: Option<DualSenseData>,
