@@ -929,8 +929,9 @@ mod tests {
     }
 
     /// Settings that replace others not yet written lose nothing, being
-    /// everything the games set; what each asked once is gathered until
-    /// a write carries it; and the same settings again write nothing.
+    /// everything the games set; what two asked once, one each, is
+    /// gathered until a write carries both; and the same settings again
+    /// write nothing.
     #[test]
     fn what_is_asked_once_is_gathered_until_it_is_written() {
         let (mut output, writer, reports, open) = recorded(true, None);
@@ -938,16 +939,21 @@ mod tests {
         let first = reports.recv().unwrap();
         assert_eq!(first[45], 0x11);
         // The writer is held in its first write. The LEDs are given back,
-        // and the newer settings, which no longer set them, come after.
+        // then the lightbar set up, and the newer settings, which ask
+        // neither, come after.
         let mut release = [0u8; GAME_SIZE];
         (release[0], release[2]) = (0x02, 0x08);
         output.pass(&release).unwrap();
+        let mut setup = [0u8; GAME_SIZE];
+        (setup[0], setup[39], setup[42]) = (0x02, 0x02, 0x02);
+        output.pass(&setup).unwrap();
         let mut trigger = release;
         (trigger[1], trigger[2], trigger[11]) = (0x04, 0, 0x01);
         output.pass(&trigger).unwrap();
         open.send(()).unwrap();
         let second = reports.recv().unwrap();
         assert_eq!((second[1], second[2], second[11]), (0x04, 0x08, 0x01));
+        assert_eq!((second[39] & 0x02, second[42]), (0x02, 0x02), "both");
         open.send(()).unwrap();
         // The same settings again are nothing new.
         output.pass(&trigger).unwrap();
