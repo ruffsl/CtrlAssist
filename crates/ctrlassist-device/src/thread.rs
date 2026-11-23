@@ -1493,6 +1493,7 @@ mod tests {
     use ctrlassist_core::{GraphSpec, Input, Layout, Mode, MuxConfig, NodeSpec, SourceSpec};
 
     const FIRST: SetupId = SetupId(1);
+    const SECOND: SetupId = SetupId(2);
 
     /// Two pads into a toggle and no virtual pad: a setup that needs no
     /// device to run.
@@ -1685,5 +1686,48 @@ mod tests {
             "{read:?}"
         );
         assert!(rig.state.slot_of(FIRST).is_none());
+    }
+
+    /// A setup whose handling panics is taken down alone: it is handed
+    /// back as failed, and the setup beside it carries on, its virtual
+    /// pads with it. Shipped builds unwind for this, and a build that
+    /// aborts on panic can't be made: the crate's root refuses it, since
+    /// the test harness unwinds whatever the profile says.
+    #[test]
+    fn a_setup_whose_handling_panics_is_taken_down_alone() {
+        let mut rig = rig();
+        rig.send(Command::Start(FIRST, setup()));
+        rig.send(Command::Start(SECOND, setup()));
+        let (first, second) = (
+            rig.state.slot_of(FIRST).unwrap(),
+            rig.state.slot_of(SECOND).unwrap(),
+        );
+        rig.read();
+        rig.state
+            .guarded(first, 0, |_, _| panic!("a step that panics"));
+        let read = rig.read();
+        assert!(matches!(read[..], [Report::Failed(FIRST, _)]), "{read:?}");
+        assert!(rig.state.slot_of(FIRST).is_none());
+        assert_eq!(rig.state.slot_of(SECOND), Some(second));
+        // And the other is handled as before.
+        let told = Tap::Told {
+            source: SourceId(1),
+            level: Level::default(),
+        };
+        rig.state.guarded(second, 0, |setup, _| {
+            note(&mut setup.taps, told);
+            None
+        });
+        let read = rig.read();
+        assert!(
+            matches!(
+                read[..],
+                [Report::Tapped {
+                    setup: SECOND,
+                    tap: Tap::Told { .. }
+                }]
+            ),
+            "{read:?}"
+        );
     }
 }
