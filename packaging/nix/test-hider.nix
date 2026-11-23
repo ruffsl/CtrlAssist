@@ -102,12 +102,18 @@ let
   #   hider-probe hide <socket> <node>
   #       hides <node>, says the status and the name of the pad whose
   #       node came back, then closes, which shows the pad again
+  #   hider-probe silent <socket> <count>
+  #       sends up to <count> requests and never reads a reply; holds
+  #   hider-probe idle <socket> <count>
+  #       opens up to <count> connections and sends nothing; holds
   probe = pkgs.writers.writePython3Bin "hider-probe" { doCheck = false; } ''
     import array
     import os
+    import resource
     import socket
     import struct
     import sys
+    import time
 
 
     def connect(path):
@@ -148,8 +154,32 @@ let
                 print(f"status={status} node={node} name={name}")
             else:
                 print(f"status={status}")
+        case ["silent", path, count]:
+            peer = connect(path)
+            peer.setblocking(False)
+            sent = 0
+            for _ in range(int(count)):
+                try:
+                    peer.send(struct.pack("<BI", 6, 0))
+                except BlockingIOError:
+                    break
+                sent += 1
+            print(f"sent={sent}", flush=True)
+            time.sleep(3600)
+        case ["idle", path, count]:
+            _, most = resource.getrlimit(resource.RLIMIT_NOFILE)
+            resource.setrlimit(resource.RLIMIT_NOFILE, (most, most))
+            peers = []
+            for _ in range(int(count)):
+                try:
+                    peers.append(connect(path))
+                except OSError as error:
+                    print(f"stopped: {error}", flush=True)
+                    break
+            print(f"connected={len(peers)}", flush=True)
+            time.sleep(3600)
         case _:
-            sys.exit("usage: hider-probe opath|hide ...")
+            sys.exit("usage: hider-probe opath|hide|silent|idle ...")
   '';
 in
 pkgs.testers.runNixOSTest {
@@ -169,6 +199,11 @@ pkgs.testers.runNixOSTest {
       # In the input group as well, as some distributions and guides
       # have gamers be: hiding must close a pad to her all the same.
       extraGroups = [ "input" ];
+    };
+    # Another local user, not at the seat.
+    users.users.bob = {
+      isNormalUser = true;
+      uid = 1001;
     };
 
     # A graphical session for alice on the seat: the service serves only
@@ -495,6 +530,38 @@ pkgs.testers.runNixOSTest {
         assert "isn't the user in front" in told, told
         assert markers() == [], markers()
         machine.succeed("systemctl stop pad-seat1")
+
+    with subtest("clients that never read their replies, and many idle connections, don't stop the service serving others"):
+        # A client of the seat user's that holds a pad, so the service
+        # stays up and its process can be looked at.
+        control, told = hide("keeper", pads()[B]["event"][0])
+        assert told.startswith("ok"), told
+        pid = machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip()
+        # Any local user may connect: root isn't at the seat, so it is
+        # only refused, again and again, as fast as it asks.
+        machine.succeed(f"systemd-run --unit silent-root hider-probe silent {SOCKET} 100000")
+        machine.succeed(f"systemd-run --unit silent-alice --uid alice hider-probe silent {SOCKET} 100000")
+        machine.succeed(f"systemd-run --unit idle-bob --uid bob hider-probe idle {SOCKET} 3000")
+        for unit in ("silent-root", "silent-alice"):
+            machine.wait_until_succeeds(f"journalctl -u {unit} -o cat | grep -q sent=")
+        machine.wait_until_succeeds("journalctl -u idle-bob -o cat | grep -q connected=")
+        print("probes: " + machine.succeed("journalctl -u silent-root -u silent-alice -u idle-bob -o cat | grep -E 'sent=|connected=|stopped'").replace("\n", " "))
+        # Served all the same: its release told, a pad hidden and shown again.
+        told = machine.succeed(f"su -l alice -c 'ctrlassist-fixture version --socket {SOCKET}'").strip()
+        assert told == "version: ${hider.version}", told
+        other, told = hide("served", pads()[A]["event"][0])
+        assert told.startswith("ok"), told
+        assert not alice_can_open(A)
+        assert order(other, "restore").startswith("ok")
+        assert alice_can_open(A)
+        machine.succeed("systemctl stop served")
+        assert machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip() == pid, "the service didn't restart"
+        print("the service holds " + machine.succeed(f"ls /proc/{pid}/fd | wc -l").strip() + " descriptors and " + machine.succeed(f"ls /proc/{pid}/task | wc -l").strip() + " threads")
+        assert int(machine.succeed(f"ls /proc/{pid}/fd | wc -l")) < 100
+        machine.succeed("systemctl stop silent-root silent-alice idle-bob")
+        assert order(control, "restore").startswith("ok")
+        machine.succeed("systemctl stop keeper")
+        wait_restored()
 
     with subtest("a pad with no driver to re-bind is refused, for the daemon to grab"):
         fake("pad-plain", "fake-pad", "--pulse", "20")

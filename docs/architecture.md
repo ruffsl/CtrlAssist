@@ -290,6 +290,8 @@ What this defends: another user's session, and the rest of the system, against a
 
 **Reconnects are driven by the daemon.** Its udev monitor sees the pad return and asks for `reopen`, so the service has no event loop of its own.
 
+**Each connection has a thread of its own,** and what is hidden is shared behind one lock that no thread holds while it waits on a client or on udev. So a client that never reads its replies blocks only its own thread at its send, and one that passes a descriptor whose last close blocks (a FUSE file's flush, a lingering TCP socket) blocks only its own thread: every descriptor received is closed on the thread that received it, any beyond the one a request carries at once. Anyone may connect, so one user may hold at most eight connections; a ninth is closed as it is accepted. Running out of descriptors stops the service accepting until a connection closes, never stops the service, which would show every hidden pad mid-session. Started on demand, it exits when its last connection closes, deciding on its main thread, so that a client waiting to be accepted is accepted rather than dropped.
+
 **The unit's sandbox is defense in depth,** the user's permissions being the boundary: no capabilities and no new privileges, the file system read-only but for the marker directory and `/sys/devices`, the device cgroup closed but for input and hidraw nodes, netlink the only socket it may make, and the rest of the usual set. The network namespace is shared, since udev's events arrive over netlink in the host's.
 
 ### Without the hiding service

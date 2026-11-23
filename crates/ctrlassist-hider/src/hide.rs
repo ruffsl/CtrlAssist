@@ -199,12 +199,10 @@ pub(crate) fn reconcile(group: u32) {
     sweep(group, &[], &BTreeSet::new());
 }
 
-/// Hides a pad: its markers, then the re-bind. Returns a descriptor on its
-/// event node as the re-bind made it. `client` hanging up stops the wait.
-pub(crate) fn hide(pad: &Pad, client: BorrowedFd<'_>) -> Result<OwnedFd, Refusal> {
-    for marker in &pad.markers {
-        create(marker).map_err(|_| Refusal::Failed)?;
-    }
+/// Cuts off whatever has a pad open, once its markers are made: the
+/// re-bind, then a descriptor on its event node as the re-bind made it.
+/// `client` hanging up stops the wait.
+pub(crate) fn cut_off(pad: &Pad, client: BorrowedFd<'_>) -> Result<OwnedFd, Refusal> {
     rebind(&pad.parent, Some(client))?;
     let node = pad::event_node(&pad.parent, pad.ordinal).ok_or(Refusal::Absent)?;
     open(&node)
