@@ -72,8 +72,6 @@ struct State {
     next_token: u32,
     next_connection: u64,
     connections: Connections,
-    /// Whether anyone has connected since the service started.
-    served_anyone: bool,
 }
 
 impl State {
@@ -518,7 +516,17 @@ fn wait(shared: &Shared, listener: &OwnedFd, exhausted: bool) -> Woken {
     }
 }
 
-/// Serves clients until none is left, or forever if `stay` is set.
+/// Serves clients until stopped, or until accepting fails with nothing
+/// connected.
+///
+/// Started on demand, the service stays once started: how often it starts
+/// is then not its clients' doing, and systemd's own limits on how often
+/// a socket may start its service, and the service start, can stay, to
+/// stop a start that keeps failing (a missing user or binary) rather than
+/// try it again for as long as a client waits. Were it to exit with its
+/// last connection, anyone could start it as often as they connect, and
+/// a daemon showing its pads again and hiding them anew a few times in a
+/// row would meet the same limits.
 ///
 /// `listener` is blocking, so an accept waits for a client: systemd
 /// clears `O_NONBLOCK` on the sockets it passes, as `NonBlocking=` is
@@ -529,7 +537,7 @@ fn wait(shared: &Shared, listener: &OwnedFd, exhausted: bool) -> Woken {
 /// process exits: closing the last reference to a listener releases the
 /// connections still queued on it, with what their clients sent, on the
 /// thread that closes it, which a lingering socket would hold there.
-fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
+fn run(listener: &OwnedFd) -> io::Result<()> {
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
         // Blocking: it is read only once a connection has closed, or when
@@ -560,13 +568,6 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
             closer.retry();
         }
         if !woken.waiting {
-            let state = shared.state();
-            if state.connections.open() == 0 && state.served_anyone && !stay {
-                // Started on demand, and nobody needs it now. A client
-                // that connects from here on waits on the socket systemd
-                // holds, which starts the service again.
-                return Ok(());
-            }
             continue;
         }
         let socket = match accept_with(listener, SocketFlags::CLOEXEC) {
@@ -584,7 +585,7 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
                 }
                 // With nothing connected nothing is hidden, so stopping
                 // shows nothing: systemd starts the service afresh for
-                // the client still queued.
+                // the client still queued, within its limits.
                 return Err(io::Error::other(format!(
                     "couldn't accept a connection with none open, so nothing will free what it needs: {error}"
                 )));
@@ -600,7 +601,6 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
         let seated = user.is_some_and(seat::has_seat);
         let (owner, holder) = {
             let mut state = shared.state();
-            state.served_anyone = true;
             let Some(holder) = state.connections.admit(user, seated) else {
                 // Closed at once, by the closer, with no thread made and
                 // nothing read: neither one user nor every user with no
@@ -699,14 +699,14 @@ fn main() -> ExitCode {
     let outcome = match arguments.as_slice() {
         // Started by systemd on a client's first connection.
         [] => unprivileged().and_then(|()| match activation::listener() {
-            Some(listener) => run(&ManuallyDrop::new(listener), false),
+            Some(listener) => run(&ManuallyDrop::new(listener)),
             None => Err(io::Error::other(
                 "not started by a systemd socket; use --listen <path>",
             )),
         }),
         ["--listen", path] => unprivileged()
             .and_then(|()| listen_at(Path::new(path)))
-            .and_then(|listener| run(&ManuallyDrop::new(listener), true)),
+            .and_then(|listener| run(&ManuallyDrop::new(listener))),
         // Undo whatever is still hidden: run by the unit after the service
         // stops, so a service that died doesn't leave pads hidden until
         // the next one starts.

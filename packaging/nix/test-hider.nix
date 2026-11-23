@@ -186,9 +186,8 @@ let
   #       passes a TCP socket whose close lingers, its data never read;
   #       says how many it holds and whether the last was closed; holds
   #   hider-probe churn <socket> <count>
-  #       <count> times without pause: connects, asks the release,
-  #       closes, and waits for the service to exit; says how many were
-  #       answered and how many refused
+  #       <count> times without pause: connects, asks the release and
+  #       closes; says how many were answered and how many refused
   #   hider-probe uhid <name> <phys> [<uniq> combo|merged]
   #       makes a HID game pad through uhid with that phys and no address;
   #       holds. With combo, a game pad and a keyboard in one descriptor,
@@ -215,10 +214,8 @@ let
     import glob
     import os
     import resource
-    import select
     import socket
     import struct
-    import subprocess
     import sys
     import time
 
@@ -359,17 +356,7 @@ let
                 except OSError:
                     refused += 1
                     continue
-                # Closed once the service that answered is known, and the
-                # next connection made once it has exited: each is one
-                # start of the service by the socket.
-                pid = subprocess.run(
-                    ["systemctl", "show", "-p", "MainPID", "--value", "ctrlassist-hider.service"],
-                    capture_output=True, text=True, check=True,
-                ).stdout.strip()
-                service = os.pidfd_open(int(pid))
                 peer.close()
-                select.select([service], [], [])
-                os.close(service)
             print(f"answered={answered} refused={refused}", flush=True)
         case ["uhid", name, phys, *combo]:
             # The test crate's uhid pad's descriptor: a game pad.
@@ -1277,6 +1264,9 @@ pkgs.testers.runNixOSTest {
         # A user with no seat holds the eight connections they may, then
         # sends a ninth a TCP socket before it is accepted: closing the
         # ninth, the service is left holding the socket's last reference.
+        # Sent as the service starts, as before anyone has used it since
+        # boot: a running service may accept the ninth before it is sent.
+        machine.succeed("systemctl stop ctrlassist-hider.service")
         machine.succeed(f"systemd-run --unit lingering --uid bob hider-probe lingering {SOCKET} 8")
         machine.wait_until_succeeds("journalctl -u lingering -o cat | grep -q held=")
         told = machine.succeed("journalctl -u lingering -o cat | grep held=").strip()
@@ -1299,17 +1289,26 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_fails(f"{closer} | grep -q tcp_close")
         wait_restored()
 
-    with subtest("a user with no seat who connects and closes without pause while nothing is hidden doesn't put the socket out of service"):
-        # Each connection starts the service afresh: two hundred is ten
-        # times systemd's default limit on a socket's starts.
-        machine.wait_until_fails("systemctl is-active ctrlassist-hider.service")
+    with subtest("connecting and closing without pause while nothing is hidden neither starts the service again nor puts the socket out of service"):
+        # Started once, the service stays, so the starts systemd limits
+        # are nobody's to make: two hundred connections from a user with
+        # no seat, each closed at once, ten times systemd's default limit
+        # on a socket's starts, then twenty of the user at the seat's
+        # own, all served by the one process.
+        told = machine.succeed(f"su -l alice -c 'ctrlassist-fixture version --socket {SOCKET}'").strip()
+        assert told == "version: ${hider.version}", told
+        pid = machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip()
+        assert pid != "0"
         started = "journalctl -u ctrlassist-hider.service -o cat | grep -c '^Started CtrlAssist hiding service'"
         before = int(machine.succeed(started))
         told = machine.succeed(f"runuser -u bob -- hider-probe churn {SOCKET} 200").strip()
-        after = int(machine.succeed(started))
-        print(f"two hundred connections, each closed at once: {told}; the service started {after - before} times; the socket: " + machine.succeed("systemctl show -p ActiveState -p Result ctrlassist-hider.socket").replace("\n", " "))
         assert told == "answered=200 refused=0", told
-        assert after - before == 200, after - before
+        told = machine.succeed(f"su -l alice -c 'hider-probe churn {SOCKET} 20'").strip()
+        assert told == "answered=20 refused=0", told
+        after = int(machine.succeed(started))
+        print(f"two hundred and twenty connections, each closed at once: the service started {after - before} times; the socket: " + machine.succeed("systemctl show -p ActiveState -p Result ctrlassist-hider.socket").replace("\n", " "))
+        assert after == before, after - before
+        assert machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip() == pid, "the service started again"
         machine.succeed("systemctl is-active ctrlassist-hider.socket")
         control, told = hide("after-churn", pads()[A]["event"][0])
         assert told.startswith("ok"), told
@@ -1541,5 +1540,29 @@ pkgs.testers.runNixOSTest {
         machine.succeed("journalctl -u ctrlassist-hider.service -o cat | grep -q 'left hidden a pad no marker names'")
         machine.succeed("systemctl stop shared combo merged pad-shared")
         wait_restored()
+
+    with subtest("a start that keeps failing as a client waits is given up at systemd's limit, and the client let go"):
+        # As where the package's user is missing. Stopped first, so its
+        # own stop runs as it is installed.
+        machine.succeed("systemctl stop ctrlassist-hider.service")
+        machine.succeed("mkdir -p /run/systemd/system/ctrlassist-hider.service.d")
+        machine.succeed("printf '[Service]\\nUser=no-such-user\\n' > /run/systemd/system/ctrlassist-hider.service.d/broken.conf")
+        machine.succeed("systemctl daemon-reload")
+        failed = "journalctl -o cat | grep -c 'ctrlassist-hider.service: Main process exited, code=exited, status=217/USER' || true"
+        before = int(machine.succeed(failed))
+        machine.succeed(f"systemd-run --unit stranded --uid alice ctrlassist-fixture version --socket {SOCKET}")
+        machine.wait_until_succeeds("systemctl show -p Result ctrlassist-hider.socket | grep -qx Result=service-start-limit-hit")
+        machine.wait_until_fails("systemctl is-active stranded")
+        starts = int(machine.succeed(failed)) - before
+        told = machine.succeed("journalctl -u stranded -o cat | grep -v -e '^Started' -e '^Stopped' -e 'Failed with result' -e 'Main process exited' || true").strip()
+        print(f"a service that can't start: {starts} failed starts; the socket: " + machine.succeed("systemctl show -p ActiveState -p Result ctrlassist-hider.socket").replace("\n", " ") + f"; the waiting client: {told}")
+        assert starts == 5, starts
+        # Mended, and its socket started again by hand: served.
+        machine.succeed("rm /run/systemd/system/ctrlassist-hider.service.d/broken.conf")
+        machine.succeed("systemctl daemon-reload")
+        machine.succeed("systemctl reset-failed ctrlassist-hider.service ctrlassist-hider.socket")
+        machine.succeed("systemctl start ctrlassist-hider.socket")
+        told = machine.succeed(f"su -l alice -c 'ctrlassist-fixture version --socket {SOCKET}'").strip()
+        assert told == "version: ${hider.version}", told
   '';
 }
