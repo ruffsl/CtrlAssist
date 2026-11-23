@@ -111,7 +111,8 @@ pub struct Hid {
     pub outcome: Result<Hidden, Refusal>,
     /// How many times the service re-bound the pad in serving the hide,
     /// each a going and a coming back: none from a service that doesn't
-    /// count, which re-bound it once if it hid it.
+    /// count, which re-bound it once if it hid it. Always said of a
+    /// refusal, one that says nothing having re-bound nothing.
     pub rebinds: Option<u8>,
 }
 
@@ -126,16 +127,17 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connects to the service at `path`, without waiting: a service
-    /// whose queue of connections to accept is full is refused at once,
-    /// as one that isn't there is. Each request then waits for its
-    /// reply, until the reply comes or the connection is
-    /// [hung up](Self::hang_up).
+    /// Connects to the service at `path`, without waiting. Each request
+    /// then waits for its reply, until the reply comes or the connection
+    /// is [hung up](Self::hang_up).
     ///
     /// # Errors
     ///
-    /// Fails if the socket can't be reached, or has no room for another
-    /// connection. A caller the service won't serve is told so on its
+    /// Fails if the socket can't be reached. A service whose queue of
+    /// connections to accept is full fails it at once, with an
+    /// [`Error::Io`] of the kind [`io::ErrorKind::WouldBlock`]: the
+    /// service is there, and [`connect_waiting`](Self::connect_waiting)
+    /// waits for room. A caller the service won't serve is told so on its
     /// first request, not here.
     pub fn connect(path: &Path) -> Result<Self, Error> {
         let flags = SocketFlags::CLOEXEC | SocketFlags::NONBLOCK;
@@ -143,6 +145,34 @@ impl Client {
         connect(&socket, &SocketAddrUnix::new(path)?)?;
         rustix::io::ioctl_fionbio(&socket, false)?;
         Ok(Self { socket })
+    }
+
+    /// Connects to the service at `path`, waiting while its queue of
+    /// connections to accept is full until it has room: for as long as
+    /// the service doesn't accept, which nothing but a signal ends. A
+    /// caller that must be able to give up waits for this on a thread it
+    /// can leave behind.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the socket can't be reached.
+    pub fn connect_waiting(path: &Path) -> Result<Self, Error> {
+        let socket = socket_with(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )?;
+        let address = SocketAddrUnix::new(path)?;
+        loop {
+            match connect(&socket, &address) {
+                Ok(()) => return Ok(Self { socket }),
+                // A Unix socket left unconnected by a signal is asked
+                // again as it was.
+                Err(Errno::INTR) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     /// Hangs up, from any thread, whatever else is using the client: a
@@ -175,17 +205,33 @@ impl Client {
         Ok((reply, fds))
     }
 
+    /// The next reply, a refusal as an error.
+    fn answer(&self) -> Result<(Reply, Vec<OwnedFd>), Error> {
+        let (reply, fds) = self.reply()?;
+        match reply.refusal {
+            Some(refusal) => Err(Error::Refused(refusal)),
+            None => Ok((reply, fds)),
+        }
+    }
+
     fn ask(
         &self,
         request: Request,
         pad: Option<BorrowedFd<'_>>,
     ) -> Result<(Reply, Vec<OwnedFd>), Error> {
         self.send(request, pad)?;
-        let (reply, fds) = self.reply()?;
-        match reply.refusal {
-            Some(refusal) => Err(Error::Refused(refusal)),
-            None => Ok((reply, fds)),
-        }
+        self.answer()
+    }
+
+    /// Reads the next reply and drops it, whatever it says: the reply to
+    /// a request whose caller gave up waiting for it, which comes before
+    /// the reply to anything asked after.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the connection breaks, or the reply makes no sense.
+    pub fn skip(&self) -> Result<(), Error> {
+        self.reply().map(drop)
     }
 
     /// The service's release, as `major.minor.patch`.
@@ -265,21 +311,19 @@ impl Client {
 
     /// The reply to a hide sent with [`send_hide`](Self::send_hide):
     /// whether the pad was hidden, and how many times the service
-    /// re-bound it, a refusal included.
+    /// re-bound it, a refusal included. A refusal that doesn't say, as one
+    /// at the service's gate doesn't, re-bound nothing.
     ///
     /// # Errors
     ///
     /// Fails if the connection breaks, or the reply makes no sense.
     pub fn hid(&self) -> Result<Hid, Error> {
         let (reply, fds) = self.reply()?;
-        let outcome = match reply.refusal {
-            Some(refusal) => Err(refusal),
-            None => Ok(Self::hidden(reply, fds)?),
+        let (outcome, rebinds) = match reply.refusal {
+            Some(refusal) => (Err(refusal), Some(reply.rebinds.unwrap_or(0))),
+            None => (Ok(Self::hidden(reply, fds)?), reply.rebinds),
         };
-        Ok(Hid {
-            outcome,
-            rebinds: reply.rebinds,
-        })
+        Ok(Hid { outcome, rebinds })
     }
 
     /// Gives up the hide sent last, leaving the pad as it was: one still
@@ -298,18 +342,23 @@ impl Client {
     /// After [`cancel`](Self::cancel): reads the hide's reply and the
     /// cancel's, and says how many times the service re-bound the pad for
     /// the two together, which is how many times the pad goes and comes
-    /// back for them.
+    /// back for them. A refusal that doesn't say, as one at the service's
+    /// gate doesn't, re-bound nothing.
     ///
     /// # Errors
     ///
     /// Fails if the connection breaks before both replies have come, or
-    /// one doesn't count.
+    /// one that did as asked doesn't count.
     pub fn cancelled(&self) -> Result<u8, Error> {
-        let mut rebinds = 0;
+        let mut rebinds = 0u8;
         // The hide's reply, whatever it was, and then the cancel's.
         for _ in 0..2 {
             let (reply, _) = self.reply()?;
-            rebinds += reply.rebinds.ok_or(Error::Protocol)?;
+            let counted = match reply.refusal {
+                Some(_) => reply.rebinds.unwrap_or(0),
+                None => reply.rebinds.ok_or(Error::Protocol)?,
+            };
+            rebinds = rebinds.saturating_add(counted);
         }
         Ok(rebinds)
     }
@@ -322,7 +371,29 @@ impl Client {
     /// Fails if the token is unknown, the pad hasn't returned, or the
     /// connection breaks.
     pub fn reopen(&self, token: Token) -> Result<Hidden, Error> {
-        let (reply, fds) = self.ask(Request::Reopen(token), None)?;
+        self.send_reopen(token)?;
+        self.reopened()
+    }
+
+    /// Asks the service to open a hidden pad again, as
+    /// [`reopen`](Self::reopen) does, and returns without waiting for the
+    /// reply: [`wait`](Self::wait) waits for it and
+    /// [`reopened`](Self::reopened) reads it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the connection breaks.
+    pub fn send_reopen(&self, token: Token) -> Result<(), Error> {
+        self.send(Request::Reopen(token), None)
+    }
+
+    /// The reply to a [`send_reopen`](Self::send_reopen).
+    ///
+    /// # Errors
+    ///
+    /// As [`reopen`](Self::reopen).
+    pub fn reopened(&self) -> Result<Hidden, Error> {
+        let (reply, fds) = self.answer()?;
         Self::hidden(reply, fds)
     }
 
@@ -348,7 +419,29 @@ impl Client {
     /// Fails if the token is unknown, the pad isn't of a kind whose raw
     /// node the service opens, or the connection breaks.
     pub fn raw_of(&self, token: Token) -> Result<OwnedFd, Error> {
-        let (_, fds) = self.ask(Request::RawOf(token), None)?;
+        self.send_raw_of(token)?;
+        self.raw_opened()
+    }
+
+    /// Asks the service for the raw HID node of a pad hidden through this
+    /// connection, as [`raw_of`](Self::raw_of) does, and returns without
+    /// waiting for the reply: [`wait`](Self::wait) waits for it and
+    /// [`raw_opened`](Self::raw_opened) reads it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the connection breaks.
+    pub fn send_raw_of(&self, token: Token) -> Result<(), Error> {
+        self.send(Request::RawOf(token), None)
+    }
+
+    /// The reply to a [`send_raw_of`](Self::send_raw_of).
+    ///
+    /// # Errors
+    ///
+    /// As [`raw_of`](Self::raw_of).
+    pub fn raw_opened(&self) -> Result<OwnedFd, Error> {
+        let (_, fds) = self.answer()?;
         fds.into_iter().next().ok_or(Error::Protocol)
     }
 

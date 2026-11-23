@@ -520,8 +520,14 @@ async fn with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored
     south_is(&mut game, true).await;
 
     // Stopped: each pad is restored, and no longer says it is hidden.
+    // The stop is answered once the setup's virtual pads are gone, not
+    // once the hiding service has shown its pads again: each says it is
+    // hidden until the service has said so.
     client.stop_setup("couch").await.unwrap();
-    // The reply means they are: the stop is answered once it is done.
+    eventually("the pads still said they were hidden", async || {
+        client.list_pads().unwrap().iter().all(|pad| !pad.hidden)
+    })
+    .await;
     let mut restored: Vec<Asked> = hider
         .asked()
         .into_iter()
@@ -534,10 +540,6 @@ async fn with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored
         restored,
         [Asked::Restore(primary_id), Asked::Restore(assist_id)]
     );
-    eventually("the pads still said they were hidden", async || {
-        client.list_pads().unwrap().iter().all(|pad| !pad.hidden)
-    })
-    .await;
 
     // A daemon that stops, however it stops, closes its connection, which
     // is what restores anything it still had hidden.
@@ -983,13 +985,6 @@ async fn another_pad_is_taken_as_the_setup_runs_and_the_one_given_up_is_shown_ag
             .disruptive
     );
     assert!(!client.update_setup("couch", true).await.unwrap().disruptive);
-    assert_eq!(
-        asked(&hider)[2..],
-        [
-            Asked::Hide(id(0x8903, "Change Third")),
-            Asked::Restore(id(0x8902, "Change Assist"))
-        ]
-    );
     let after = client.setup("couch").unwrap().unwrap();
     assert_eq!(after.phase, Phase::Running);
     assert_eq!(after.sinks[0].node, before.sinks[0].node);
@@ -1000,11 +995,20 @@ async fn another_pad_is_taken_as_the_setup_runs_and_the_one_given_up_is_shown_ag
         .collect();
     let (third_id, primary_id) = (id(0x8903, "Change Third"), id(0x8901, "Change Primary"));
     assert_eq!(pads, [Some(third_id.as_str()), Some(primary_id.as_str())]);
+    // The update is answered once the old assist is let go, and the
+    // assist says it is hidden until the service has shown it again.
     eventually("the pads never said whose they are", async || {
         user(&third_id) == (Some("couch".to_string()), true)
             && user(&id(0x8902, "Change Assist")) == (None, false)
     })
     .await;
+    assert_eq!(
+        asked(&hider)[2..],
+        [
+            Asked::Hide(id(0x8903, "Change Third")),
+            Asked::Restore(id(0x8902, "Change Assist"))
+        ]
+    );
 
     // The pad given up is no longer the game's; the other two are.
     assist.south(true).unwrap();

@@ -37,9 +37,11 @@ pub trait Unary: Rpc {
     /// thread handing a setup back, or the disk. Its call waits for the
     /// reply for as long as the service is there, which the service's
     /// liveliness token says: the service answers each rpc it holds once,
-    /// as it stops with [`DaemonShuttingDown`] before its token goes, and
-    /// only one that ends otherwise, as by a panic, drops what it holds,
-    /// which ends the call too. The query itself is declared with a
+    /// as it stops with [`DaemonShuttingDown`] before its token goes. A
+    /// query that reaches it after that, and before its token goes, is
+    /// dropped unanswered, as is what a service that ends otherwise, as
+    /// by a panic, holds; a query dropped ends its call too. The query
+    /// itself is declared with a
     /// limit of six hours, only so that zenoh's task for it ends. Every
     /// other rpc's call gives up after
     /// [`RPC_TIMEOUT`](crate::caller::RPC_TIMEOUT).

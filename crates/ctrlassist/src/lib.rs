@@ -385,9 +385,12 @@ impl DaemonClient {
         self.call::<setup::Start>(&request).await.map(|_| ())
     }
 
-    /// Stop the setup `name`. Returns once its virtual pads are gone and
-    /// its pads shown again, which is waited for as long as the daemon is
-    /// there, for up to six hours. A setup that is still starting is
+    /// Stop the setup `name`. Returns once its virtual pads are gone,
+    /// which is waited for as long as the daemon is there, for up to six
+    /// hours. Its pads are shown again from then on, without waiting on
+    /// the hiding service: each is published as hidden until the service
+    /// has shown it, and a start that wants one waits for that within its
+    /// own work. A setup that is still starting is
     /// stopped too: what its start waits on is given up, and the start
     /// is refused with [`ErrorCode::SetupFailed`].
     ///
@@ -718,11 +721,14 @@ impl TrayClient {
 /// waits for its answer for as long as the service's liveliness token is
 /// there, and fails with [`Error::Gone`] once it isn't, at once and
 /// without asking if it isn't now. An rpc the service holds is answered
-/// once: the daemon, as it stops, answers what it holds that it is
-/// stopping ([`Error::Stopping`]) before its token goes; a server that
-/// ends otherwise, as by a panic, drops what it holds, which ends the
-/// call too; and a service whose link drops is seen without its token.
-/// So an answer, or the token's going, ends the wait; the protocol's
+/// once: the daemon, as it stops, answers what it holds and has queued
+/// that it is stopping ([`Error::Stopping`]) before its token goes. One
+/// that reaches it after that, and before the token goes, finds nothing
+/// to answer it, and a server that ends otherwise, as by a panic, drops
+/// what it holds: either ends the call with no answer, as
+/// [`Error::Timeout`]. A service whose link drops is seen without its
+/// token. So an answer, a call dropped, or the token's going ends the
+/// wait; the protocol's
 /// caller gives up only after six hours, a limit there so that zenoh's
 /// task for the query ends.
 /// Every other rpc waits as long as the protocol's caller does.

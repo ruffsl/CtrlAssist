@@ -260,6 +260,10 @@ pkgs.testers.runNixOSTest {
     with subtest("stopped, the pads are back as they were and nothing is left behind"):
         cli("stop", "couch")
         assert setup() is None
+        # The stop is answered once the virtual pad is gone; the pad the
+        # service hid is shown again after, and said to be hidden until
+        # the service has said it is shown.
+        retry(lambda _last: not known()[HID]["hidden"])
         machine.succeed("udevadm settle")
         assert alice_can_open(HID, "event") and alice_can_open(PLAIN, "event")
         assert markers() == [], markers()

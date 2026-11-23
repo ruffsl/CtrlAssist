@@ -289,6 +289,7 @@ impl Daemon {
             copied,
         );
         reactor.test_pads = paths.test_pads;
+        reactor.flusher = Some(watch.flusher());
         let (steam, state) = (paths.steam.clone(), paths.state.clone());
         let blacklist = tokio::task::spawn_blocking(move || Blacklist::open(steam, &state))
             .await
@@ -341,11 +342,19 @@ impl Daemon {
         // a query: no reply can reach a client ahead of the token, and a
         // command that takes an answer without a token for a daemon that
         // is stopping is never told that of one that is starting.
-        let alive = session
+        let alive = match session
             .liveliness()
             .declare_token(keys::daemon_alive())
             .await
-            .map_err(|error| anyhow!("declaring the daemon's liveliness: {error}"))?;
+        {
+            Ok(alive) => alive,
+            Err(error) => {
+                // The look for the hiding service, and any start sent off,
+                // ask it nothing more: what they wait on is hung up.
+                reactor.hiding.close();
+                return Err(anyhow!("declaring the daemon's liveliness: {error}"));
+            }
+        };
         let (stop, stopped) = oneshot::channel();
         let reactor = tokio::spawn(reactor.run(rpcs, seen, reports, stopped));
         info!(socket = %socket.display(), state = %state_dir.display(), version = VERSION, realtime, "the daemon is up");
