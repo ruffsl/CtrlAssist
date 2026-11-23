@@ -222,7 +222,8 @@ impl Identity {
 pub struct Source {
     /// Which pad; see [`PadRef`].
     pub pad: String,
-    /// Sticks resting inside this are read as at rest.
+    /// Sticks resting inside this are read as at rest. At least 0 and
+    /// less than 1.
     #[serde(default)]
     pub deadzone: Option<f32>,
 }
@@ -711,8 +712,12 @@ impl Profile {
                 );
             }
             let deadzone = source.deadzone.unwrap_or(DEADZONE);
-            if !(deadzone.is_finite() && deadzone >= 0.0) {
-                return error(format!("{at}.deadzone"), "a deadzone is a number from 0");
+            // Written so that a value that isn't a number fails.
+            if !(0.0..1.0).contains(&deadzone) {
+                return error(
+                    format!("{at}.deadzone"),
+                    "a deadzone is a number from 0 to less than 1: a stick resting inside it reads as untouched, and at 1 one moved short of all the way would too",
+                );
             }
             sources.push(PlannedSource {
                 name: name.clone(),

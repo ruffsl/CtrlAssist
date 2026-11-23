@@ -445,6 +445,18 @@ fn a_refusal_the_core_would_make_is_said_with_where() {
             "source.a.deadzone",
             "a number from 0",
         ),
+        (
+            "[source.a]\npad = \"model:0001:0001\"\ndeadzone = 1.0\n[sink.o]\ninput = \"a\"\n"
+                .to_string(),
+            "source.a.deadzone",
+            "less than 1",
+        ),
+        (
+            "[source.a]\npad = \"model:0001:0001\"\ndeadzone = 2.5\n[sink.o]\ninput = \"a\"\n"
+                .to_string(),
+            "source.a.deadzone",
+            "less than 1",
+        ),
     ] {
         let (at, problem) = refusal(&text);
         assert_eq!(at, want_at, "{problem}\n{text}");
@@ -452,6 +464,25 @@ fn a_refusal_the_core_would_make_is_said_with_where() {
     }
     plan(&mux("engage = 1.0\nrelease = 1.0\n")).unwrap();
     plan(&demux(16)).unwrap();
+    // A deadzone from 0 to just short of 1 leaves some travel; none
+    // written is the default, which does too.
+    for deadzone in ["deadzone = 0.0\n", "deadzone = 0.99\n", ""] {
+        let text =
+            format!("[source.a]\npad = \"model:0001:0001\"\n{deadzone}[sink.o]\ninput = \"a\"\n");
+        let deadzones: Vec<f32> = plan(&text)
+            .unwrap()
+            .graph
+            .sources
+            .iter()
+            .map(|source| source.deadzone)
+            .collect();
+        assert!(
+            deadzones
+                .iter()
+                .all(|deadzone| (0.0..1.0).contains(deadzone)),
+            "{deadzones:?}"
+        );
+    }
 
     // A toggle of one input switches on that input's button, not on a
     // second input it doesn't have.
