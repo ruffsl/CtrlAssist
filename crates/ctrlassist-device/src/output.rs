@@ -25,7 +25,7 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering, fence};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{JoinHandle, Thread};
 
 use ctrlassist_core::Level;
@@ -166,6 +166,115 @@ struct Shared {
     /// Something handed over to go after the pad's last write: dropped
     /// by the writer as it ends, and never by whoever let the pad go.
     after: Mutex<Option<Box<dyn Send>>>,
+    /// Said once the writer has left the pad at rest.
+    rested: Arc<Done>,
+}
+
+/// Whether a writer has left its pad at rest, and a way to wait for it.
+#[derive(Debug, Default)]
+struct Done {
+    rested: Mutex<bool>,
+    said: Condvar,
+}
+
+/// Says the writer has left the pad at rest as it is dropped: after the
+/// rest is written, or as a panic unwinds past it, so that nobody waits
+/// for a writer that has gone.
+struct Finish(Arc<Done>);
+
+impl Drop for Finish {
+    fn drop(&mut self) {
+        *self.0.rested.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.0.said.notify_all();
+    }
+}
+
+/// What a pad's writer writes, and so what [`Rested::wait`] waits for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum Writes {
+    /// Nothing: the pad is sent nothing, or its writer couldn't be
+    /// started. There is nothing to wait for.
+    Nothing,
+    /// Whole output reports to the pad's raw node: a DualSense or a
+    /// DualShock 4 given its raw node. Its last report turns off what a
+    /// game set beyond rumble, a DualSense's trigger effects among them,
+    /// which a re-bind of the pad's driver doesn't: so this is the write
+    /// that someone about to have the driver re-bound waits for.
+    Reports,
+    /// Levels to the pad's one kernel effect. Its last act erases the
+    /// effect, which the kernel stops first.
+    Effect,
+}
+
+/// Says when the writer of a pad that has been let go has left the pad
+/// at rest, and waits for it. Got from [`Pad::rested`](crate::Pad::rested)
+/// or [`Pad::let_go`](crate::Pad::let_go).
+///
+/// What waiting covers is by what the writer [writes](Self::writes):
+///
+/// - For [`Writes::Reports`], the writer has written what was left and
+///   then the report that leaves the pad at rest, each written or refused
+///   as by a pad that has gone, and has closed the raw node: nothing is
+///   written to the pad after. Each write to a pad on USB can take the
+///   kernel's five seconds, for a pad that stalls.
+/// - For [`Writes::Effect`], the writer has sent the level left and
+///   erased the effect. For a pad another program makes through uinput,
+///   which has stopped answering, the update under way and the erase can
+///   take 30 seconds each. Not covered: the pad's grab let go and its
+///   event node closed, which come after on the same thread and can take
+///   30 seconds more.
+/// - For [`Writes::Nothing`], it is done at once.
+///
+/// The writer starts on what is left once the pad is dropped, so a wait
+/// for a pad that is never dropped never ends. Waiting is a choice:
+/// dropping this changes nothing, and never waits. It is bounded by
+/// nothing but what the writer is doing, as above; a writer that panics
+/// is done once it has tried the rest.
+#[derive(Clone, Debug)]
+pub struct Rested {
+    done: Option<Arc<Done>>,
+    writes: Writes,
+}
+
+impl Rested {
+    /// For a pad with no writer: done already.
+    pub(crate) fn already() -> Self {
+        Self {
+            done: None,
+            writes: Writes::Nothing,
+        }
+    }
+
+    /// What the writer writes, which says what [`wait`](Self::wait)
+    /// waits for.
+    #[must_use]
+    pub fn writes(&self) -> Writes {
+        self.writes
+    }
+
+    /// Whether the writer has left the pad at rest.
+    #[must_use]
+    pub fn is_done(&self) -> bool {
+        self.done
+            .as_ref()
+            .is_none_or(|done| *done.rested.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Waits until the writer has left the pad at rest. Blocks the
+    /// calling thread, for as long as the writer takes; see [`Rested`].
+    pub fn wait(&self) {
+        let Some(done) = &self.done else {
+            return;
+        };
+        let mut rested = done.rested.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*rested {
+            rested = done
+                .said
+                .wait(rested)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
 }
 
 /// Where a writer writes: what it does with what the pad should be sent,
@@ -355,12 +464,15 @@ impl Output {
             broken: AtomicBool::new(false),
             once: AtomicU32::new(0),
             after: Mutex::new(None),
+            rested: Arc::new(Done::default()),
         });
         let writer = {
             let shared = Arc::clone(&shared);
             std::thread::Builder::new()
                 .name(name.to_string())
                 .spawn(move || {
+                    // Said however this thread goes from here.
+                    let finish = Finish(Arc::clone(&shared.rested));
                     // A writer that panics writes nothing more, and says
                     // so at everything the pad is told after.
                     let wrote = catch_unwind(AssertUnwindSafe(|| {
@@ -374,6 +486,9 @@ impl Output {
                     if catch_unwind(AssertUnwindSafe(move || target.rest())).is_err() {
                         shared.broken.store(true, Ordering::Release);
                     }
+                    // The pad's last write is made, and its raw node, if
+                    // that is what was written, closed.
+                    drop(finish);
                     // What was handed over goes here, once it has been:
                     // as the pad is let go, which a writer that broke off
                     // waits for.
@@ -407,6 +522,19 @@ impl Output {
     /// Whether this writes whole output reports to a raw node.
     pub(crate) fn is_raw(&self) -> bool {
         self.kind.is_some()
+    }
+
+    /// Says when the writer has left the pad at rest, after this is
+    /// dropped.
+    pub(crate) fn rested(&self) -> Rested {
+        Rested {
+            done: Some(Arc::clone(&self.shared.rested)),
+            writes: if self.is_raw() {
+                Writes::Reports
+            } else {
+                Writes::Effect
+            },
+        }
     }
 
     /// Makes the pad's motors run at `level`, with nothing else changed.
@@ -885,6 +1013,50 @@ mod tests {
         );
     }
 
+    /// Whoever lets a pad go can wait, on another thread, until its last
+    /// report is written: not while that write is held, and at once
+    /// after, with nothing written to the pad after it.
+    #[test]
+    fn a_pad_let_go_is_rested_once_its_last_report_is_written() {
+        let (mut output, writer, reports, open) = recorded(true, None);
+        output.rumble(level(0x1000, 0)).unwrap();
+        reports.recv().unwrap();
+        // The writer is held in that write.
+        let rested = output.rested();
+        assert_eq!(rested.writes(), Writes::Reports);
+        drop(output);
+        let (said, waited) = mpsc::channel();
+        let waiting = {
+            let rested = rested.clone();
+            std::thread::spawn(move || {
+                rested.wait();
+                said.send(()).unwrap();
+            })
+        };
+        assert!(!rested.is_done());
+        open.send(()).unwrap();
+        // The rest, held as it is written.
+        let rest = reports.recv().unwrap();
+        assert!(is_rest(&rest), "{rest:?}");
+        assert!(!rested.is_done(), "not until the rest is written");
+        assert!(waited.try_recv().is_err());
+        open.send(()).unwrap();
+        waited.recv().unwrap();
+        assert!(rested.is_done());
+        waiting.join().unwrap();
+        writer.join().unwrap();
+        assert!(reports.try_recv().is_err(), "nothing after the rest");
+        // Dropping a handle waits for nothing and changes nothing.
+        drop(rested);
+        // A pad with no writer is done already.
+        let nothing = Rested::already();
+        assert_eq!(nothing.writes(), Writes::Nothing);
+        assert!(nothing.is_done());
+        nothing.wait();
+        fn shared<T: Send + Sync>(_: &T) {}
+        shared(&nothing);
+    }
+
     /// A write the pad refuses is said at the next thing it is told.
     #[test]
     fn a_refused_write_is_said_next_time() {
@@ -930,10 +1102,13 @@ mod tests {
         }
     }
 
-    struct Left(mpsc::Sender<Told>);
+    /// Handed over with the pad, and said to be dropped only once the pad
+    /// is said to be at rest.
+    struct Left(mpsc::Sender<Told>, Rested);
 
     impl Drop for Left {
         fn drop(&mut self) {
+            assert!(self.1.is_done(), "dropped after the pad is said at rest");
             self.0.send(Told::After).unwrap();
         }
     }
@@ -973,9 +1148,13 @@ mod tests {
             told: told_by.clone(),
         };
         let (mut output, writer) = Output::start(target, None, "pad-rumble").unwrap();
+        let rested = output.rested();
+        assert_eq!(rested.writes(), Writes::Effect);
         output.rumble(level(0x1000, 0)).unwrap();
         let writer_name = Some("pad-rumble".to_string());
         assert_eq!(told.recv().unwrap(), (Told::Rest, writer_name.clone()));
+        // Said as soon as the rest is tried, the pad not yet let go.
+        rested.wait();
         for _ in 0..2 {
             let refused = output.rumble(level(0x2000, 0)).unwrap_err();
             assert!(refused.raw_os_error().is_none(), "{refused}");
@@ -989,8 +1168,8 @@ mod tests {
 
     /// While a pad's write waits, whoever tells it a level, or drops it,
     /// goes on at once: the newest level is sent once the write is let
-    /// go, then the pad is left at rest, and only then is what was left
-    /// with the writer dropped.
+    /// go, then the pad is left at rest and said to be, and only then is
+    /// what was left with the writer dropped.
     #[test]
     fn a_pad_whose_write_waits_holds_nobody_who_tells_it_or_drops_it() {
         let (told_by, told) = mpsc::channel();
@@ -1008,7 +1187,7 @@ mod tests {
         output.rumble(level(0x3000, 0x3000)).unwrap();
         // Nothing for a pad that is sent only its level.
         output.pass(&lights(0x11)).unwrap();
-        output.leave_after(Box::new(Left(told_by)));
+        output.leave_after(Box::new(Left(told_by, output.rested())));
         drop(output);
         assert!(told.try_recv().is_err(), "{:?}", told.try_recv());
         open.send(()).unwrap();
