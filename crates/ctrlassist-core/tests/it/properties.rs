@@ -404,18 +404,29 @@ fn any_mux() -> impl Strategy<Value = MuxConfig> {
         ),
         any_rule(),
         any_rule(),
-        any_threshold(),
-        any_threshold(),
+        // Mostly within the 0 to 1 a mux takes, so that most build.
+        prop_oneof![19 => 0.01f32..=1.0, 1 => any::<f32>()],
+        prop_oneof![19 => 0.01f32..=1.0, 1 => any::<f32>()],
         prop::option::of((prop::option::of(0usize..3), any_control())),
         prop_oneof![
             Just(MuxFeedback::None),
             Just(MuxFeedback::Active),
             any::<u32>().prop_map(MuxFeedback::Inputs),
         ],
+        prop::bool::weighted(0.25),
     )
         .prop_map(
-            |(groups, ungrouped_buttons, ungrouped_axes, engage, release, switch, feedback)| {
-                MuxConfig {
+            |(
+                groups,
+                ungrouped_buttons,
+                ungrouped_axes,
+                engage,
+                release,
+                switch,
+                feedback,
+                stray,
+            )| {
+                let mut config = MuxConfig {
                     rules: groups
                         .into_iter()
                         .filter_map(|(controls, rule)| Some((Group::of(&controls).ok()?, rule)))
@@ -435,7 +446,13 @@ fn any_mux() -> impl Strategy<Value = MuxConfig> {
                     },
                     switch: switch.map(|(input, button)| Switch { input, button }),
                     feedback,
+                };
+                // Usually a switch only where something follows it, as
+                // in a real profile; sometimes one that is refused.
+                if !stray && !config.selects() {
+                    config.switch = None;
                 }
+                config
             },
         )
 }
@@ -450,15 +467,20 @@ fn any_node() -> impl Strategy<Value = NodeSpec> {
             prop_oneof![9 => 1usize..4, 1 => 0usize..20],
             prop::option::of(any_control()),
             prop::sample::select(vec![DemuxFeedback::None, DemuxFeedback::Active]),
+            prop::bool::weighted(0.25),
         )
-            .prop_map(|(input, mode, outputs, switch, feedback)| NodeSpec::Demux {
-                input,
-                config: DemuxConfig {
-                    mode,
-                    outputs,
-                    switch,
-                    feedback
-                },
+            .prop_map(|(input, mode, outputs, switch, feedback, stray)| {
+                NodeSpec::Demux {
+                    input,
+                    config: DemuxConfig {
+                        mode,
+                        outputs,
+                        // Usually a switch only on a unicast, which
+                        // selects; sometimes one that is refused.
+                        switch: switch.filter(|_| stray || mode == DemuxMode::Unicast),
+                        feedback,
+                    },
+                }
             }),
     ]
 }
