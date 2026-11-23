@@ -563,7 +563,26 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
     // rumbled through its event node as a real one is.
     let mut motors = VirtualPad::create(Identity::Generic).unwrap();
     let _ = std::process::Command::new("udevadm").arg("settle").status();
-    let pad = writable(motors.event_node());
+    // Opening the pad uploads the one effect it keeps, which the stand-in
+    // answers as a pad's driver would.
+    let node = motors.event_node().to_path_buf();
+    let opening = std::thread::spawn(move || writable(&node));
+    let mut requests = Vec::new();
+    while !opening.is_finished() {
+        let mut fds = [PollFd::new(&motors, PollFlags::IN)];
+        let wait = Timespec {
+            tv_sec: 0,
+            tv_nsec: 10_000_000,
+        };
+        let _ = poll(&mut fds, Some(&wait));
+        motors
+            .serve(|request| {
+                requests.push(request);
+                Ok(())
+            })
+            .unwrap();
+    }
+    let pad = opening.join().unwrap();
 
     let (sink, _reader) = sink();
     let game_node = sink.event_node().to_path_buf();
@@ -593,7 +612,6 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
         drop(effect);
     });
 
-    let mut requests = Vec::new();
     let mut ended = None;
     for _ in 0..400 {
         let mut fds = [PollFd::new(&motors, PollFlags::IN)];
@@ -660,6 +678,14 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
     assert_eq!(
         requests,
         [
+            Request::Upload {
+                id: 0,
+                effect: Effect {
+                    strong: 0,
+                    weak: 0,
+                    ..level
+                }
+            },
             Request::Upload {
                 id: 0,
                 effect: level

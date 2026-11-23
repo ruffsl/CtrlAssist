@@ -281,6 +281,12 @@ fn a_rumble_level_is_one_endless_effect_updated_in_place_and_stopped_at_zero() {
     assert_eq!(
         requests,
         [
+            // Uploaded at rest as the pad is opened, so that the thread
+            // that rumbles it only ever updates it.
+            Request::Upload {
+                id: 0,
+                effect: endless(0, 0)
+            },
             Request::Upload {
                 id: 0,
                 effect: endless(0x8000, 0)

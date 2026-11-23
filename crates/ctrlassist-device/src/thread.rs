@@ -28,7 +28,7 @@ use rustix::time::{
     timerfd_create, timerfd_settime,
 };
 
-use crate::{Pad, PadError, Request, VirtualPad, realtime};
+use crate::{Pad, PadError, Request, VirtualPad, queue, realtime};
 
 /// The most setups that run at once.
 const SETUPS: usize = 8;
@@ -48,7 +48,8 @@ const REPORTS: usize = OWED + QUEUE;
 /// something too.
 const IN_HAND: usize = 1;
 /// The most selections reported after one piece of a setup's handling.
-/// A setup with more nodes that select reports the rest after its next.
+/// A setup with more nodes that select has the thread wake itself to tell
+/// the rest, so that each wake does a bounded amount.
 const SWITCHED: usize = 8;
 /// The effect a virtual pad that is sent levels holds its level as: a
 /// number no game's effect has.
@@ -185,6 +186,42 @@ const TAPS: usize = 8;
 fn note(taps: &mut [Option<Tap>; TAPS], tap: Tap) {
     if let Some(place) = taps.iter_mut().find(|place| place.is_none()) {
         *place = Some(tap);
+    }
+}
+
+/// A setup's pads with what their raw nodes are told kept back, and let
+/// go when this is dropped: at the end of the handling, or as a panic
+/// unwinds out of it, so no pad is left holding what it was told.
+struct Held<'a>(&'a mut Vec<Option<Box<Pad>>>);
+
+impl<'a> Held<'a> {
+    fn new(pads: &'a mut Vec<Option<Box<Pad>>>) -> Self {
+        for pad in pads.iter_mut().flatten() {
+            pad.hold_output();
+        }
+        Self(pads)
+    }
+}
+
+impl std::ops::Deref for Held<'_> {
+    type Target = Vec<Option<Box<Pad>>>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+impl std::ops::DerefMut for Held<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        for pad in self.0.iter_mut().flatten() {
+            pad.release_output();
+        }
     }
 }
 
@@ -612,9 +649,7 @@ impl Setup {
         }
         // What each pad's raw node is told here is written at once, so a
         // level and a report that change together are one write.
-        for pad in pads.iter_mut().flatten() {
-            pad.hold_output();
-        }
+        let mut pads = Held::new(pads);
         for (index, sink) in sinks.iter_mut().enumerate() {
             router.set_targets(SinkId(index), graph.feedback_targets(SinkId(index)));
             let new = sink.take_output().is_some();
@@ -685,9 +720,7 @@ impl Setup {
                 *had = targets;
             }
         }
-        for pad in pads.iter_mut().flatten() {
-            pad.release_output();
-        }
+        drop(pads);
         if let Some(due) = due {
             *next_ms = Some(next_ms.map_or(due, |next| next.min(due)));
         }
@@ -915,8 +948,13 @@ struct Owed {
 /// control side's own queue has no bound, and whatever it no longer
 /// takes is dropped in `deliver`, off the input thread. Ends when the
 /// input thread does.
-fn forward(queued: Receiver<Report>, owed: &Owed, wake: &OwnedFd, mut deliver: impl FnMut(Report)) {
-    for report in queued {
+fn forward(
+    queued: queue::Receiver<Report>,
+    owed: &Owed,
+    wake: &OwnedFd,
+    mut deliver: impl FnMut(Report),
+) {
+    while let Some(report) = queued.recv() {
         owed.read(wake);
         deliver(report);
     }
@@ -977,7 +1015,7 @@ impl InputThread {
         epoll::add(&epoll, &timer, EventData::new_u64(TIMER), EventFlags::IN)?;
 
         let (commands, inbox) = sync_channel(QUEUE);
-        let (outbox, queued) = sync_channel(REPORTS);
+        let (outbox, queued) = queue::queue(REPORTS);
         let owed = Arc::new(Owed::default());
         let forwarder = {
             let (owed, wake) = (Arc::clone(&owed), Arc::clone(&wake));
@@ -985,6 +1023,7 @@ impl InputThread {
                 .name("input-reports".to_string())
                 .spawn(move || forward(queued, &owed, &wake, deliver))?
         };
+        let outbox = outbox.to(forwarder.thread().clone());
         let (granted_tx, granted) = sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let tap = Arc::new(AtomicBool::new(false));
@@ -1078,7 +1117,7 @@ struct State {
     wake: Arc<OwnedFd>,
     timer: OwnedFd,
     inbox: Receiver<Command>,
-    outbox: SyncSender<Report>,
+    outbox: queue::Sender<Report>,
     owed: Arc<Owed>,
     stop: Arc<AtomicBool>,
     tap: Arc<AtomicBool>,
@@ -1106,7 +1145,7 @@ impl State {
         wake: Arc<OwnedFd>,
         timer: OwnedFd,
         inbox: Receiver<Command>,
-        outbox: SyncSender<Report>,
+        outbox: queue::Sender<Report>,
         owed: Arc<Owed>,
         stop: Arc<AtomicBool>,
         tap: Arc<AtomicBool>,
@@ -1173,7 +1212,7 @@ impl State {
         // Counted before it can be read, so the count never falls below
         // what waits.
         self.owed.waiting.fetch_add(1, Ordering::SeqCst);
-        if self.outbox.try_send(report).is_err() {
+        if self.outbox.send(report).is_err() {
             // Only if the count is wrong, or the thread passing reports
             // on has gone: what the report carried is dropped here.
             self.owed.waiting.fetch_sub(1, Ordering::SeqCst);
@@ -1287,7 +1326,8 @@ impl State {
     /// Tells what a setup's nodes now select, where it isn't what was
     /// last told: a step changes one node's at most, and a start each
     /// node's once. With no room to tell one, it is told after a report
-    /// is read. A panic while looking takes the setup down.
+    /// is read; beyond [`SWITCHED`], at the thread's next wake, which
+    /// this then makes. A panic while looking takes the setup down.
     fn tell_selections(&mut self, slot: usize) {
         for _ in 0..SWITCHED {
             if !self.room(1 + IN_HAND) {
@@ -1314,6 +1354,11 @@ impl State {
                 }
             }
         }
+        // More may be owed than one handling tells. The thread wakes
+        // itself to tell the rest, rather than leave them for the setup's
+        // next handling, which may be a while coming.
+        self.behind = true;
+        let _ = rustix::io::write(&*self.wake, &1u64.to_ne_bytes());
     }
 
     /// Takes the commands waiting, in order, each once every report it
@@ -1545,7 +1590,7 @@ mod tests {
     struct Rig {
         state: State,
         commands: SyncSender<Command>,
-        queued: Receiver<Report>,
+        queued: queue::Receiver<Report>,
     }
 
     fn rig() -> Rig {
@@ -1557,7 +1602,8 @@ mod tests {
         )
         .unwrap();
         let (commands, inbox) = sync_channel(QUEUE);
-        let (outbox, queued) = sync_channel(REPORTS);
+        let (outbox, queued) = queue::queue(REPORTS);
+        let outbox = outbox.to(std::thread::current());
         let state = State::new(
             epoll,
             wake,
@@ -1579,7 +1625,7 @@ mod tests {
         /// Reads what waits, as the thread that passes reports on does.
         fn read(&self) -> Vec<Report> {
             let mut read = Vec::new();
-            while let Ok(report) = self.queued.try_recv() {
+            while let Some(report) = self.queued.try_recv() {
                 self.state.owed.read(&self.state.wake);
                 read.push(report);
             }
@@ -1632,6 +1678,46 @@ mod tests {
                 .any(|report| matches!(report, Report::GraphTaken { setup: FIRST, .. }))
         );
         assert!(matches!(read.last(), Some(Report::Stopped(FIRST, _))));
+    }
+
+    /// A setup with more nodes that select than one handling tells has
+    /// the thread wake itself for the rest, not leave them waiting for
+    /// a pad's next report.
+    #[test]
+    fn selections_beyond_one_handling_s_are_told_at_a_wake_of_their_own() {
+        let mut rig = rig();
+        let source = || SourceSpec {
+            deadzone: 0.1,
+            layout: Layout::gamepad(),
+        };
+        let nodes = 3 * SWITCHED / 2;
+        let graph = Graph::build(GraphSpec {
+            sources: vec![source(), source()],
+            nodes: (0..nodes)
+                .map(|_| NodeSpec::Mux {
+                    inputs: vec![Input::Source(SourceId(0)), Input::Source(SourceId(1))],
+                    config: MuxConfig::new(Mode::Toggle, &Layout::gamepad()),
+                })
+                .collect(),
+            sinks: Vec::new(),
+        })
+        .unwrap();
+        let setup = Setup::new(graph, vec![None, None], Vec::new());
+        rig.send(Command::Start(FIRST, Box::new(setup)));
+        let selected = |read: &[Report]| {
+            read.iter()
+                .filter(|report| matches!(report, Report::Selected { setup: FIRST, .. }))
+                .count()
+        };
+        assert_eq!(selected(&rig.read()), SWITCHED);
+        let mut count = [0u8; 8];
+        assert!(
+            rustix::io::read(&*rig.state.wake, &mut count).is_ok(),
+            "the thread woke itself"
+        );
+        // As the thread does when woken.
+        rig.state.commands(0);
+        assert_eq!(selected(&rig.read()), nodes - SWITCHED);
     }
 
     /// With nothing read, commands wait for room rather than have their
