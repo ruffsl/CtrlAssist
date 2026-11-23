@@ -230,7 +230,30 @@ fn a_pad_is_an_address_a_known_name_or_a_model() {
         PadRef::parse("model:054c:09cc"),
         Some(PadRef::Model(0x054c, 0x09cc))
     );
+    // The vendor and product in capitals are the numbers the device
+    // crate writes in lowercase; the serial, port or name is kept.
+    assert_eq!(
+        PadRef::parse("serial:054C:09CC:7EED821FFB17"),
+        exact("serial:054c:09cc:7EED821FFB17")
+    );
+    assert_eq!(
+        PadRef::parse("port:045E:02DD:usb-0000:00:14.0-3/input0"),
+        exact("port:045e:02dd:usb-0000:00:14.0-3/input0")
+    );
+    assert_eq!(
+        PadRef::parse("model:1A34:5B78:Some Pad: Deluxe"),
+        exact("model:1a34:5b78:Some Pad: Deluxe")
+    );
+    assert_eq!(
+        PadRef::parse("model:054C:09CC"),
+        Some(PadRef::Model(0x054c, 0x09cc))
+    );
+    let written = PadRef::parse("serial:054C:09CC:abc").unwrap();
+    assert!(written.matches("serial:054c:09cc:abc", 0x054c, 0x09cc));
+    assert!(!written.matches("serial:054c:09cc:ABC", 0x054c, 0x09cc));
     for not_a_pad in [
+        "model:+54c:09cc",
+        "serial:054c:-9cc:abc",
         "",
         "dualshock4",
         "model:dualshock4",

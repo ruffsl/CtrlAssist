@@ -395,8 +395,9 @@ impl PadRef {
     /// `model:<vendor>:<product>` for any pad of that model.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
+        // Four hex digits; `from_str_radix` alone would take a sign.
         let hex = |text: &str| {
-            (text.len() == 4)
+            (text.len() == 4 && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
                 .then(|| u16::from_str_radix(text, 16).ok())
                 .flatten()
         };
@@ -422,17 +423,22 @@ impl PadRef {
         }
         match kind {
             "address" => is_address(rest).then(|| Self::Exact(text.to_ascii_lowercase())),
-            "model" => match rest.split(':').collect::<Vec<_>>().as_slice() {
-                [vendor, product] => Some(Self::Model(hex(vendor)?, hex(product)?)),
-                [vendor, product, _name, ..] => (hex(vendor).is_some() && hex(product).is_some())
-                    .then(|| Self::Exact(text.to_string())),
-                _ => None,
-            },
-            "serial" | "port" => {
+            "model" | "serial" | "port" => {
                 let mut parts = rest.splitn(3, ':');
-                let numbers = hex(parts.next()?).is_some() && hex(parts.next()?).is_some();
-                (numbers && parts.next().is_some_and(|last| !last.is_empty()))
-                    .then(|| Self::Exact(text.to_string()))
+                let vendor = hex(parts.next()?)?;
+                let product = hex(parts.next()?)?;
+                // The numbers as the device crate writes them, in
+                // lowercase, so that one written in capitals matches; the
+                // serial, port or name after them is the pad's own, kept
+                // as written.
+                let exact =
+                    |last: &str| Self::Exact(format!("{kind}:{vendor:04x}:{product:04x}:{last}"));
+                match (kind, parts.next()) {
+                    ("model", None) => Some(Self::Model(vendor, product)),
+                    ("model", Some(name)) => Some(exact(name)),
+                    (_, Some(last)) if !last.is_empty() => Some(exact(last)),
+                    _ => None,
+                }
             }
             _ => None,
         }
