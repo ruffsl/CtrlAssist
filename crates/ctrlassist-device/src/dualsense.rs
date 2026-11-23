@@ -328,6 +328,198 @@ fn with_rumble(mut report: [u8; OUTPUT_SIZE], level: Level, newer: bool) -> [u8;
     report
 }
 
+// Where each setting sits in a USB output report, the report's number
+// first. The pad applies only the settings a report's three flag bytes
+// mark, so a report is a change, not a state. The layout is the kernel's
+// `struct dualsense_output_report_common` (drivers/hid/hid-playstation.c),
+// which starts one byte in, and its `DS_OUTPUT_VALID_FLAG*` bits; the
+// bytes the kernel leaves reserved are named by SDL's `DS5EffectsState_t`
+// (src/joystick/hidapi/SDL_hidapi_ps5.c, at the same offset as the
+// kernel's common block), and the flags that mark the trigger effects and
+// the headphone volume by SDL's test program (test/testcontroller.c).
+
+/// The first flag byte: rumble, the trigger effects and the audio.
+const FLAG0: usize = 1;
+/// The second: the LEDs, the microphone and more audio.
+const FLAG1: usize = 2;
+/// The third: the lightbar's setup and the newer rumble.
+const FLAG2: usize = 39;
+
+/// The settings a report carries that are kept, each as the flag bit
+/// that marks it and the bytes it sets.
+const SETTINGS: [(usize, u8, std::ops::Range<usize>); 11] = [
+    // SDL's right and left trigger effects, 11 bytes each, at 10 and 21
+    // of the common block; marked by bits 2 and 3, as SDL's test program
+    // sets them.
+    (FLAG0, 0x04, 11..22),
+    (FLAG0, 0x08, 22..33),
+    // The headphone volume (bit 4, as SDL's test program marks it), and
+    // the kernel's speaker volume, microphone volume and audio control.
+    (FLAG0, 0x10, 5..6),
+    (FLAG0, 0x20, 6..7),
+    (FLAG0, 0x40, 7..8),
+    (FLAG0, 0x80, 8..9),
+    // The kernel's microphone mute LED and power save control, which
+    // mutes the microphone.
+    (FLAG1, 0x01, 9..10),
+    (FLAG1, 0x02, 10..11),
+    // The kernel's lightbar color and player LEDs.
+    (FLAG1, 0x04, 45..48),
+    (FLAG1, 0x10, 44..45),
+    // The kernel's second audio control.
+    (FLAG1, 0x80, 38..39),
+];
+
+/// The lightbar's color and the player LEDs, which a report that gives
+/// the LEDs back to the pad leaves no longer set.
+const LEDS: u8 = 0x04 | 0x10;
+
+/// The flag bits whose meaning neither the kernel nor SDL gives, kept as
+/// one setting: the newest report that marks any of them gives them all,
+/// with the bytes no other setting claims. They are said to be the
+/// player LEDs' brightness (the third byte's bit 0, at 43) and the
+/// motors' power, but that is not from either source.
+const OTHER: [(usize, u8); 2] = [(FLAG1, 0x20 | 0x40), (FLAG2, 0xf9)];
+/// The bytes no setting claims: SDL's unknown bytes after the trigger
+/// effects, the kernel's reserved bytes before the lightbar's setup, and
+/// its LED brightness.
+const OTHER_BYTES: [std::ops::Range<usize>; 3] = [33..38, 40..42, 43..44];
+
+/// What a report asks once, which is acted on as it comes and is no
+/// setting to keep: the LEDs given back to the pad (the second flag
+/// byte's bit 3, the kernel's `RELEASE_LEDS`, which SDL sends as "reset
+/// LED state" before it sets the colors again), and the lightbar's setup
+/// with its byte at 42 (the third flag byte's bit 1), which the kernel's
+/// driver sends once as it binds a pad, to fade out the light it starts
+/// with. Rumble is neither: every report written carries the level the
+/// pad should be at.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub(crate) struct Once(u32);
+
+const RELEASE_LEDS: u8 = 0x08;
+const LIGHTBAR_SETUP: u8 = 0x02;
+const LIGHTBAR_SETUP_BYTE: usize = 42;
+
+impl Once {
+    /// What `report` asks once.
+    pub(crate) fn of(report: &[u8; OUTPUT_SIZE]) -> Self {
+        let release = u32::from(report[FLAG1] & RELEASE_LEDS != 0);
+        let setup = if report[FLAG2] & LIGHTBAR_SETUP != 0 {
+            0x02 | (u32::from(report[LIGHTBAR_SETUP_BYTE]) << 8)
+        } else {
+            0
+        };
+        Self(release | setup)
+    }
+
+    /// Whether nothing is asked.
+    pub(crate) fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// This, and then `newer`: the LEDs are given back if either asks,
+    /// and the newer lightbar setup is the one made.
+    pub(crate) fn then(self, newer: Self) -> Self {
+        let release = (self.0 | newer.0) & 0x01;
+        let setup = if newer.0 & 0x02 != 0 { newer.0 } else { self.0 };
+        Self(release | (setup & 0xff02))
+    }
+
+    /// As a word, for an atomic.
+    pub(crate) fn bits(self) -> u32 {
+        self.0
+    }
+
+    pub(crate) fn from_bits(bits: u32) -> Self {
+        Self(bits & 0xff03)
+    }
+
+    /// `report` asking this as well.
+    fn onto(self, mut report: [u8; OUTPUT_SIZE]) -> [u8; OUTPUT_SIZE] {
+        if self.0 & 0x01 != 0 {
+            report[FLAG1] |= RELEASE_LEDS;
+        }
+        if self.0 & 0x02 != 0 {
+            report[FLAG2] |= LIGHTBAR_SETUP;
+            report[LIGHTBAR_SETUP_BYTE] = (self.0 >> 8) as u8;
+        }
+        report
+    }
+
+    /// `report` with nothing asked once.
+    pub(crate) fn strip(mut report: [u8; OUTPUT_SIZE]) -> [u8; OUTPUT_SIZE] {
+        report[FLAG1] &= !RELEASE_LEDS;
+        report[FLAG2] &= !LIGHTBAR_SETUP;
+        report[LIGHTBAR_SETUP_BYTE] = 0;
+        report
+    }
+}
+
+/// What the games have set on a virtual DualSense through its output
+/// reports, kept as one report: each setting from the newest report that
+/// marks it, and its flag kept. A report's rumble is not kept, being
+/// replaced by the level each pad should be at, and neither is what it
+/// asks once, which goes with the next report passed on and no other.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Settings {
+    report: [u8; OUTPUT_SIZE],
+    /// Whether a game has sent any report.
+    any: bool,
+    /// What was asked once since it was last passed on.
+    once: Once,
+}
+
+impl Settings {
+    pub(crate) const NONE: Self = Self {
+        report: [0; OUTPUT_SIZE],
+        any: false,
+        once: Once(0),
+    };
+
+    /// Takes in a game's output report.
+    pub(crate) fn take(&mut self, report: &[u8; OUTPUT_SIZE]) {
+        if report[0] != OUTPUT_REPORT {
+            return;
+        }
+        let kept = &mut self.report;
+        kept[0] = OUTPUT_REPORT;
+        // Given back before the report's own settings are taken, so that
+        // a report that gives the LEDs back and sets a color keeps it.
+        if report[FLAG1] & RELEASE_LEDS != 0 {
+            kept[FLAG1] &= !LEDS;
+        }
+        for (flag, bit, bytes) in &SETTINGS {
+            if report[*flag] & bit != 0 {
+                kept[*flag] |= bit;
+                kept[bytes.clone()].copy_from_slice(&report[bytes.clone()]);
+            }
+        }
+        if OTHER.iter().any(|(flag, bits)| report[*flag] & bits != 0) {
+            for (flag, bits) in OTHER {
+                kept[flag] = (kept[flag] & !bits) | (report[flag] & bits);
+            }
+            for bytes in OTHER_BYTES {
+                kept[bytes.clone()].copy_from_slice(&report[bytes]);
+            }
+        }
+        self.once = self.once.then(Once::of(report));
+        self.any = true;
+    }
+
+    /// Every setting kept, for a pad that joins: nothing asked once, which
+    /// went to the pads there were then.
+    pub(crate) fn kept(&self) -> Option<[u8; OUTPUT_SIZE]> {
+        self.any.then_some(self.report)
+    }
+
+    /// Every setting kept and what was asked once since this was last
+    /// asked, for the pads a new report goes to.
+    pub(crate) fn fresh(&mut self) -> Option<[u8; OUTPUT_SIZE]> {
+        let once = std::mem::take(&mut self.once);
+        self.any.then(|| once.onto(self.report))
+    }
+}
+
 /// The output report a DualSense takes over Bluetooth, and its size.
 const BLUETOOTH_OUTPUT_REPORT: u8 = 0x31;
 const BLUETOOTH_OUTPUT_SIZE: usize = 78;
@@ -493,19 +685,22 @@ impl Composer {
         }
     }
 
-    /// The report that leaves the pad at `level`, carrying `game`, a
-    /// game's report not yet written: a DualSense's whole, or the
-    /// lightbar's color for a DualShock 4. Without one, a DualSense's
+    /// The report that leaves the pad at `level`, carrying `game`, the
+    /// games' settings not yet written: a DualSense's whole, or the
+    /// lightbar's color for a DualShock 4. Without them, a DualSense's
     /// report changes nothing but rumble, and a DualShock 4's keeps the
-    /// color it was last given. Returns the report and its length.
+    /// color it was last given. A DualSense's carries what is asked
+    /// `once` too. Returns the report and its length.
     pub(crate) fn compose(
         &mut self,
         game: Option<&[u8; OUTPUT_SIZE]>,
         level: Level,
+        once: Once,
     ) -> ([u8; RAW_SIZE], usize) {
         match self.kind {
             Kind::DualSense { newer, bluetooth } => {
-                let usb = with_rumble(game.copied().unwrap_or([0; OUTPUT_SIZE]), level, newer);
+                let settings = once.onto(game.copied().unwrap_or([0; OUTPUT_SIZE]));
+                let usb = with_rumble(settings, level, newer);
                 if bluetooth {
                     let report = over_bluetooth(usb, self.sequence);
                     self.sequence = (self.sequence + 1) & 0x0f;
@@ -624,6 +819,9 @@ pub(crate) struct Emulator {
     output: [u8; OUTPUT_SIZE],
     sent: bool,
     fresh: bool,
+    /// What the games have set through every output report, for the
+    /// pads behind it.
+    settings: Settings,
     /// Kept between calls so that serving allocates nothing.
     event: Box<[u8; UHID_EVENT]>,
 }
@@ -685,6 +883,7 @@ impl Emulator {
             output: [0; OUTPUT_SIZE],
             sent: false,
             fresh: false,
+            settings: Settings::NONE,
             event: Box::new([0; UHID_EVENT]),
         };
         let uniq = address_text(address);
@@ -764,8 +963,8 @@ impl Emulator {
         Ok(())
     }
 
-    /// Keeps the event just read if it is an output report: what the
-    /// pads behind this one are sent.
+    /// Keeps the event just read if it is an output report, and takes in
+    /// what it sets, which the pads behind this one are sent.
     fn keep_output(&mut self) {
         let event = self.event.as_slice();
         if u32_at(event, 0) != UHID_OUTPUT || event.get(4) != Some(&OUTPUT_REPORT) {
@@ -779,6 +978,7 @@ impl Emulator {
             }
         }
         self.output = output;
+        self.settings.take(&output);
         (self.sent, self.fresh) = (true, true);
     }
 
@@ -791,6 +991,17 @@ impl Emulator {
     /// The last output report a game sent, if any ever came.
     pub(crate) fn last_output(&self) -> Option<&[u8]> {
         self.sent.then_some(self.output.as_slice())
+    }
+
+    /// What the games have set, as one report, if any report came: with
+    /// what was asked once since this was last asked `fresh`, for the
+    /// pads a new report goes to, or without, for a pad that joins.
+    pub(crate) fn settings(&mut self, fresh: bool) -> Option<[u8; OUTPUT_SIZE]> {
+        if fresh {
+            self.settings.fresh()
+        } else {
+            self.settings.kept()
+        }
     }
 
     /// Sends the report the pad holds once more if it has sent none for
@@ -1140,17 +1351,17 @@ mod tests {
         // A DualShock 4 keeps the color it was given at each rumble, and
         // a report that sets no color leaves it.
         let mut ds4 = Composer::new(Kind::DualShock4 { bluetooth: false });
-        let (report, length) = ds4.compose(None, level_of(0x80, 0));
+        let (report, length) = ds4.compose(None, level_of(0x80, 0), Once::default());
         assert_eq!(length, 32);
         assert_eq!(report[..9], [0x05, 0x01, 0, 0, 0, 0x80, 0, 0, 0]);
         let mut game = [0u8; OUTPUT_SIZE];
         game[0] = OUTPUT_REPORT;
         (game[2], game[45], game[46], game[47]) = (0x04, 1, 2, 3);
-        ds4.compose(Some(&game), level_of(0x80, 0));
+        ds4.compose(Some(&game), level_of(0x80, 0), Once::default());
         game[2] = 0;
         game[45] = 9;
-        ds4.compose(Some(&game), level_of(0x80, 0));
-        let (report, _) = ds4.compose(None, Level::default());
+        ds4.compose(Some(&game), level_of(0x80, 0), Once::default());
+        let (report, _) = ds4.compose(None, Level::default(), Once::default());
         assert_eq!(report[..9], [0x05, 0x03, 0, 0, 0, 0, 1, 2, 3]);
         // A DualSense's report without a game's changes nothing but
         // rumble; one with it carries it whole.
@@ -1158,13 +1369,13 @@ mod tests {
             newer: true,
             bluetooth: false,
         });
-        let (alone, length) = usb.compose(None, level_of(0x80, 0x40));
+        let (alone, length) = usb.compose(None, level_of(0x80, 0x40), Once::default());
         assert_eq!(length, OUTPUT_SIZE);
         assert_eq!(
             alone[..OUTPUT_SIZE],
             with_rumble([0; OUTPUT_SIZE], level_of(0x80, 0x40), true)
         );
-        let (whole, _) = usb.compose(Some(&game), Level::default());
+        let (whole, _) = usb.compose(Some(&game), Level::default(), Once::default());
         assert_eq!(
             whole[..OUTPUT_SIZE],
             with_rumble(game, Level::default(), true)
@@ -1175,10 +1386,135 @@ mod tests {
             bluetooth: true,
         });
         let numbers: Vec<u8> = (0..17)
-            .map(|_| bluetooth.compose(None, Level::default()).0[1] >> 4)
+            .map(|_| bluetooth.compose(None, Level::default(), Once::default()).0[1] >> 4)
             .collect();
         assert_eq!(numbers[..4], [0, 1, 2, 3]);
         assert_eq!(numbers[15..], [15, 0]);
+    }
+
+    /// A game's output report that marks `flags` (the three flag bytes)
+    /// and sets `bytes`.
+    fn marked(flags: [u8; 3], bytes: &[(usize, u8)]) -> [u8; OUTPUT_SIZE] {
+        let mut report = [0u8; OUTPUT_SIZE];
+        report[0] = OUTPUT_REPORT;
+        (report[FLAG0], report[FLAG1], report[FLAG2]) = (flags[0], flags[1], flags[2]);
+        for (at, byte) in bytes {
+            report[*at] = *byte;
+        }
+        report
+    }
+
+    /// The pad takes only what a report marks, so reports that each set
+    /// one thing are kept as one that sets them all, each from the newest
+    /// report that set it.
+    #[test]
+    fn each_setting_is_kept_from_the_newest_report_that_set_it() {
+        let mut settings = Settings::NONE;
+        assert_eq!(settings.kept(), None, "nothing sent yet");
+        assert_eq!(settings.fresh(), None);
+        // The lightbar's color and the right trigger's effect.
+        settings.take(&marked(
+            [0x04, 0x04, 0],
+            &[(11, 0x01), (13, 110), (45, 1), (46, 2), (47, 3)],
+        ));
+        // The player LEDs alone: the color stays.
+        settings.take(&marked([0, 0x10, 0], &[(44, 0x05)]));
+        // A new color, with rumble, which is not kept, and the left
+        // trigger's effect.
+        settings.take(&marked(
+            [0x0b, 0x04, 0x04],
+            &[(3, 9), (4, 9), (22, 0x02), (45, 4), (46, 5), (47, 6)],
+        ));
+        // Another report than the output report is no setting.
+        let mut other = marked([0xff, 0xff, 0xff], &[(45, 0xff)]);
+        other[0] = 0x31;
+        settings.take(&other);
+        let kept = settings.kept().unwrap();
+        assert_eq!((kept[FLAG0], kept[FLAG1], kept[FLAG2]), (0x0c, 0x14, 0));
+        assert_eq!(kept[3..5], [0, 0], "rumble isn't kept");
+        assert_eq!((kept[11], kept[13], kept[22]), (0x01, 110, 0x02));
+        assert_eq!(kept[44..48], [0x05, 4, 5, 6]);
+        assert_eq!(settings.fresh(), Some(kept), "nothing was asked once");
+        // Every setting has its place in the report, and none overlaps.
+        let mut claimed = [false; OUTPUT_SIZE];
+        let places = SETTINGS
+            .iter()
+            .map(|(_, _, bytes)| bytes.clone())
+            .chain(OTHER_BYTES)
+            .chain([3..5, LIGHTBAR_SETUP_BYTE..LIGHTBAR_SETUP_BYTE + 1]);
+        for at in places.flatten() {
+            assert!(!claimed[at], "byte {at} is claimed twice");
+            claimed[at] = true;
+        }
+        let flags = [0, FLAG0, FLAG1, FLAG2];
+        let unclaimed: Vec<usize> = (0..OUTPUT_SIZE)
+            .filter(|at| !claimed[*at] && !flags.contains(at))
+            .collect();
+        assert!(unclaimed.is_empty(), "{unclaimed:?}");
+    }
+
+    /// What neither source names is kept as one setting, whole from the
+    /// newest report that marks any of it.
+    #[test]
+    fn what_no_source_names_is_kept_whole_from_the_newest_report_that_marks_it() {
+        let mut settings = Settings::NONE;
+        settings.take(&marked([0, 0, 0x01], &[(43, 0x7f)]));
+        settings.take(&marked([0, 0x04, 0], &[(43, 0x11), (45, 9)]));
+        let kept = settings.kept().unwrap();
+        assert_eq!((kept[FLAG2], kept[43]), (0x01, 0x7f), "unmarked: kept");
+        settings.take(&marked([0, 0x40, 0], &[(37, 3)]));
+        let kept = settings.kept().unwrap();
+        assert_eq!((kept[FLAG1], kept[FLAG2]), (0x44, 0), "replaced whole");
+        assert_eq!((kept[37], kept[43], kept[45]), (3, 0, 9));
+    }
+
+    /// What a report asks once goes with the next settings passed on to
+    /// the pads there are, and to no pad that joins later.
+    #[test]
+    fn what_a_report_asks_once_goes_once() {
+        let mut settings = Settings::NONE;
+        settings.take(&marked([0, 0x14, 0], &[(44, 0x05), (45, 1)]));
+        // The LEDs given back to the pad: the colors set before are no
+        // longer what it shows. And the lightbar set up twice, the newer
+        // the one made.
+        settings.take(&marked([0, 0x08, 0x02], &[(LIGHTBAR_SETUP_BYTE, 0x02)]));
+        settings.take(&marked([0, 0, 0x02], &[(LIGHTBAR_SETUP_BYTE, 0x01)]));
+        let kept = settings.kept().unwrap();
+        assert_eq!(
+            (kept[FLAG1], kept[FLAG2], kept[LIGHTBAR_SETUP_BYTE]),
+            (0, 0, 0)
+        );
+        let fresh = settings.fresh().unwrap();
+        assert_eq!(
+            (fresh[FLAG1], fresh[FLAG2], fresh[LIGHTBAR_SETUP_BYTE]),
+            (0x08, 0x02, 0x01)
+        );
+        assert_eq!(settings.fresh(), Some(kept), "once only");
+        // Given back and set again in one report: the color set is kept.
+        settings.take(&marked([0, 0x0c, 0], &[(45, 7)]));
+        let kept = settings.kept().unwrap();
+        assert_eq!((kept[FLAG1], kept[45]), (0x04, 7));
+        assert_eq!(settings.fresh().unwrap()[FLAG1], 0x0c);
+
+        let release = Once::of(&marked([0, 0x08, 0], &[]));
+        let setup = |byte| Once::of(&marked([0, 0, 0x02], &[(LIGHTBAR_SETUP_BYTE, byte)]));
+        assert!(Once::default().is_empty() && !release.is_empty());
+        assert_eq!(release.then(setup(3)), setup(3).then(release));
+        assert_eq!(setup(3).then(setup(4)), setup(4));
+        assert_eq!(setup(4).then(Once::default()), setup(4));
+        let both = release.then(setup(3));
+        assert_eq!(Once::from_bits(both.bits()), both);
+        let stripped = Once::strip(both.onto([0; OUTPUT_SIZE]));
+        assert_eq!(stripped, [0; OUTPUT_SIZE]);
+        // Over Bluetooth it is in the same place in the settings, two
+        // bytes on.
+        let mut bluetooth = Composer::new(Kind::DualSense {
+            newer: true,
+            bluetooth: true,
+        });
+        let (report, _) = bluetooth.compose(None, Level::default(), both);
+        assert_eq!((report[FLAG1 + 2], report[FLAG2 + 2]), (0x08, 0x02));
+        assert_eq!(report[LIGHTBAR_SETUP_BYTE + 2], 3);
     }
 
     fn level_of(strong: u8, weak: u8) -> Level {

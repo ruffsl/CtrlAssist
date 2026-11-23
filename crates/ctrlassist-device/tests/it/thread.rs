@@ -941,3 +941,69 @@ fn a_virtual_dualsense_in_a_setup_reports_all_the_time() {
     );
     assert!(sequences.len() >= 70, "{} counts", sequences.len());
 }
+
+/// A game's output reports each change only what they mark, and the pad
+/// behind a virtual DualSense is sent everything the games have set: a
+/// report that sets the lightbar and then one that sets the player LEDs
+/// reach it as one that sets both, whether the input thread reads them
+/// together or apart.
+#[test]
+fn a_pad_behind_a_virtual_dualsense_is_sent_everything_the_games_set() {
+    const TEST: &str = "a_pad_behind_a_virtual_dualsense_is_sent_everything_the_games_set";
+    if !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    let skip = |why: &str| {
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), "SKIPPED {TEST}: {why}");
+    };
+    let real = ctrlassist_test::FakeDualSense::new(0x32).unwrap();
+    let data = ctrlassist_test::synthetic_dualsense(true);
+    let sink = VirtualPad::dualsense(&data, ctrlassist_device::own_address(0x7e_5b02)).unwrap();
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    let real_raw = ctrlassist_test::raw_node_of(real.event_node()).unwrap();
+    let sink_raw = ctrlassist_test::raw_node_of(sink.event_node()).unwrap();
+    if !ctrlassist_test::can_open(&real_raw, true) || !ctrlassist_test::can_open(&sink_raw, true) {
+        return skip("a DualSense's raw node isn't this user's to open here");
+    }
+    let mut pad = writable(real.event_node());
+    let raw: OwnedFd = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&real_raw)
+        .unwrap()
+        .into();
+    pad.set_raw(raw).unwrap();
+    let graph = Graph::build(GraphSpec {
+        sources: vec![source()],
+        nodes: vec![],
+        sinks: vec![Input::Source(PRIMARY)],
+    })
+    .unwrap();
+    let setup = Setup::new(graph, vec![Some(pad)], vec![sink]);
+    let (thread, _reports) = InputThread::spawn().unwrap();
+    thread.send(Command::Start(ID, Box::new(setup))).unwrap();
+
+    use std::io::Write as _;
+    let mut game = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&sink_raw)
+        .unwrap();
+    let mut lights = [0u8; 48];
+    lights[0] = 0x02;
+    (lights[2], lights[45], lights[46], lights[47]) = (0x04, 1, 2, 3);
+    let mut players = [0u8; 48];
+    players[0] = 0x02;
+    (players[2], players[44]) = (0x10, 0x05);
+    game.write_all(&lights).unwrap();
+    game.write_all(&players).unwrap();
+    let both =
+        |sent: &Vec<u8>| sent[2] & 0x14 == 0x14 && sent[44] == 0x05 && sent[45..48] == [1, 2, 3];
+    for _ in 0..400 {
+        if real.outputs().iter().any(both) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    unreachable!("no report set both: {:?}", real.outputs());
+}

@@ -661,19 +661,23 @@ impl Setup {
                 let _ = pad.rumble(*level);
             }
         }
-        // What a game sent a virtual pad beyond rumble goes to the pads
-        // its feedback goes to: to all of them when it is new, and to one
-        // that has just become one of them.
-        for (index, sink) in sinks.iter().enumerate() {
+        // What the games set on a virtual pad beyond rumble goes to the
+        // pads its feedback goes to, as everything they have set: to all
+        // of them when a report is new, and to one that has just become
+        // one of them.
+        for (index, sink) in sinks.iter_mut().enumerate() {
             let targets = graph.feedback_targets(SinkId(index));
             let new = fresh.get(index).copied().unwrap_or(false);
             let had = passed.get(index).copied().unwrap_or(SourceSet::EMPTY);
-            if let Some(report) = sink.last_output() {
+            let joined = targets.iter().any(|source| !had.contains(source));
+            if (new || joined)
+                && let Some(report) = sink.settings(new)
+            {
                 for source in targets.iter() {
                     if (new || !had.contains(source))
                         && let Some(Some(pad)) = pads.get_mut(source.0)
                     {
-                        let _ = pad.pass(report);
+                        let _ = pad.pass(&report);
                     }
                 }
             }
