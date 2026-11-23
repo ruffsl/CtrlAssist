@@ -30,9 +30,10 @@ const SCHEMA: u32 = 1;
 #[derive(Serialize, Deserialize, Default)]
 struct Record {
     schema: u32,
-    /// The entries added, such as `054c/0ce6`.
+    /// The entries added to each file, such as `054c/0ce6`, by the
+    /// file's path.
     #[serde(default)]
-    added: BTreeSet<String>,
+    added: BTreeMap<PathBuf, BTreeSet<String>>,
 }
 
 /// A model as Steam's list writes it.
@@ -52,16 +53,16 @@ fn listed(line: &str) -> Option<Vec<&str>> {
     )
 }
 
-/// `text` with `add` in Steam's list and `remove` out of it, or nothing
-/// if that changes nothing or the file isn't shaped as expected: it is
-/// then left alone. Everything but the one line is kept as it was. Also
-/// says which of `add` weren't there before, which are the daemon's to
-/// take out again.
+/// `text` with `add` in Steam's list and `remove` out of it, if that
+/// changes it, and which of `add` weren't there before, which are the
+/// daemon's to take out again. Nothing if the file isn't shaped as
+/// expected: it is then left alone. Everything but the one line is kept
+/// as it was.
 fn edited(
     text: &str,
     add: &BTreeSet<String>,
     remove: &BTreeSet<String>,
-) -> Option<(String, BTreeSet<String>)> {
+) -> Option<(Option<String>, BTreeSet<String>)> {
     let ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let mut lines: Vec<String> = text.split(ending).map(str::to_string).collect();
     let at = lines
@@ -87,7 +88,7 @@ fn edited(
         }
     }
     if now == before {
-        return None;
+        return Some((None, ours));
     }
     let line = format!("\t{KEY}\t\t\"{}\"", now.join(","));
     match at {
@@ -102,7 +103,7 @@ fn edited(
             lines.insert(brace + 1, line);
         }
     }
-    Some((lines.join(ending), ours))
+    Some((Some(lines.join(ending)), ours))
 }
 
 /// Steam's lists, and what the daemon has in them.
@@ -113,8 +114,9 @@ pub(crate) struct Blacklist {
     record: PathBuf,
     /// Each setup's entries.
     wanted: BTreeMap<String, BTreeSet<String>>,
-    /// The entries the daemon added, and so may remove.
-    added: BTreeSet<String>,
+    /// The entries the daemon added to each file, and so may remove from
+    /// it: an entry may be the user's own in one file and not another.
+    added: BTreeMap<PathBuf, BTreeSet<String>>,
 }
 
 impl Blacklist {
@@ -147,7 +149,16 @@ impl Blacklist {
             configs: Vec::new(),
             record: PathBuf::new(),
             wanted: BTreeMap::new(),
-            added: BTreeSet::new(),
+            added: BTreeMap::new(),
+        }
+    }
+
+    /// Notes `entries` as the ones the daemon added to `config`.
+    fn note(&mut self, config: &Path, entries: BTreeSet<String>) {
+        if entries.is_empty() {
+            self.added.remove(config);
+        } else {
+            self.added.insert(config.to_path_buf(), entries);
         }
     }
 
@@ -190,35 +201,49 @@ impl Blacklist {
             return;
         }
         let want: BTreeSet<String> = self.wanted.values().flatten().cloned().collect();
-        let remove: BTreeSet<String> = self.added.difference(&want).cloned().collect();
-        // Recorded as possibly added before Steam's file is touched, so
-        // that a daemon that dies between the two is cleaned up after.
-        let before = self.added.clone();
-        self.added.extend(want.iter().cloned());
-        if self.added != before {
-            self.save();
-        }
-        let mut ours = BTreeSet::new();
-        for config in &self.configs {
-            let Ok(text) = fs::read_to_string(config) else {
-                continue;
-            };
-            let Some((text, added)) = edited(&text, &want, &remove) else {
-                continue;
-            };
-            match durable::write(config, &text) {
-                Ok(()) => {
-                    info!(path = %config.display(), added = ?added, removed = ?remove, "Steam's controller blacklist was changed; Steam takes it up when it next starts");
-                    ours.extend(added);
+        for config in self.configs.clone() {
+            let added = self.added.get(&config).cloned().unwrap_or_default();
+            let remove: BTreeSet<String> = added.difference(&want).cloned().collect();
+            let text = match fs::read_to_string(&config) {
+                Ok(text) => text,
+                // Gone, and what was added with it.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.note(&config, BTreeSet::new());
+                    continue;
                 }
+                // What was added stays the daemon's, to take out once the
+                // file can be read.
+                Err(error) => {
+                    warn!(path = %config.display(), %error, "Steam's controller blacklist couldn't be read");
+                    continue;
+                }
+            };
+            // A file not shaped as Steam's is left alone, and what was
+            // added to it stays the daemon's.
+            let Some((text, ours)) = edited(&text, &want, &remove) else {
+                continue;
+            };
+            let kept: BTreeSet<String> = added.difference(&remove).cloned().collect();
+            let Some(text) = text else {
+                self.note(&config, kept);
+                continue;
+            };
+            // Recorded as added before Steam's file is touched, so that a
+            // daemon that dies between the two is cleaned up after.
+            self.note(&config, added.union(&ours).cloned().collect());
+            self.save();
+            match durable::write(&config, &text) {
+                Ok(()) => {
+                    info!(path = %config.display(), added = ?ours, removed = ?remove, "Steam's controller blacklist was changed; Steam takes it up when it next starts");
+                    self.note(&config, kept.union(&ours).cloned().collect());
+                }
+                // As it was: what was to be taken out is still there.
                 Err(error) => {
                     warn!(path = %config.display(), %error, "Steam's controller blacklist couldn't be written");
+                    self.note(&config, added);
                 }
             }
         }
-        // Ours are what was added now or before and is still wanted.
-        let kept: BTreeSet<String> = before.intersection(&want).cloned().collect();
-        self.added = kept.union(&ours).cloned().collect();
         self.save();
     }
 }
@@ -242,6 +267,7 @@ mod tests {
     #[test]
     fn only_the_one_line_changes_and_only_when_it_must() {
         let (text, ours) = edited(STEAM, &set(&["054c/0ce6"]), &set(&[])).unwrap();
+        let text = text.unwrap();
         assert_eq!(
             text,
             STEAM.replace("\t\t\"\"", "\t\t\"054c/0ce6\""),
@@ -250,15 +276,18 @@ mod tests {
         assert_eq!(ours, set(&["054c/0ce6"]));
         // Already there, by the user's own doing: nothing to write, and
         // not the daemon's to take out.
-        assert_eq!(edited(&text, &set(&["054c/0ce6"]), &set(&[])), None);
+        let unchanged = Some((None, set(&[])));
+        assert_eq!(edited(&text, &set(&["054c/0ce6"]), &set(&[])), unchanged);
         // Beside the user's own entry, which stays first and stays.
         let users = STEAM.replace("\t\t\"\"", "\t\t\"28de/1142\"");
         let (text, ours) = edited(&users, &set(&["045e/02dd", "054c/0ce6"]), &set(&[])).unwrap();
+        let text = text.unwrap();
         assert!(text.contains("\"28de/1142,045e/02dd,054c/0ce6\""), "{text}");
         assert_eq!(ours.len(), 2);
         let (text, _) = edited(&text, &set(&[]), &set(&["045e/02dd", "054c/0ce6"])).unwrap();
+        let text = text.unwrap();
         assert_eq!(text, users);
-        assert_eq!(edited(&text, &set(&[]), &set(&["054c/0ce6"])), None);
+        assert_eq!(edited(&text, &set(&[]), &set(&["054c/0ce6"])), unchanged);
     }
 
     #[test]
@@ -266,7 +295,7 @@ mod tests {
         let bare = "\"InstallConfigStore\"\r\n{\r\n\t\"Software\"\r\n\t{\r\n\t}\r\n}\r\n";
         let (text, _) = edited(bare, &set(&["054c/0ce6"]), &set(&[])).unwrap();
         assert_eq!(
-            text,
+            text.unwrap(),
             "\"InstallConfigStore\"\r\n{\r\n\t\"controller_blacklist\"\t\t\"054c/0ce6\"\r\n\t\"Software\"\r\n\t{\r\n\t}\r\n}\r\n"
         );
         // A file that isn't shaped as Steam's is left alone.
@@ -324,6 +353,11 @@ mod tests {
         let next = Blacklist::open(vec![config.clone()], dir.path());
         assert_eq!(list(&config), "28de/1142");
         assert!(next.added.is_empty());
+        let record = fs::read_to_string(dir.path().join("steam-blacklist.toml")).unwrap();
+        assert_eq!(
+            toml::from_str::<Record>(&record).unwrap().added,
+            BTreeMap::new()
+        );
         // A record that can't be read is nothing to act on.
         fs::write(
             dir.path().join("steam-blacklist.toml"),
@@ -341,5 +375,58 @@ mod tests {
         none.set("couch", set(&["054c/0ce6"]));
         none.clear();
         assert!(none.added.is_empty());
+    }
+
+    /// Steam may be installed twice, as a distribution installs it and
+    /// as a Flatpak, and an entry the user put in one file is theirs in
+    /// that file even where the daemon added it to the other.
+    #[test]
+    fn an_entry_is_the_daemon_s_only_in_the_files_it_added_it_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = dir.path().join("native/config.vdf");
+        let flatpak = dir.path().join("flatpak/config.vdf");
+        fs::create_dir_all(native.parent().unwrap()).unwrap();
+        fs::create_dir_all(flatpak.parent().unwrap()).unwrap();
+        fs::write(&native, STEAM.replace("\t\t\"\"", "\t\t\"28de/1142\"")).unwrap();
+        fs::write(&flatpak, STEAM).unwrap();
+        let mut blacklist = Blacklist::open(vec![native.clone(), flatpak.clone()], dir.path());
+        blacklist.set("couch", set(&["28de/1142"]));
+        assert_eq!(
+            (list(&native), list(&flatpak)),
+            ("28de/1142".into(), "28de/1142".into())
+        );
+        // A daemon that dies here leaves a record that says the same.
+        let next = Blacklist::open(vec![native.clone(), flatpak.clone()], dir.path());
+        assert_eq!(
+            (list(&native), list(&flatpak)),
+            ("28de/1142".into(), String::new())
+        );
+        drop(next);
+        blacklist.set("couch", set(&["28de/1142"]));
+        blacklist.set("couch", set(&[]));
+        assert_eq!(
+            (list(&native), list(&flatpak)),
+            ("28de/1142".into(), String::new())
+        );
+    }
+
+    /// An entry that can't be taken out now stays the daemon's, and is
+    /// taken out once it can be.
+    #[test]
+    fn an_entry_that_cannot_be_taken_out_yet_is_taken_out_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.vdf");
+        fs::write(&config, STEAM).unwrap();
+        let mut blacklist = Blacklist::open(vec![config.clone()], dir.path());
+        blacklist.set("couch", set(&["054c/0ce6"]));
+        // Something sits where the new file is written before it takes
+        // the old one's place.
+        let partial = dir.path().join("config.vdf.partial");
+        fs::create_dir(&partial).unwrap();
+        blacklist.set("couch", set(&[]));
+        assert_eq!(list(&config), "054c/0ce6");
+        fs::remove_dir(&partial).unwrap();
+        blacklist.clear();
+        assert_eq!(list(&config), "");
     }
 }
