@@ -84,6 +84,31 @@ Three surveys were made on 2026-11-23, by agents reading public sources. What a 
 - **Gyro from one pad and accelerometer from another is the worst of the mixtures.** Local space doesn't notice. Player space is unaffected while the two pads' poses differ by less than about 45°, weakens past that and reverses past 90°. The gravity estimate is turned by one pad and pulled toward the other. And calibration by fusion takes one player's steady aiming, unseen by the other pad's accelerometer, for bias, and corrects it away. This weighs against the first position's "the primary's accelerometer always".
 - **JoyShockMapper's way with two Joy-Cons** is to let each move the mouse by itself, each after its own calibration and curve: a sum of results, not of signals.
 
+### The accelerometer: tilt, pose and shakes
+
+**Steering by tilt is done three ways, and each takes a mixed signal differently.**
+
+- *From gravity alone.* The angle is `roll = atan2(a.x, a.y)` of the accelerometer's reading, sometimes through a low-pass of about a second ([Unity's sample](https://docs.unity3d.com/2019.4/Documentation/Manual/MobileInput.html)). It has no memory: nothing to drift, nothing to recover. The Wii's games before its gyro could do nothing else, and a Dolphin bug shows them reading the raw vector, linear acceleration and all ([Dolphin 11776](https://bugs.dolphin-emu.org/issues/11776)).
+- *From a pose the platform fuses.* The Switch and the PlayStation hand a game an orientation beside the readings; Steam's API hands a quaternion. Emulators that stand in for those platforms fuse it themselves, and their code is where the constants can be read.
+- *From the gyro integrated.* Steam Input's own "gyro to joystick deflection" does this, and users report it losing its center, as an angle with nothing to anchor it would.
+
+**How a fused pose recovers** after its gyro was fed turning its accelerometer never saw: a Mahony filter (Cemu, and with other gains the Switch emulators) pulls back at `Kp × sin(error)`, a time constant of 2 to 3.3 s; Madgwick's slews at a constant 11.5°/s; Dolphin's in about a quarter second; GamepadMotionHelpers closes a large error fast and the last 3° slowly. In all of them only pitch and roll come back, smoothly and with no jump; an error in heading is never corrected. One library ignores an accelerometer that disagrees by more than 10° for about 5 s before it recovers at all ([x-io Fusion](https://github.com/xioTechnologies/Fusion)).
+
+**Some consumers check that gravity is 1 g long.** The Switch emulators' filter corrects drift only between 0.75 and 1.25 g, and takes a pad for still, to learn its bias, only between 0.9 and 1.1 g. GamepadMotionHelpers uses the direction alone and counts a change of length as shaking.
+
+**Shakes are found in what is not gravity:** a magnitude over about 1.3 g for a quarter second ([Seismic](https://github.com/square/seismic)), or acceleration with gravity taken out over a threshold. A vector that is always exactly 1 g can never shake.
+
+**Not found.** Which of the three ways any named racing game steers by; Sony's and Nintendo's own documents (what is above is from homebrew headers and emulators); how Steam fuses its quaternion; any report of a game misbehaving when gravity jumped. The consequences below rest on libraries' and emulators' code, not on games seen to do it.
+
+**What follows for two pads (inference).**
+
+- **The primary's gravity with the other's rate** leaves a gravity-only game steering by the primary alone, as if the assist weren't there; makes a fused pose follow the assist and then drift back over seconds, with the heading left off for good; and has a calibrator by fusion learn the assist's steady turning as bias.
+- **Both switched together** steps a gravity-only game's steering to the other pad's tilt, which is what was asked; a fused pose settles for seconds each way; and a calibrator by fusion can take the swing for a bias of tens of degrees a second, a spin of the camera. The most damaging case where that calibrator is on.
+- **Made up, as a rigid body turned by the merged rate,** is perfectly consistent and no filter can notice it. But nothing ties it to the real down: the gyros' bias walks the steering's center away, and whatever the assist turned stays turned after they let go, so the primary must hold their pad askew to drive straight. And it can't shake. Tying it back to the pads' measured gravity with a gain makes it a complementary filter, and then the assist's part fades in a time of one over the gain: a nudge, not a held angle.
+- **The two vectors averaged** points along the bisector, which for a roll in one plane is exactly the mean of the two roll angles: a gravity-only game gets a true blend of the two steerings, the best of the options for such a game. Its length is `cos(half the angle between)` of a g: 0.97 at 30° apart, 0.90 at 52°, 0.75 at 83°, nothing at opposite. So it wants making 1 g long again, and guarding where the two pads are nearly opposed.
+- **Blending tilt angles and making a gravity vector of the result** is sound, and for pads near level it is the same as blending the unit vectors, which has no singularity at a pad held on end and no wrap at 180°, so the vectors are the better thing to blend. What it loses: linear acceleration, unless carried apart; exact agreement with the gyro, which holds only near level; and it mixes two people's resting poses, since nobody holds a pad level. Blending each one's departure from their own rest, and adding the result to the active player's rest, avoids the last.
+- **The signal a game is least likely to notice,** by this survey: gravity's direction as a weighted mean of the pads' directions, made 1 g long; linear acceleration carried apart if shakes matter; and any change of weights ramped, a step in them being a jump of gravity in small.
+
 ## Steps
 
 To be written once the open questions are answered. The first will be a spike: one real DualSense's sensors and touchpad carried to a virtual one, tried in a game that aims by gyro and one that steers by tilt.
