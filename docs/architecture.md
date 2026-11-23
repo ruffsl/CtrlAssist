@@ -37,6 +37,7 @@ flowchart LR
     subgraph user["User session"]
         cli["ctrlassist (CLI)"]
         tray["tray"]
+        gui["settings window"]
         daemon["daemon<br>input thread + control side"]
     end
     subgraph system["System"]
@@ -48,6 +49,7 @@ flowchart LR
     vpads --> games["games, Steam"]
     cli -- "zenoh, Unix socket" --> daemon
     tray -- "zenoh, Unix socket" --> daemon
+    gui -- "zenoh, Unix socket" --> daemon
     daemon -- "Unix socket, descriptors" --> hider
     hider --> udev
 ```
@@ -56,9 +58,9 @@ flowchart LR
 |---|---|---|
 | daemon | the user, as a systemd user service | Owns the pads, the virtual pads, the running setups and the profiles. |
 | hiding service | root, started on demand by a system socket | Hides and restores pads, and hands the daemon open descriptors for them. Nothing else. |
-| clients | the user | The CLI and the tray. They hold no state the daemon doesn't. |
+| clients | the user | The CLI, the tray and the settings window. They hold no state the daemon doesn't. |
 
-The daemon and the clients are verbs of one binary, `ctrlassist`. The hiding service is a separate, small binary with no async runtime and no zenoh, so that the code running as root is short enough to read in one sitting.
+The daemon, the CLI and the tray are verbs of one binary, `ctrlassist`. The settings window is a binary of its own, `ctrlassist-gui`, so that neither the daemon nor the CLI links a GUI toolkit. The hiding service is a separate, small binary with no async runtime and no zenoh, so that the code running as root is short enough to read in one sitting.
 
 These are separate processes because a client crash must not drop a virtual pad mid-game, a GUI toolkit should not share a process with the input thread, and a gamescope session may have no tray at all. The separation does not extend to the daemon itself: when the daemon stops, its virtual pads go with it and the hidden pads are restored, so a game falls back to the real pads.
 
@@ -73,11 +75,14 @@ One workspace, one shared version.
 | `ctrlassist-core` | Controls, pad state, groups, layouts; the mux and demux nodes; the graph; the feedback router. No device or async code; serialization behind a feature. |
 | `ctrlassist-protocol` | The key space, wire payloads, the rpc table, the profile schema, typed wire errors, session configuration. |
 | `ctrlassist` | The client SDK: a daemon client and a state watcher. |
-| `ctrlassist-device` | Everything that touches the kernel: pads from descriptors, uinput and uhid virtual pads, the controller database, hotplug, the input thread, the hiding service's client, the unprivileged hiding fallback. |
-| `ctrlassist-hider` | The hiding service: a library holding its wire types, which the device crate also uses, and the root binary. |
+| `ctrlassist-device` | Everything that touches the kernel: pads from descriptors, uinput and uhid virtual pads, the controller database, hotplug, the input thread, and the grab that is the unprivileged hiding fallback. |
+| `ctrlassist-hider` | The hiding service: a library holding its wire types and its client, which the daemon uses, and the root binary. |
 | `ctrlassist-daemon` | The control side: profile store, setup lifecycle, the zenoh bridge. A library that the CLI's `service daemon` verb runs. |
 | `ctrlassist-cli` | The `ctrlassist` binary and its clap tree as a library. |
 | `ctrlassist-tray` | The ksni tray and notifications. |
+| `ctrlassist-gui` | The settings window's compiled Slint UI: tokens, theme, widgets and panes. It owns the gettext domain, which Slint names after the package. |
+| `ctrlassist-gui-app` | The code that drives the settings window, its tests, and the `ctrlassist-gui` binary. Split from the UI so that a change to the Rust doesn't recompile the Slint. |
+| `ctrlassist-icons` | Freedesktop icon-theme lookup for the tray and the window: an icon's name, with fallbacks, to a file in the desktop's theme. |
 | `ctrlassist-test` | Fake pads through uinput and uhid, and the fixtures the VM checks use. |
 | `ctrlassist-docgen` | Generated partials for the book. |
 

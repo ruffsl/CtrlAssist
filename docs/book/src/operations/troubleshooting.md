@@ -28,7 +28,7 @@ Right after installing, log out and back in once.
 
 ## The game sees the real controllers as well as the virtual one
 
-Look at the last line of the tray menu, or the daemon's log from when it started.
+Look at the tray menu's **Hiding:** line, just above **Settings**, or the daemon's log from when it started.
 
 - **Hiding: service** means controllers are truly hidden while an arrangement runs. If the game still shows one, it was probably started before the arrangement; restart the game.
 - **Hiding: grab** means the hiding service hasn't been reachable, so controllers are only grabbed. Most games then see just the virtual controller, but a program that reads controllers its own way still sees the real ones. Steam does this for PlayStation controllers. Check `systemctl status ctrlassist-hider.socket`. The daemon looks for the service again each time an arrangement starts, so once the service is there, stop and start the arrangement. While controllers are only grabbed, CtrlAssist also asks Steam to leave their models alone, by adding them to Steam's controller blacklist for as long as the arrangement runs; Steam takes that up only when it next starts, so restart Steam after starting the arrangement.
@@ -52,9 +52,13 @@ A controller it needs isn't connected. `ctrlassist setups` says which. Reconnect
 
 On GNOME, install and enable the AppIndicator extension. The tray is still running without it, for notifications: `systemctl --user status ctrlassist-tray`.
 
+## The settings window doesn't open
+
+It needs a Wayland session, and doesn't open in an X11 one. Started from a terminal, `ctrlassist-gui` says why it couldn't open.
+
 ## Input feels delayed when the machine is busy
 
-The daemon asks for real-time scheduling for the one thread that carries input, and runs without it if refused. The tray's last line and the daemon's log say which.
+The daemon asks for real-time scheduling for the one thread that carries input, and runs without it if refused. The tray menu's **Real-time:** line and the daemon's log say which.
 
 ```sh
 journalctl --user -u ctrlassist-daemon | grep -i real-time

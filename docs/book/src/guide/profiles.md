@@ -81,7 +81,9 @@ Once a part has taken a controller, it waits for that same controller if it disc
 
 If you connect a real DualSense by USB cable, with the hiding service installed, CtrlAssist copies what that controller says of itself, keeps the copy in `~/.local/state/ctrlassist/identities/`, and makes its virtual DualSenses from that from then on; until then it uses a description of the controller that ships with it. You don't need to own one.
 
-A virtual DualSense carries the buttons, sticks, triggers and rumble. When the controller behind it is a real DualSense on a USB cable, with the hiding service installed, the game's lightbar, player lights and adaptive trigger effects reach it too. A DualShock 4 behind it gets the lightbar's color. Its touchpad and motion sensors are there and report nothing, and the system shows a battery and lights for it, as it does for a real one.
+A virtual DualSense carries the buttons, sticks, triggers and rumble. Its touchpad and motion sensors are there and report nothing, and the system shows a battery and lights for it, as it does for a real one.
+
+When the controller behind it is a real DualSense, on a USB cable or over Bluetooth, and the hiding service has hidden it (`hide` left at `full`, with the service installed), the game's lightbar, player lights and adaptive trigger effects reach it too. A DualShock 4 behind it, either way, gets the lightbar's color. A controller that is only grabbed, or not hidden, gets only the rumble. A controller that a game-streaming host presents as a DualSense is treated as one; whether the lights and trigger effects then reach the controller at the far end depends on the host.
 
 ## The default profile
 
@@ -174,4 +176,4 @@ ctrlassist select couch mux          # the next one
 
 ## Where profiles live
 
-In `~/.config/ctrlassist/profiles/`, one file each. They are the daemon's: write them with `profile put`, not by editing there. A file edited in place is read only when the daemon next starts, and one it can't understand is listed with what is wrong and left untouched.
+In `~/.config/ctrlassist/profiles/`, one file each. `profile put` is the usual way to write them. A file edited in place is read at `ctrlassist reload` or when the daemon next starts, as [above](#editing-the-files-by-hand), and one it can't understand is listed with what is wrong and left untouched.

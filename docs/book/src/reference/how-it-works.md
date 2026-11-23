@@ -8,10 +8,11 @@ This page is for the curious. Nothing here is needed to use CtrlAssist.
 |---|---|---|
 | The daemon, `ctrlassist service daemon` | You | Reads the real controllers, combines them, and writes the virtual ones. Keeps your profiles. |
 | The tray, `ctrlassist service tray` | You | Shows what the daemon reports and passes on what you click. |
+| The settings window, `ctrlassist-gui` | You | Shows every controller and profile, and edits profiles without writing a file. |
 | The command, `ctrlassist …` | You | The same, from a terminal. |
 | The hiding service, `ctrlassist-hider` | root | Makes a running arrangement's real controllers invisible to games. |
 
-The tray and the command hold no state of their own: close either and nothing changes. They talk to the daemon over a socket in your runtime directory that only you can open.
+The tray, the window and the command only show what the daemon reports and pass on what you ask: close any of them and nothing that runs changes. They talk to the daemon over a socket in your runtime directory that only you can open.
 
 ## Hiding
 
