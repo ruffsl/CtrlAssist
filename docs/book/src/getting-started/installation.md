@@ -68,6 +68,16 @@ ctrlassist status
 
 It should say the daemon is alive and which release it runs. Then `ctrlassist pads` lists the controllers it sees. If either disagrees, see [Troubleshooting](../operations/troubleshooting.md).
 
+## Removing it
+
+On NixOS, set `services.ctrlassist.enable = false` and rebuild. Elsewhere, remove the package with your package manager. A daemon and a tray that are already running may carry on until you log out; to stop yours sooner, which gives back any controllers it hid:
+
+```sh
+systemctl --user stop ctrlassist-daemon ctrlassist-tray
+```
+
+Your profiles and what CtrlAssist remembers of your controllers stay, in `~/.config/ctrlassist` and `~/.local/state/ctrlassist`; delete those to remove them too.
+
 ## GNOME
 
 GNOME has no place for tray icons unless an extension adds one. Install and enable the AppIndicator extension (`gnome-shell-extension-appindicator`) to see the tray. Without it everything else works, notifications included, and you use the command.

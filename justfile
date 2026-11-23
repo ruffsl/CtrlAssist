@@ -366,8 +366,9 @@ package-all: package-deb package-rpm package-archlinux
 # runs on that distribution's glibc and finds its libraries, says there is
 # no daemon, and completes its own words; the hiding service runs and
 # refuses what isn't a pad; the window's binary runs as far as saying its
-# release, which is before it loads the libraries it draws with; and
-# everything the package ships is in place.
+# release, which needs fontconfig, which it links, and not the libraries
+# it loads at run time to draw with; and everything the package ships is
+# in place.
 _package_checks := '''
     set -eu
     ctrlassist --version
@@ -657,14 +658,16 @@ hide-pad node:
     target/debug/ctrlassist-fixture hide {{ node }} --socket {{ hider_dev_socket }} --control target/hide-pad
 
 # Two fake pads through the input thread's mux to a virtual pad, at 1,000
-# events a second each. Compare with the table in docs/architecture.md.
+# events a second each. Compare with the table in docs/architecture.md,
+# whose numbers were taken with `--release`; the bench builds with the
+# `dist` profile, as the packages are, so that it times what ships.
 #
 # Time the input path, idle and with every CPU busy
 [group('hardware')]
 bench seconds="10":
-    cargo build --quiet --release --package ctrlassist-test
-    target/release/ctrlassist-bench --seconds {{ seconds }}
-    target/release/ctrlassist-bench --seconds {{ seconds }} --load "$(nproc)"
+    cargo build --quiet --profile dist --package ctrlassist-test
+    target/dist/ctrlassist-bench --seconds {{ seconds }}
+    target/dist/ctrlassist-bench --seconds {{ seconds }} --load "$(nproc)"
 
 # The same measurement with the input thread inside a daemon, which the
 # bench runs as a child with a profile over its two fake pads: what the
@@ -673,9 +676,9 @@ bench seconds="10":
 # Time the input path through the daemon, idle and with every CPU busy
 [group('hardware')]
 bench-daemon seconds="10":
-    cargo build --quiet --release --package ctrlassist-test --package ctrlassist-cli
-    target/release/ctrlassist-bench --seconds {{ seconds }} --daemon target/release/ctrlassist
-    target/release/ctrlassist-bench --seconds {{ seconds }} --daemon target/release/ctrlassist --load "$(nproc)"
+    cargo build --quiet --profile dist --package ctrlassist-test --package ctrlassist-cli
+    target/dist/ctrlassist-bench --seconds {{ seconds }} --daemon target/dist/ctrlassist
+    target/dist/ctrlassist-bench --seconds {{ seconds }} --daemon target/dist/ctrlassist --load "$(nproc)"
 
 # Pass the pad's event node, and `--xbox` for the Xbox identity. Needs
 # uinput, which the packaged udev rule or Steam's own gives the seat user.

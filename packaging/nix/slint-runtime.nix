@@ -1,10 +1,13 @@
-# System libraries Slint's femtovg renderer + winit's Wayland backend
-# dlopen at runtime. patchelf can't see dlopen targets, so package.nix
-# splices them onto the GUI binary's rpath in postFixup, and
-# flake.nix's dev shell exports them via LD_LIBRARY_PATH so `cargo
-# run` works in-tree.
+# System libraries the settings window needs at run time beyond what
+# the linker records. Slint's femtovg renderer and winit's Wayland
+# backend dlopen most of them, which patchelf can't see, so package.nix
+# splices them onto the GUI binary's rpath in postFixup, and flake.nix's
+# dev shell exports them via LD_LIBRARY_PATH so `cargo run` works
+# in-tree.
 #
-#   - fontconfig: femtovg renderer (default)
+#   - fontconfig: linked, not dlopened (yeslogic-fontconfig-sys, through
+#     fontique), so the build needs it too: package.nix also takes this
+#     list as build inputs
 #   - libGL:      OpenGL ES backend (winit + glutin EGL dlopen)
 #   - libxkbcommon: winit pulls xkbcommon-dl for keymap parsing,
 #     even on pure-Wayland sessions

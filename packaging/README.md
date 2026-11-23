@@ -17,11 +17,17 @@ How CtrlAssist is put on a machine. After TisVlay's packaging, which has the lon
 - Completions for bash, zsh and fish.
 - `NOTICE`, which carries the bundled controller database's license, and `THIRD-PARTY-LICENSES.html`, the license of every crate built in, under `/usr/share/doc/ctrlassist/`.
 
-The scripts in [`scripts/`](scripts/) run at install and removal: they load the modules, reload udev, and enable the units, and on removal undo that. They do nothing on an upgrade but restart the hiding service onto the new binary.
+The scripts in [`scripts/`](scripts/) run at install, upgrade and removal:
+
+- `postinstall.sh` loads the modules, reloads udev and systemd, enables the units, and restarts a running hiding service onto the new binary. deb and rpm run it on an install and on every upgrade; the Arch package runs it as `post_install` and as `post_upgrade`, since pacman runs only the second on an upgrade.
+- `preremove.sh`, on a removal and never on an upgrade, disables the units and stops the hiding service, which restores whatever it had hidden.
+- `postremove.sh`, once the files are gone, has systemd and udev read what is left, so the units and the real-time drop-in are forgotten and the rule's grant of uinput and uhid is no longer applied. Whether a grant already made is taken back before the next boot is udev's and logind's to decide.
+
+Users' running daemons, trays and windows are left running, as TisVlay leaves its user services: a package script has no safe hold on a live user manager, and stopping a daemon would take its virtual pads from under a game. They run from the removed binaries until each user logs out; `preremove.sh` says so, with the command to stop them sooner.
 
 ## How the binaries are built
 
-`just package-build` builds with the `dist` profile through cargo-zigbuild, with zig as the linker and `x86_64-unknown-linux-gnu.2.34` as the target. The binaries then name the standard ELF interpreter, not a Nix store path, and use no glibc symbol newer than 2.34, so they run on Debian 12, Ubuntu 22.04, Fedora and Arch. They link libudev, and the hiding service libsystemd, by their plain sonames, which each package declares as a dependency. The window loads fontconfig, OpenGL, EGL and the Wayland client libraries at run time, which no linker lists; each package declares those too, and the Nix package puts them on the window's rpath.
+`just package-build` builds with the `dist` profile through cargo-zigbuild, with zig as the linker and `x86_64-unknown-linux-gnu.2.34` as the target. The binaries then name the standard ELF interpreter, not a Nix store path, and use no glibc symbol newer than 2.34, so they run on Debian 12, Ubuntu 22.04, Fedora and Arch. They link libudev, and the hiding service libsystemd, by their plain sonames, which each package declares as a dependency. The window links fontconfig too, so the loader needs it before the window's first line runs, and loads OpenGL, EGL, the Wayland client libraries and libxkbcommon at run time, which no linker lists; each package declares all of them, and the Nix package puts them on the window's rpath.
 
 ## Trying a package
 
