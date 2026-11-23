@@ -8,6 +8,8 @@ use std::io;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::PathBuf;
 
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
+
 use crate::anchor::{self, Anchor};
 use crate::pad::Identifiers;
 
@@ -40,8 +42,14 @@ impl Found {
 pub enum Change {
     /// A pad has connected, or one already connected changed.
     Arrived(Found),
-    /// The pad whose event node this was has gone.
-    Left(PathBuf),
+    /// The pad on an event node has gone.
+    Left {
+        /// The event node, whose name a node made since may have.
+        node: PathBuf,
+        /// Its place in sysfs, which no node made since has: what tells
+        /// which pad this was, the node's name being handed on.
+        syspath: PathBuf,
+    },
     /// The device at this place in sysfs, which a pad can be
     /// [anchored](Anchor) to, has gone: after every node under it, udev
     /// sending a device's removal after its children's.
@@ -60,8 +68,12 @@ pub enum Change {
         present: Vec<PathBuf>,
     },
     /// Changes were lost, the monitor not read in time: what is connected
-    /// is to be looked at again, with [`connected`] and [`anchors`]. What
-    /// is read after this came after the loss.
+    /// is to be looked at again, with [`connected`] and [`anchors`]. Said
+    /// once the queue has been read to its end. The kernel keeps what was
+    /// queued before the loss, drops each change that comes after until
+    /// the queue has been read empty, and says so before the first of
+    /// those kept is read; so what was kept is passed on before this, in
+    /// order, and what is passed on after this came after the loss.
     Overran,
 }
 
@@ -235,6 +247,7 @@ impl Monitor {
         drain(
             || socket.iter().next(),
             || io::Error::last_os_error().raw_os_error(),
+            || readable(socket),
             |event| match event {
                 Some(event) => changed(&event.device(), event.event_type(), &mut change),
                 None => change(Change::Overran),
@@ -243,21 +256,42 @@ impl Monitor {
     }
 }
 
+/// Whether something is queued on `socket` now.
+fn readable(socket: &impl AsFd) -> bool {
+    let mut fds = [PollFd::new(socket, PollFlags::IN)];
+    let now = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    poll(&mut fds, Some(&now)).is_ok_and(|ready| ready > 0)
+}
+
 /// Reads what `next` gives until it gives nothing, passing each to
 /// `each`. udev's library says why it had nothing in `errno`: once after
 /// the kernel dropped events for a socket not read in time, it is
-/// `ENOBUFS`, which is passed on as `None`, and what was queued after the
-/// loss is read still.
+/// `ENOBUFS`. The kernel says that before the first event still queued,
+/// and those queued were sent before the loss, so the loss is passed on,
+/// as `None`, only once the socket has been read to its end, `readable`
+/// saying when: udev's library has nothing for an event it sets aside as
+/// well, an event from a sender it doesn't trust, with more queued.
 fn drain<T>(
     mut next: impl FnMut() -> Option<T>,
     errno: impl Fn() -> Option<i32>,
+    readable: impl Fn() -> bool,
     mut each: impl FnMut(Option<T>),
 ) {
+    let mut overran = false;
     loop {
         match next() {
             Some(item) => each(Some(item)),
-            None if errno() == Some(libc::ENOBUFS) => each(None),
-            None => return,
+            None if errno() == Some(libc::ENOBUFS) => overran = true,
+            None if overran && readable() => {}
+            None => {
+                if overran {
+                    each(None);
+                }
+                return;
+            }
         }
     }
 }
@@ -281,14 +315,17 @@ fn changed(device: &udev::Device, kind: udev::EventType, change: &mut impl FnMut
             }
         }
         udev::EventType::Remove => {
-            // What it was is gone with it; only its node is left
-            // to say which pad this was.
+            // What it was is gone with it; only its node and its place
+            // are left to say which pad this was.
             let is_event = device
                 .sysname()
                 .to_str()
                 .is_some_and(|name| name.starts_with("event"));
             if let (true, Some(node)) = (is_event, device.devnode()) {
-                change(Change::Left(node.to_path_buf()));
+                change(Change::Left {
+                    node: node.to_path_buf(),
+                    syspath: device.syspath().to_path_buf(),
+                });
             }
         }
         _ => {}
@@ -315,8 +352,9 @@ mod tests {
         Nothing(i32),
     }
 
-    /// Drains `script` as the monitor drains its socket, and says what
-    /// was passed on, an overrun as `None`, and how much is left unread.
+    /// Drains `script` as the monitor drains its socket, the socket
+    /// readable while any of the script is left, and says what was passed
+    /// on, an overrun as `None`, and how much is left unread.
     fn drained(script: Vec<Read>) -> (Vec<Option<u32>>, usize) {
         let script = RefCell::new(VecDeque::from(script));
         let errno = Cell::new(0);
@@ -330,30 +368,51 @@ mod tests {
                 }
             },
             || Some(errno.get()),
+            || !script.borrow().is_empty(),
             |event| passed.borrow_mut().push(event),
         );
         (passed.into_inner(), script.into_inner().len())
     }
 
-    /// Events lost to a socket not read in time are said, once each time
-    /// the kernel says so, and what was queued after is still read.
+    /// The kernel says it dropped events before the first of those it
+    /// kept, which were sent before the loss: the loss is said once they
+    /// are read, so that what is connected is looked at again after them
+    /// and not before. An event set aside by udev's library, with more
+    /// queued, isn't the queue's end; once every event queued is read, it
+    /// is.
     #[test]
-    fn an_overrun_is_said_and_what_follows_is_read() {
+    fn an_overrun_is_said_once_what_was_kept_is_read() {
         let (passed, left) = drained(vec![
             Read::Event(1),
             Read::Nothing(libc::ENOBUFS),
             Read::Event(2),
             Read::Nothing(libc::EAGAIN),
             Read::Event(3),
+            Read::Nothing(libc::EAGAIN),
         ]);
-        assert_eq!(passed, [Some(1), None, Some(2)]);
-        assert_eq!(left, 1, "read at the socket's next wake");
+        assert_eq!(passed, [Some(1), Some(2), Some(3), None]);
+        assert_eq!(left, 0);
     }
 
-    /// Nothing for any other reason ends the read without an overrun.
+    /// A socket is readable while something is queued on it, and asking
+    /// waits for nothing.
+    #[test]
+    fn a_socket_is_readable_while_something_is_queued() {
+        let (one, other) = std::os::unix::net::UnixDatagram::pair().unwrap();
+        assert!(!readable(&other));
+        one.send(b"queued").unwrap();
+        assert!(readable(&other));
+        other.recv(&mut [0; 8]).unwrap();
+        assert!(!readable(&other));
+    }
+
+    /// Without an overrun, nothing for whatever reason ends the read,
+    /// what is left read at the socket's next wake.
     #[test]
     fn nothing_else_is_an_overrun() {
-        let (passed, left) = drained(vec![Read::Nothing(libc::EINVAL), Read::Event(1)]);
-        assert_eq!((passed, left), (Vec::new(), 1));
+        for error in [libc::EINVAL, libc::EAGAIN] {
+            let (passed, left) = drained(vec![Read::Nothing(error), Read::Event(1)]);
+            assert_eq!((passed, left), (Vec::new(), 1));
+        }
     }
 }

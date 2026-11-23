@@ -317,6 +317,27 @@ pkgs.testers.runNixOSTest {
         print("\n".join(heard))
         assert order == ["rebinding", "left", "arrived"] * 2, (order, heard)
 
+    with subtest("udev's events lost to a watch not read in time are said once what was kept is read"):
+        # The kernel keeps what was queued, drops what comes after until
+        # the queue has been read empty, and says so before the first it
+        # kept is read: the monitor says the loss after what it kept, which
+        # came before the loss, so that what is connected is looked at
+        # again after those and not before. Its buffer is the least the
+        # kernel gives, and it is stopped while udev sends it more.
+        machine.succeed("systemd-run --unit overrun -p StandardOutput=file:/tmp/overrun ctrlassist-fixture watch --receive-buffer 1")
+        machine.wait_until_succeeds("grep -qx watching /tmp/overrun")
+        machine.succeed("systemctl kill --signal=SIGSTOP overrun")
+        first = nodes()[HID]["event"][0]
+        machine.succeed(f"udevadm trigger --settle --action=change /sys/class/input/{first.split('/')[-1]}")
+        machine.succeed("udevadm trigger --settle --action=change --subsystem-match=input")
+        machine.succeed("systemctl kill --signal=SIGCONT overrun")
+        machine.wait_until_succeeds("grep -qx overran /tmp/overrun")
+        machine.succeed("systemctl stop overrun")
+        heard = machine.succeed("cat /tmp/overrun").splitlines()[1:]
+        print("\n".join(heard))
+        assert heard[0].startswith(f"arrived {first} "), heard
+        assert heard[-1] == "overran" and heard.count("overran") == 1, heard
+
     with subtest("a connected DualSense is copied through the service, and virtual ones are made from it"):
         # A stand-in for a real one: a pad of the kernel's PlayStation
         # driver with an address a real pad could have.

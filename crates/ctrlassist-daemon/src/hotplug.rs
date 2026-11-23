@@ -29,7 +29,8 @@ use tracing::warn;
 pub(crate) enum Seen {
     /// A pad connected, or changed.
     Arrived(Found),
-    /// The pad on this event node has gone.
+    /// The pad on the event node at this place in sysfs has gone. Its
+    /// place, not its node's name, which a node made since may have.
     Left(PathBuf),
     /// The device at this place in sysfs, which pads can be anchored to,
     /// has gone.
@@ -49,7 +50,8 @@ pub(crate) enum Seen {
         rumble: bool,
     },
     /// udev's events overran the watch, and some were lost: every pad
-    /// connected now, and every device a pad can be anchored to.
+    /// connected now, and every device a pad can be anchored to, looked
+    /// at once what was queued before the loss had been seen.
     Overran {
         connected: Vec<Found>,
         anchors: Vec<Anchor>,
@@ -166,8 +168,8 @@ impl Watch {
                             let _ = seen.send(Seen::Arrived(found));
                             learn(opened);
                         }
-                        Change::Left(node) => {
-                            let _ = seen.send(Seen::Left(node));
+                        Change::Left { syspath, .. } => {
+                            let _ = seen.send(Seen::Left(syspath));
                         }
                         Change::Unplugged(device) => {
                             let _ = seen.send(Seen::Unplugged(device));
