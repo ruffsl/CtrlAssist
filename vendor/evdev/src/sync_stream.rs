@@ -336,9 +336,15 @@ impl Device {
             None
         };
 
-        self.raw.fill_events()?;
-
-        Ok(sync)
+        match self.raw.fill_events() {
+            Ok(_) => Ok(sync),
+            // Nothing more to read yet, but the state just fetched, and
+            // the events read after the SYN_DROPPED, are still to be
+            // handed over: returning the error would lose them until the
+            // device next reports.
+            Err(error) if sync.is_some() && error.kind() == io::ErrorKind::WouldBlock => Ok(sync),
+            Err(error) => Err(error),
+        }
     }
 
     /// Fetches and returns events from the kernel ring buffer, doing synchronization on SYN_DROPPED.
