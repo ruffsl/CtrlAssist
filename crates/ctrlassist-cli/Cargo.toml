@@ -13,7 +13,7 @@ publish.workspace = true
 name = "ctrlassist"
 # The whole distribution, not just this crate's command: cargo-nfpm would
 # otherwise use the crate description above.
-description = "Controller assist for gaming on Linux: several game controllers as one, or one as several. Daemon, tray, command and hiding service"
+description = "Controller assist for gaming on Linux: several game controllers as one, or one as several. Daemon, tray, settings window, command and hiding service"
 section = "games"
 priority = "optional"
 
