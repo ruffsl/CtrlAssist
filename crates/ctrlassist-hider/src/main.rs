@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use ctrlassist_hider::{Refusal, Reply, Request, Token, pack_release, receive, send};
 use rustix::event::{EventfdFlags, PollFd, PollFlags, eventfd, poll};
+use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use rustix::io::Errno;
 use rustix::net::sockopt::socket_peercred;
 use rustix::net::{
@@ -485,6 +486,8 @@ struct Woken {
     closed: bool,
     /// A client is waiting to be accepted.
     waiting: bool,
+    /// Nothing was waited for: the accept is to wait for a client itself.
+    blocking: bool,
 }
 
 /// Waits for a connection to close, or, unless there is no room to accept
@@ -498,23 +501,40 @@ fn wait(shared: &Shared, listener: &OwnedFd, exhausted: bool) -> Woken {
         Ok(_) => Woken {
             closed: !fds[0].revents().is_empty(),
             waiting: fds.get(1).is_some_and(|fd| !fd.revents().is_empty()),
+            blocking: false,
         },
         Err(Errno::INTR) => Woken {
             closed: false,
             waiting: false,
+            blocking: false,
         },
         Err(error) => {
             // Ending the service would show every hidden pad, and trying
             // again at once would spin. Instead it waits on the one thing
             // that matters now, blocking on it alone: a connection closing
-            // when there's no room to accept, else a client to accept.
+            // when there's no room to accept, by reading the closings,
+            // else a client to accept, by an accept that waits.
             warn!(%error, "couldn't wait on the listener and the connections together; waiting on one alone");
             Woken {
                 closed: exhausted,
                 waiting: !exhausted,
+                blocking: !exhausted,
             }
         }
     }
+}
+
+/// Accepts a client, waiting for one. systemd hands the listener over
+/// non-blocking, and shares it, so it is made blocking for this accept
+/// alone and put back after.
+fn accept_waiting(listener: &OwnedFd) -> rustix::io::Result<OwnedFd> {
+    let flags = fcntl_getfl(listener)?;
+    fcntl_setfl(listener, flags - OFlags::NONBLOCK)?;
+    let accepted = accept_with(listener, SocketFlags::CLOEXEC);
+    if let Err(error) = fcntl_setfl(listener, flags) {
+        warn!(%error, "couldn't make the listener non-blocking again");
+    }
+    accepted
 }
 
 /// Serves clients until none is left, or forever if `stay` is set.
@@ -563,7 +583,12 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
             }
             continue;
         }
-        let socket = match accept_with(listener, SocketFlags::CLOEXEC) {
+        let accepted = if woken.blocking {
+            accept_waiting(listener)
+        } else {
+            accept_with(listener, SocketFlags::CLOEXEC)
+        };
+        let socket = match accepted {
             Ok(socket) => socket,
             // The client gave up, or a signal came: nothing is left over.
             Err(Errno::INTR | Errno::CONNABORTED | Errno::AGAIN) => continue,
