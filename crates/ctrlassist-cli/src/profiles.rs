@@ -47,7 +47,7 @@ pub(crate) async fn run(socket: &Path, command: Profile) -> Result<()> {
             let toml = read(&file)?;
             let (client, _watcher) = connect(socket).await?;
             if let Some(problem) = client.validate_profile(&toml).await? {
-                bail!("{}: {problem}", file.display());
+                bail!("{}: {}", file.display(), printable(&problem.to_string()));
             }
         }
         Profile::Put { file, name } => {

@@ -35,12 +35,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Requirements
 
-- **A tokio multi-thread runtime.** The client and the watcher spawn tasks on the ambient runtime, which must be the multi-thread scheduler (zenoh, which carries the protocol, rejects the current-thread one). Construct them from inside that runtime.
+- **A tokio multi-thread runtime.** The client spawns tasks on the ambient runtime, which must be the multi-thread scheduler (zenoh, which carries the protocol, rejects the current-thread one). Construct it from inside that runtime.
 - **Linux.** The daemon listens on a Unix socket in the user's runtime directory.
 
 ## Compatibility
 
-A client talks only to a daemon of its own release line, the same `major.minor`: patch releases interoperate, and a pre-release such as `0.5.0-rc.1` works only with exactly itself. The client checks the daemon's release in each lifetime of the daemon, starting when the daemon appears and retrying until it gets an answer. The answer is a mirror read, `service_info`, announced by `StateEvent::ReleaseChecked`. On a mismatch, rpcs fail with `Error::VersionMismatch`, mirror reads return the same error, and `StateEvent::VersionMismatch` fires, until the daemon restarts on a matching release.
+A client talks only to a daemon of its own release line, the same `major.minor`: patch releases interoperate, and a pre-release such as `0.5.0-rc.1` works only with exactly itself. The client checks the daemon's release in each lifetime of the daemon, starting when the daemon appears and retrying until it gets an answer, and keeps only an answer got while the daemon's liveliness token is present. The answer is a mirror read, `service_info`, announced by `StateEvent::ReleaseChecked`. On a mismatch, rpcs fail with `Error::VersionMismatch`, the daemon client's mirror reads return the same error, the tray client's `notification_settings` returns `None`, and `StateEvent::VersionMismatch` fires, until the service restarts on a matching release.
 
 ## Durations
 

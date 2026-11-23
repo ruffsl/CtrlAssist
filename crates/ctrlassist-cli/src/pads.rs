@@ -10,7 +10,8 @@ use anyhow::{Context, Result, bail};
 use ctrlassist::{DaemonClient, Error, StateEvent, StateWatcher, StateWatcherConfig};
 pub(crate) use ctrlassist_cli::printable;
 
-/// Connects to the daemon on `socket` and checks it can be talked to.
+/// Connects to the daemon on `socket`, waits until the client has taken
+/// it up, and checks it can be talked to.
 pub(crate) async fn connect(socket: &Path) -> Result<(DaemonClient, StateWatcher)> {
     // A session that doesn't keep dialing: a command that runs once says
     // at once when nothing is listening.
@@ -21,16 +22,32 @@ pub(crate) async fn connect(socket: &Path) -> Result<(DaemonClient, StateWatcher
     let client = DaemonClient::with_session(session)
         .await
         .context("following the daemon's state")?;
-    // The watcher before the first call, so the daemon going away after
-    // that call can't be missed.
+    // The watcher before anything is asked, so the daemon going away
+    // after that can't be missed.
     let mut config = StateWatcherConfig::default();
     config.fallback_poll_interval = Duration::ZERO;
-    let watcher = StateWatcher::new(&client, None, config);
+    let mut watcher = StateWatcher::new(&client, None, config);
     match client.check_release().await {
-        Ok(()) => Ok((client, watcher)),
+        Ok(()) => {}
         Err(Error::Unavailable { .. }) => bail!("no daemon is running on {}", socket.display()),
-        Err(error) => Err(error.into()),
+        Err(error) => return Err(error.into()),
     }
+    // Answered, on a session in client mode, after the daemon's token
+    // reached the client if it held one: a daemon without one is
+    // stopping, though it answers, and is no daemon to a command.
+    if !client.token_present() {
+        bail!("no daemon is running on {}", socket.display());
+    }
+    // It has, and the client takes it up, or sees it going.
+    while !client.is_available() {
+        match watcher.next().await {
+            Some(StateEvent::DaemonDisappeared) | None => {
+                bail!("the daemon on {} went away", socket.display())
+            }
+            Some(_) => {}
+        }
+    }
+    Ok((client, watcher))
 }
 
 /// As [`connect`], then waits until the daemon's published state has

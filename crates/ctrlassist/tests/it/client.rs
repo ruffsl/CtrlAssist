@@ -14,7 +14,7 @@ use ctrlassist_protocol::{VERSION, keys};
 use serde_json::json;
 use tempfile::TempDir;
 
-use crate::fake::{FakeDaemon, answer_info};
+use crate::fake::{FakeDaemon, answer_info, answer_info_from};
 
 /// How long a case waits for the client to converge.
 const CONVERGE: Duration = Duration::from_secs(20);
@@ -142,12 +142,13 @@ async fn a_watcher_built_late_hears_what_already_happened() {
     eventually("the client never hydrated", async || client.is_hydrated()).await;
     assert!(!client.daemon_state().unwrap().unwrap().realtime);
 
+    // Handed over at once, in order, before anything forwarded.
     let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());
-    next_matching(&mut watcher, |e| *e == StateEvent::DaemonAppeared).await;
-    next_matching(&mut watcher, |e| {
-        *e == StateEvent::ReleaseChecked(ctrlassist::Service::Daemon)
-    })
-    .await;
+    assert_eq!(watcher.try_next(), Some(StateEvent::DaemonAppeared));
+    assert_eq!(
+        watcher.try_next(),
+        Some(StateEvent::ReleaseChecked(ctrlassist::Service::Daemon))
+    );
 
     daemon
         .put(
@@ -255,7 +256,11 @@ async fn a_watcher_built_late_still_hears_of_a_known_mismatch() {
     let (_dir, socket) = socket();
     let _daemon = FakeDaemon::start(&socket, "99.0.0").await;
     let client = DaemonClient::connect(&socket).await.unwrap();
-    // A call settles the verdict before any watcher exists.
+    // The verdict settles before any watcher exists.
+    eventually("the release check never settled", async || {
+        client.service_info().is_some()
+    })
+    .await;
     assert!(matches!(
         client.check_release().await,
         Err(Error::VersionMismatch { .. })
@@ -319,6 +324,124 @@ async fn hydration_ends_at_the_deadline_without_a_listed_key() {
     assert!(!client.is_hydrated(), "a listed key is missing");
     eventually("hydration never ended", async || client.is_hydrated()).await;
     assert_eq!(client.daemon_state().unwrap(), None);
+}
+
+/// A daemon that has withdrawn its token, and still answers while it
+/// drains, can't settle the release check for the daemon that comes
+/// next: that one is checked afresh once it appears, and its check is
+/// announced after its appearance.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_draining_daemon_s_release_is_not_kept_for_the_next() {
+    let (_dir, socket) = socket();
+    let session = zenoh::open(ctrlassist_protocol::bootstrap::router_config(&socket).unwrap())
+        .await
+        .unwrap();
+    let release = Arc::new(Mutex::new("99.0.0".to_string()));
+    let _serve = answer_info_from(&session, &release, &Arc::default()).await;
+    let token = session
+        .liveliness()
+        .declare_token(keys::daemon_alive())
+        .await
+        .unwrap();
+    let client = DaemonClient::connect(&socket).await.unwrap();
+    let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());
+    next_matching(&mut watcher, |e| {
+        matches!(e, StateEvent::VersionMismatch { .. })
+    })
+    .await;
+    assert!(client.token_present());
+
+    // The token goes, and the daemon answers on as it drains.
+    token.undeclare().await.unwrap();
+    next_matching(&mut watcher, |e| *e == StateEvent::DaemonDisappeared).await;
+    assert!(!client.token_present());
+    assert!(matches!(
+        client.check_release().await,
+        Err(Error::VersionMismatch { .. })
+    ));
+    assert!(
+        client.service_info().is_none(),
+        "nothing kept with no token"
+    );
+
+    // The next daemon, on this release.
+    *release.lock().unwrap() = VERSION.to_string();
+    let _token = session
+        .liveliness()
+        .declare_token(keys::daemon_alive())
+        .await
+        .unwrap();
+    let lifecycle = |e: &StateEvent| {
+        matches!(
+            e,
+            StateEvent::DaemonAppeared
+                | StateEvent::DaemonDisappeared
+                | StateEvent::ReleaseChecked(_)
+                | StateEvent::VersionMismatch { .. }
+        )
+    };
+    assert_eq!(
+        next_matching(&mut watcher, lifecycle).await,
+        StateEvent::DaemonAppeared
+    );
+    assert_eq!(
+        next_matching(&mut watcher, lifecycle).await,
+        StateEvent::ReleaseChecked(ctrlassist::Service::Daemon)
+    );
+    assert_eq!(client.service_info().unwrap().version, VERSION);
+    client.check_release().await.unwrap();
+}
+
+/// A client dropped while its release check still retries lets go of
+/// its link: the retrying ends with the client.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_dropped_before_its_release_check_settles_closes_its_link() {
+    let (_dir, socket) = socket();
+    let session = zenoh::open(ctrlassist_protocol::bootstrap::router_config(&socket).unwrap())
+        .await
+        .unwrap();
+    // Present, but never answering `info`.
+    let _token = session
+        .liveliness()
+        .declare_token(keys::daemon_alive())
+        .await
+        .unwrap();
+    let client = DaemonClient::connect(&socket).await.unwrap();
+    let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());
+    next_matching(&mut watcher, |e| *e == StateEvent::DaemonAppeared).await;
+    assert!(client.service_info().is_none());
+    drop(client);
+    eventually("the dropped client's link stayed up", async || {
+        session.info().peers_zid().await.count() == 0
+    })
+    .await;
+    let ended = tokio::time::timeout(CONVERGE, watcher.next()).await;
+    assert_eq!(ended.ok(), Some(None), "the watcher ends with the client");
+}
+
+/// A client dropped at any point while it takes up a daemon, its
+/// subscriptions half declared included, lets go of its link: no task
+/// that reads them outlives it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_dropped_as_it_subscribes_closes_its_link() {
+    let (_dir, socket) = socket();
+    let mut daemon = FakeDaemon::start(&socket, VERSION).await;
+    daemon
+        .put(
+            &keys::daemon(),
+            &json!({"version": VERSION, "realtime": false, "hiding": "grab"}),
+        )
+        .await;
+    for wait in 0..20 {
+        let client = DaemonClient::connect(&socket).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(wait)).await;
+        drop(client);
+        eventually("a dropped client's link stayed up", async || {
+            daemon.peers().await == 0
+        })
+        .await;
+    }
+    daemon.stop().await;
 }
 
 /// `try_next` hands over a queued event without waiting, and nothing when

@@ -14,7 +14,7 @@ use ctrlassist::{DaemonClient, StateEvent, StateWatcher, StateWatcherConfig};
 /// Controller assist: let several game controllers act as one, or one as
 /// several.
 #[derive(Parser, Debug)]
-#[command(name = "ctrlassist", version, about)]
+#[command(name = "ctrlassist", version)]
 pub struct Cli {
     /// The daemon's socket, in place of the one in the user's runtime
     /// directory.
@@ -32,7 +32,7 @@ pub enum Command {
     /// Say whether the daemon is running and which release it is.
     Status {
         /// Print one JSON object, and exit with status 1 if the daemon is
-        /// missing or incompatible.
+        /// missing, doesn't say its release, or is incompatible.
         #[arg(long)]
         json: bool,
     },

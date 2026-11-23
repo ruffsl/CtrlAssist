@@ -24,7 +24,7 @@
 
 ## `ctrlassist`
 
-The ctrlassist command: the daemon as a service verb, and the clients that talk to it
+Controller assist: let several game controllers act as one, or one as several
 
 **Usage:** `ctrlassist [OPTIONS] <COMMAND>`
 
@@ -58,7 +58,7 @@ Say whether the daemon is running and which release it is
 
 ###### **Options:**
 
-* `--json` — Print one JSON object, and exit with status 1 if the daemon is missing or incompatible
+* `--json` — Print one JSON object, and exit with status 1 if the daemon is missing, doesn't say its release, or is incompatible
 
 
 
