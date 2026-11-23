@@ -154,6 +154,14 @@ pub enum Tap {
         /// The level.
         level: Level,
     },
+    /// A pad that was told a level didn't take it: the write to it
+    /// failed, and its motors are as they were.
+    Refused {
+        /// The pad.
+        source: SourceId,
+        /// The level it didn't take.
+        level: Level,
+    },
 }
 
 /// The most taps kept from one piece of a setup's handling.
@@ -619,10 +627,14 @@ impl Setup {
             }
             // A buzz outranks the games until it ends.
             let buzzing = buzz.get(source.0).is_some_and(Option::is_some);
-            if !buzzing && let Some(Some(pad)) = pads.get_mut(source.0) {
+            if !buzzing
+                && let Some(Some(pad)) = pads.get_mut(source.0)
                 // A pad that refuses rumble still plays; the control side
-                // knows from the pad itself which can't.
-                let _ = pad.rumble(level);
+                // knows from the pad itself which can't. That it refused
+                // is kept for whoever is watching.
+                && pad.rumble(level).is_err()
+            {
+                note(taps, Tap::Refused { source, level });
             }
         });
         for (index, slot) in buzz.iter_mut().enumerate() {

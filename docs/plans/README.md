@@ -24,5 +24,6 @@ Working space for in-progress plan docs. Which changes need one, and the steps f
 
 - [`tisvlay-template-overhaul.md`](tisvlay-template-overhaul.md) — the clean-slate rewrite on the TisVlay template: decisions, spikes and their exit criteria, then the build.
 - [`gui.md`](gui.md) — the settings window, on TisVlay's GUI: what is copied, the panes, and the build steps.
+- [`bluetooth-output.md`](bluetooth-output.md) — whole output reports for a DualSense on Bluetooth: lights and trigger effects, not rumble alone.
 
 Remove the entry when the plan retires and its file deletes (per Convention above). Git history is the archive, so there is no retired-plans list here.
