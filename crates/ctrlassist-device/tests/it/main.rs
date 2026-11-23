@@ -149,6 +149,127 @@ fn events_the_kernel_dropped_cannot_leave_a_button_held() {
     assert_eq!(*pad.state(), truth);
 }
 
+/// Whether a read of the kernel's raw events on `reader` holds the mark
+/// the kernel leaves where it dropped events. Reads until nothing is
+/// left.
+fn saw_a_drop(reader: &mut File) -> bool {
+    use std::io::Read as _;
+    // An event is a time of two words, then its type, code and value.
+    const EVENT: usize = 24;
+    let mut buffer = [0u8; 64 * EVENT];
+    let mut dropped = false;
+    while let Ok(read) = reader.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        for event in buffer[..read].as_chunks::<EVENT>().0 {
+            // EV_SYN, SYN_DROPPED.
+            dropped |= event[16..20] == [0, 0, 3, 0];
+        }
+    }
+    dropped
+}
+
+/// A stick that moves each time it is asked to, so that each frame it
+/// sends is one the kernel passes on.
+struct Stick(i32);
+
+impl Stick {
+    fn moved(&mut self, fake: &mut FakePad) {
+        self.0 += 1;
+        fake.frame(&[(EV_ABS, ABS_X, self.0)]).unwrap();
+    }
+}
+
+/// How many frames of one event a reader can be sent unread before the
+/// kernel drops some: its buffer, in events, is twice that, and the drop
+/// comes with the last frame's report.
+fn frames_before_a_drop(fake: &mut FakePad, stick: &mut Stick) -> usize {
+    for frames in 1..=512 {
+        let mut reader = File::open(fake.event_node()).unwrap();
+        rustix::fs::fcntl_setfl(&reader, rustix::fs::OFlags::NONBLOCK).unwrap();
+        for _ in 0..frames {
+            stick.moved(fake);
+        }
+        if saw_a_drop(&mut reader) {
+            return frames;
+        }
+    }
+    unreachable!("the kernel's buffer is finite");
+}
+
+/// The kernel keeps the newest event with its mark of a drop, and the
+/// frame it ends is never handed over whole. A press there is not lost:
+/// the state fetched after the drop has it, and is told as a change from
+/// what was last handed over, not from the dropped frame.
+#[test]
+fn a_press_in_the_frame_the_kernel_dropped_is_not_lost() {
+    let Some(mut fake) = fake("a_press_in_the_frame_the_kernel_dropped_is_not_lost") else {
+        return;
+    };
+    let mut stick = Stick(0);
+    let before_a_drop = frames_before_a_drop(&mut fake, &mut stick);
+    let mut pad = open(&fake);
+    // One event short of the buffer, then the press as the event that
+    // overflows it, kept with the mark.
+    for _ in 0..before_a_drop - 2 {
+        stick.moved(&mut fake);
+    }
+    fake.frame(&[(EV_ABS, ABS_X, -1), (EV_ABS, ABS_Z, 9)])
+        .unwrap();
+    fake.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+
+    let frames = read_until(&mut pad, |_| true);
+    assert!(!frames.is_empty());
+    assert_eq!(pad.state().get(gamepad::SOUTH), 1.0, "{frames:?}");
+}
+
+/// After the kernel drops events, the batch read with its mark can hold
+/// frames from after it: older than the state then fetched, which takes
+/// the key events still queued out of the kernel's buffer. Played after
+/// that state, a press among them would stay held with no release to
+/// follow it.
+#[test]
+fn events_read_beside_a_drop_cannot_undo_the_state_fetched_after_it() {
+    let Some(mut fake) = fake("events_read_beside_a_drop_cannot_undo_the_state_fetched_after_it")
+    else {
+        return;
+    };
+    let mut stick = Stick(0);
+    let before_a_drop = frames_before_a_drop(&mut fake, &mut stick);
+    let mut stick = |fake: &mut FakePad| stick.moved(fake);
+    // The pad reads up to 64 events at a time; the press must fall within
+    // the first read after the drop, and the release after it, with no
+    // second drop.
+    let between = 31;
+    if 2 * before_a_drop < 2 + 2 + 2 * between + 2 + 4 + 2 {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED: the kernel's buffer for this pad is too small to leave events past one read"
+        );
+        return;
+    }
+    let mut pad = open(&fake);
+    for _ in 0..before_a_drop {
+        stick(&mut fake);
+    }
+    fake.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
+    for _ in 0..between {
+        stick(&mut fake);
+    }
+    fake.frame(&[(EV_KEY, BTN_SOUTH, 0)]).unwrap();
+    stick(&mut fake);
+    stick(&mut fake);
+
+    let frames = read_until(&mut pad, |_| true);
+    assert!(!frames.is_empty());
+    assert_eq!(
+        pad.state().get(gamepad::SOUTH),
+        0.0,
+        "the press and the release both came before the state was fetched"
+    );
+}
+
 #[test]
 fn a_frame_that_changes_nothing_mapped_is_not_reported() {
     let Some(mut fake) = fake("a_frame_that_changes_nothing_mapped_is_not_reported") else {
