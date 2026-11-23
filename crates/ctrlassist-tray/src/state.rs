@@ -15,6 +15,11 @@ pub struct View {
     pub alive: bool,
     /// Whether all it publishes has arrived, so that empty means empty.
     pub hydrated: bool,
+    /// Which of the daemon's lifetimes this is, as the tray counts them:
+    /// one more each time the daemon was seen to come. A daemon that went
+    /// and came between two views is told by this, its being down never
+    /// having been seen.
+    pub lifetime: u64,
     /// The daemon's release, when this tray can't talk to it.
     pub mismatch: Option<String>,
     /// The daemon's own state.
@@ -107,14 +112,12 @@ impl View {
     #[must_use]
     pub fn news_for(&self, before: &Self, asked: &mut BTreeMap<String, Asked>) -> Vec<Toast> {
         let mut news = Vec::new();
-        if !self.alive {
-            // A daemon that comes numbers its starts afresh: nothing of
-            // the one that went is still to be seen.
-            for entry in asked.values_mut() {
-                entry.restarted_as = None;
-                entry.replacing = None;
-            }
-            asked.retain(|_, asked| !asked.is_empty());
+        if !self.alive || self.lifetime != before.lifetime {
+            // Nothing asked of a daemon that went is still to be seen: a
+            // start or a stop it answered or never will, a change it
+            // answered or never will, and a restart it numbered, a
+            // daemon that comes numbering its starts afresh.
+            asked.clear();
         }
         // Nothing is compared until both are complete: a state still
         // arriving looks like things appearing one by one.
@@ -476,6 +479,35 @@ pub fn answered(
     news
 }
 
+/// A start or a stop asked of a setup from here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    /// A start.
+    Start,
+    /// A stop.
+    Stop,
+}
+
+/// Takes the answer to a start or a stop asked of `name` from here, with
+/// the view caught up with the daemon as it answered. What of it the
+/// views were to show they have shown by now, or never will: the setup
+/// came and went between two of them, or failed before it was seen
+/// running, or the rpc failed. The mark goes either way, so that it
+/// can't silence a later start or stop of the name that is someone
+/// else's.
+pub fn unmark(asked: &mut BTreeMap<String, Asked>, name: &str, mark: Mark) {
+    let Some(entry) = asked.get_mut(name) else {
+        return;
+    };
+    match mark {
+        Mark::Start => entry.start = false,
+        Mark::Stop => entry.stop = false,
+    }
+    if entry.is_empty() {
+        asked.remove(name);
+    }
+}
+
 /// Of what was held while a change was unanswered, where the restart's
 /// stop and start are, by a guess for a daemon that doesn't number the
 /// restart's start in its answer: the first stop, and the first start
@@ -630,6 +662,7 @@ pub(crate) mod tests {
         View {
             alive: true,
             hydrated: true,
+            lifetime: 1,
             mismatch: None,
             daemon: Some(DaemonState {
                 version: "0.5.0".to_string(),
@@ -717,6 +750,96 @@ pub(crate) mod tests {
         assert_eq!(
             summaries(&grabbed.news_for(&view(None, Hiding::Grab), &mut started)),
             ["couch: its pads are grabbed, not hidden"]
+        );
+    }
+
+    /// A start asked from here and answered leaves nothing marked to
+    /// silence a later one from elsewhere: not when its setup is first
+    /// seen failed, nor when it came and went between two views.
+    #[test]
+    fn a_start_answered_leaves_no_mark_whatever_the_views_showed_of_it() {
+        let stopped = view(None, Hiding::Service);
+        let running = view(Some(Phase::Running), Hiding::Service);
+        let failed = view(Some(Phase::Failed), Hiding::Service);
+
+        // First seen failed: no start is seen, and nothing said.
+        let mut marks = asked(start());
+        assert!(failed.news_for(&stopped, &mut marks).is_empty());
+        unmark(&mut marks, "couch", Mark::Start);
+        assert!(marks.is_empty());
+        // Cleared away, then started from elsewhere: news.
+        let _ = stopped.news_for(&failed, &mut marks);
+        assert_eq!(
+            summaries(&numbered(&running, 2).news_for(&stopped, &mut marks)),
+            ["couch started"]
+        );
+
+        // Started and stopped again between two views: nothing seen.
+        let mut marks = asked(start());
+        assert!(stopped.news_for(&stopped, &mut marks).is_empty());
+        unmark(&mut marks, "couch", Mark::Start);
+        assert!(marks.is_empty());
+        assert_eq!(
+            summaries(&running.news_for(&stopped, &mut marks)),
+            ["couch started"]
+        );
+
+        // The same of a stop whose setup came back between two views:
+        // the start after it is someone else's, and news.
+        let mut marks = asked(Asked {
+            stop: true,
+            ..Asked::default()
+        });
+        unmark(&mut marks, "couch", Mark::Stop);
+        assert!(marks.is_empty());
+        assert_eq!(
+            summaries(&stopped.news_for(&running, &mut marks)),
+            ["couch stopped"]
+        );
+        // Marks of another kind, or of another setup, stay.
+        let mut both = asked(Asked {
+            start: true,
+            stop: true,
+            ..Asked::default()
+        });
+        unmark(&mut both, "couch", Mark::Stop);
+        unmark(&mut both, "desk", Mark::Start);
+        assert_eq!(both, asked(start()));
+    }
+
+    /// A daemon that went and came between two views, its being down
+    /// never seen, takes with it all that was asked of it: neither a
+    /// start it never answered nor a restart it numbered silences what
+    /// the daemon that came does.
+    #[test]
+    fn a_daemon_restart_never_seen_as_down_leaves_nothing_asked() {
+        let running = numbered(&view(Some(Phase::Running), Hiding::Service), 4);
+        let stopped = view(None, Hiding::Service);
+        let next = |view: &View| View {
+            lifetime: view.lifetime + 1,
+            ..view.clone()
+        };
+
+        // A restart answered as start 5, whose start the old daemon never
+        // published; the new daemon starts the profile as its first.
+        let mut marks = changes(1);
+        let _ = answered(&mut marks, &running, "couch", Some(5));
+        assert!(!marks.is_empty());
+        let first = numbered(&next(&running), 1);
+        assert_eq!(
+            summaries(&first.news_for(&running, &mut marks)),
+            ["couch restarted"]
+        );
+        assert!(marks.is_empty());
+
+        // A start asked of the daemon that went, never seen.
+        let mut marks = asked(start());
+        let again = next(&stopped);
+        assert!(again.news_for(&stopped, &mut marks).is_empty());
+        assert!(marks.is_empty());
+        assert_eq!(
+            summaries(&numbered(&next(&running), 1).news_for(&again, &mut marks)),
+            ["couch started"]
         );
     }
 
