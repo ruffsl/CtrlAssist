@@ -1167,11 +1167,12 @@ pkgs.testers.runNixOSTest {
         assert order(other, "restore").startswith("ok")
         machine.succeed("systemctl stop served-again")
         # She has room for what a daemon with sixteen pads holds, two for
-        # each pad and two more, beside the one that holds pad B.
-        machine.succeed(f"systemd-run --unit alice-many hider-probe uids {SOCKET} 1000 1 34 hold")
+        # each pad and two more, and a few over: forty in all, the one that
+        # holds pad B among them, and not one more.
+        machine.succeed(f"systemd-run --unit alice-many hider-probe uids {SOCKET} 1000 1 41 hold")
         machine.wait_until_succeeds("journalctl -u alice-many -o cat | grep -q answered=")
         told = machine.succeed("journalctl -u alice-many -o cat | grep answered=").strip()
-        assert told == "answered=34 closed=0", told
+        assert told == "answered=39 closed=2", told
         descriptors = int(machine.succeed(f"ls /proc/{pid}/fd | wc -l"))
         print(f"the service holds {descriptors} descriptors, with its limit at " + machine.succeed(f"grep 'Max open files' /proc/{pid}/limits").strip())
         assert descriptors < 200
