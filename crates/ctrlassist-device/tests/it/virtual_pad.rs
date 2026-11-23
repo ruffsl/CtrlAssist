@@ -65,6 +65,32 @@ fn serve_while<T: Send + 'static>(
     (requests, outcome)
 }
 
+/// Serves the virtual pad, noting each request in `requests`, until
+/// `enough` says the requests so far are what was waited for, or gives
+/// up after a bounded number of waits so that a failing test ends.
+fn serve_until(
+    sink: &mut VirtualPad,
+    requests: &mut Vec<Request>,
+    enough: impl Fn(&[Request]) -> bool,
+) {
+    for _ in 0..400 {
+        if enough(requests) {
+            return;
+        }
+        let mut fds = [PollFd::new(&*sink, PollFlags::IN)];
+        let wait = rustix::event::Timespec {
+            tv_sec: 0,
+            tv_nsec: 10_000_000,
+        };
+        let _ = poll(&mut fds, Some(&wait));
+        sink.serve(|request| {
+            requests.push(request);
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
 pub(crate) fn game_opens(node: &Path) -> Device {
     // A game writes to the node to play effects.
     Device::open(node).unwrap()
@@ -254,24 +280,35 @@ fn a_rumble_level_is_one_endless_effect_updated_in_place_and_stopped_at_zero() {
     let node = motors.event_node().to_path_buf();
     let _ = std::process::Command::new("udevadm").arg("settle").status();
 
-    let player = move || {
-        let mut pad = writable(&node);
-        assert!(pad.can_rumble());
-        let first = Level {
-            strong: 0x8000,
-            weak: 0,
-        };
-        let second = Level {
-            strong: 0x2000,
-            weak: 0xffff,
-        };
-        pad.rumble(first).unwrap();
-        // The same level again asks the pad for nothing.
-        pad.rumble(first).unwrap();
-        pad.rumble(second).unwrap();
-        pad.rumble(Level::default()).unwrap();
+    // Opening the pad uploads its effect, which the stand-in answers.
+    let opening = move || writable(&node);
+    let (mut requests, mut pad) = serve_while(&mut motors, opening, |_| Ok(()));
+    assert!(pad.can_rumble());
+    // A thread of the pad's own sends it each level, and a newer level
+    // takes the place of one not yet sent: each is waited for here, so
+    // that each is sent.
+    let first = Level {
+        strong: 0x8000,
+        weak: 0,
     };
-    let (requests, ()) = serve_while(&mut motors, player, |_| Ok(()));
+    let second = Level {
+        strong: 0x2000,
+        weak: 0xffff,
+    };
+    pad.rumble(first).unwrap();
+    // The same level again asks the pad for nothing.
+    pad.rumble(first).unwrap();
+    serve_until(&mut motors, &mut requests, |requests| requests.len() >= 3);
+    pad.rumble(second).unwrap();
+    serve_until(&mut motors, &mut requests, |requests| requests.len() >= 5);
+    pad.rumble(Level::default()).unwrap();
+    serve_until(&mut motors, &mut requests, |requests| requests.len() >= 6);
+    // Dropped, the pad has its effect erased by that thread, which the
+    // dropping doesn't wait for.
+    drop(pad);
+    serve_until(&mut motors, &mut requests, |requests| {
+        requests.last() == Some(&Request::Erase { id: 0 })
+    });
     let endless = |strong, weak| Effect {
         strong,
         weak,
@@ -534,20 +571,24 @@ fn a_dualsense_on_bluetooth_is_sent_whole_output_reports() {
             && sent[2] == 0x10
             && sent[74..] == ctrlassist_test::playstation_crc32(0xa2, &sent[..74]).to_le_bytes()
     };
-    // The driver's own, from binding the pad: the shape to match. Its
-    // worker may write them after the pad's node is there, and the
-    // stand-in notes them as it reads them.
+    // The driver's own, from binding the pad: the shape to match. It
+    // writes one as it binds the pad, after the pad's node is there, and
+    // its worker then writes the lightbar's color and the player LEDs,
+    // in one report or two, as late as the machine lets it: the player
+    // LEDs are the last thing it sets. Those that came first can't be
+    // taken for all of them, or a late one is taken for ours.
+    let players = |sent: &Vec<u8>| sent.get(4).is_some_and(|flags| flags & 0x10 != 0);
     let mut theirs = real.outputs();
     for _ in 0..400 {
-        if !theirs.is_empty() {
+        if theirs.iter().any(players) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
         theirs = real.outputs();
     }
     assert!(
-        !theirs.is_empty(),
-        "the driver set the pad's lights as it bound it"
+        theirs.iter().any(players),
+        "the driver set the pad's player LEDs as it bound it: {theirs:?}"
     );
     assert!(theirs.iter().all(|sent| whole(sent)), "{theirs:?}");
 

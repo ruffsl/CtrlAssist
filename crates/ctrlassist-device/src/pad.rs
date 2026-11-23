@@ -1,14 +1,12 @@
 //! A pad, read from an open descriptor on its event node.
 
 use crate::dualsense::Kind;
-use crate::output::RawOutput;
+use crate::output::{Output, endless};
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
 use ctrlassist_core::{Level, PadState};
-use evdev::{
-    Device, EventType, FFEffect, FFEffectCode, FFEffectData, FFEffectKind, FFReplay, FFTrigger,
-};
+use evdev::{Device, EventType, FFEffectCode};
 use rustix::fs::fstat;
 
 use crate::database::Database;
@@ -172,7 +170,7 @@ const GAMEPAD_DRIVERS: [&str; 9] = [
     "steam-deck",
 ];
 
-/// Why a pad holds no effect of its own.
+/// Why a pad is sent no rumble.
 #[derive(Debug)]
 enum NoEffect {
     /// It has no motors the kernel drives, or is sent whole output
@@ -203,7 +201,9 @@ fn serial(device_number: u64) -> Option<String> {
 /// reports the pad's whole state after each report frame that changed it,
 /// not the events that made the change.
 pub struct Pad {
-    device: Device,
+    /// The pad's event node. Taken only as the pad is dropped, to go
+    /// with the thread that writes its effect.
+    device: Option<Device>,
     mapping: Mapping,
     identifiers: Identifiers,
     /// The state as of the last complete frame.
@@ -211,11 +211,10 @@ pub struct Pad {
     /// The state with the events of a frame still arriving applied.
     pending: PadState,
     can_rumble: bool,
-    /// The one effect kept on the pad, uploaded as it is opened, and the
-    /// level it is at, zero while it is stopped; or why there is none.
-    rumble: Result<(FFEffect, Level), NoEffect>,
-    /// The pad's raw node, for a pad that is sent whole output reports.
-    raw: Option<RawOutput>,
+    /// What writes to the pad, off the input thread: the one effect kept
+    /// on it, uploaded as it is opened, or its raw node, for a pad that
+    /// is sent whole output reports; or why nothing does.
+    output: Result<Output, NoEffect>,
 }
 
 impl std::fmt::Debug for Pad {
@@ -318,15 +317,17 @@ impl Pad {
             .is_some_and(|ff| ff.contains(FFEffectCode::FF_RUMBLE));
         // The one effect the pad will hold, uploaded here and not on the
         // input thread: an upload duplicates the descriptor, and a pad
-        // another program makes waits for that program to answer it.
-        let rumble = if !can_rumble {
+        // another program makes waits for that program to answer it. A
+        // thread of the pad's own updates it from then on, for the same
+        // reason.
+        let output = if !can_rumble {
             Err(NoEffect::NotWanted)
         } else if !writable {
             Err(NoEffect::Refused(rustix::io::Errno::BADF.raw_os_error()))
         } else {
             device
                 .upload_ff_effect(endless(Level::default()))
-                .map(|effect| (effect, Level::default()))
+                .and_then(Output::effect)
                 .map_err(|error| {
                     NoEffect::Refused(
                         error
@@ -336,14 +337,13 @@ impl Pad {
                 })
         };
         Ok(Self {
-            device,
+            device: Some(device),
             mapping,
             identifiers,
             state,
             pending: state,
             can_rumble,
-            rumble,
-            raw: None,
+            output,
         })
     }
 
@@ -363,7 +363,10 @@ impl Pad {
     ///
     /// Fails if the pad has gone, or another descriptor holds the grab.
     pub fn grab(&mut self) -> io::Result<()> {
-        self.device.grab()
+        match &mut self.device {
+            Some(device) => device.grab(),
+            None => Err(io::Error::from(rustix::io::Errno::NODEV)),
+        }
     }
 
     /// Whether this is one of the daemon's own virtual pads; see
@@ -392,8 +395,11 @@ impl Pad {
     /// [`PadError::Gone`] when the pad has gone; the state then stays as
     /// it last was, and what that should mean is the caller's decision.
     pub fn read(&mut self, mut frame: impl FnMut(&PadState)) -> Result<(), PadError> {
+        let Some(device) = &mut self.device else {
+            return Err(PadError::Gone);
+        };
         loop {
-            let events = match self.device.fetch_events() {
+            let events = match device.fetch_events() {
                 Ok(events) => events,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) => return Err(error.into()),
@@ -435,10 +441,9 @@ impl Pad {
     /// Fails, leaving the pad as it was, if the node isn't such a pad's,
     /// can't be read, or the thread can't be started.
     pub fn set_raw(&mut self, raw: OwnedFd) -> io::Result<()> {
-        let raw = RawOutput::open(raw)?;
-        // The kernel's own effect, if one runs, ends here.
-        self.rumble = Err(NoEffect::NotWanted);
-        self.raw = Some(raw);
+        // The kernel's own effect, if one runs, ends here, stopped and
+        // erased by the thread that wrote it.
+        self.output = Ok(Output::raw(raw)?);
         Ok(())
     }
 
@@ -453,7 +458,7 @@ impl Pad {
     /// Whether the pad is sent whole output reports.
     #[must_use]
     pub fn takes_output(&self) -> bool {
-        self.raw.is_some()
+        self.output.as_ref().is_ok_and(Output::is_raw)
     }
 
     /// Sends the pad an output report a game sent a virtual pad of its
@@ -466,25 +471,25 @@ impl Pad {
     /// Fails if the pad's raw node refused a write since that was last
     /// said.
     pub fn pass(&mut self, report: &[u8]) -> Result<(), PadError> {
-        match &mut self.raw {
-            Some(raw) => Ok(raw.pass(report)?),
-            None => Ok(()),
+        match &mut self.output {
+            Ok(output) => Ok(output.pass(report)?),
+            Err(_) => Ok(()),
         }
     }
 
-    /// Keeps back what the pad's raw node is told, until
+    /// Keeps back what the pad is told, until
     /// [`release_output`](Self::release_output): a level and a report
     /// told together are then written once.
     pub(crate) fn hold_output(&mut self) {
-        if let Some(raw) = &mut self.raw {
-            raw.hold();
+        if let Ok(output) = &mut self.output {
+            output.hold();
         }
     }
 
-    /// Has what was kept back from the pad's raw node written.
+    /// Has what was kept back from the pad written.
     pub(crate) fn release_output(&mut self) {
-        if let Some(raw) = &mut self.raw {
-            raw.release();
+        if let Ok(output) = &mut self.output {
+            output.release();
         }
     }
 
@@ -494,35 +499,21 @@ impl Pad {
     /// The pad holds one effect however many games are rumbling it,
     /// uploaded as the pad is opened and kept until it is dropped: a new
     /// level updates it in place, with no gap and no second slot, and a
-    /// level of zero stops it. Nothing here duplicates a descriptor.
+    /// level of zero stops it. A pad sent whole output reports is sent
+    /// the level in them instead. Either way the level is sent by a
+    /// thread of the pad's own, and this never waits for it: a newer
+    /// level takes the place of one not yet sent.
     ///
     /// # Errors
     ///
-    /// Fails if the pad has gone, the descriptor isn't open for writing,
-    /// or the pad refused the effect as it was opened; the motors then
-    /// stay as they were. A pad sent whole output reports is written
-    /// without waiting, and fails if its raw node refused a write since
-    /// that was last said.
+    /// Fails if the descriptor isn't open for writing or the pad refused
+    /// the effect as it was opened, the motors then staying as they were;
+    /// or if the pad refused a write since that was last said, as one
+    /// that has gone does.
     pub fn rumble(&mut self, level: Level) -> Result<(), PadError> {
-        if let Some(raw) = &mut self.raw {
-            return Ok(raw.rumble(level)?);
-        }
         let stop = level == Level::default();
-        match &mut self.rumble {
-            Ok((_, held)) if *held == level => {}
-            Ok((effect, held)) if stop => {
-                effect.stop()?;
-                *held = level;
-            }
-            Ok((effect, held)) => {
-                // Played again as well as updated: a memless driver, as a
-                // rumble-only pad's is, goes on at the new strength either
-                // way, and another program's uinput pad may act only on a
-                // play.
-                effect.update(endless(level))?;
-                effect.play(1)?;
-                *held = level;
-            }
+        match &mut self.output {
+            Ok(output) => output.rumble(level)?,
             Err(NoEffect::Refused(errno)) if !stop => {
                 return Err(io::Error::from_raw_os_error(*errno).into());
             }
@@ -532,25 +523,29 @@ impl Pad {
     }
 }
 
-/// A rumble at `level` with no length: it runs until it is changed or
-/// stopped. When each rumble ends is the router's business.
-fn endless(level: Level) -> FFEffectData {
-    FFEffectData {
-        direction: 0,
-        trigger: FFTrigger::default(),
-        replay: FFReplay {
-            length: 0,
-            delay: 0,
-        },
-        kind: FFEffectKind::Rumble {
-            strong_magnitude: level.strong,
-            weak_magnitude: level.weak,
-        },
+impl Drop for Pad {
+    fn drop(&mut self) {
+        // A pad whose effect is written goes to the thread that writes
+        // it, and is closed there after the effect is stopped and erased:
+        // closing the pad, and taking back a grab, wait on the pad's node
+        // while that thread's update or erase holds it, which for a pad
+        // another program makes lasts until that program answers. Whoever
+        // drops the pad waits for none of that.
+        if let (Ok(output), Some(device)) = (&mut self.output, self.device.take()) {
+            if output.is_raw() {
+                self.device = Some(device);
+            } else {
+                output.leave_after(Box::new(device));
+            }
+        }
     }
 }
 
 impl AsFd for Pad {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.device.as_fd()
+        self.device
+            .as_ref()
+            .expect("the pad's device is taken only as the pad is dropped")
+            .as_fd()
     }
 }

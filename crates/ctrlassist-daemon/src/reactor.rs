@@ -121,7 +121,8 @@ impl std::fmt::Debug for Reactor {
 }
 
 /// Starts a pad buzzing and keeps it buzzing for `millis`. The reply
-/// goes once the motors run, or with why they don't.
+/// goes once the pad has taken its effect and been told the level,
+/// which a thread of the pad's own then sends it, or with why it can't.
 async fn buzz(node: PathBuf, millis: u32, responder: Responder<pad::Identify>) {
     let started = tokio::task::spawn_blocking(move || {
         let file = OpenOptions::new().read(true).write(true).open(&node)?;
