@@ -109,6 +109,11 @@ impl Mailbox {
         self.sequence.store(at.wrapping_add(2), Ordering::Release);
     }
 
+    /// The sequence now: odd while a put is under way.
+    fn sequence(&self) -> u64 {
+        self.sequence.load(Ordering::Acquire)
+    }
+
     /// The words last put, whole, and the sequence they were put under.
     fn get(&self) -> (u64, [u64; WORDS]) {
         loop {
@@ -137,10 +142,9 @@ struct Shared {
     stop: AtomicBool,
     /// The error number of a write the pad refused, until it is said.
     refused: AtomicI32,
-    /// What was asked once and not yet written, as [`Once`]'s bits: put
-    /// after the settings it came with, and taken by the writer before
-    /// it looks in the mailbox, so it goes with those settings or later
-    /// ones, never earlier.
+    /// What was asked once and not yet taken, as [`Once`]'s bits: added
+    /// after the settings it came with are put, and taken by the writer
+    /// between two looks at the mailbox (see [`write_out`]).
     once: AtomicU32,
     /// Something handed over to go after the pad's last write: dropped
     /// by the writer as it ends, and never by whoever let the pad go.
@@ -310,9 +314,21 @@ impl Output {
     /// Starts a writer, named `name`, on `target`: a raw node of a pad of
     /// `kind`, or an effect.
     fn start<T: Target>(
+        target: T,
+        kind: Option<Kind>,
+        name: &str,
+    ) -> io::Result<(Self, JoinHandle<()>)> {
+        Self::start_with(target, kind, name, || {})
+    }
+
+    /// As [`start`](Self::start), with `between` called by the writer between
+    /// its look in the mailbox and its taking what was asked once: for a
+    /// test to hold it there.
+    fn start_with<T: Target>(
         mut target: T,
         kind: Option<Kind>,
         name: &str,
+        between: impl Fn() + Send + 'static,
     ) -> io::Result<(Self, JoinHandle<()>)> {
         let shared = Arc::new(Shared {
             mailbox: Mailbox::new(),
@@ -326,7 +342,7 @@ impl Output {
             std::thread::Builder::new()
                 .name(name.to_string())
                 .spawn(move || {
-                    write_out(&shared, &mut target);
+                    write_out(&shared, &mut target, &between);
                     // What the pad is left with, after whatever was left.
                     target.rest();
                     let after = shared
@@ -482,22 +498,42 @@ impl Drop for Output {
 /// The writer: sends what is wanted each time it changes, and sleeps
 /// between. Ends once the input thread's side is gone and what it left
 /// is sent.
-fn write_out<T: Target>(shared: &Shared, target: &mut T) {
+///
+/// What is asked once goes in the first report written whose settings
+/// came with it or after it, and never in a later one: no settings put
+/// after it are written before it. The input thread puts the settings,
+/// then adds what they ask once; this looks in the mailbox, then takes
+/// what was asked once, then looks at the mailbox's sequence again, and
+/// writes only if it hasn't moved. Taken by the swap, anything asked once
+/// was added after its own settings were put, and the swap's acquiring
+/// it makes that put's sequence seen by the look after: unmoved, it is
+/// the one read, so those settings or later ones are what is written
+/// with it. Moved, what was taken is kept and the mailbox looked in
+/// again. And settings put after something asked once were put after it
+/// was added, so a look that reads them is followed by a swap that sees
+/// it, if it isn't already kept: it goes with them.
+fn write_out<T: Target>(shared: &Shared, target: &mut T, between: &impl Fn()) {
     let (mut written, mut games) = (0u64, 0u32);
+    // What was asked once, taken and not yet written.
+    let mut once = Once::default();
     loop {
         // Before the mailbox is looked in, so that what was put before
         // the stop is written.
         let stopping = shared.stop.load(Ordering::Acquire);
-        // And what was asked once, which is put after the settings it
-        // came with: those are in the mailbox by now.
-        let once = Once::from_bits(shared.once.swap(0, Ordering::AcqRel));
         let (sequence, words) = shared.mailbox.get();
+        between();
+        once = once.then(Once::from_bits(shared.once.swap(0, Ordering::AcqRel)));
+        if shared.mailbox.sequence() != sequence {
+            // Put since the look: what was just taken may have come with
+            // what was put, which is to be read first.
+            continue;
+        }
         if sequence != written || !once.is_empty() {
             written = sequence;
             let wanted = Wanted::from_words(words);
             let game = (wanted.games != games).then_some(&wanted.game);
             games = wanted.games;
-            if let Err(error) = target.send(game, wanted.level, once) {
+            if let Err(error) = target.send(game, wanted.level, std::mem::take(&mut once)) {
                 let errno = error
                     .raw_os_error()
                     .unwrap_or(rustix::io::Errno::IO.raw_os_error());
@@ -760,6 +796,55 @@ mod tests {
         drop(output);
         open.send(()).unwrap();
         writer.join().unwrap();
+    }
+
+    /// What is asked once is never written after settings that followed
+    /// it. The writer is held between its two looks, at the mailbox and
+    /// at what was asked once, while the lights are let go and then a
+    /// color set: the first report with the color lets the lights go too,
+    /// and nothing after lets them go again.
+    #[test]
+    fn what_is_asked_once_never_follows_the_settings_after_it() {
+        let (written, reports) = mpsc::channel();
+        let recorder = Recorder {
+            written,
+            gate: None,
+            refuse: None,
+        };
+        let (arrived, held) = mpsc::channel();
+        let (go, gate) = mpsc::channel::<()>();
+        let gate = Mutex::new(gate);
+        let armed = AtomicBool::new(true);
+        let between = move || {
+            if armed.swap(false, Ordering::SeqCst) {
+                arrived.send(()).unwrap();
+                gate.lock().unwrap().recv().unwrap();
+            }
+        };
+        let target = RawNode::new(recorder, USB, None);
+        let (mut output, writer) =
+            Output::start_with(target, Some(USB), "pad-output", between).unwrap();
+        // The writer's first look, held between its two reads.
+        held.recv().unwrap();
+        let mut release = [0u8; GAME_SIZE];
+        (release[0], release[2]) = (0x02, 0x08);
+        output.pass(&release).unwrap();
+        output.pass(&lights(0xbb)).unwrap();
+        go.send(()).unwrap();
+        drop(output);
+        writer.join().unwrap();
+        let written: Vec<Vec<u8>> = reports.try_iter().collect();
+        let lets_go = |report: &Vec<u8>| report[2] & 0x08 != 0;
+        let colored = written
+            .iter()
+            .position(|report| report[45] == 0xbb)
+            .expect("the color is written");
+        assert!(lets_go(&written[colored]), "{written:?}");
+        assert_eq!(
+            written.iter().filter(|report| lets_go(report)).count(),
+            1,
+            "{written:?}"
+        );
     }
 
     /// A write the pad refuses is said at the next thing it is told.
