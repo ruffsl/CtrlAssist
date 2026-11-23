@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use ctrlassist::{DaemonClient, StateWatcher, StateWatcherConfig};
+use ctrlassist::{DaemonClient, StateEvent, StateWatcher, StateWatcherConfig};
 use ctrlassist_protocol::endpoint::tray;
 use ctrlassist_protocol::error::{ErrorCode, WireError};
 pub use ctrlassist_protocol::rpc::NotificationSettings;
@@ -98,6 +98,23 @@ impl Notifier {
             icon: "input-gaming",
         });
     }
+}
+
+/// `text` as a notification server that reads a body as markup shows it
+/// as written: a pad's name or a daemon's reason with `&` or `<` in it
+/// is otherwise taken for markup, and mangled or dropped.
+#[must_use]
+pub(crate) fn as_markup(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 /// `tray.toml`: the switches and the profile last used, under a schema
@@ -393,13 +410,13 @@ pub async fn serve_while_daemon(
     quiet.fallback_poll_interval = Duration::ZERO;
     let mut watcher = StateWatcher::new(&daemon, None, quiet);
     let mut serving: Option<tokio::task::JoinHandle<()>> = None;
+    let mut event = None;
     loop {
         let wanted = daemon.is_available();
-        // One that ended by itself is done with, whatever the daemon.
         let ended = serving
             .as_ref()
             .is_some_and(tokio::task::JoinHandle::is_finished);
-        if (ended || !wanted)
+        if link_goes(event.as_ref(), wanted, ended)
             && let Some(served) = serving.take()
         {
             // Its session goes with it, and the token with that.
@@ -408,10 +425,25 @@ pub async fn serve_while_daemon(
         if wanted && serving.is_none() {
             serving = open_and_serve(&socket, &config, &notifier).await;
         }
-        if watcher.next().await.is_none() {
+        event = watcher.next().await;
+        if event.is_none() {
             return;
         }
     }
+}
+
+/// Whether the link the settings are served on goes, woken by `event`
+/// with the daemon `available` or not: when the daemon isn't there, and
+/// when it went, though another may be there by now, since the link was
+/// to the one that went. Events lost on the way may have been its going.
+/// A link whose task `ended` by itself is done with, whatever the daemon.
+fn link_goes(event: Option<&StateEvent>, available: bool, ended: bool) -> bool {
+    ended
+        || !available
+        || matches!(
+            event,
+            Some(StateEvent::DaemonDisappeared | StateEvent::FallbackPoll)
+        )
 }
 
 /// Opens a link in client mode to the daemon on `socket` and serves the
@@ -481,6 +513,35 @@ mod tests {
         // A file from before the profile was kept has none.
         std::fs::write(&path, "schema = 1\nsetup_started = false\n").unwrap();
         assert_eq!(load_target(&path), None);
+    }
+
+    /// A daemon that went and came back between two looks is served
+    /// through a new link: the old one was to the daemon that went.
+    #[test]
+    fn the_link_goes_with_the_daemon_it_was_to() {
+        let gone = Some(&StateEvent::DaemonDisappeared);
+        assert!(link_goes(gone, true, false), "another is there already");
+        assert!(link_goes(gone, false, false));
+        assert!(link_goes(None, false, false));
+        assert!(link_goes(Some(&StateEvent::FallbackPoll), true, false));
+        assert!(link_goes(Some(&StateEvent::DaemonAppeared), true, true));
+        // The daemon it is to, still there.
+        assert!(!link_goes(Some(&StateEvent::DaemonAppeared), true, false));
+        assert!(!link_goes(
+            Some(&StateEvent::DaemonStateChanged),
+            true,
+            false
+        ));
+        assert!(!link_goes(None, true, false));
+    }
+
+    #[test]
+    fn a_body_read_as_markup_shows_what_was_written() {
+        assert_eq!(
+            as_markup("Mad Catz <Pro> & 8BitDo disconnected"),
+            "Mad Catz &lt;Pro&gt; &amp; 8BitDo disconnected"
+        );
+        assert_eq!(as_markup("plain"), "plain");
     }
 
     /// A hand edit that isn't settings is left for a reload to refuse

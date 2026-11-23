@@ -16,17 +16,49 @@ use crate::notify::{self, NotificationSettings, Notifier};
 use crate::tray::PadTray;
 use crate::{Handle, act, follow};
 
+/// Whether the notification server on `bus` reads a body as markup, as
+/// it says it does. Asked for each toast, since the server can be
+/// replaced by another while the tray runs.
+async fn body_markup(bus: &zbus::Connection) -> bool {
+    let reply = bus
+        .call_method(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            Some("org.freedesktop.Notifications"),
+            "GetCapabilities",
+            &(),
+        )
+        .await;
+    reply
+        .ok()
+        .and_then(|reply| reply.body().deserialize::<Vec<String>>().ok())
+        .is_some_and(|capabilities| capabilities.iter().any(|said| said == "body-markup"))
+}
+
 /// Shows each toast on the desktop, through the session bus's
 /// notification daemon. One at a time: a burst while no notification
 /// daemon answers is a row of short failures, not as many stalls.
 fn show_toasts(initial: NotificationSettings) -> Notifier {
     let (notifier, mut toasts) = Notifier::capturing(initial);
     tokio::spawn(async move {
+        let mut bus = None;
         while let Some(toast) = toasts.recv().await {
+            if bus.is_none() {
+                bus = zbus::Connection::session().await.ok();
+            }
+            let markup = match &bus {
+                Some(bus) => body_markup(bus).await,
+                None => false,
+            };
+            let body = if markup {
+                notify::as_markup(&toast.body)
+            } else {
+                toast.body.clone()
+            };
             let shown = Notification::new()
                 .appname("CtrlAssist")
                 .summary(&toast.summary)
-                .body(&toast.body)
+                .body(&body)
                 .icon(toast.icon)
                 .show_async()
                 .await;
