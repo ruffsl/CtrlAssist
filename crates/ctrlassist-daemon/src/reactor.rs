@@ -187,14 +187,11 @@ impl Reactor {
     }
 
     /// Says how pads are hidden now, if that isn't what was last said:
-    /// the hiding service may be found after the daemon started.
+    /// the hiding service may be found after the daemon started, and its
+    /// connection may break. What was found is read as it stands, never
+    /// waiting on a request to the service under way.
     pub(crate) async fn publish_hiding(&mut self) {
-        let hiding = Arc::clone(&self.hiding);
-        let found =
-            tokio::task::spawn_blocking(move || (hiding.mechanism(), hiding.service_release()));
-        let Ok((now, release)) = found.await else {
-            return;
-        };
+        let (now, release) = (self.hiding.mechanism(), self.hiding.service_release());
         let Some(state) = self
             .state
             .clone()
