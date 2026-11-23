@@ -1,0 +1,13 @@
+# Over Bluetooth, a pad's last report may be queued and not sent
+
+A pad given its raw node (a DualSense, a DualShock 4) has a writer thread of its own, whose last report leaves the pad at rest: its motors stopped, a DualSense's trigger effects off, and the lights its driver keeps. Before the hiding service shows a hidden pad again, which re-binds its driver, the daemon waits for that report to be written (see [the control side](../architecture.md#the-control-side)), since a re-bind sets the lights and stops the motors itself but never touches the triggers. On USB, a write to the raw node waits until the pad has taken the report, so written is at rest.
+
+Over Bluetooth it is suspected not to be. Through the kernel's own Bluetooth HID transport, HIDP, a write to the raw node is queued for the session's thread to send, and returns without waiting for it; and unbinding the driver, as the re-bind does, stops the transport, which may empty that queue. If so, the rest report can be dropped unsent, and a trigger effect a game set stays on a Bluetooth DualSense after its setup stops. A pad BlueZ presents through uhid hands the write to BlueZ instead, which sends it on its own; whether a re-bind can lose it there is not known either.
+
+**What is known.** Nothing observed. That HIDP's output path queues (`hidp_output_report` puts the report on the session's interrupt queue and wakes its thread) and that `hidp_stop` purges the session's queues is from a reviewer's memory of the kernel's source, not read for this. Nor is it known whether the re-bind reaches `hidp_stop` before the session's thread has sent what was queued: a race, which load could tip either way.
+
+**Risk.** Low. It takes a DualSense over Bluetooth given its raw node, a game that sets a trigger effect, and a setup stopped with the pad hidden; the trigger then stays stiff or vibrating until something else writes to the pad, or the pad is turned off.
+
+**Mitigation.** None yet.
+
+**Closes when.** The hardware check settles it. Pair a DualSense over Bluetooth; through a setup, have a game or a test tool set a trigger effect; stop the setup with the pad hidden; feel the trigger. Repeat with the machine under load, so the session's thread is slow to send, and through both HIDP and uhid where BlueZ can be set to either. If the effect is never felt to stay, the concern closes as observed. If it stays, the candidate fix is to send the rest report over the control channel with the raw node's `HIDIOCSOUTPUT`, which for HIDP sends a SET_REPORT and waits for the pad's handshake; whether a DualSense takes its Bluetooth output report, 0x31, that way is to be tried.

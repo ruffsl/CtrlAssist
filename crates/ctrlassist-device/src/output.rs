@@ -200,7 +200,9 @@ pub enum Writes {
     /// DualShock 4 given its raw node. Its last report turns off what a
     /// game set beyond rumble, a DualSense's trigger effects among them,
     /// which a re-bind of the pad's driver doesn't: so this is the write
-    /// that someone about to have the driver re-bound waits for.
+    /// that someone about to have the driver re-bound waits for. On USB,
+    /// that write done is the pad at rest; over Bluetooth, only the rest
+    /// on its way (see [`Rested`]).
     Reports,
     /// Levels to the pad's one kernel effect. Its last act erases the
     /// effect, which the kernel stops first.
@@ -216,8 +218,16 @@ pub enum Writes {
 /// - For [`Writes::Reports`], the writer has written what was left and
 ///   then the report that leaves the pad at rest, each written or refused
 ///   as by a pad that has gone, and has closed the raw node: nothing is
-///   written to the pad after. Each write to a pad on USB can take the
-///   kernel's five seconds, for a pad that stalls.
+///   written to the pad after. Written means what the kernel's write
+///   means on the pad's transport. On USB the write waits until the pad
+///   has taken the report, up to the kernel's five seconds for a pad
+///   that stalls, so the pad is at rest. Over Bluetooth it doesn't wait:
+///   through the kernel's own Bluetooth HID the report is queued for the
+///   session's thread to send, and through BlueZ's uhid it is handed to
+///   BlueZ, so the pad is at rest once that is sent. A re-bind of the
+///   driver straight after may drop what the kernel has queued, which is
+///   suspected and not yet seen (the project's concern,
+///   `docs/concerns/rest-over-bluetooth.md`).
 /// - For [`Writes::Effect`], the writer has sent the level left and
 ///   erased the effect. For a pad another program makes through uinput,
 ///   which has stopped answering, the update under way and the erase can
@@ -640,10 +650,14 @@ impl Output {
         self.writer.unpark();
     }
 
+    /// Says a write the pad refused, or a writer that has broken off.
+    /// Called on the input thread, so neither error allocates: an error
+    /// number and a bare kind are held in place, where a message would be
+    /// boxed, at every call once the writer has broken off.
     fn refusal(&self) -> io::Result<()> {
         match self.shared.refused.swap(0, Ordering::Relaxed) {
             0 if self.shared.broken.load(Ordering::Acquire) => {
-                Err(io::Error::other("the thread writing to the pad failed"))
+                Err(io::Error::from(io::ErrorKind::Other))
             }
             0 => Ok(()),
             errno => Err(io::Error::from_raw_os_error(errno)),
@@ -665,23 +679,40 @@ impl Drop for Output {
 /// between. Ends once the input thread's side is gone and what it left
 /// is sent.
 ///
-/// What is asked once goes in the first report written whose settings
-/// came with it or after it, and never in a later one: no settings put
-/// after it are written before it. The input thread puts the settings,
-/// then adds what they ask once; this looks in the mailbox, then takes
-/// what was asked once, then looks at the mailbox's sequence again, and
-/// writes only if it hasn't moved. Taken by the swap, anything asked once
-/// was added after its own settings were put, and the swap's acquiring
-/// it makes that put's sequence seen by the look after: unmoved, it is
-/// the one read, so those settings or later ones are what is written
-/// with it. Moved, what was taken is kept and the mailbox looked in
-/// again. And settings put after something asked once were put after it
-/// was added, so a look that reads them is followed by a swap that sees
-/// it, if it isn't already kept: it goes with them.
+/// What is asked once is written with its own settings or later ones,
+/// possibly in the report just after its own; never after settings put
+/// after it. The input thread puts the settings, then adds what they ask
+/// once; this looks in the mailbox, then takes what was asked once, then
+/// looks at the mailbox's sequence again, and writes only if it hasn't
+/// moved. Taken by the swap, anything asked once was added after its own
+/// settings were put, and the swap's acquiring it makes that put's
+/// sequence seen by the look after: unmoved, it is the one read, so those
+/// settings or later ones are what is written with it. Moved, what was
+/// taken is kept and the mailbox looked in again. Not yet added as its
+/// own settings were read, it is taken at the next look, and goes in the
+/// report after theirs. And settings put after something asked once were
+/// put after it was added, so a look that reads them is followed by a
+/// swap that sees it, if it isn't already kept: it goes with them.
+///
+/// A write the pad refuses is said to the input thread, and isn't tried
+/// again by itself: a pad that refuses one write may refuse the next at
+/// once, for as long as it likes. What it carried goes with the next
+/// write, which the next change brings: what it asked once is kept for
+/// that write, and the games' settings are taken as not written, so that
+/// write carries them again. So a pad that stalls for a moment, as one
+/// on USB that times out, loses no setting until a game next changes it.
+/// A pad that has gone, whose node answers every write so, is kept
+/// nothing: nothing written there again will reach it.
 fn write_out<T: Target>(shared: &Shared, target: &mut T, between: &impl Fn()) {
+    // The sequence last written or refused, and the count of the game
+    // reports whose settings the pad took last.
     let (mut written, mut games) = (0u64, 0u32);
     // What was asked once, taken and not yet written.
     let mut once = Once::default();
+    // What a refused write asked once: carried by the next write, and no
+    // reason for one by itself.
+    let mut unsent = Once::default();
+    let gone = rustix::io::Errno::NODEV.raw_os_error();
     loop {
         // Before the mailbox is looked in, so that what was put before
         // the stop is written.
@@ -698,12 +729,20 @@ fn write_out<T: Target>(shared: &Shared, target: &mut T, between: &impl Fn()) {
             written = sequence;
             let wanted = Wanted::from_words(words);
             let game = (wanted.games != games).then_some(&wanted.game);
-            games = wanted.games;
-            if let Err(error) = target.send(game, wanted.level, std::mem::take(&mut once)) {
-                let errno = error
-                    .raw_os_error()
-                    .unwrap_or(rustix::io::Errno::IO.raw_os_error());
-                shared.refused.store(errno, Ordering::Relaxed);
+            let asked = std::mem::take(&mut unsent).then(std::mem::take(&mut once));
+            match target.send(game, wanted.level, asked) {
+                Ok(()) => games = wanted.games,
+                Err(error) => {
+                    let errno = error
+                        .raw_os_error()
+                        .unwrap_or(rustix::io::Errno::IO.raw_os_error());
+                    shared.refused.store(errno, Ordering::Relaxed);
+                    if errno == gone {
+                        games = wanted.games;
+                    } else {
+                        unsent = asked;
+                    }
+                }
             }
             continue;
         }
@@ -738,22 +777,25 @@ mod tests {
     }
 
     /// Stands in for a raw node: says each report written, and if gated,
-    /// doesn't finish the write until the test says so.
+    /// doesn't finish the write until the test says so, and how: taken,
+    /// as zero, or refused with that error number. Ungated, it refuses
+    /// every write with `refuse`, if given.
     struct Recorder {
         written: mpsc::Sender<Vec<u8>>,
-        gate: Option<mpsc::Receiver<()>>,
+        gate: Option<mpsc::Receiver<i32>>,
         refuse: Option<i32>,
     }
 
     impl Write for Recorder {
         fn write(&mut self, report: &[u8]) -> io::Result<usize> {
             self.written.send(report.to_vec()).unwrap();
-            if let Some(gate) = &self.gate {
-                gate.recv().unwrap();
-            }
-            match self.refuse {
-                Some(errno) => Err(io::Error::from_raw_os_error(errno)),
-                None => Ok(report.len()),
+            let errno = match &self.gate {
+                Some(gate) => gate.recv().unwrap(),
+                None => self.refuse.unwrap_or(0),
+            };
+            match errno {
+                0 => Ok(report.len()),
+                errno => Err(io::Error::from_raw_os_error(errno)),
             }
         }
 
@@ -769,7 +811,7 @@ mod tests {
         Output,
         JoinHandle<()>,
         mpsc::Receiver<Vec<u8>>,
-        mpsc::Sender<()>,
+        mpsc::Sender<i32>,
     ) {
         let (written, reports) = mpsc::channel();
         let (open, gate) = mpsc::channel();
@@ -914,12 +956,12 @@ mod tests {
         output.pass(&lights(0xaa)).unwrap();
         output.pass(&lights(0xbb)).unwrap();
         output.rumble(level(0x2000, 0)).unwrap();
-        open.send(()).unwrap();
+        open.send(0).unwrap();
         let second = reports.recv().unwrap();
         assert_eq!((second[4], second[45]), (0x20, 0xbb), "{second:?}");
         drop(output);
-        open.send(()).unwrap();
-        open.send(()).unwrap();
+        open.send(0).unwrap();
+        open.send(0).unwrap();
         writer.join().unwrap();
         let rest: Vec<Vec<u8>> = reports.try_iter().collect();
         assert!(
@@ -950,11 +992,11 @@ mod tests {
         let mut trigger = release;
         (trigger[1], trigger[2], trigger[11]) = (0x04, 0, 0x01);
         output.pass(&trigger).unwrap();
-        open.send(()).unwrap();
+        open.send(0).unwrap();
         let second = reports.recv().unwrap();
         assert_eq!((second[1], second[2], second[11]), (0x04, 0x08, 0x01));
         assert_eq!((second[39] & 0x02, second[42]), (0x02, 0x02), "both");
-        open.send(()).unwrap();
+        open.send(0).unwrap();
         // The same settings again are nothing new.
         output.pass(&trigger).unwrap();
         output.rumble(level(0x1000, 0)).unwrap();
@@ -964,9 +1006,9 @@ mod tests {
             (0, 0x10),
             "the level alone: {third:?}"
         );
-        open.send(()).unwrap();
+        open.send(0).unwrap();
         drop(output);
-        open.send(()).unwrap();
+        open.send(0).unwrap();
         writer.join().unwrap();
     }
 
@@ -1040,13 +1082,13 @@ mod tests {
             })
         };
         assert!(!rested.is_done());
-        open.send(()).unwrap();
+        open.send(0).unwrap();
         // The rest, held as it is written.
         let rest = reports.recv().unwrap();
         assert!(is_rest(&rest), "{rest:?}");
         assert!(!rested.is_done(), "not until the rest is written");
         assert!(waited.try_recv().is_err());
-        open.send(()).unwrap();
+        open.send(0).unwrap();
         waited.recv().unwrap();
         assert!(rested.is_done());
         waiting.join().unwrap();
@@ -1077,6 +1119,65 @@ mod tests {
         let refused = output.rumble(level(0x2000, 0)).unwrap_err();
         assert_eq!(refused.raw_os_error(), Some(enodev));
         drop(output);
+        writer.join().unwrap();
+    }
+
+    /// Waits until the writer has noted a refusal, just after the write
+    /// it refused.
+    fn noted(output: &Output) {
+        while output.shared.refused.load(Ordering::Relaxed) == 0 {
+            std::thread::yield_now();
+        }
+    }
+
+    /// A write refused for a moment, as by a pad on USB that times out,
+    /// is tried again by nothing but the next change, and loses nothing:
+    /// that write carries what the refused one asked once, and the games'
+    /// settings again. One refused by a pad that has gone is kept nothing.
+    #[test]
+    fn a_write_refused_for_a_moment_loses_nothing_and_one_gone_is_kept_nothing() {
+        let timed_out = rustix::io::Errno::TIMEDOUT.raw_os_error();
+        let enodev = rustix::io::Errno::NODEV.raw_os_error();
+        let (mut output, writer, reports, open) = recorded(true, None);
+        let lets_go = |report: &[u8]| report[2] & 0x08 != 0;
+        // The lights set, and the LEDs given back first.
+        let mut lit = lights(0x11);
+        lit[2] |= 0x08;
+        output.pass(&lit).unwrap();
+        let first = reports.recv().unwrap();
+        assert!(lets_go(&first) && first[45] == 0x11, "{first:?}");
+        open.send(timed_out).unwrap();
+        noted(&output);
+        // Not tried again: the next write is the next change's.
+        let refused = output.rumble(level(0x1000, 0)).unwrap_err();
+        assert_eq!(refused.raw_os_error(), Some(timed_out));
+        let second = reports.recv().unwrap();
+        assert_eq!(second[4], 0x10, "the change's, not one tried again");
+        assert!(lets_go(&second) && second[45] == 0x11, "{second:?}");
+        open.send(0).unwrap();
+        // Taken, nothing of it is carried again.
+        output.rumble(level(0x2000, 0)).unwrap();
+        let third = reports.recv().unwrap();
+        assert!(!lets_go(&third) && third[45] == 0, "{third:?}");
+        open.send(0).unwrap();
+
+        // The pad has gone.
+        let mut lit = lights(0x22);
+        lit[2] |= 0x08;
+        output.pass(&lit).unwrap();
+        let fourth = reports.recv().unwrap();
+        assert!(lets_go(&fourth) && fourth[45] == 0x22, "{fourth:?}");
+        open.send(enodev).unwrap();
+        noted(&output);
+        let refused = output.rumble(level(0x3000, 0)).unwrap_err();
+        assert_eq!(refused.raw_os_error(), Some(enodev));
+        let fifth = reports.recv().unwrap();
+        assert!(!lets_go(&fifth) && fifth[45] == 0, "{fifth:?}");
+        open.send(enodev).unwrap();
+        drop(output);
+        // The rest.
+        assert!(is_rest(&reports.recv().unwrap()));
+        open.send(enodev).unwrap();
         writer.join().unwrap();
     }
 
@@ -1164,6 +1265,9 @@ mod tests {
         for _ in 0..2 {
             let refused = output.rumble(level(0x2000, 0)).unwrap_err();
             assert!(refused.raw_os_error().is_none(), "{refused}");
+            assert_eq!(refused.kind(), io::ErrorKind::Other);
+            // Made on the input thread: nothing boxed, as a message is.
+            assert!(refused.get_ref().is_none(), "{refused:?}");
             output.rumble(level(0x1000, 0)).unwrap_err();
         }
         output.leave_after(Box::new(LeftOn(told_by)));

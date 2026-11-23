@@ -955,8 +955,8 @@ pub struct InputThread {
 struct Owed {
     waiting: AtomicUsize,
     short: AtomicBool,
-    /// Set once `deliver` has panicked: the control side hears nothing
-    /// more, and is sent nothing more.
+    /// Set once `deliver` has panicked, just before it is dropped: the
+    /// control side hears nothing more, and is sent nothing more.
     unheard: AtomicBool,
 }
 
@@ -967,24 +967,36 @@ struct Owed {
 /// takes is dropped in `deliver`, off the input thread. Ends when the
 /// input thread does.
 ///
-/// A `deliver` that panics has its panic caught here, and is called no
-/// more: whatever it was handed went as it unwound, and every report
-/// after it, having nowhere to go, is dropped here, still counted as
-/// read, so the input thread neither waits for room that never comes
-/// nor drops anything itself. Its commands are refused from then on, as
-/// a thread's that has stopped; its setups run on until it is dropped.
+/// A `deliver` that panics has its panic caught here, and is dropped at
+/// once, with whatever it holds: the control side's end of its queue
+/// among them, so the control side hears the thread as ended, as it
+/// would one that stopped by itself, and doesn't wait on reports that
+/// will never come. Whatever it was handed went as it unwound, and
+/// every report after it, having nowhere to go, is dropped here, still
+/// counted as read, so the input thread neither waits for room that
+/// never comes nor drops anything itself. Its commands are refused from
+/// then on, as a thread's that has stopped; its setups run on until it
+/// is dropped.
 fn forward(
     queued: queue::Receiver<Report>,
     owed: &Owed,
     wake: &OwnedFd,
-    mut deliver: impl FnMut(Report),
+    deliver: impl FnMut(Report),
 ) {
+    let mut deliver = Some(deliver);
     while let Some(report) = queued.recv() {
         owed.read(wake);
-        if owed.unheard.load(Ordering::Relaxed) {
+        let Some(handing) = deliver.as_mut() else {
             drop(report);
-        } else if catch_unwind(AssertUnwindSafe(|| deliver(report))).is_err() {
+            continue;
+        };
+        if catch_unwind(AssertUnwindSafe(|| handing(report))).is_err() {
+            // Refused before the control side can hear the queue close.
             owed.unheard.store(true, Ordering::Release);
+            let broken = deliver.take();
+            // A drop that panics too leaves it dropped as far as it got,
+            // and this thread still passing reports on.
+            let _ = catch_unwind(AssertUnwindSafe(move || drop(broken)));
         }
     }
 }
@@ -1027,7 +1039,8 @@ impl InputThread {
     /// takes no command until the reports that command may cause fit.
     /// `deliver` runs on that thread, and goes with it once the input
     /// thread has stopped and what it handed back on its way out has
-    /// been delivered.
+    /// been delivered; or at once, should it panic, so that a queue it
+    /// fills closes and whoever reads it hears the thread as ended.
     ///
     /// # Errors
     ///
@@ -1729,41 +1742,69 @@ mod tests {
         assert!(matches!(read.last(), Some(Report::Stopped(FIRST, _))));
     }
 
-    /// A `deliver` that panics is called no more: the reports after it
-    /// are dropped where it ran, still counted as read so that the input
-    /// thread never waits for room that can't come, and the thread that
-    /// passes them on ends with the input thread, as before. Commands are
-    /// refused from then on.
+    /// Says when it is dropped.
+    struct Dropped(Arc<AtomicBool>);
+
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A `deliver` that panics is dropped at once, with what it holds,
+    /// as the control side's end of its queue, which then closes: not
+    /// kept until the input thread ends. The reports after it are dropped
+    /// where it ran, still counted as read so that the input thread never
+    /// waits for room that can't come, and the thread that passes them on
+    /// ends with the input thread, as before. Commands are refused from
+    /// then on.
     #[test]
-    fn a_deliver_that_panics_leaves_nothing_owed_and_commands_refused() {
+    fn a_deliver_that_panics_is_dropped_leaving_nothing_owed_and_commands_refused() {
         let (unbound, queued) = queue::queue(REPORTS);
         let owed = Arc::new(Owed::default());
-        let wake = Arc::new(eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK).unwrap());
-        let called = Arc::new(AtomicUsize::new(0));
+        // Waited on below: written as a report is read while the input
+        // thread is short of room.
+        let wake = Arc::new(eventfd(0, EventfdFlags::CLOEXEC).unwrap());
+        let (called_by, called) = channel();
+        let dropped = Arc::new(AtomicBool::new(false));
         let forwarder = {
-            let (owed, wake, called) = (Arc::clone(&owed), Arc::clone(&wake), Arc::clone(&called));
+            let (owed, wake) = (Arc::clone(&owed), Arc::clone(&wake));
+            let held = Dropped(Arc::clone(&dropped));
             std::thread::spawn(move || {
-                forward(queued, &owed, &wake, |_| {
-                    called.fetch_add(1, Ordering::SeqCst);
+                forward(queued, &owed, &wake, move |_| {
+                    let _ = &held;
+                    called_by.send(()).unwrap();
                     panic!("a deliver that panics");
                 });
             })
         };
         let outbox = unbound.to(forwarder.thread().clone());
-        for index in 0..3 {
+        let report = |index| Report::Selected {
+            setup: FIRST,
+            node: NodeId(0),
+            index,
+        };
+        owed.waiting.fetch_add(1, Ordering::SeqCst);
+        assert!(outbox.send(report(0)).is_ok());
+        called.recv().unwrap();
+        // The next report read wakes this thread, and is read only once
+        // the first's handling, the drop included, is over.
+        owed.short.store(true, Ordering::SeqCst);
+        for index in 1..3 {
             owed.waiting.fetch_add(1, Ordering::SeqCst);
-            let report = Report::Selected {
-                setup: FIRST,
-                node: NodeId(0),
-                index,
-            };
-            assert!(outbox.send(report).is_ok());
+            assert!(outbox.send(report(index)).is_ok());
         }
+        let mut count = [0u8; 8];
+        rustix::io::read(&*wake, &mut count).unwrap();
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "dropped at the panic, while the queue is still open"
+        );
+        assert!(owed.unheard.load(Ordering::SeqCst));
         drop(outbox);
         assert!(forwarder.join().is_ok(), "the panic was caught");
-        assert_eq!(called.load(Ordering::SeqCst), 1, "called no more");
+        assert!(called.recv().is_err(), "called no more");
         assert_eq!(owed.waiting.load(Ordering::SeqCst), 0, "nothing owed");
-        assert!(owed.unheard.load(Ordering::SeqCst));
 
         let thread = InputThread::spawn_with(|_| {}).unwrap();
         thread.owed.unheard.store(true, Ordering::SeqCst);
