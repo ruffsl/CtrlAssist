@@ -37,40 +37,22 @@ pub enum Asked {
     Closed,
 }
 
-/// What a hide the stand-in [holds](FakeHider::holding) comes to once
-/// it is cancelled, as the real service's would, by how far it had got.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Cancelled {
-    /// The cancel came before the pad was re-bound: nothing was done.
-    Untouched,
-    /// The cancel came as the pad was being re-bound: the hide ends, and
-    /// a second re-bind shows the pad again. Two goings and comings back.
-    Undone,
-    /// The hide was done before the cancel was read, which then shows
-    /// the pad again. Two goings and comings back, one for each reply.
-    DoneFirst,
-}
-
 /// How a [scripted](FakeHider::scripted) stand-in answers, beside
-/// speaking the real service's protocol and counting as it does. It hides
-/// whatever descriptor a hide carries, needing no pad, and hands that
-/// descriptor back as the pad's node. What it holds, it holds until it is
-/// [let go](FakeHider::let_go).
+/// speaking the real service's protocol. It hides whatever descriptor a
+/// hide carries, needing no pad, and hands that descriptor back as the
+/// pad's node. What it holds, it holds until it is
+/// [let go](FakeHider::let_go), whether its client hangs up meanwhile or
+/// not; a connection it is holding a request on closes only after that,
+/// as the real service closes one only once it has shown again what was
+/// hidden through it.
 #[derive(Clone, Debug, Default)]
 pub struct Script {
     /// How many of the first requests it is asked, on any connection, it
-    /// refuses as from a caller not in front of a seat, with no count, as
-    /// a service refuses at its gate.
+    /// refuses as from a caller not in front of a seat, as the real
+    /// service refuses at its gate.
     pub refuse: usize,
-    /// Holds each hide until it is cancelled, and then answers it and the
-    /// cancel as the real service would have, by how far it had got. None
-    /// answers each hide at once, the pad hidden.
-    pub hold_hides: Option<Cancelled>,
-    /// How many re-binds a hide answered at once says it made.
-    pub hide_rebinds: u8,
-    /// How many re-binds a restore, or a cancel that shows a pad again,
-    /// says it made.
-    pub restore_rebinds: u8,
+    /// Holds each hide, and answers it with the pad hidden.
+    pub hold_hides: bool,
     /// How many of the first restores it holds.
     pub hold_restores: usize,
     /// How many of the first reopens and openings of a hidden pad's raw
@@ -144,10 +126,9 @@ impl Hold {
 /// A hiding service that speaks the real one's protocol on a socket of
 /// its own and hides nothing: it hands back the pad's node opened for
 /// reading and writing, as the real service does, and notes what it was
-/// asked. It counts, as the real service does: never a re-bind, since
-/// it makes none. The real service runs as its own user with the rule
-/// shipped with it installed, which a test can't arrange; the virtual
-/// machine check runs it.
+/// asked. It re-binds nothing, and its replies say so. The real service
+/// runs as its own user with the rule shipped with it installed, which a
+/// test can't arrange; the virtual machine check runs it.
 pub struct FakeHider {
     path: PathBuf,
     asked: Arc<Mutex<Vec<Asked>>>,
@@ -212,15 +193,6 @@ fn done(token: Token) -> Reply {
     }
 }
 
-/// A reply of a service that counts, that re-bound the pad `rebinds`
-/// times for the request.
-fn counted(reply: Reply, rebinds: u8) -> Reply {
-    Reply {
-        rebinds: Some(rebinds),
-        ..reply
-    }
-}
-
 /// Serves one connection of a [scripted](FakeHider::scripted) stand-in.
 fn serve_scripted(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>, hold: &Hold) {
     let note = |what: Asked| {
@@ -241,8 +213,6 @@ fn serve_scripted(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>, hold: &Hold) 
     // Each pad hidden, by token, with the descriptor that came with it.
     let mut hidden: BTreeMap<u32, OwnedFd> = BTreeMap::new();
     let mut tokens = 0u32;
-    // The pad the last hide hid, while it is: what a cancel shows again.
-    let mut last_hidden = None;
     while let Some((request, mut fds)) = next() {
         if hold.refuses() {
             if answer(Reply::refused(Refusal::NotPermitted), &[]) {
@@ -258,60 +228,31 @@ fn serve_scripted(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>, hold: &Hold) 
                 &[],
             ),
             Request::Hide if fds.is_empty() => answer(Reply::refused(Refusal::BadRequest), &[]),
-            Request::Hide => match script.hold_hides {
-                Some(outcome) => {
-                    note(Asked::Hide(String::new()));
-                    hold.set(|state| state.held += 1);
-                    // Nothing more comes until the cancel, which ends it.
-                    let Some((Request::Cancel, _)) = next() else {
-                        break;
-                    };
-                    note(Asked::Cancel);
-                    hold.wait(|state| state.let_go);
-                    hold.set(|state| state.held -= 1);
-                    let cancelled = counted(Reply::refused(Refusal::Cancelled), 0);
-                    let (hide, cancel) = match outcome {
-                        Cancelled::Untouched => (cancelled, counted(done(Token(0)), 0)),
-                        Cancelled::Undone => (counted(cancelled, 2), counted(done(Token(0)), 0)),
-                        Cancelled::DoneFirst => {
-                            (counted(done(Token(1)), 1), counted(done(Token(0)), 1))
-                        }
-                    };
-                    // A hide done passes the pad's descriptor back, as the
-                    // real service passes the new node's.
-                    let pass: Vec<_> = match outcome {
-                        Cancelled::DoneFirst => fds.iter().map(AsFd::as_fd).collect(),
-                        Cancelled::Untouched | Cancelled::Undone => Vec::new(),
-                    };
-                    answer(hide, &pass) && answer(cancel, &[])
-                }
-                None => {
-                    note(Asked::Hide(String::new()));
-                    tokens += 1;
-                    let fd = fds.swap_remove(0);
-                    let reply = Reply {
-                        dislodged: true,
-                        ..counted(done(Token(tokens)), script.hide_rebinds)
-                    };
-                    let answered = answer(reply, &[fd.as_fd()]);
-                    hidden.insert(tokens, fd);
-                    last_hidden = Some(tokens);
-                    answered
-                }
-            },
+            Request::Hide => {
+                note(Asked::Hide(String::new()));
+                hold.hold(script.hold_hides);
+                tokens += 1;
+                // The pad's descriptor goes back, as the real service
+                // passes the new node's.
+                let fd = fds.swap_remove(0);
+                let reply = Reply {
+                    dislodged: true,
+                    ..done(Token(tokens))
+                };
+                let answered = answer(reply, &[fd.as_fd()]);
+                hidden.insert(tokens, fd);
+                answered
+            }
             Request::Restore(token) => match hidden.remove(&token.0) {
                 Some(_) => {
                     note(Asked::Restore(String::new()));
-                    if last_hidden == Some(token.0) {
-                        last_hidden = None;
-                    }
                     let restores = {
                         let mut state = hold.state();
                         state.restores += 1;
                         state.restores
                     };
                     hold.hold(restores <= script.hold_restores);
-                    answer(counted(done(token), script.restore_rebinds), &[])
+                    answer(done(token), &[])
                 }
                 None => answer(Reply::refused(Refusal::UnknownToken), &[]),
             },
@@ -331,20 +272,7 @@ fn serve_scripted(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>, hold: &Hold) 
                 }
                 None => answer(Reply::refused(Refusal::UnknownToken), &[]),
             },
-            Request::Cancel => {
-                note(Asked::Cancel);
-                let shown = last_hidden.take().and_then(|token| hidden.remove(&token));
-                if shown.is_some() {
-                    note(Asked::Restore(String::new()));
-                }
-                let rebinds = if shown.is_some() {
-                    script.restore_rebinds
-                } else {
-                    0
-                };
-                answer(counted(done(Token(0)), rebinds), &[])
-            }
-            Request::Raw => answer(Reply::refused(Refusal::Unsupported), &[]),
+            Request::Cancel | Request::Raw => answer(Reply::refused(Refusal::Unsupported), &[]),
         };
         if !answered {
             break;
@@ -493,27 +421,7 @@ impl FakeHider {
         Self::serving(path, None)
     }
 
-    /// Listens at `path` as a service that counts, and holds every hide
-    /// it is asked, whatever descriptor comes with it, until it is
-    /// cancelled: then, once [let go](Self::let_go), it answers the hide
-    /// and the cancel as the real service would have, by `outcome`. It
-    /// needs no pad.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the socket can't be made there.
-    pub fn holding(path: &Path, outcome: Cancelled) -> io::Result<Self> {
-        Self::scripted(
-            path,
-            Script {
-                hold_hides: Some(outcome),
-                ..Script::default()
-            },
-        )
-    }
-
-    /// Listens at `path` as a service that counts, answering as `script`
-    /// says.
+    /// Listens at `path`, answering as `script` says.
     ///
     /// # Errors
     ///
@@ -533,10 +441,19 @@ impl FakeHider {
     ///
     /// Panics if the stand-in isn't scripted.
     pub fn wait_held(&self) {
+        self.wait_holding(1);
+    }
+
+    /// Waits until it holds `count` requests at once.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stand-in isn't scripted.
+    pub fn wait_holding(&self, count: usize) {
         self.hold
             .as_ref()
             .expect("only a scripted stand-in is waited on to hold something")
-            .wait(|state| state.held > 0);
+            .wait(|state| state.held >= count);
     }
 
     /// Has an unscripted stand-in run `hook` each time it is asked to
@@ -592,9 +509,16 @@ impl FakeHider {
                         let before_restore = Arc::clone(&before_restore);
                         let served = std::thread::Builder::new()
                             .name("fake-hider-client".into())
-                            .spawn(move || match hold {
-                                Some(hold) => serve_scripted(&connection, &asked, &hold),
-                                None => serve(&connection, &asked, &before_restore),
+                            .spawn(move || {
+                                match hold {
+                                    Some(hold) => serve_scripted(&connection, &asked, &hold),
+                                    None => serve(&connection, &asked, &before_restore),
+                                }
+                                // Its end closed, as the real service closes
+                                // it once it has shown again what was hidden
+                                // through it: the copy kept to hang up on
+                                // would keep it open.
+                                let _ = shutdown(&connection, Shutdown::Both);
                             });
                         drop(served);
                     }
