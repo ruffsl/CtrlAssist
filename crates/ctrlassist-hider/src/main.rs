@@ -133,8 +133,10 @@ fn reply(socket: BorrowedFd<'_>, reply: Reply, fd: Option<&OwnedFd>) {
     }
 }
 
+/// A refusal of a request that re-bound nothing. It says so: every reply
+/// of a service that counts carries a count, refusals included.
 fn refuse(socket: BorrowedFd<'_>, refusal: Refusal) {
-    reply(socket, Reply::refused(refusal), None);
+    reply(socket, refused(refusal, 0), None);
 }
 
 /// A reply that did as asked, saying how many times the pad was re-bound

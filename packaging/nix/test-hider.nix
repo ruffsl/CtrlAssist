@@ -225,7 +225,8 @@ let
             peer = connect(path)
             peer.send(struct.pack("<BI", 6, 0) + b"more")
             data, _, _, _ = socket.recv_fds(peer, 6, 2)
-            print(f"status={data[0]}")
+            # Bit 1 of the flags says the re-binds are counted.
+            print(f"status={data[0]} counted={data[5] >> 1 & 1}")
         case ["silent", path, count]:
             peer = connect(path)
             peer.setblocking(False)
@@ -779,6 +780,13 @@ pkgs.testers.runNixOSTest {
     with subtest("a request longer than a request is refused, not read as its first five bytes"):
         told = machine.succeed(f"su -l alice -c 'hider-probe long {SOCKET}'")
         assert "status=7" in told, told
+
+    with subtest("every refusal says how many re-binds it took, none, at the gate as well"):
+        # Not understood, and from someone not in front of the machine.
+        told = machine.succeed(f"su -l alice -c 'hider-probe long {SOCKET}'")
+        assert "status=7 counted=1" in told, told
+        told = machine.succeed(f"hider-probe long {SOCKET}")
+        assert "status=1 counted=1" in told, told
 
     with subtest("run by hand with --listen, as the dev recipe does, it is the same service on a socket anyone may reach"):
         machine.succeed("install -d -o ctrlassist-hider -g ctrlassist-hider -m 0755 /run/ctrlassist-dev")
