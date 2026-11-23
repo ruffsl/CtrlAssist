@@ -32,7 +32,7 @@ use ctrlassist_protocol::endpoint::{daemon, tray};
 use ctrlassist_protocol::keys;
 use tokio::sync::{Notify, broadcast, mpsc};
 use tokio::task::JoinHandle;
-use tracing::warn;
+use tracing::{debug, warn};
 use zenoh::Session;
 use zenoh::handlers::FifoChannelHandler;
 use zenoh::key_expr::KeyExpr;
@@ -41,12 +41,19 @@ use zenoh::sample::{Sample, SampleKind};
 use zenoh_ext::{AdvancedSubscriber, AdvancedSubscriberBuilderExt, HistoryConfig, RecoveryConfig};
 
 use crate::handshake::Handshake;
-use crate::{EVENT_CAPACITY, Error, Result, Service, ServiceInfo, StateEvent, on_liveliness};
+use crate::{EVENT_CAPACITY, Error, Result, Service, ServiceInfo, StateEvent};
 
 /// The first wait before a failed subscription is retried, doubling up
 /// to [`SUBSCRIBE_RETRY_MAX`].
 const SUBSCRIBE_RETRY_FIRST: Duration = Duration::from_millis(100);
 const SUBSCRIBE_RETRY_MAX: Duration = Duration::from_secs(5);
+
+/// The first wait before a failed release check is retried, doubling up
+/// to [`CHECK_RETRY_MAX`].
+const CHECK_RETRY_FIRST: Duration = Duration::from_secs(1);
+
+/// The longest wait between release-check retries.
+const CHECK_RETRY_MAX: Duration = Duration::from_secs(30);
 
 /// How long a lifetime hydrates at most, from its token appearing: past
 /// it, the mirror counts as hydrated with whatever arrived.
@@ -118,10 +125,11 @@ impl<M> Clone for LifetimeMirror<M> {
 }
 
 /// One lifetime's tasks: the setup that subscribes (retrying until it
-/// can), and a task per subscription.
+/// can), checks the service's release and waits for its history, and a
+/// task per subscription.
 struct Lifetime {
     setup: JoinHandle<()>,
-    pumps: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    pumps: Pumps,
 }
 
 impl Lifetime {
@@ -129,33 +137,62 @@ impl Lifetime {
     /// applied once this returns.
     async fn end(mut self) {
         self.setup.abort();
+        // Once it has stopped, it registers no more pumps.
         let _ = (&mut self.setup).await;
-        let pumps = std::mem::take(
-            &mut *self
-                .pumps
-                .lock()
-                .expect("nothing panics while the pump list is held"),
-        );
-        for pump in pumps {
-            pump.abort();
-            let _ = pump.await;
+        let mut pumps = self.pumps.take();
+        // All stopped before any is waited for: dropped between two waits
+        // (its follow task aborted), the rest are stopped all the same.
+        for pump in &pumps {
+            pump.0.abort();
+        }
+        for pump in &mut pumps {
+            let _ = (&mut pump.0).await;
         }
     }
 }
 
 /// A lifetime dropped without [`Lifetime::end`] (its follow task aborted)
-/// still stops its tasks, so their subscriptions and session go too.
+/// still stops its tasks, so their subscriptions and session go too. A
+/// pump its setup task registers after this, while finishing what it
+/// was doing when aborted, is stopped as the setup task lets go of the
+/// list.
 impl Drop for Lifetime {
     fn drop(&mut self) {
         self.setup.abort();
-        for pump in self
-            .pumps
+        drop(self.pumps.take());
+    }
+}
+
+/// The pumps of one lifetime, each registered as it is spawned, so none
+/// is left running when the lifetime ends or is dropped partway through
+/// subscribing.
+#[derive(Clone, Default)]
+struct Pumps(Arc<Mutex<Vec<Pump>>>);
+
+impl Pumps {
+    fn register(&self, pump: JoinHandle<()>) {
+        self.lock().push(Pump(pump));
+    }
+
+    /// Every pump registered so far, leaving none.
+    fn take(&self) -> Vec<Pump> {
+        std::mem::take(&mut *self.lock())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Pump>> {
+        self.0
             .lock()
             .expect("nothing panics while the pump list is held")
-            .iter()
-        {
-            pump.abort();
-        }
+    }
+}
+
+/// A pump's task, stopped when this is dropped: by the list going with
+/// the last of its lifetime's tasks, or by a retry letting go of it.
+struct Pump(JoinHandle<()>);
+
+impl Drop for Pump {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -245,52 +282,65 @@ impl<M: Mirror> LifetimeMirror<M> {
             for event in removed {
                 let _ = self.events.send(event);
             }
-            on_liveliness(
-                false,
-                disappeared(M::SERVICE),
-                &self.handshake,
-                &self.events,
-                &caller,
-                M::SERVICE,
-                |caller| service_info(caller, M::SERVICE),
-            );
+            self.handshake.disappeared(&self.events);
         }
     }
 
     /// Subscribe, then report the daemon available: a client that waits
     /// for it finds the subscriptions in place, their history replaying
-    /// as it arrives. Then wait for the history to arrive.
+    /// as it arrives. Then check its release, and wait for the history
+    /// to arrive.
     fn begin(&self, session: &Session, caller: &Arc<Caller>) -> Lifetime {
         let deadline = tokio::time::Instant::now() + HYDRATE_DEADLINE;
-        let pumps = Arc::new(Mutex::new(Vec::new()));
+        let pumps = Pumps::default();
         let setup = tokio::spawn({
             let this = self.clone();
             let session = session.clone();
             let caller = Arc::clone(caller);
-            let pumps = Arc::clone(&pumps);
+            let pumps = pumps.clone();
             async move {
-                let started = this.subscribe(&session).await;
-                pumps
-                    .lock()
-                    .expect("nothing panics while the pump list is held")
-                    .extend(started);
+                this.subscribe(&session, &pumps).await;
                 // Before announcing, so the release check's settling can't
                 // be missed.
                 let events = this.events.subscribe();
                 this.lock().alive = true;
-                on_liveliness(
-                    true,
-                    appeared(M::SERVICE),
-                    &this.handshake,
-                    &this.events,
-                    &caller,
-                    M::SERVICE,
-                    |caller| service_info(caller, M::SERVICE),
+                let lifetime = this.handshake.appeared(&this.events);
+                tokio::join!(
+                    this.check(lifetime, &caller),
+                    this.hydrate(events, deadline)
                 );
-                this.hydrate(events, deadline).await;
             }
         });
         Lifetime { setup, pumps }
+    }
+
+    /// Check the service's release at once, so its release (and a
+    /// mismatch) reaches a watcher without waiting for a call, retrying
+    /// a check that got no answer, backing off, until one settles or the
+    /// lifetime ends. Runs on the lifetime's setup task, so it ends with
+    /// the lifetime, and with the client.
+    async fn check(&self, lifetime: u64, caller: &Arc<Caller>) {
+        let mut backoff = CHECK_RETRY_FIRST;
+        loop {
+            let checked = self
+                .handshake
+                .ensure(&self.events, || async {
+                    service_info(Arc::clone(caller), M::SERVICE)
+                        .await
+                        .map_err(|e| Error::from_rpc(M::SERVICE, e))
+                })
+                .await;
+            // Settled, a mismatch included; or the service went away, and
+            // its next lifetime gets its own check.
+            if self.handshake.info().is_some() || self.handshake.lifetime() != lifetime {
+                return;
+            }
+            if let Err(e) = checked {
+                debug!(service = %M::SERVICE, error = %e, ?backoff, "release check failed; retrying");
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(CHECK_RETRY_MAX);
+        }
     }
 
     /// Wait for the release check's `info` reply, then for a sample on each
@@ -343,8 +393,8 @@ impl<M: Mirror> LifetimeMirror<M> {
     }
 
     /// Subscribes to every key `M` mirrors, from history on and with
-    /// recovery, retrying until all are declared, and returns the tasks
-    /// that read them.
+    /// recovery, retrying until all are declared, and registers in
+    /// `pumps` each task that reads one as soon as it is spawned.
     ///
     /// What a subscription delivers is queued without bound. Its history
     /// arrives while it is still being declared, before there is
@@ -353,10 +403,9 @@ impl<M: Mirror> LifetimeMirror<M> {
     /// state under one key than that stopped the declaration for good,
     /// and the client never found the daemon alive. What a daemon
     /// publishes is its state, which is what bounds the queue.
-    async fn subscribe(&self, session: &Session) -> Vec<JoinHandle<()>> {
+    async fn subscribe(&self, session: &Session, pumps: &Pumps) {
         let mut backoff = SUBSCRIBE_RETRY_FIRST;
         loop {
-            let mut pumps = Vec::new();
             let mut failed = None;
             for key in M::keys() {
                 let (samples, arriving) = mpsc::unbounded_channel();
@@ -371,7 +420,7 @@ impl<M: Mirror> LifetimeMirror<M> {
                     .await;
                 match declared {
                     Ok(subscriber) => {
-                        pumps.push(tokio::spawn(self.clone().pump(subscriber, arriving)));
+                        pumps.register(tokio::spawn(self.clone().pump(subscriber, arriving)));
                     }
                     Err(e) => {
                         failed = Some(e);
@@ -380,13 +429,11 @@ impl<M: Mirror> LifetimeMirror<M> {
                 }
             }
             let Some(error) = failed else {
-                return pumps;
+                return;
             };
             warn!(service = %M::SERVICE, %error, ?backoff, "couldn't subscribe to the service's keys; retrying");
             // Each takes its subscription with it.
-            for pump in pumps {
-                pump.abort();
-            }
+            drop(pumps.take());
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(SUBSCRIBE_RETRY_MAX);
         }
@@ -421,20 +468,6 @@ fn alive_key(service: Service) -> String {
     }
 }
 
-fn appeared(service: Service) -> StateEvent {
-    match service {
-        Service::Daemon => StateEvent::DaemonAppeared,
-        Service::Tray => StateEvent::TrayAppeared,
-    }
-}
-
-fn disappeared(service: Service) -> StateEvent {
-    match service {
-        Service::Daemon => StateEvent::DaemonDisappeared,
-        Service::Tray => StateEvent::TrayDisappeared,
-    }
-}
-
 async fn service_info(
     caller: Arc<Caller>,
     service: Service,
@@ -442,5 +475,66 @@ async fn service_info(
     match service {
         Service::Daemon => caller.call::<daemon::Info>(&(), &()).await,
         Service::Tray => caller.call::<tray::Info>(&(), &()).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    /// A pump that holds `alive` for as long as its task lives.
+    fn pump(alive: oneshot::Sender<()>) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let _alive = alive;
+            std::future::pending::<()>().await;
+        })
+    }
+
+    /// A lifetime dropped while its setup task is busy declaring (zenoh
+    /// declares without yielding, so an abort can't stop it there) still
+    /// stops the pumps that task goes on to spawn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_lifetime_dropped_while_subscribing_stops_its_pumps() {
+        let pumps = Pumps::default();
+        let (alive, gone) = oneshot::channel();
+        let (busy, declaring) = oneshot::channel();
+        let setup = tokio::spawn({
+            let pumps = pumps.clone();
+            async move {
+                let _ = busy.send(());
+                std::thread::sleep(Duration::from_millis(200));
+                pumps.register(pump(alive));
+                std::future::pending::<()>().await;
+            }
+        });
+        declaring.await.unwrap();
+        drop(Lifetime { setup, pumps });
+        let stopped = tokio::time::timeout(Duration::from_secs(10), gone).await;
+        assert!(
+            matches!(stopped, Ok(Err(_))),
+            "the pump outlived its lifetime"
+        );
+    }
+
+    /// Ending a lifetime stops every pump, and waits for each.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ending_a_lifetime_stops_every_pump() {
+        let pumps = Pumps::default();
+        let mut gone = Vec::new();
+        for _ in 0..3 {
+            let (alive, went) = oneshot::channel();
+            pumps.register(pump(alive));
+            gone.push(went);
+        }
+        let setup = tokio::spawn(std::future::pending::<()>());
+        Lifetime { setup, pumps }.end().await;
+        for mut went in gone {
+            assert!(
+                matches!(went.try_recv(), Err(oneshot::error::TryRecvError::Closed)),
+                "a pump was still running once the lifetime ended"
+            );
+        }
     }
 }

@@ -6,7 +6,7 @@ mod handshake;
 mod lifetime;
 mod mirror;
 
-use std::future::Future;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,8 +28,8 @@ pub use ctrlassist_protocol::rpc::{
     NotificationSettings, NotificationSettingsPatch, ReloadReport, Reloaded, ServiceInfo,
 };
 pub use error::{BoxError, Error, Result, Service};
-use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, warn};
+use tokio::sync::broadcast;
+use tracing::warn;
 
 use handshake::Handshake;
 use lifetime::LifetimeMirror;
@@ -70,33 +70,40 @@ pub enum StateEvent {
     /// [`DaemonClient::list_identities`].
     IdentitiesChanged,
     /// The daemon's liveliness token appeared: it's running and serving
-    /// rpcs. Can repeat for one lifetime, so treat it idempotently.
+    /// rpcs, and the client is subscribed to its state. Sent once per
+    /// lifetime; a watcher built while the daemon is up gets it on start.
     DaemonAppeared,
     /// The daemon's liveliness token went away (stopped, crashed, or the
     /// link dropped). Its state has already left the mirror, announced
     /// before this event, and [`DaemonClient::service_info`] has cleared.
+    /// Can come with no [`Self::DaemonAppeared`] before it, for a token
+    /// that went while the client was still subscribing.
     DaemonDisappeared,
     /// The tray's liveliness token appeared: its settings service is
-    /// running. Can repeat for one lifetime, so treat it idempotently.
+    /// running. Sent once per lifetime; a watcher built while the tray is
+    /// up gets it on start.
     TrayAppeared,
     /// The tray's liveliness token went away: the tray stopped, or the
     /// daemon it serves through did. Its switches have already left the
     /// mirror, announced before this event, and
-    /// [`TrayClient::service_info`] has cleared.
+    /// [`TrayClient::service_info`] has cleared. Can come with no
+    /// [`Self::TrayAppeared`] before it, as for the daemon.
     TrayDisappeared,
     /// The tray's notification switches changed in the mirror, or left
     /// it because the tray went away. Re-read
     /// [`TrayClient::notification_settings`].
     TrayNotificationSettingsChanged,
     /// Re-read everything: the watcher's periodic tick
-    /// ([`StateWatcherConfig::fallback_poll_interval`]), also sent when
-    /// the watcher fell behind and dropped events.
+    /// ([`StateWatcherConfig::fallback_poll_interval`]), also sent in
+    /// place of the events a watcher lost by going unread for more than
+    /// 256 of them (see [`StateWatcher`]).
     FallbackPoll,
     /// A service's release check settled for its current lifetime, so
     /// its client's `service_info` now answers. Sent once per service
-    /// lifetime, after its `*Appeared`, whatever the verdict; a watcher
-    /// built after the check settled gets it on start, and may then see
-    /// it twice.
+    /// lifetime, whatever the verdict, after its `*Appeared` and before
+    /// its `*Disappeared`: the check runs as soon as the service appears,
+    /// and only a check made while its token is present settles. A
+    /// watcher built after the check settled gets it on start.
     ReleaseChecked(Service),
     /// A service's cached state has arrived in the mirror for the
     /// current lifetime, so an empty read now means empty rather than not
@@ -108,7 +115,7 @@ pub enum StateEvent {
     /// it fails until it's restarted on a matching release. Sent once per
     /// service lifetime, right after its [`Self::ReleaseChecked`]; a
     /// watcher built while the mismatch is already known gets it on
-    /// start, and may then see it twice.
+    /// start.
     VersionMismatch {
         /// The mismatched service.
         service: Service,
@@ -371,8 +378,10 @@ impl DaemonClient {
     /// a [`Self::put_profile`]; with `apply` false, only ask what that
     /// would cost. Returns whether it is disruptive: whether the setup's
     /// virtual pads are made anew, which a game sees as its pad
-    /// disconnecting. Every update is, for now. With `apply`, returns
-    /// once the setup runs again.
+    /// disconnecting. A profile that keeps the setup's virtual pads and
+    /// its way of hiding pads is taken up live, without; any other
+    /// change, or a setup that failed, is a restart. With `apply`,
+    /// returns once the setup runs again.
     ///
     /// # Errors
     ///
@@ -415,13 +424,17 @@ impl DaemonClient {
     }
 
     /// Buzz a pad for `duration`, so a person can tell which one it is.
-    /// `pad` is its id, a bare address, or `model:<vendor>:<product>`
-    /// when one known pad is of that model. Returns once the buzz has
+    /// `pad` is its id, its id's key segment, a bare address, or
+    /// `model:<vendor>:<product>` when one known pad is of that model.
+    /// Or a running setup's virtual pad, as `virtual:<setup>/<name>`,
+    /// which is rumbled as a game would rumble it: the pads behind it
+    /// buzz as the setup's profile sends it on. Returns once the buzz has
     /// started.
     ///
     /// # Errors
     ///
-    /// Refused with [`ErrorCode::UnknownPad`], [`ErrorCode::AmbiguousPad`],
+    /// Refused with [`ErrorCode::UnknownPad`] (for a virtual pad, when no
+    /// setup has it now), [`ErrorCode::AmbiguousPad`],
     /// [`ErrorCode::PadDisconnected`], [`ErrorCode::PadWithoutRumble`] or
     /// [`ErrorCode::PadRefused`], or with [`ErrorCode::BadRequest`] for a
     /// duration of nothing or of more than five seconds; and fails as any
@@ -436,7 +449,7 @@ impl DaemonClient {
     }
 
     /// Stop remembering a pad that isn't connected. `pad` names it as for
-    /// [`Self::identify_pad`].
+    /// [`Self::identify_pad`], a virtual pad aside.
     ///
     /// # Errors
     ///
@@ -499,10 +512,6 @@ impl DaemonClient {
             .call::<daemon::Info>(&(), &())
             .await
             .map_err(|e| Error::from_rpc(Service::Daemon, e))
-    }
-
-    fn subscribe_events(&self) -> broadcast::Receiver<StateEvent> {
-        self.events.subscribe()
     }
 
     /// Call a daemon rpc, once the daemon's release is known to match.
@@ -655,10 +664,6 @@ impl TrayClient {
         self.call::<tray::Reload>(&()).await
     }
 
-    fn subscribe_events(&self) -> broadcast::Receiver<StateEvent> {
-        self.events.subscribe()
-    }
-
     async fn call<R: Unary<Target = ()>>(&self, request: &R::Request) -> Result<R::Response> {
         self.handshake.ensure(&self.events, || self.info()).await?;
         self.caller
@@ -674,70 +679,6 @@ impl TrayClient {
             .map_err(|e| Error::from_rpc(Service::Tray, e))
     }
 }
-
-/// Announce the daemon's liveliness edge (`announce`) and keep the
-/// client's release check in step: a daemon that went away loses its
-/// release before the announcement, so a reader acting on it sees none,
-/// and its next lifetime gets a fresh check. One that appeared is checked
-/// at once, after the announcement, so its release (and a mismatch)
-/// reaches the watcher without waiting for a call. A failed check is
-/// retried, backing off, for as long as that lifetime lasts. The check
-/// runs on its own task, so a slow `info` never holds up the next
-/// liveliness edge.
-fn on_liveliness<F, Fut>(
-    alive: bool,
-    announce: StateEvent,
-    handshake: &Arc<Handshake>,
-    events: &broadcast::Sender<StateEvent>,
-    caller: &Arc<Caller>,
-    service: Service,
-    info: F,
-) where
-    F: Fn(Arc<Caller>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = std::result::Result<ServiceInfo, ctrlassist_protocol::caller::RpcError>>
-        + Send,
-{
-    if !alive {
-        handshake.reset();
-        let _ = events.send(announce);
-        return;
-    }
-    // Read before spawning, on the liveliness task: a `reset` for this
-    // service going away can only come after it.
-    let lifetime = handshake.lifetime();
-    let _ = events.send(announce);
-    let handshake = Arc::clone(handshake);
-    let events = events.clone();
-    let caller = Arc::clone(caller);
-    tokio::spawn(async move {
-        let mut backoff = CHECK_RETRY_FIRST;
-        loop {
-            let caller = Arc::clone(&caller);
-            let checked = handshake
-                .ensure(&events, || async {
-                    info(caller).await.map_err(|e| Error::from_rpc(service, e))
-                })
-                .await;
-            // Settled, a mismatch included; or the service went away, and
-            // its next lifetime gets its own check.
-            if handshake.info().is_some() || handshake.lifetime() != lifetime {
-                return;
-            }
-            if let Err(e) = checked {
-                debug!(%service, error = %e, ?backoff, "release check failed; retrying");
-            }
-            tokio::time::sleep(backoff).await;
-            backoff = (backoff * 2).min(CHECK_RETRY_MAX);
-        }
-    });
-}
-
-/// The first wait before a failed release check is retried, doubling up
-/// to [`CHECK_RETRY_MAX`].
-const CHECK_RETRY_FIRST: Duration = Duration::from_secs(1);
-
-/// The longest wait between release-check retries.
-const CHECK_RETRY_MAX: Duration = Duration::from_secs(30);
 
 /// Watcher tuning: mirror deltas forward directly, so the one knob is
 /// the fallback poll interval.
@@ -759,143 +700,245 @@ impl Default for StateWatcherConfig {
 
 /// The merged change stream: the daemon's mirror deltas, the tray's when
 /// asked for, liveliness edges and a fallback poll tick.
+///
+/// It reads each client's own queue of events, which holds the last 256
+/// for each watcher: one that isn't read for
+/// longer than that loses the oldest, and is sent a
+/// [`StateEvent::FallbackPoll`] in their place, rather than holding on to
+/// them. A slow consumer costs events it then re-reads as state, never
+/// memory.
 #[derive(Debug)]
 pub struct StateWatcher {
-    rx: mpsc::UnboundedReceiver<StateEvent>,
+    /// What was announced before the watcher was built that still holds,
+    /// handed over first.
+    replay: VecDeque<StateEvent>,
+    /// The daemon client's events; `None` once every copy of it is gone.
+    daemon: Option<broadcast::Receiver<StateEvent>>,
+    /// The tray client's, when asked for; `None` once it is gone.
+    tray: Option<broadcast::Receiver<StateEvent>>,
+    /// The fallback poll, when on.
+    poll: Option<Poll>,
+}
+
+#[derive(Debug)]
+struct Poll {
+    every: Duration,
+    next: tokio::time::Instant,
+}
+
+/// What woke [`StateWatcher::next`].
+enum Woke {
+    Daemon(std::result::Result<StateEvent, broadcast::error::RecvError>),
+    Tray(std::result::Result<StateEvent, broadcast::error::RecvError>),
+    Poll,
 }
 
 impl StateWatcher {
     /// Merge the events of `daemon` and of the optional `tray` client
     /// into one stream. Each service already alive when the watcher is
-    /// built gets an `*Appeared` event, so a consumer driven by events
-    /// alone still learns of it. Must run inside the tokio runtime.
+    /// built gets its `*Appeared` event first, followed by the
+    /// [`StateEvent::ReleaseChecked`] (and [`StateEvent::VersionMismatch`])
+    /// of a check already settled, so a consumer driven by events alone
+    /// still learns of them, each once and in order.
     #[must_use]
     pub fn new(
         daemon: &DaemonClient,
         tray: Option<&TrayClient>,
         config: StateWatcherConfig,
     ) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
-        forward(daemon.subscribe_events(), tx.clone());
-        if let Some(tray) = tray {
-            forward(tray.subscribe_events(), tx.clone());
-        }
-        // Synthesize `DaemonAppeared` for a daemon already alive, and the
-        // `ReleaseChecked` / `VersionMismatch` of a check already
-        // settled: all fired into the client's broadcast before this
-        // watcher subscribed (a tokio broadcast drops events sent with no
-        // receivers), so consumers relying on edges alone would never
-        // learn of them. A level-triggered emit after subscription closes
-        // the window; a check finishing in between can announce twice,
-        // and consumers treat repeats idempotently.
-        {
-            let tx = tx.clone();
-            let daemon = daemon.clone();
-            let tray = tray.cloned();
-            tokio::spawn(async move {
-                if daemon.is_available() {
-                    let _ = tx.send(StateEvent::DaemonAppeared);
-                }
-                for event in daemon.handshake.settled_events() {
-                    let _ = tx.send(event);
-                }
-                if let Some(tray) = tray {
-                    if tray.is_available() {
-                        let _ = tx.send(StateEvent::TrayAppeared);
-                    }
-                    for event in tray.handshake.settled_events() {
-                        let _ = tx.send(event);
-                    }
-                }
-            });
-        }
-        if config.fallback_poll_interval.is_zero() {
-            return Self { rx };
-        }
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(config.fallback_poll_interval);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            interval.tick().await; // immediate first tick is not a poll
-            loop {
-                interval.tick().await;
-                if tx.send(StateEvent::FallbackPoll).is_err() {
-                    return;
-                }
-            }
+        let (daemon, mut replay) = daemon.handshake.subscribe(&daemon.events);
+        let tray = tray.map(|tray| {
+            let (events, announced) = tray.handshake.subscribe(&tray.events);
+            replay.extend(announced);
+            events
         });
-        Self { rx }
+        Self::merging(replay, daemon, tray, &config)
     }
 
-    /// The next event, waiting for one. `None` only once the watcher's
-    /// tasks have stopped, which happens when the runtime shuts down.
+    fn merging(
+        replay: Vec<StateEvent>,
+        daemon: broadcast::Receiver<StateEvent>,
+        tray: Option<broadcast::Receiver<StateEvent>>,
+        config: &StateWatcherConfig,
+    ) -> Self {
+        let every = config.fallback_poll_interval;
+        Self {
+            replay: replay.into(),
+            daemon: Some(daemon),
+            tray,
+            poll: (!every.is_zero()).then(|| Poll {
+                every,
+                next: tokio::time::Instant::now() + every,
+            }),
+        }
+    }
+
+    /// The next event, waiting for one. `None` once every client the
+    /// watcher follows has been dropped, every copy of it, and its tasks
+    /// have stopped; until then, with the fallback poll off and nothing
+    /// changing, it waits. Cancel-safe: dropping the future loses no
+    /// event.
     pub async fn next(&mut self) -> Option<StateEvent> {
-        self.rx.recv().await
+        if let Some(event) = self.replay.pop_front() {
+            return Some(event);
+        }
+        loop {
+            if self.daemon.is_none() && self.tray.is_none() {
+                return None;
+            }
+            let woke = tokio::select! {
+                got = recv(self.daemon.as_mut()) => Woke::Daemon(got),
+                got = recv(self.tray.as_mut()) => Woke::Tray(got),
+                () = due(self.poll.as_ref()) => Woke::Poll,
+            };
+            let (got, source) = match woke {
+                Woke::Daemon(got) => (got, &mut self.daemon),
+                Woke::Tray(got) => (got, &mut self.tray),
+                Woke::Poll => {
+                    self.polled();
+                    return Some(StateEvent::FallbackPoll);
+                }
+            };
+            match got {
+                Ok(event) => return Some(event),
+                Err(broadcast::error::RecvError::Lagged(missed)) => {
+                    warn!(missed, "state events lagged; forcing a refresh");
+                    return Some(StateEvent::FallbackPoll);
+                }
+                Err(broadcast::error::RecvError::Closed) => *source = None,
+            }
+        }
     }
 
     /// The next event if one is already queued, without waiting. Draining
     /// these after [`Self::next`] lets a consumer act once on the state a
     /// burst of events leaves, rather than once per event.
     pub fn try_next(&mut self) -> Option<StateEvent> {
-        self.rx.try_recv().ok()
+        if let Some(event) = self.replay.pop_front() {
+            return Some(event);
+        }
+        for source in [&mut self.daemon, &mut self.tray] {
+            let Some(events) = source else {
+                continue;
+            };
+            match events.try_recv() {
+                Ok(event) => return Some(event),
+                Err(broadcast::error::TryRecvError::Lagged(missed)) => {
+                    warn!(missed, "state events lagged; forcing a refresh");
+                    return Some(StateEvent::FallbackPoll);
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {}
+                Err(broadcast::error::TryRecvError::Closed) => *source = None,
+            }
+        }
+        if self
+            .poll
+            .as_ref()
+            .is_some_and(|poll| poll.next <= tokio::time::Instant::now())
+        {
+            self.polled();
+            return Some(StateEvent::FallbackPoll);
+        }
+        None
+    }
+
+    /// The poll fired: the next one is a whole interval from now, so a
+    /// watcher that wasn't read for a while gets one, not a backlog.
+    fn polled(&mut self) {
+        if let Some(poll) = &mut self.poll {
+            poll.next = tokio::time::Instant::now() + poll.every;
+        }
     }
 }
 
-fn forward(mut rx: broadcast::Receiver<StateEvent>, tx: mpsc::UnboundedSender<StateEvent>) {
-    tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    if tx.send(event).is_err() {
-                        return;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(missed)) => {
-                    warn!(missed, "state events lagged; forcing a refresh");
-                    if tx.send(StateEvent::FallbackPoll).is_err() {
-                        return;
-                    }
-                }
-                Err(broadcast::error::RecvError::Closed) => return,
-            }
-        }
-    });
+/// The next of a client's events, or never for a client that is gone.
+async fn recv(
+    events: Option<&mut broadcast::Receiver<StateEvent>>,
+) -> std::result::Result<StateEvent, broadcast::error::RecvError> {
+    match events {
+        Some(events) => events.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// When the fallback poll is due, or never with it off.
+async fn due(poll: Option<&Poll>) {
+    match poll {
+        Some(poll) => tokio::time::sleep_until(poll.next).await,
+        None => std::future::pending().await,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A watcher that fell behind is told to re-read everything, and its
-    /// forwarding ends with either side of it.
+    fn quiet() -> StateWatcherConfig {
+        StateWatcherConfig {
+            fallback_poll_interval: Duration::ZERO,
+        }
+    }
+
+    /// A watcher that fell behind is told to re-read everything, rather
+    /// than queuing what it hasn't read, and its stream ends with the
+    /// client.
     #[tokio::test]
     async fn a_lagging_watcher_is_told_to_refresh() {
         let (events, behind) = broadcast::channel(2);
+        let mut watcher = StateWatcher::merging(Vec::new(), behind, None, &quiet());
         for _ in 0..5 {
             events.send(StateEvent::DaemonStateChanged).unwrap();
         }
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        forward(behind, tx);
-        assert_eq!(rx.recv().await, Some(StateEvent::FallbackPoll));
-        assert_eq!(rx.recv().await, Some(StateEvent::DaemonStateChanged));
-        assert_eq!(rx.recv().await, Some(StateEvent::DaemonStateChanged));
-        // The client gone, the stream ends.
-        drop(events);
-        assert_eq!(rx.recv().await, None);
-
-        // The watcher gone, the forwarding stops at the next event, lagged
-        // or not.
-        for lagged in [false, true] {
-            let (events, behind) = broadcast::channel(2);
-            let (tx, rx) = mpsc::unbounded_channel();
-            drop(rx);
-            for _ in 0..if lagged { 5 } else { 1 } {
-                events.send(StateEvent::DaemonAppeared).unwrap();
-            }
-            forward(behind, tx.clone());
-            tx.closed().await;
-            while events.receiver_count() != 0 {
-                tokio::task::yield_now().await;
-            }
+        assert_eq!(watcher.next().await, Some(StateEvent::FallbackPoll));
+        assert_eq!(watcher.next().await, Some(StateEvent::DaemonStateChanged));
+        assert_eq!(watcher.try_next(), Some(StateEvent::DaemonStateChanged));
+        assert_eq!(watcher.try_next(), None);
+        for _ in 0..5 {
+            events.send(StateEvent::DaemonStateChanged).unwrap();
         }
+        assert_eq!(watcher.try_next(), Some(StateEvent::FallbackPoll));
+        // The client gone, the stream ends once drained.
+        drop(events);
+        assert_eq!(watcher.next().await, Some(StateEvent::DaemonStateChanged));
+        assert_eq!(watcher.next().await, Some(StateEvent::DaemonStateChanged));
+        assert_eq!(watcher.next().await, None);
+    }
+
+    /// What a watcher is handed on start comes before anything it then
+    /// hears; with the poll on, it still ends with its clients.
+    #[tokio::test]
+    async fn a_watcher_hands_over_what_already_holds_first() {
+        let (events, heard) = broadcast::channel(4);
+        let (tray_events, tray_heard) = broadcast::channel(4);
+        let mut watcher = StateWatcher::merging(
+            vec![StateEvent::DaemonAppeared],
+            heard,
+            Some(tray_heard),
+            &StateWatcherConfig::default(),
+        );
+        events.send(StateEvent::DaemonDisappeared).unwrap();
+        assert_eq!(watcher.next().await, Some(StateEvent::DaemonAppeared));
+        assert_eq!(watcher.next().await, Some(StateEvent::DaemonDisappeared));
+        drop(events);
+        tray_events.send(StateEvent::TrayAppeared).unwrap();
+        assert_eq!(watcher.next().await, Some(StateEvent::TrayAppeared));
+        drop(tray_events);
+        assert_eq!(watcher.next().await, None);
+    }
+
+    /// The poll fires once for a stretch the watcher wasn't read, and is
+    /// seen by `try_next` too.
+    #[tokio::test]
+    async fn the_poll_fires_once_however_long_it_waited() {
+        let (_events, heard) = broadcast::channel(4);
+        let config = StateWatcherConfig {
+            fallback_poll_interval: Duration::from_millis(50),
+        };
+        let mut watcher = StateWatcher::merging(Vec::new(), heard, None, &config);
+        assert_eq!(watcher.try_next(), None);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(watcher.try_next(), Some(StateEvent::FallbackPoll));
+        assert_eq!(watcher.try_next(), None);
+        assert_eq!(watcher.next().await, Some(StateEvent::FallbackPoll));
     }
 }

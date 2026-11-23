@@ -33,11 +33,22 @@ pub(crate) async fn answer_info(
     release: &str,
     listed: &Arc<Mutex<BTreeSet<String>>>,
 ) -> JoinHandle<()> {
+    let release = Arc::new(Mutex::new(release.to_string()));
+    answer_info_from(session, &release, listed).await
+}
+
+/// Answer `info` on `session` with whatever `release` holds when asked,
+/// and the `listed` keys.
+pub(crate) async fn answer_info_from(
+    session: &Session,
+    release: &Arc<Mutex<String>>,
+    listed: &Arc<Mutex<BTreeSet<String>>>,
+) -> JoinHandle<()> {
     let queryable = session
         .declare_queryable(keys::daemon_rpc_wild())
         .await
         .unwrap();
-    let release = release.to_string();
+    let release = Arc::clone(release);
     let listed = Arc::clone(listed);
     tokio::spawn(async move {
         while let Ok(query) = queryable.recv_async().await {
@@ -45,7 +56,7 @@ pub(crate) async fn answer_info(
                 daemon::Incoming::receive(query).await
             {
                 let info = ctrlassist::ServiceInfo {
-                    version: release.clone(),
+                    version: release.lock().unwrap().clone(),
                     keys: listed.lock().unwrap().iter().cloned().collect(),
                     config: String::new(),
                 };
