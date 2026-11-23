@@ -8,7 +8,9 @@
 //! text. A pad's address is masked throughout: its vendor half stays,
 //! which tells a maker's pad from a clone, and the half that names the
 //! one unit is replaced, with a number so two pads of one maker can
-//! still be told apart.
+//! still be told apart. No file path goes in: one under the home
+//! directory names the user, so the daemon's section says only whether
+//! the daemon named the directory it keeps the user's files in.
 
 use ctrlassist::{DaemonState, Pad, Profile, Setup};
 use serde_json::{Value, json};
@@ -146,7 +148,7 @@ fn render(inputs: &Inputs) -> Value {
             "target": env!("CTRLASSIST_BUILD_TARGET"),
         },
         "parts": parts,
-        "daemon": inputs.daemon,
+        "daemon": inputs.daemon.as_ref().map(daemon_section),
         "machine": {
             "kernel": machine.kernel,
             "os_id": machine.os_id,
@@ -160,6 +162,20 @@ fn render(inputs: &Inputs) -> Value {
         "pads": inputs.pads,
         "setups": inputs.setups,
         "profiles": inputs.profiles,
+    })
+}
+
+/// The daemon's published state, but for the directory it keeps the
+/// user's files in, which names the home directory and so usually the
+/// user: whether it named one is all that goes in. Field by field, so a
+/// field added to the state doesn't reach the bundle unread.
+fn daemon_section(daemon: &DaemonState) -> Value {
+    json!({
+        "version": daemon.version,
+        "realtime": daemon.realtime,
+        "hiding": daemon.hiding,
+        "config": !daemon.config.is_empty(),
+        "hider_version": daemon.hider_version,
     })
 }
 
@@ -277,6 +293,34 @@ mod tests {
             Some("26.05")
         );
         assert_eq!(os_release_field(text, "BUILD_ID"), None);
+    }
+
+    #[test]
+    fn the_daemon_section_says_whether_it_named_its_directory_and_not_where() {
+        let inputs = Inputs {
+            daemon: Some(DaemonState {
+                version: "0.5.0".into(),
+                realtime: true,
+                hiding: ctrlassist::Hiding::Service,
+                config: "/home/someone/.config/ctrlassist".into(),
+                hider_version: Some("0.5.0".into()),
+            }),
+            ..Inputs::default()
+        };
+        let text = bundle(&inputs);
+        assert!(!text.contains("/home"), "{text}");
+        assert!(!text.contains("someone"), "{text}");
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value["daemon"],
+            json!({
+                "version": "0.5.0",
+                "realtime": true,
+                "hiding": "service",
+                "config": true,
+                "hider_version": "0.5.0",
+            })
+        );
     }
 
     #[test]
