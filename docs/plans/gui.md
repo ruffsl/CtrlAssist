@@ -2,7 +2,7 @@
 
 ## State
 
-- **Status:** decisions settled with the maintainer on 2026-11-21; the build is under way. Build steps 1 to 7 are done: the window opens with its sidebar and five empty panes, is steered by keys, with couch mode, follows the daemon, and its Reload asks the daemon to reread its files.
+- **Status:** decisions settled with the maintainer on 2026-11-21; the build is under way. Build steps 1 to 9 are done. From the first seven, the window opens with its sidebar and five empty panes, is steered by keys, with couch mode, follows the daemon, and its Reload asks the daemon to reread its files.
 - **Next action:** build steps 1 to 9 are done, the panes are rebuilt to the layout in "The panes, rethought", and the window is packaged and opened as TisVlay's is (build step 12), with its VM check. Building is paused for the maintainer to use the window; help, translations and the book follow. The daemon has no settings of its own: see "Rethought, 2026-11-22".
 - **Branch:** `feat/rewrite`, with the rewrite. Nothing is pushed.
 - **Template:** TisVlay at `5ddc2c0d` (`crates/tisvlay-gui`, `crates/tisvlay-gui-app`, `crates/tisvlay-icons`, `docs/gui/`).
