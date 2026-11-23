@@ -24,7 +24,6 @@ mod seat;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -485,11 +484,15 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
 fn listen_at(path: &Path) -> io::Result<OwnedFd> {
     let _ = std::fs::remove_file(path);
     let socket = socket(AddressFamily::UNIX, SocketType::SEQPACKET, None)?;
-    bind(&socket, &SocketAddrUnix::new(path)?)?;
-    listen(&socket, 8)?;
     // Anyone may connect, as with the installed socket; who is served is
-    // decided per connection.
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))?;
+    // decided per connection. The mode is given as the socket is made,
+    // under a umask, so nothing is changed by a path that could have been
+    // swapped since.
+    let was = rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o111));
+    let bound = SocketAddrUnix::new(path).and_then(|address| bind(&socket, &address));
+    rustix::process::umask(was);
+    bound?;
+    listen(&socket, 8)?;
     Ok(socket)
 }
 

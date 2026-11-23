@@ -102,6 +102,8 @@ let
   #   hider-probe hide <socket> <node>
   #       hides <node>, says the status and the name of the pad whose
   #       node came back, then closes, which shows the pad again
+  #   hider-probe long <socket>
+  #       sends a request with bytes after it, says the status
   #   hider-probe silent <socket> <count>
   #       sends up to <count> requests and never reads a reply; holds
   #   hider-probe idle <socket> <count>
@@ -154,6 +156,12 @@ let
                 print(f"status={status} node={node} name={name}")
             else:
                 print(f"status={status}")
+        case ["long", path]:
+            # A version request with more after it.
+            peer = connect(path)
+            peer.send(struct.pack("<BI", 6, 0) + b"more")
+            data, _, _, _ = socket.recv_fds(peer, 6, 2)
+            print(f"status={data[0]}")
         case ["silent", path, count]:
             peer = connect(path)
             peer.setblocking(False)
@@ -561,6 +569,34 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl stop silent-root silent-alice idle-bob")
         assert order(control, "restore").startswith("ok")
         machine.succeed("systemctl stop keeper")
+        wait_restored()
+
+    with subtest("a request longer than a request is refused, not read as its first five bytes"):
+        told = machine.succeed(f"su -l alice -c 'hider-probe long {SOCKET}'")
+        assert "status=7" in told, told
+
+    with subtest("run by hand with --listen, as the dev recipe does, it is the same service on a socket anyone may reach"):
+        machine.succeed("install -d -o ctrlassist-hider -g ctrlassist-hider -m 0755 /run/ctrlassist-dev")
+        machine.succeed(
+            "systemd-run --unit hider-by-hand --uid ctrlassist-hider --gid ctrlassist-hider "
+            "ctrlassist-hider --listen /run/ctrlassist-dev/hider.sock"
+        )
+        machine.wait_for_file("/run/ctrlassist-dev/hider.sock")
+        assert machine.succeed("stat -c '%A %U' /run/ctrlassist-dev/hider.sock").strip() == "srw-rw-rw- ctrlassist-hider"
+        told = machine.succeed("su -l alice -c 'ctrlassist-fixture version --socket /run/ctrlassist-dev/hider.sock'").strip()
+        assert told == "version: ${hider.version}", told
+        # Without the unit's sandbox, its user's permissions alone hide a pad.
+        machine.succeed(
+            f"systemd-run --unit by-hand --uid alice ctrlassist-fixture hide {pads()[A]['event'][0]} "
+            "--socket /run/ctrlassist-dev/hider.sock --control /tmp/by-hand"
+        )
+        machine.wait_for_file("/tmp/by-hand/hide.done")
+        told = machine.succeed("cat /tmp/by-hand/hide.done")
+        assert told.startswith("ok") and "dislodged=true" in told, told
+        assert not alice_can_open(A)
+        assert order("/tmp/by-hand", "restore").startswith("ok")
+        assert alice_can_open(A)
+        machine.succeed("systemctl stop by-hand hider-by-hand")
         wait_restored()
 
     with subtest("a pad with no driver to re-bind is refused, for the daemon to grab"):

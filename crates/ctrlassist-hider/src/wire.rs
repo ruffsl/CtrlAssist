@@ -261,6 +261,11 @@ pub fn send(
 /// Receives one message into `buffer`, with any descriptors that came
 /// beside it. A length of zero means the other end has closed.
 ///
+/// The length is the message's own, which is more than the buffer holds
+/// when the message didn't fit: what was cut off isn't to be read as a
+/// shorter message, so a caller decodes `buffer.get(..length)`, which is
+/// then nothing.
+///
 /// # Errors
 ///
 /// Fails if the socket does.
@@ -274,7 +279,7 @@ pub fn receive(
         socket,
         &mut [IoSliceMut::new(buffer)],
         &mut control,
-        RecvFlags::CMSG_CLOEXEC,
+        RecvFlags::CMSG_CLOEXEC | RecvFlags::TRUNC,
     )?;
     let mut fds = Vec::new();
     for message in control.drain() {

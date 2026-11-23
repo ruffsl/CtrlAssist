@@ -1,11 +1,13 @@
 //! The hiding service's wire protocol and its client.
 //!
-//! The service is a root process on a system socket. A client asks it to
-//! hide a pad by passing an open descriptor on the pad's event node; the
-//! service denies the pad's nodes to everyone, re-binds its driver so that
-//! whatever had it open is cut off, and passes back a descriptor on the
-//! new event node with a token. When the client's connection closes, for
-//! any reason, the service restores everything that connection hid.
+//! The service is a system process, a user of its own with no
+//! capabilities, on a system socket. A client asks it to hide a pad by
+//! passing an open descriptor on the pad's event node; the service has
+//! the pad's nodes given to its own group alone, has its driver re-bound
+//! so that whatever had it open is cut off, and passes back a descriptor
+//! on the new event node with a token. When the client's connection
+//! closes, for any reason, the service restores everything that
+//! connection hid.
 //!
 //! A pad is named by a descriptor the caller already holds, never by a
 //! path or a name, so the service grants nothing the caller couldn't
@@ -82,9 +84,11 @@ pub struct Hidden {
     pub token: Token,
     /// The pad's event node, opened by the service after hiding it.
     pub event: OwnedFd,
-    /// Whether whatever had the pad open before was cut off. False for a
-    /// pad with no driver to re-bind, which stays readable by programs
-    /// that already had it open.
+    /// Whether whatever had the pad open before was cut off, by a re-bind
+    /// of its driver, which showing it again repeats. A service that
+    /// can't re-bind a pad refuses to hide it, so a pad it hid always has
+    /// been; a service from before that said false for such a pad, which
+    /// stayed readable by programs that already had it open.
     pub dislodged: bool,
 }
 
@@ -123,7 +127,10 @@ impl Client {
         send(self.socket.as_fd(), &request.encode(), fds)?;
         let mut buffer = [0u8; Reply::SIZE];
         let (length, fds) = receive(self.socket.as_fd(), &mut buffer)?;
-        let reply = Reply::decode(&buffer[..length]).ok_or(Error::Protocol)?;
+        let reply = buffer
+            .get(..length)
+            .and_then(Reply::decode)
+            .ok_or(Error::Protocol)?;
         match reply.refusal {
             Some(refusal) => Err(Error::Refused(refusal)),
             None => Ok((reply, fds)),
