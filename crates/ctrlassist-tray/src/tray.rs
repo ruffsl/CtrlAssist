@@ -267,27 +267,35 @@ impl PadTray {
                 key,
                 value,
             } => {
-                let fields = &self.view.fields;
-                let kept = self
+                // Only a profile in the preset form has fields to set.
+                let Some((was, mut values)) = self
+                    .view
+                    .profiles
+                    .iter()
+                    .find(|kept| kept.name == profile)
+                    .and_then(|kept| {
+                        let values = form::from_toml(&self.view.fields, &kept.toml)?;
+                        Some((kept.toml.clone(), values))
+                    })
+                else {
+                    return;
+                };
+                menu::pick(&self.view, &profile, &mut values, &key, &value);
+                let toml = form::to_toml(&self.view.fields, &values);
+                let Some(kept) = self
                     .view
                     .profiles
                     .iter_mut()
-                    .find(|kept| kept.name == profile);
-                // Only a profile in the preset form has fields to set.
-                let Some((kept, mut values)) = kept.and_then(|kept| {
-                    let values = form::from_toml(fields, &kept.toml)?;
-                    Some((kept, values))
-                }) else {
+                    .find(|kept| kept.name == profile)
+                else {
                     return;
                 };
-                menu::pick(fields, &self.view.pads, &mut values, &key, &value);
-                let toml = form::to_toml(fields, &values);
                 // Shown as picked until the daemon publishes it, so that
                 // a second pick made at once builds on the first.
                 self.picked
                     .entry(profile.clone())
                     .or_insert_with(|| Picks {
-                        was: kept.toml.clone(),
+                        was,
                         sent: Vec::new(),
                     })
                     .sent
@@ -805,6 +813,21 @@ mod tests {
             tray.activate(command);
             assert_eq!(clicked.try_recv().unwrap(), action);
         }
+    }
+
+    /// One notch moves the mark to the next line of the tooltip.
+    #[test]
+    fn a_notch_moves_the_mark_to_the_tooltip_s_next_line() {
+        let (mut tray, _clicked) = tray(Some(Phase::Running));
+        tray.view.profiles[1].toml = "mode = \"unicast\"\npad = \"model:2dc8:6003\"\n".to_string();
+        (tray.view.pads[1].vendor, tray.view.pads[1].product) = (0x2dc8, 0x6003);
+        let mut alpha = tray.view.profiles[1].clone();
+        alpha.name = "alpha".to_string();
+        tray.view.profiles.insert(0, alpha);
+        assert_eq!(tray.aimed(), Some("couch"));
+        tray.scroll(120, ksni::Orientation::Vertical);
+        assert_eq!(tray.aimed(), Some("alpha"));
+        assert!(tray.tool_tip().description.contains("\n► alpha: Ready\n"));
     }
 
     /// The text a pick asked to keep.

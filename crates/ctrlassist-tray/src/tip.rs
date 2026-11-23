@@ -93,9 +93,31 @@ pub(crate) fn names(wanted: &PadRef, pad: &Pad) -> bool {
     }
 }
 
+/// The pads that `wanted`, a profile's pads in the order of their
+/// names, would have if it started now, as the daemon binds them: one
+/// named by its id is that pad, if it is known; one named by model is
+/// the first connected pad of the model that no setup has and none
+/// before it took. None where no pad would be.
+pub(crate) fn bind<'a>(view: &'a View, wanted: &[&PadRef]) -> Vec<Option<&'a Pad>> {
+    let mut bound: Vec<Option<&Pad>> = Vec::with_capacity(wanted.len());
+    for wanted in wanted {
+        let pad = match wanted {
+            PadRef::Exact(id) => view.pad(id),
+            PadRef::Model(..) => view.pads.iter().find(|pad| {
+                names(wanted, pad)
+                    && pad.connected
+                    && pad.setup.is_none()
+                    && !bound.iter().flatten().any(|taken| taken.id == pad.id)
+            }),
+        };
+        bound.push(pad);
+    }
+    bound
+}
+
 /// The kept profiles that could start now, as the window's "Ready": not
-/// running, nothing wrong, and every pad they name connected and in no
-/// setup.
+/// running, nothing wrong, and a pad of its own for each part, connected
+/// and in no setup. Two parts named by one model need two such pads.
 #[must_use]
 pub fn ready(view: &View) -> Vec<&str> {
     view.profiles
@@ -103,10 +125,14 @@ pub fn ready(view: &View) -> Vec<&str> {
         .filter(|profile| profile.problem.is_none() && view.setup(&profile.name).is_none())
         .filter(|profile| {
             Checked::check(&profile.toml).is_ok_and(|plan| {
-                plan.sources.iter().all(|source| {
-                    view.pads
-                        .iter()
-                        .any(|pad| names(&source.pad, pad) && pad.connected && pad.setup.is_none())
+                let wanted: Vec<&PadRef> = plan.sources.iter().map(|source| &source.pad).collect();
+                let bound = bind(view, &wanted);
+                bound.iter().enumerate().all(|(at, pad)| {
+                    pad.is_some_and(|pad| {
+                        pad.connected
+                            && pad.setup.is_none()
+                            && !bound[..at].iter().flatten().any(|other| other.id == pad.id)
+                    })
                 })
             })
         })
@@ -114,16 +140,17 @@ pub fn ready(view: &View) -> Vec<&str> {
         .collect()
 }
 
-/// The profiles a middle click could act on, in the order of their
-/// names: the ones that run, to stop, and the ones that could start.
+/// The profiles a middle click could act on, in the tooltip's order, so
+/// that a notch of the wheel moves the mark a line: the ones that run,
+/// to stop, then the ones that could start, each in the menu's order
+/// with the default profile first.
 #[must_use]
 pub fn candidates(view: &View) -> Vec<&str> {
-    // In the menu's order, the default profile first.
     let ready = ready(view);
-    menu::listed(view)
-        .into_iter()
-        .filter(|name| view.setup(name).is_some() || ready.contains(name))
-        .collect()
+    let listed = menu::listed(view);
+    let running = listed.iter().filter(|name| view.setup(name).is_some());
+    let startable = listed.iter().filter(|name| ready.contains(name));
+    running.chain(startable).copied().collect()
 }
 
 /// The profile a middle click acts on: the one `remembered`, the last
@@ -160,12 +187,13 @@ pub fn description(view: &View, target: Option<&str>) -> String {
         let connected = view.pads.iter().filter(|pad| pad.connected).count();
         lines.push(format!("{connected} of {} pads connected", view.pads.len()));
     }
-    for setup in &view.setups {
-        setup_lines(view, setup, target, &mut lines);
-    }
-    // A line each, so the mark has somewhere to be.
-    for name in ready(view) {
-        lines.push(format!("{} {name}: Ready", marked(name, target)));
+    // In the wheel's order. A profile that could start has a line of
+    // its own, so the mark has somewhere to be.
+    for name in candidates(view) {
+        match view.setup(name) {
+            Some(setup) => setup_lines(view, setup, target, &mut lines),
+            None => lines.push(format!("{} {name}: Ready", marked(name, target))),
+        }
     }
     lines.join("\n")
 }
@@ -247,6 +275,51 @@ mod tests {
         // One could: that one. One runs: that one, to stop.
         assert_eq!(target(&kept(None), None), Some("couch"));
         assert_eq!(target(&kept(Some(Phase::Running)), None), Some("couch"));
+    }
+
+    /// The tooltip lists what the wheel goes through, in its order: the
+    /// setups first, then what could start, so one notch moves the mark
+    /// one line.
+    #[test]
+    fn the_wheel_goes_through_the_tooltip_in_its_order() {
+        let mut view = view(Some(Phase::Running), Hiding::Service);
+        view.profiles[1].toml = "mode = \"unicast\"\npad = \"model:2dc8:6003\"\n".to_string();
+        (view.pads[1].vendor, view.pads[1].product) = (0x2dc8, 0x6003);
+        let mut alpha = view.profiles[1].clone();
+        alpha.name = "alpha".to_string();
+        view.profiles.insert(0, alpha);
+        assert_eq!(candidates(&view), ["couch", "alpha", "desk"]);
+        let lines: Vec<String> = description(&view, Some("couch"))
+            .lines()
+            .filter(|line| !line.starts_with("    "))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "► couch: Running · Toggle",
+                "  alpha: Ready",
+                "  desk: Ready"
+            ]
+        );
+    }
+
+    /// Two parts named by one model need two pads of it to be ready.
+    #[test]
+    fn two_parts_of_one_model_need_two_pads_of_it() {
+        const TWO: &str =
+            "mode = \"toggle\"\nprimary = \"model:054c:0ce6\"\nassist = \"model:054c:0ce6\"\n";
+        let mut one = kept(None);
+        (one.pads[1].vendor, one.pads[1].product) = (0x2dc8, 0x6003);
+        one.profiles[1].toml = TWO.to_string();
+        assert_eq!(ready(&one), ["couch"]);
+        // A second of the model, and it is.
+        let mut two = one.clone();
+        (two.pads[1].vendor, two.pads[1].product) = (0x054c, 0x0ce6);
+        assert_eq!(ready(&two), ["couch", "desk"]);
+        // Not while one of them is in a setup.
+        two.pads[1].setup = Some("other".to_string());
+        assert_eq!(ready(&two), ["couch"]);
     }
 
     #[test]
