@@ -628,6 +628,24 @@ fn text_that_is_not_a_profile_is_refused_with_its_line() {
         "schema: this profile is for schema 2, and this version reads up to 1"
     );
     assert_eq!(refused("schema = 0\n").at, "schema");
+    // A newer schema is said to be one even where the file has keys this
+    // version doesn't know, as a newer file may well have, wherever the
+    // schema is written.
+    for newer in [
+        "schema = 2\nmode = \"priority\"\nfuture = true\n",
+        "mode = \"priority\"\n[node.m]\nnew-key = 1\n",
+    ] {
+        let text = if newer.starts_with("schema") {
+            newer.to_string()
+        } else {
+            format!("schema = 2\n{newer}")
+        };
+        assert_eq!(
+            refused(&text).to_string(),
+            "schema: this profile is for schema 2, and this version reads up to 1",
+            "{text}"
+        );
+    }
 }
 
 #[test]
@@ -855,8 +873,24 @@ mod form {
         ] {
             assert_eq!(form::from_toml(&fields, toml), None, "{toml}");
         }
-        // The file's own schema number is no field, and is passed over.
-        assert!(form::from_toml(&fields, include_str!("fixtures/preset.toml")).is_some());
+        // The file's own schema number is no field, and is passed over
+        // where it is this version's.
+        let preset = include_str!("fixtures/preset.toml");
+        assert!(form::from_toml(&fields, preset).is_some());
+        assert!(form::from_toml(&fields, &format!("schema = 1\n{preset}")).is_some());
+    }
+
+    /// A form shows nothing of a profile for another schema: what it
+    /// writes carries no schema, so writing a newer profile's values
+    /// back would quietly make it this version's.
+    #[test]
+    fn a_form_shows_nothing_of_a_profile_for_another_schema() {
+        let fields = form::fields();
+        let preset = include_str!("fixtures/preset.toml");
+        for schema in ["2", "0", "\"1\""] {
+            let toml = format!("schema = {schema}\n{preset}");
+            assert_eq!(form::from_toml(&fields, &toml), None, "{toml}");
+        }
     }
 
     #[test]

@@ -626,6 +626,22 @@ impl Profile {
     /// written for a newer schema. What the profile then means is checked
     /// by [`plan`](Self::plan).
     pub fn from_toml(text: &str) -> Result<Self, ProfileError> {
+        // The schema first: a file for a newer one may well have a key
+        // this version doesn't know, which the strict read below would
+        // name in place of the reason.
+        let newer = text
+            .parse::<toml::Table>()
+            .ok()
+            .and_then(|table| table.get("schema")?.as_integer())
+            .filter(|schema| *schema > i64::from(SCHEMA));
+        if let Some(schema) = newer {
+            return error(
+                "schema",
+                format!(
+                    "this profile is for schema {schema}, and this version reads up to {SCHEMA}"
+                ),
+            );
+        }
         let profile: Self = toml::from_str(text).map_err(|error| {
             // The line, where the parser knows it; its message already
             // names the key.
@@ -642,15 +658,6 @@ impl Profile {
                 problem: error.message().to_string(),
             }
         })?;
-        if profile.schema > SCHEMA {
-            return error(
-                "schema",
-                format!(
-                    "this profile is for schema {}, and this version reads up to {SCHEMA}",
-                    profile.schema
-                ),
-            );
-        }
         if profile.schema == 0 {
             return error("schema", "the schema starts at 1");
         }
