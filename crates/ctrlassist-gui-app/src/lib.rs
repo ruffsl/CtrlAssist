@@ -92,7 +92,7 @@ pub fn run() -> Result<()> {
     // claim, and the window opens all the same.
     let gui_config_path = couch::default_config_path();
     let claimed = rt.block_on(dbus::try_claim_and_serve(Some(gui_config_path.clone())));
-    let (_gui_dbus, activation) = match claimed {
+    let (gui_dbus, activation) = match claimed {
         Ok((dbus::ClaimResult::Primary(connection), activation)) => {
             (Some(connection), Some(activation))
         }
@@ -395,6 +395,13 @@ pub fn run() -> Result<()> {
     // driving tasks. `rt` drops at the end of this function, aborting
     // any that remain.
     app.run()?;
+
+    // The window is gone: its name goes before anything is waited for,
+    // so that a launch from now on opens a window of its own rather than
+    // handing over to this one, which has none to raise.
+    if let Some(connection) = gui_dbus {
+        rt.block_on(dbus::release(connection));
+    }
 
     // A preference changed just before the window closed may still be
     // on its way to the disk, and a profile's change, start, copy or

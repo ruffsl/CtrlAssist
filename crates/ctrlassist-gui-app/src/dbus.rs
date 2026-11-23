@@ -27,7 +27,7 @@ use slint::winit_030::WinitWindowAccessor;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use tracing::info;
+use tracing::{info, warn};
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::interface;
 use zbus::names::WellKnownName;
@@ -152,6 +152,17 @@ async fn claim_on_connection(
                 Err(error) => Ok((ClaimResult::Unanswered(error), activation)),
             }
         }
+    }
+}
+
+/// Gives up the window's name, and the connection that claimed it, as
+/// the window closes: a launch after this claims the name itself and
+/// opens a window, where one handed over to this process would find no
+/// window to raise.
+pub(crate) async fn release(connection: zbus::Connection) {
+    let name = WellKnownName::try_from(GUI_BUS_NAME).expect("static bus name is well-formed");
+    if let Err(error) = connection.release_name(name).await {
+        warn!(%error, "the window's name on the session bus wasn't released");
     }
 }
 
@@ -454,5 +465,37 @@ mod tests {
             .await
             .expect("a bus is there");
         assert!(matches!(claimed, ClaimResult::Unanswered(_)));
+    }
+
+    /// A window that is closing gives up its name before it waits for
+    /// anything, and a launch after that claims the name and opens a
+    /// window of its own.
+    #[tokio::test]
+    async fn a_window_that_has_released_its_name_leaves_it_to_the_next_launch() {
+        let Some(bus) = private_bus() else {
+            return;
+        };
+        let connect = || async {
+            zbus::connection::Builder::address(bus.address.as_str())
+                .expect("dbus-daemon printed an address")
+                .build()
+                .await
+                .expect("the private bus takes a connection")
+        };
+        let (first, _) = claim_on_connection(connect().await, None)
+            .await
+            .expect("a bus is there");
+        let ClaimResult::Primary(first) = first else {
+            unreachable!("the name is free on a bus of the test's own");
+        };
+        // Kept alive, as a window still waiting on its writers keeps the
+        // process and its connection: the name is gone all the same.
+        let kept = first.clone();
+        release(first).await;
+        let (next, _) = claim_on_connection(connect().await, None)
+            .await
+            .expect("a bus is there");
+        assert!(matches!(next, ClaimResult::Primary(_)));
+        drop(kept);
     }
 }
