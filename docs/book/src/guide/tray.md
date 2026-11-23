@@ -38,17 +38,24 @@ CtrlAssist tells you when:
 - a controller that no arrangement uses **connected** or **disconnected**;
 - something you asked for from the menu **couldn't be done**, with the reason.
 
-Each kind can be turned off. The switches are kept in `tray.toml`, in `~/.config/ctrlassist` beside your profiles, and everything is on until you turn it off:
+Each kind can be turned off in the CtrlAssist window. The switches are kept in `tray.toml`, in `~/.config/ctrlassist` beside your profiles, and everything is on until you turn it off:
 
 ```toml
 schema = 1
-setup_started = true    # an arrangement started or stopped
-setup_trouble = true    # held, failed, only grabbed, no rumble, the daemon stopped
-pad_connection = true   # a controller connected or disconnected
-refused = true          # something asked from the menu couldn't be done
+target = "default"
+setup_started = true
+setup_trouble = true
+pad_connection = true
+refused = true
 ```
 
-The tray reads the file when it starts. After editing it by hand, restart the tray.
+- `setup_started`: an arrangement started or stopped.
+- `setup_trouble`: held, failed, only grabbed, no rumble, the daemon stopped.
+- `pad_connection`: a controller connected or disconnected.
+- `refused`: something asked from the menu couldn't be done.
+- `target`: the profile a middle click acts on, which the tray keeps there itself as the mark moves, so it is where it was after the tray restarts.
+
+The tray reads the file when it starts, and again whenever the daemon comes back. After editing it by hand, **Reload** in the window takes the edit up, or says what is wrong with the file; until then the tray leaves a file it can't read as it is. The tray writes the file plain, so comments in it don't last.
 
 ## Starting and stopping the tray
 

@@ -215,11 +215,12 @@ pub(crate) fn virtual_name(view: &View, identity: &str) -> String {
 /// What a running setup's nodes select between: who has control.
 fn control_entries(setup: &Setup, entries: &mut Vec<Entry>) {
     for node in &setup.nodes {
-        // A preset's one node needs no name; any other is called by its.
-        let label = if node.name == "mux" {
+        // One node needs no name, and of several each is called by its
+        // own, as the window has them.
+        let label = if setup.nodes.len() == 1 {
             "Has control".to_string()
         } else {
-            format!("{} selects", node.name)
+            node.name.clone()
         };
         let choices = node
             .choices
@@ -748,7 +749,8 @@ pub fn menu(view: &View) -> Vec<Entry> {
     entries
 }
 
-/// can't talk to.
+/// What the menu and the tooltip say of a daemon on release `theirs`,
+/// which this tray can't talk to.
 #[must_use]
 pub fn mismatch_text(theirs: &str) -> String {
     format!(
@@ -1038,7 +1040,9 @@ default ✓ (Not set up) >
         odd.setups[0].sinks[0].node = None;
         let menu = outline(&menu(&odd));
         assert!(menu.starts_with("couch (Running) >\n"), "{menu}");
-        assert!(menu.contains("share selects >"), "{menu}");
+        // Its one node has control, whatever it is called, as the window
+        // says.
+        assert!(menu.contains("  Has control >\n"), "{menu}");
         assert!(
             menu.contains("- Assist: waiting for a pad that fits"),
             "{menu}"
@@ -1046,6 +1050,14 @@ default ✓ (Not set up) >
         assert!(menu.contains("- Primary: DualSense\n"), "{menu}");
         assert!(menu.contains("- Virtual: Generic (not made)"), "{menu}");
         assert!(!menu.contains("Mode:"), "{menu}");
+        // Of several, each goes by its name.
+        let mut second = odd.setups[0].nodes[0].clone();
+        second.name = "route".to_string();
+        odd.setups[0].nodes.push(second);
+        let menu = outline(&super::menu(&odd));
+        assert!(menu.contains("  share >\n"), "{menu}");
+        assert!(menu.contains("  route >\n"), "{menu}");
+        assert!(!menu.contains("Has control"), "{menu}");
         // Not running, it has Start and nothing else.
         let mut kept = view(None, Hiding::Service);
         kept.profiles[1].toml = "[source.a]\npad = \"model:0001:0001\"\n".to_string();

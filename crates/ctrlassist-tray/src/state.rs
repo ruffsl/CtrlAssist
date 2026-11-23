@@ -127,10 +127,7 @@ impl View {
                     news.push(toast(
                         Category::SetupTrouble,
                         format!("{name} is held"),
-                        format!(
-                            "{} disconnected. The virtual pad stays, and the rest plays on.",
-                            missing.join(" and ")
-                        ),
+                        held_body(setup, &missing),
                         WARNING,
                     ));
                 }
@@ -267,6 +264,25 @@ impl View {
         }
         news
     }
+}
+
+/// What a held setup's notification says: the pads that left, by name,
+/// that its virtual pads stay, and whether the pads still there play on
+/// or the setup waits for the ones that left.
+fn held_body(setup: &Setup, missing: &[&str]) -> String {
+    let stay = if setup.sinks.len() == 1 {
+        "The virtual pad stays"
+    } else {
+        "The virtual pads stay"
+    };
+    let present = setup.sources.iter().filter(|source| source.present).count();
+    let rest = match (present, missing.len()) {
+        (0, 1) => " until it is back",
+        (0, _) => " until they are back",
+        (1, _) => ", and the other pad plays on",
+        _ => ", and the other pads play on",
+    };
+    format!("{} disconnected. {stay}{rest}.", missing.join(" and "))
 }
 
 /// What was asked of a setup from this tray and isn't news when seen,
@@ -719,9 +735,20 @@ pub(crate) mod tests {
 
         let news = held.news(&running);
         assert_eq!(summaries(&news), ["couch is held"]);
-        assert!(
-            news[0].body.starts_with("Xbox pad disconnected"),
-            "{news:?}"
+        assert_eq!(
+            news[0].body,
+            "Xbox pad disconnected. The virtual pad stays, and the other pad plays on."
+        );
+        // A setup of one pad, with two virtual pads, waits for it.
+        let (mut alone, mut was) = (held.clone(), running.clone());
+        for view in [&mut alone, &mut was] {
+            view.setups[0].sources.truncate(1);
+            let sink = view.setups[0].sinks[0].clone();
+            view.setups[0].sinks.push(sink);
+        }
+        assert_eq!(
+            alone.news(&was)[0].body,
+            "Xbox pad disconnected. The virtual pads stay until it is back."
         );
         assert_eq!(summaries(&running.news(&held)), ["couch is running again"]);
         let news = failed.news(&running);
