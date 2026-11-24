@@ -920,6 +920,12 @@ impl Hiding {
             .connector
             .dial(socket, &self.shared, Arc::clone(&dialing))
         {
+            // The service can't be reached from here, as with any other
+            // connection that fails: what is published says the pads are
+            // grabbed, as they are, and one grabbed for want of it is
+            // hidden once a later connection finds the service, rather
+            // than asked again at once into the same failure.
+            self.found(Found::Absent);
             return Err(Unasked::NotThere);
         }
         let mut state = self.state();
@@ -1588,6 +1594,37 @@ mod tests {
         looking.recv().unwrap();
         assert_eq!(hiding.mechanism(), payload::Hiding::Service);
         assert_eq!(hiding.service_release().as_deref(), Some("1.2.3"));
+        hiding.close();
+    }
+
+    /// A service with no room for another connection, where the thread
+    /// that waits for room can't be had, can't be reached: the pad is
+    /// grabbed, the service taken for absent as for any connection that
+    /// fails, and the pad isn't to be hidden until a later connection
+    /// finds the service, so it isn't asked again at once into the same
+    /// failure.
+    #[test]
+    fn a_full_queue_with_no_thread_to_wait_for_room_is_the_service_absent() {
+        let (_dir, _listener, path) = silent_with(0);
+        // Fills the queue.
+        let filler = socket(AddressFamily::UNIX, SocketType::SEQPACKET, None).unwrap();
+        rustix::net::connect(&filler, &SocketAddrUnix::new(&path).unwrap()).unwrap();
+        let hiding = Hiding::new(&path);
+        hiding.found(Found::There {
+            release: "1.2.3".to_string(),
+        });
+        // The thread that waits for room, gone.
+        let (sender, receiver) = mpsc::channel();
+        drop(receiver);
+        *hiding.connector.queue.lock().unwrap() = Some(sender);
+        let (errand, fd) = (Arc::new(Errand::default()), a_descriptor());
+        assert_eq!(
+            hiding.hide(&errand, "pad", fd.as_fd()).map(|_| ()),
+            Err(Unhidden::Not)
+        );
+        assert_eq!(hiding.mechanism(), payload::Hiding::Grab);
+        assert!(hiding.is_wanting("pad"));
+        assert!(!hiding.take_wanting("pad"), "not until it is found");
         hiding.close();
     }
 }
