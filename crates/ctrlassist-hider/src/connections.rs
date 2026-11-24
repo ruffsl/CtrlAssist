@@ -221,6 +221,22 @@ mod tests {
         rustix::net::recv(client, &mut [0u8; 8], RecvFlags::DONTWAIT) == Err(Errno::AGAIN)
     }
 
+    /// Where the closer's thread sleeps, as the kernel names it: `0` while
+    /// it runs. No other test in this binary starts a closer.
+    fn closer_sleeps_in() -> String {
+        let mut found = Vec::new();
+        for task in std::fs::read_dir("/proc/self/task").unwrap() {
+            let task = task.unwrap().path();
+            if std::fs::read_to_string(task.join("comm")).unwrap().trim() == "closer" {
+                found.push(task);
+            }
+        }
+        let [task] = found.as_slice() else {
+            panic!("one closer's thread, not {}", found.len());
+        };
+        std::fs::read_to_string(task.join("wchan")).unwrap()
+    }
+
     #[test]
     fn a_close_that_blocks_holds_up_the_closer_and_nothing_else() {
         let (closes, closed) = mpsc::channel();
@@ -228,8 +244,22 @@ mod tests {
         let (stuck, peer) = lingering();
         let (service, blocked) = connection(&[stuck]);
         closer.close(service);
-        // The closer has begun closing it, and is held in the close.
+        // The closer has begun closing it: its end is gone.
         poll(&mut [PollFd::new(&blocked, PollFlags::IN)], None).unwrap();
+        // And is held in the close, waiting for the lingering socket's data
+        // to go: either it is found asleep there, or the close has ended
+        // and it has said so.
+        loop {
+            assert_eq!(
+                closed.try_recv(),
+                Err(mpsc::TryRecvError::Empty),
+                "the close didn't block"
+            );
+            if closer_sleeps_in() == "wait_woken" {
+                break;
+            }
+            std::thread::yield_now();
+        }
         // Each handed over at once all the same: two have room behind it,
         // and the next is kept, with nothing more to be accepted.
         let behind: Vec<_> = (0..3).map(|_| connection(&[])).collect();

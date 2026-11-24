@@ -34,7 +34,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use ctrlassist_hider::{Refusal, Reply, Request, Token, pack_release, receive, send};
 use rustix::event::{EventfdFlags, PollFd, PollFlags, eventfd, poll};
-use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use rustix::io::Errno;
 use rustix::net::sockopt::socket_peercred;
 use rustix::net::{
@@ -73,8 +72,6 @@ struct State {
     next_token: u32,
     next_connection: u64,
     connections: Connections,
-    /// Whether anyone has connected since the service started.
-    served_anyone: bool,
 }
 
 impl State {
@@ -486,8 +483,6 @@ struct Woken {
     closed: bool,
     /// A client is waiting to be accepted.
     waiting: bool,
-    /// Nothing was waited for: the accept is to wait for a client itself.
-    blocking: bool,
 }
 
 /// Waits for a connection to close, or, unless there is no room to accept
@@ -501,49 +496,48 @@ fn wait(shared: &Shared, listener: &OwnedFd, exhausted: bool) -> Woken {
         Ok(_) => Woken {
             closed: !fds[0].revents().is_empty(),
             waiting: fds.get(1).is_some_and(|fd| !fd.revents().is_empty()),
-            blocking: false,
         },
         Err(Errno::INTR) => Woken {
             closed: false,
             waiting: false,
-            blocking: false,
         },
         Err(error) => {
             // Ending the service would show every hidden pad, and trying
             // again at once would spin. Instead it waits on the one thing
             // that matters now, blocking on it alone: a connection closing
             // when there's no room to accept, by reading the closings,
-            // else a client to accept, by an accept that waits.
+            // else a client to accept, by the accept, which waits for one.
             warn!(%error, "couldn't wait on the listener and the connections together; waiting on one alone");
             Woken {
                 closed: exhausted,
                 waiting: !exhausted,
-                blocking: !exhausted,
             }
         }
     }
 }
 
-/// Accepts a client, waiting for one. systemd hands the listener over
-/// non-blocking, and shares it, so it is made blocking for this accept
-/// alone and put back after.
-fn accept_waiting(listener: &OwnedFd) -> rustix::io::Result<OwnedFd> {
-    let flags = fcntl_getfl(listener)?;
-    fcntl_setfl(listener, flags - OFlags::NONBLOCK)?;
-    let accepted = accept_with(listener, SocketFlags::CLOEXEC);
-    if let Err(error) = fcntl_setfl(listener, flags) {
-        warn!(%error, "couldn't make the listener non-blocking again");
-    }
-    accepted
-}
-
-/// Serves clients until none is left, or forever if `stay` is set.
+/// Serves clients until stopped, or until accepting fails with nothing
+/// connected.
+///
+/// Started on demand, the service stays once started: how often it starts
+/// is then not its clients' doing, and systemd's own limits on how often
+/// a socket may start its service, and the service start, can stay, to
+/// stop a start that keeps failing (a missing user or binary) rather than
+/// try it again for as long as a client waits. Were it to exit with its
+/// last connection, anyone could start it as often as they connect, and
+/// a daemon showing its pads again and hiding them anew a few times in a
+/// row would meet the same limits.
+///
+/// `listener` is blocking, so an accept waits for a client: systemd
+/// clears `O_NONBLOCK` on the sockets it passes, as `NonBlocking=` is
+/// off, and [`listen_at`] makes it so. Only this thread accepts, so one
+/// that `poll` said is waiting is there to accept.
 ///
 /// The caller never closes `listener`, leaving it to the kernel as the
 /// process exits: closing the last reference to a listener releases the
 /// connections still queued on it, with what their clients sent, on the
 /// thread that closes it, which a lingering socket would hold there.
-fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
+fn run(listener: &OwnedFd) -> io::Result<()> {
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
         // Blocking: it is read only once a connection has closed, or when
@@ -574,21 +568,9 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
             closer.retry();
         }
         if !woken.waiting {
-            let state = shared.state();
-            if state.connections.open() == 0 && state.served_anyone && !stay {
-                // Started on demand, and nobody needs it now. A client
-                // that connects from here on waits on the socket systemd
-                // holds, which starts the service again.
-                return Ok(());
-            }
             continue;
         }
-        let accepted = if woken.blocking {
-            accept_waiting(listener)
-        } else {
-            accept_with(listener, SocketFlags::CLOEXEC)
-        };
-        let socket = match accepted {
+        let socket = match accept_with(listener, SocketFlags::CLOEXEC) {
             Ok(socket) => socket,
             // The client gave up, or a signal came: nothing is left over.
             Err(Errno::INTR | Errno::CONNABORTED | Errno::AGAIN) => continue,
@@ -603,7 +585,7 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
                 }
                 // With nothing connected nothing is hidden, so stopping
                 // shows nothing: systemd starts the service afresh for
-                // the client still queued.
+                // the client still queued, within its limits.
                 return Err(io::Error::other(format!(
                     "couldn't accept a connection with none open, so nothing will free what it needs: {error}"
                 )));
@@ -619,7 +601,6 @@ fn run(listener: &OwnedFd, stay: bool) -> io::Result<()> {
         let seated = user.is_some_and(seat::has_seat);
         let (owner, holder) = {
             let mut state = shared.state();
-            state.served_anyone = true;
             let Some(holder) = state.connections.admit(user, seated) else {
                 // Closed at once, by the closer, with no thread made and
                 // nothing read: neither one user nor every user with no
@@ -718,14 +699,14 @@ fn main() -> ExitCode {
     let outcome = match arguments.as_slice() {
         // Started by systemd on a client's first connection.
         [] => unprivileged().and_then(|()| match activation::listener() {
-            Some(listener) => run(&ManuallyDrop::new(listener), false),
+            Some(listener) => run(&ManuallyDrop::new(listener)),
             None => Err(io::Error::other(
                 "not started by a systemd socket; use --listen <path>",
             )),
         }),
         ["--listen", path] => unprivileged()
             .and_then(|()| listen_at(Path::new(path)))
-            .and_then(|listener| run(&ManuallyDrop::new(listener), true)),
+            .and_then(|listener| run(&ManuallyDrop::new(listener))),
         // Undo whatever is still hidden: run by the unit after the service
         // stops, so a service that died doesn't leave pads hidden until
         // the next one starts.
