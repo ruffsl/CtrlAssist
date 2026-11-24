@@ -92,7 +92,8 @@ pub(crate) struct Pad {
     pub(crate) identity: Identity,
     /// The marker files that hide it, by name.
     pub(crate) markers: BTreeSet<String>,
-    /// Every marker the rule hides it by, as [`named_by`] says.
+    /// Every marker the rule hides its event, js and mouse nodes by, as
+    /// [`named_by`] says.
     pub(crate) named_by: BTreeSet<String>,
 }
 
@@ -221,16 +222,23 @@ pub(crate) fn markers(names: &Names) -> BTreeSet<String> {
     markers
 }
 
-/// Every marker the rule hides a pad's nodes by, from what its devices
-/// say: those [`markers`] makes for it, and the rest the rule tests as
-/// well, its serial number beside its address and its port beside
-/// either. A pad is hidden while any of these is there, though a hide of
-/// it makes only the first.
+/// Every marker the rule hides a pad's event, js and mouse nodes by, from
+/// what its devices say: its address, its serial number, its HID device
+/// and its port, whichever it has, though a hide of it makes only some.
+/// Its raw node is named apart, by [`raw_markers`]: a marker that names
+/// only the raw node, as a pad of the model hidden in its port does,
+/// doesn't keep the others hidden.
 pub(crate) fn named_by(names: &Names) -> BTreeSet<String> {
-    let mut named = markers(names);
+    let mut named = BTreeSet::new();
+    if let Some(address) = names.uniq.as_deref().filter(|uniq| is_address(uniq)) {
+        named.insert(format!("addr-{address}"));
+    }
     let serial = names.serial.as_deref().filter(|serial| is_serial(serial));
     if let (Some(serial), Some(vendor), Some(product)) = (serial, names.vendor, names.product) {
         named.insert(format!("serial-{vendor:04x}-{product:04x}-{serial}"));
+    }
+    if let Some(hid) = names.hid.as_deref().filter(|name| is_hid_name(name)) {
+        named.insert(format!("hid-{hid}"));
     }
     if let Some(interface) = interface(names) {
         named.insert(format!("port-{interface}"));
@@ -923,10 +931,11 @@ mod tests {
         assert_eq!(markers(&xpad), set(&["serial-045e-028e-XPADFIXTURE1"]));
     }
 
-    /// The rule hides a pad by its port's marker, and by its serial
-    /// number's beside its address's, though a hide of it makes neither:
-    /// a pad with a serial number plugged into the port of one hidden by
-    /// its port is hidden by that marker, which the sweep is to see.
+    /// The rule hides a pad's nodes by its port's marker, and by its
+    /// serial number's beside its address's, though a hide of it makes
+    /// neither: a pad with a serial number plugged into the port of one
+    /// hidden by its port is hidden by that marker, which the sweep is to
+    /// see. Its raw node's markers aren't among them.
     #[test]
     fn a_pad_is_named_by_every_marker_the_rule_tests_for_it() {
         let xpad = Names {
@@ -951,10 +960,13 @@ mod tests {
                 "serial-045e-028e-XPADFIXTURE1",
                 "port-1-1:1.0",
                 "hid-0003:054C:0CE6.0017",
-                "raw-1-1:1.0-0003:0000054C:00000CE6",
             ])
         );
-        assert!(markers(&both).is_subset(&named_by(&both)));
+        let all: BTreeSet<String> = named_by(&both)
+            .union(&raw_markers(&both))
+            .cloned()
+            .collect();
+        assert!(markers(&both).is_subset(&all));
         // With nothing the rule can name, nothing.
         assert_eq!(named_by(&names()), set(&[]));
     }
