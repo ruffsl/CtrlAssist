@@ -37,11 +37,21 @@ udevadm trigger --action=change --subsystem-match=hidraw 2>/dev/null || true
 
 # The hiding service starts on demand from its socket, so only the socket
 # is enabled and started. On an upgrade a running service is restarted
-# onto the new binary; whatever it had hidden is restored as it stops and
-# hidden again by the daemon.
+# onto the new binary, its socket listening throughout: whatever it had
+# hidden is restored as it stops, and the daemon's next connection waits
+# on the socket for the new service, which hides it again. With no
+# service running nothing is hidden, and the socket itself is restarted,
+# as a listener keeps the settings it was made with until then. A socket
+# kept listening keeps them until it next restarts, at the latest at the
+# next boot; the service sees to the one that matters most, refusing
+# descriptors, itself as it starts.
 systemctl enable ctrlassist-hider.socket 2>/dev/null || true
+if systemctl is-active --quiet ctrlassist-hider.service 2>/dev/null; then
+    systemctl try-restart ctrlassist-hider.service 2>/dev/null || true
+else
+    systemctl try-restart ctrlassist-hider.socket 2>/dev/null || true
+fi
 systemctl start ctrlassist-hider.socket 2>/dev/null || true
-systemctl try-restart ctrlassist-hider.service 2>/dev/null || true
 
 # The daemon and the tray are each user's own services: enabled for every
 # user, started at their next login. A user who doesn't want them runs

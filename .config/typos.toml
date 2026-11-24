@@ -15,6 +15,9 @@ ratatui = "ratatui"
 # The kernel's name for the inheritable capability set in
 # /proc/<pid>/status, CapInh, which the hider check reads.
 Inh = "Inh"
+# NixOS's option for a configuration within a configuration, and the
+# directory a switch to one is made from, which the daemon check uses.
+specialisation = "specialisation"
 
 [files]
 # Scan the dotted directories too: .claude/ holds the project instructions.

@@ -528,9 +528,12 @@ fn wait(shared: &Shared, listener: &OwnedFd, exhausted: bool) -> Woken {
 /// could block the closer. Asked of the listener once, and said: a kernel
 /// from before Linux 6.16 has no such setting, and every connection may
 /// pass descriptors as soon as it has connected, leaving the closer the
-/// only defense against a close that blocks. A listener that takes them,
-/// as one from systemd before 258 does, the unit's setting unknown to it,
-/// is made to refuse them here, for the connections queued from now on.
+/// only defense against a close that blocks. A listener that takes them
+/// although the socket unit refuses them is made to refuse them here, for
+/// the connections queued from now on: systemd before 258 doesn't know
+/// the unit's setting, and a socket not restarted since its unit gained
+/// it keeps the listener it made before. Which it was can't be told from
+/// here, so both are said.
 fn refusing(listener: BorrowedFd<'_>) -> bool {
     match takes_descriptors(listener) {
         Ok(false) => {
@@ -540,7 +543,7 @@ fn refusing(listener: BorrowedFd<'_>) -> bool {
         Ok(true) => match take_descriptors(listener, false) {
             Ok(()) => {
                 warn!(
-                    "the listener took descriptors, as systemd before 258 leaves it; it refuses them from now on, but a connection queued before now may still carry them, for the closer to close"
+                    "the listener took descriptors although the socket unit refuses them: systemd before 258 ignores that setting, and a socket not restarted since its unit gained it keeps its listener as it was; it refuses them from now on, but a connection queued before now may still carry them, for the closer to close"
                 );
                 true
             }

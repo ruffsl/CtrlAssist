@@ -114,6 +114,38 @@ in
     systemd.packages = [ cfg.package ];
     systemd.sockets.ctrlassist-hider = lib.mkIf cfg.hiding {
       wantedBy = [ "sockets.target" ];
+      # Restarted when the unit below is.
+      partOf = [ "ctrlassist-hider-socket-unit.service" ];
+    };
+    # A listener keeps the settings it was made with until its socket is
+    # restarted, and a switch restarts no socket whose unit changed:
+    # NixOS's switch leaves changed sockets alone, and restarts a socket
+    # only with its service, when that service is running and has changed
+    # too. So a setting new to the socket's unit, as refusing descriptors
+    # once was, would hold only from the next boot. This unit stands for
+    # the socket's unit, the package's and what this module adds to it: a
+    # switch that changes either restarts this unit, and the restart is
+    # passed on to the socket, and from the socket to the service if it
+    # is running. Stopping the service shows again what it had hidden, and
+    # the daemon takes each pad back into its setup as it comes back:
+    # hidden again by the service started afresh, or grabbed if the
+    # socket isn't listening again yet, as after any switch that changes
+    # the package while the service runs, which restarts both itself.
+    systemd.services.ctrlassist-hider-socket-unit = lib.mkIf cfg.hiding {
+      description = "Restart CtrlAssist's hiding service socket when its unit changes";
+      wantedBy = [ "multi-user.target" ];
+      restartTriggers = [
+        cfg.package
+        config.systemd.units."ctrlassist-hider.socket".unit
+      ];
+      # Restarted, not stopped and started again: only a restart is passed
+      # on to the socket as one.
+      stopIfChanged = false;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${pkgs.coreutils}/bin/true";
+      };
     };
     # The hiding service's own user, which its unit runs as, and its
     # group, which the package's udev rule names whether or not hiding is

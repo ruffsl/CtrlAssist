@@ -39,8 +39,20 @@ pkgs.testers.runNixOSTest {
       program = "${pkgs.coreutils}/bin/sleep infinity";
     };
     virtualisation.qemu.options = [ "-vga none -device virtio-gpu-pci" ];
+    # A switch starts getty.target again, which with no display manager
+    # wants a getty on tty1, and that would stop the session there: as
+    # with a display manager, it wants none.
+    systemd.targets.getty.wants = pkgs.lib.mkForce [ ];
 
     environment.systemPackages = [ fixture ];
+
+    # The same machine with the hiding service's socket unit changed, as
+    # an upgrade can change it: switched to and back, its socket is to be
+    # restarted each time. Taking descriptors, as the unit had the
+    # listener do before it refused them.
+    specialisation.takes.configuration = {
+      systemd.sockets.ctrlassist-hider.socketConfig.AcceptFileDescriptors = "yes";
+    };
   };
 
   testScript = ''
@@ -122,6 +134,8 @@ pkgs.testers.runNixOSTest {
 
     machine.wait_for_file("/run/user/1000/wayland-0.lock")
     machine.wait_for_unit("sockets.target")
+    # The configuration booted, which a switch to a specialisation leaves.
+    BASE = machine.succeed("readlink -f /run/current-system").strip()
     # One pad with a HID driver to re-bind, as a PlayStation or Bluetooth
     # pad has, and one without, as a uinput pad another program made has:
     # the hiding service refuses that one, and the daemon grabs it.
@@ -454,6 +468,58 @@ pkgs.testers.runNixOSTest {
         since_stop = daemon_journal().split("a setup stopped")[-1]
         assert since_stop.count("a pad disconnected") == 1, since_stop
         assert "a profile starts by itself" in since_stop, since_stop
+
+    def socket_invocation():
+        return machine.succeed("systemctl show -p InvocationID --value ctrlassist-hider.socket").strip()
+
+    def service_said(text):
+        """Whether the hiding service, as it runs now, has said `text` since it started."""
+        invocation = machine.succeed("systemctl show -p InvocationID --value ctrlassist-hider.service").strip()
+        assert invocation, "the service isn't running"
+        said = machine.succeed(f"journalctl -o cat _SYSTEMD_INVOCATION_ID={invocation}")
+        return text in said
+
+    TAKES = "the listener took descriptors although the socket unit refuses them"
+    REFUSES = "connections pass no descriptor until they are admitted"
+
+    with subtest("a switch that changes the socket's unit restarts the socket, and the service with it, while the daemon keeps its setup's pads from games"):
+        # A switch leaves a changed socket unit alone by itself; the
+        # module's own unit has it restarted.
+        assert service_said(REFUSES)
+        socket, pid = socket_invocation(), machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip()
+        assert known()[HID]["hidden"] and markers()
+        RETURNED = "a pad returned to its setup"
+        returned = daemon_journal().count(RETURNED)
+        machine.succeed(f"{BASE}/specialisation/takes/bin/switch-to-configuration test")
+        assert socket_invocation() != socket, "the socket wasn't restarted"
+        # The service was stopped with the socket, and started again with
+        # it, on the listener as the unit now makes it.
+        machine.wait_until_succeeds("systemctl is-active ctrlassist-hider.service")
+        assert machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip() != pid
+        assert service_said(TAKES)
+        # Its stop showed the pad again, and the daemon took the pad back
+        # into its setup as it came back: hidden again if the socket was
+        # listening by then, grabbed if not.
+        machine.wait_until_succeeds(f"[ $(journalctl _SYSTEMD_USER_UNIT=ctrlassist-daemon.service -o cat | grep -c '{RETURNED}') -gt {returned} ]")
+        machine.succeed("udevadm settle")
+        phase_is("running")
+        assert not alice_can_open(HID) or grabbed(HID), "the pad is open to games"
+        assert grabbed(PLAIN)
+        print(f"through the switch the pad came back {'hidden' if known()[HID]['hidden'] else 'grabbed'}; the daemon: " + " | ".join(daemon_journal().splitlines()[-8:]))
+
+    with subtest("a switch that changes the socket's unit restarts it when the service isn't running"):
+        cli("stop", "couch")
+        retry(lambda _last: not known()[HID]["hidden"])
+        wait_restored()
+        machine.succeed("systemctl stop ctrlassist-hider.service")
+        socket = socket_invocation()
+        machine.succeed(f"{BASE}/bin/switch-to-configuration test")
+        assert socket_invocation() != socket, "the socket wasn't restarted"
+        machine.fail("systemctl is-active ctrlassist-hider.service")
+        # Started by the next client, on the listener as the unit now
+        # makes it.
+        machine.succeed(as_alice("ctrlassist-fixture version --socket /run/ctrlassist/hider.sock"))
+        assert service_said(REFUSES) and not service_said(TAKES)
 
     with subtest("stopping the service restores the pads"):
         machine.succeed(as_alice("systemctl --user stop ctrlassist-daemon.service"))
