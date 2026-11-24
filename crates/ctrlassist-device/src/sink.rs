@@ -399,7 +399,7 @@ fn errno(refusal: FeedbackError) -> i32 {
 }
 
 enum Kind {
-    Uinput(Uinput),
+    Uinput(Box<Uinput>),
     DualSense(Box<Emulator>),
 }
 
@@ -439,7 +439,7 @@ impl VirtualPad {
             ));
         }
         Ok(Self {
-            kind: Kind::Uinput(Uinput::create(identity)?),
+            kind: Kind::Uinput(Box::new(Uinput::create(identity)?)),
         })
     }
 

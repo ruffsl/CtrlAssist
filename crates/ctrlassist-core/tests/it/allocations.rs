@@ -13,8 +13,8 @@ use std::cell::Cell;
 
 use ctrlassist_core::gamepad::*;
 use ctrlassist_core::{
-    DemuxConfig, DemuxMode, Graph, GraphSpec, Input, Layout, Mode, MuxConfig, NodeId, NodeSpec,
-    PadState, SourceId, SourceSpec,
+    Contact, DemuxConfig, DemuxMode, Graph, GraphSpec, Input, Layout, Mode, Motion, MuxConfig,
+    NodeId, NodeSpec, PadState, SourceId, SourceSpec, Touchpad,
 };
 
 thread_local! {
@@ -87,7 +87,18 @@ fn stepping_a_graph_allocates_nothing() {
             .with(LEFT_X, value)
             .with(RIGHT_TRIGGER, value.abs())
             .with(SOUTH, (step % 2) as f32)
-            .with(MODE, ((step / 100) % 2) as f32);
+            .with(MODE, ((step / 100) % 2) as f32)
+            .with(TOUCHPAD, ((step / 10) % 2) as f32)
+            .with_motion(Motion::new(
+                [value * 500.0, -value, 0.0],
+                [value, 1.0, -value],
+                step as u32,
+                4000,
+            ))
+            .with_touchpad(Touchpad::new([
+                Contact::new(step % 3 == 0, value.abs(), 0.5),
+                Contact::UP,
+            ]));
         graph.update(SourceId(step % 3), state, &mut |_| changes += 1);
         if step % 1000 == 0 {
             graph.set_present(SourceId(1), step % 2000 == 0, &mut |_| changes += 1);

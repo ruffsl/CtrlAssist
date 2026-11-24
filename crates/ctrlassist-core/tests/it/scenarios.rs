@@ -5,10 +5,10 @@
 
 use ctrlassist_core::gamepad::*;
 use ctrlassist_core::{
-    Control, DemuxConfig, DemuxFeedback, DemuxMode, EFFECTS, Effect, EffectKey, FeedbackError,
-    Graph, GraphError, GraphSpec, Group, Input, Kind, Layout, Level, MAX_NODES, MAX_SINKS, Mode,
-    MuxConfig, MuxFeedback, NodeId, NodeSpec, PadState, Router, Rule, SinkId, SourceId, SourceSet,
-    SourceSpec, Switch,
+    Contact, Control, DemuxConfig, DemuxFeedback, DemuxMode, EFFECTS, Effect, EffectKey,
+    FeedbackError, Graph, GraphError, GraphSpec, Group, Input, Kind, Layout, Level, MAX_NODES,
+    MAX_SINKS, Mode, Motion, MuxConfig, MuxFeedback, NodeId, NodeSpec, PadState, Router, Rule,
+    SinkId, SourceId, SourceSet, SourceSpec, Switch, Touchpad,
 };
 
 const PRIMARY: SourceId = SourceId(0);
@@ -495,6 +495,237 @@ fn a_pad_that_drops_out_goes_neutral_and_the_other_carries_on() {
         graph.sink(SinkId(0)).get(LEFT_X),
         -0.7,
         "it is the assist again when it returns"
+    );
+}
+
+// --- motion and the touchpad ------------------------------------------------
+
+/// The `readings`th reading of a pad turning at `yaw` degrees a second,
+/// tipped to one side.
+fn turning(yaw: f32, readings: u32) -> Motion {
+    Motion::new([0.0, yaw, 0.0], [0.5, 0.85, 0.0], readings, 4000)
+}
+
+/// One finger down, at a place.
+fn finger(x: f32, y: f32) -> Touchpad {
+    Touchpad::new([Contact::new(true, x, y), Contact::UP])
+}
+
+#[test]
+fn a_pad_at_rest_lies_flat_and_still_with_no_finger_down() {
+    let motion = PadState::NEUTRAL.motion();
+    assert_eq!(motion, Motion::STILL);
+    assert_eq!(motion.gyro(), [0.0; 3]);
+    assert_eq!(motion.accel(), [0.0, 1.0, 0.0], "1 g, straight up");
+    assert_eq!(motion.readings(), 0);
+    assert_eq!(PadState::NEUTRAL.touchpad(), Touchpad::UNTOUCHED);
+    assert!(
+        Touchpad::UNTOUCHED
+            .contacts()
+            .iter()
+            .all(|contact| !contact.down())
+    );
+}
+
+#[test]
+fn priority_and_average_carry_the_primarys_motion_and_contacts_whatever_the_assist_does() {
+    for mode in [Mode::Priority, Mode::Average] {
+        let mut graph = mux(mode);
+        let primary = pad()
+            .with_motion(turning(30.0, 1))
+            .with_touchpad(finger(0.2, 0.3));
+        step(&mut graph, PRIMARY, primary);
+        // The assist turns hard, touches, and takes the stick.
+        let assist = |readings| {
+            pad()
+                .with(LEFT_X, 0.9)
+                .with(SOUTH, 1.0)
+                .with_motion(turning(-200.0, readings))
+                .with_touchpad(finger(0.9, 0.9))
+        };
+        step(&mut graph, ASSIST, assist(50));
+        let sink = *graph.sink(SinkId(0));
+        assert_eq!(sink.get(LEFT_X), 0.9, "{mode:?}: the stick is the assist's");
+        assert_eq!(sink.motion(), primary.motion(), "{mode:?}");
+        assert_eq!(sink.touchpad(), primary.touchpad(), "{mode:?}");
+        // The assist's next report is no fresh reading of the primary's.
+        step(&mut graph, ASSIST, assist(51));
+        assert_eq!(graph.sink(SinkId(0)).motion().readings(), 1, "{mode:?}");
+        // The primary's is.
+        step(&mut graph, PRIMARY, primary.with_motion(turning(35.0, 2)));
+        assert_eq!(graph.sink(SinkId(0)).motion(), turning(35.0, 2), "{mode:?}");
+    }
+}
+
+#[test]
+fn the_assist_does_not_stand_in_for_a_primary_that_goes() {
+    let mut graph = mux(Mode::Priority);
+    step(
+        &mut graph,
+        PRIMARY,
+        pad()
+            .with_motion(turning(30.0, 1))
+            .with_touchpad(finger(0.2, 0.3)),
+    );
+    step(
+        &mut graph,
+        ASSIST,
+        pad()
+            .with_motion(turning(-200.0, 9))
+            .with_touchpad(finger(0.9, 0.9)),
+    );
+    graph.set_present(PRIMARY, false, &mut |_| {});
+    let sink = *graph.sink(SinkId(0));
+    assert_eq!(sink.motion(), Motion::STILL, "the primary's pad is gone");
+    assert_eq!(sink.touchpad(), Touchpad::UNTOUCHED);
+}
+
+#[test]
+fn toggle_carries_the_selected_pads_motion_and_contacts_following_a_switch() {
+    let mut graph = mux(Mode::Toggle);
+    let primary = pad()
+        .with_motion(turning(30.0, 1))
+        .with_touchpad(finger(0.2, 0.3));
+    let assist = pad()
+        .with_motion(turning(-200.0, 9))
+        .with_touchpad(finger(0.9, 0.9));
+    step(&mut graph, PRIMARY, primary);
+    step(&mut graph, ASSIST, assist);
+    assert_eq!(graph.sink(SinkId(0)).motion(), primary.motion());
+    assert_eq!(graph.sink(SinkId(0)).touchpad(), primary.touchpad());
+
+    // By the switch's button: a finger held down moves to the assist's
+    // place in one report, as a stick steps.
+    step(&mut graph, ASSIST, assist.with(MODE, 1.0));
+    assert_eq!(graph.sink(SinkId(0)).motion(), assist.motion());
+    assert_eq!(graph.sink(SinkId(0)).touchpad(), assist.touchpad());
+
+    // By a client.
+    graph.select(NodeId(0), 0, &mut |_| {});
+    assert_eq!(graph.sink(SinkId(0)).motion(), primary.motion());
+    assert_eq!(graph.sink(SinkId(0)).touchpad(), primary.touchpad());
+}
+
+#[test]
+fn toggle_carries_the_next_pads_motion_when_the_selected_one_goes() {
+    let mut graph = mux(Mode::Toggle);
+    let assist = pad().with_motion(turning(-200.0, 9));
+    step(&mut graph, PRIMARY, pad().with_motion(turning(30.0, 1)));
+    step(&mut graph, ASSIST, assist);
+    graph.set_present(PRIMARY, false, &mut |_| {});
+    assert_eq!(graph.selected(NodeId(0)), Some(1));
+    assert_eq!(graph.sink(SinkId(0)).motion(), assist.motion());
+}
+
+#[test]
+fn the_touchpads_click_follows_the_modes_rule_for_buttons() {
+    for mode in [Mode::Priority, Mode::Average] {
+        let mut graph = mux(mode);
+        step(&mut graph, ASSIST, pad().with(TOUCHPAD, 1.0));
+        assert_eq!(
+            graph.sink(SinkId(0)).get(TOUCHPAD),
+            1.0,
+            "{mode:?}: either pad's click presses it"
+        );
+    }
+    let mut graph = mux(Mode::Toggle);
+    step(&mut graph, ASSIST, pad().with(TOUCHPAD, 1.0));
+    assert_eq!(
+        graph.sink(SinkId(0)).get(TOUCHPAD),
+        0.0,
+        "toggle: only the selected pad's"
+    );
+    graph.switch(NodeId(0), &mut |_| {});
+    assert_eq!(graph.sink(SinkId(0)).get(TOUCHPAD), 1.0);
+}
+
+#[test]
+fn motion_and_contacts_change_no_control() {
+    let mut graph = mux(Mode::Priority);
+    let mut changes = Vec::new();
+    graph.update(
+        PRIMARY,
+        pad()
+            .with_motion(turning(30.0, 1))
+            .with_touchpad(finger(0.2, 0.3)),
+        &mut |change| changes.push(change),
+    );
+    assert_eq!(changes, [], "a virtual pad is written its whole state");
+    assert_eq!(graph.sink(SinkId(0)).motion(), turning(30.0, 1));
+}
+
+#[test]
+fn unicast_carries_motion_and_contacts_to_the_selected_virtual_pad_alone() {
+    let mut graph = demux(DemuxMode::Unicast, 2);
+    let held = pad()
+        .with_motion(turning(30.0, 1))
+        .with_touchpad(finger(0.2, 0.3));
+    step(&mut graph, SourceId(0), held);
+    assert_eq!(graph.sink(SinkId(0)).motion(), held.motion());
+    assert_eq!(graph.sink(SinkId(0)).touchpad(), held.touchpad());
+    assert_eq!(*graph.sink(SinkId(1)), PadState::NEUTRAL);
+    step(&mut graph, SourceId(0), held.with(MODE, 1.0));
+    assert_eq!(
+        *graph.sink(SinkId(0)),
+        PadState::NEUTRAL,
+        "the one it leaves lies still, untouched"
+    );
+    assert_eq!(graph.sink(SinkId(1)).motion(), held.motion());
+    assert_eq!(graph.sink(SinkId(1)).touchpad(), held.touchpad());
+}
+
+#[test]
+fn multicast_carries_motion_and_contacts_to_every_virtual_pad() {
+    let mut graph = demux(DemuxMode::Multicast, 2);
+    let held = pad()
+        .with_motion(turning(30.0, 1))
+        .with_touchpad(finger(0.2, 0.3));
+    step(&mut graph, SourceId(0), held);
+    for sink in [SinkId(0), SinkId(1)] {
+        assert_eq!(*graph.sink(sink), held);
+    }
+}
+
+#[test]
+fn a_helper_shared_between_two_players_moves_neither_ones_motion() {
+    let mut graph = double_agent();
+    step(&mut graph, SourceId(0), pad().with_motion(turning(10.0, 1)));
+    step(&mut graph, SourceId(1), pad().with_motion(turning(20.0, 1)));
+    step(
+        &mut graph,
+        SourceId(2),
+        pad().with_motion(turning(-200.0, 1)),
+    );
+    assert_eq!(graph.sink(SinkId(0)).motion(), turning(10.0, 1));
+    assert_eq!(graph.sink(SinkId(1)).motion(), turning(20.0, 1));
+}
+
+#[test]
+fn a_reading_that_is_not_a_number_lies_still_and_a_place_stays_on_the_touchpad() {
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let motion = Motion::new([0.0, bad, 0.0], [0.5, 0.85, 0.0], 7, 4000);
+        assert_eq!(motion.gyro(), Motion::STILL.gyro(), "{bad}");
+        assert_eq!(
+            motion.accel(),
+            Motion::STILL.accel(),
+            "{bad}: the whole reading"
+        );
+        assert_eq!(motion.readings(), 7, "it is still a reading");
+        assert_eq!(motion.interval_us(), 4000);
+        let motion = Motion::new([0.0; 3], [bad, 1.0, 0.0], 7, 4000);
+        assert_eq!(motion.accel(), Motion::STILL.accel(), "{bad}");
+        assert_eq!(Contact::new(true, bad, 0.5), Contact::UP, "{bad}");
+        assert_eq!(Contact::new(true, 0.5, bad), Contact::UP, "{bad}");
+    }
+    let past = Contact::new(true, 1.5, -0.25);
+    assert!(past.down());
+    assert_eq!((past.x(), past.y()), (1.0, 0.0));
+    let lifted = Contact::new(false, 0.25, 0.75);
+    assert!(!lifted.down());
+    assert_eq!(
+        (lifted.x(), lifted.y()),
+        (0.25, 0.75),
+        "a lifted finger's place is kept"
     );
 }
 

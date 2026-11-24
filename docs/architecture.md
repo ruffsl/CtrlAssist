@@ -98,11 +98,11 @@ A graph is sources, nodes and sinks. It is validated once and then stepped.
 
 **Pads, virtual pads and nodes are named by number, each with its own type,** so a virtual pad's number can't be passed where a pad's is wanted. The names a profile uses are mapped to these once, by the daemon, when it builds the graph.
 
-**Pad state** is a fixed-size value, 64 buttons and 16 axes, addressed by kind and index. The gamepad names are well-known positions in that space, which is what lets two different pads be merged control by control. A step allocates nothing.
+**Pad state** is a fixed-size value, 64 buttons and 16 axes, addressed by kind and index. The gamepad names are well-known positions in that space, which is what lets two different pads be merged control by control; the touchpad's click is one of them, a button at the place the controller database gives `touchpad`. Beside the controls it holds two blocks that are not controls: the motion sensors' last reading (the rate of turning in degrees a second and the acceleration in g, gravity included, in the pad's own axes as a DualSense reports them, with a count of the pad's readings and the time since its last one by its own clock), and the touchpad's two contacts, each down or not, at a place across and down from 0 to 1. At rest a pad lies flat and still, 1 g up, with no finger down. Each value is set through a check: a reading that isn't a number lies still, and a place is held to the touchpad. A step allocates nothing.
 
 **No profile can panic a step.** Building a graph rejects anything that could: a control index beyond the capacity, a reference to a source, node or output that doesn't exist, a cycle, more than 8 inputs to a mux, 32 sources, 64 nodes or 32 sinks, thresholds outside 0 < release ≤ engage ≤ 1, a deadzone outside 0 ≤ deadzone < 1 (which would read a stick as at rest short of all the way), a switch on a node that never selects (which would only keep its button from the game), a value that isn't a number. This is a tested invariant, because a panic on the input thread would take every virtual pad with it. As a second line, a setup whose step does panic is torn down alone.
 
-**Scope.** The model is built for controls that rest at zero: buttons, sticks, triggers. A lever with no rest position (a throttle) would count as touched forever, and a relative control (a mouse, a gyro delta) has no level to diff. Both are out of scope until a pad needs them ([ideas](ideas/README.md)).
+**Scope.** The model is built for controls that rest at zero: buttons, sticks, triggers. A lever with no rest position (a throttle) would count as touched forever, and a relative control (a mouse, a gyro delta) has no level to diff. Both are out of scope until a pad needs them ([ideas](ideas/README.md)). Motion and the touchpad's contacts are carried beside the controls instead, outside the rules: each node takes them whole from one input, and the graph reports no difference for them, a virtual pad that carries them being written its whole state.
 
 ### Mux
 
@@ -125,6 +125,8 @@ A mode is a table from group kind to rule; there is no per-mode code.
 
 A control in no declared group is treated as a group of one, a button as a button and an axis as a stick, so every control obeys the mode. A profile may override the rule for a kind.
 
+**Motion and the touchpad's contacts are one pad's,** never blended: a mux takes both whole from the input selected if any group is switched, as in toggle, and otherwise from its first input, a preset's primary. A game then always sees one pad's two sensors, which agree.
+
 **Groups** generalize the stick pair. One rule covers a lone button, a stick's two axes and a larger set alike: whoever is active on the group owns every member, so the output is one person's direction rather than a blend of two. A gamepad's groups are derived from the well-known names; a profile may declare its own.
 
 **Activity** has two parts. A source's deadzone zeroes a group's axes while they rest inside it, as a whole, so rest noise on a worn stick never reaches a node. A mux marks an input active on a group at its engage threshold and inactive below its lower release threshold, so an owner doesn't flicker. No ownership is held by a timer.
@@ -135,7 +137,7 @@ A control in no declared group is treated as a group of one, a button as a butto
 
 ### Demux
 
-A demux sends its input to the selected output and rests the others (unicast), or sends it to all (multicast). Its switch works as a mux's does.
+A demux sends its input to the selected output and rests the others (unicast), or sends it to all (multicast), motion and the touchpad's contacts with the controls. Its switch works as a mux's does.
 
 ### Feedback
 
