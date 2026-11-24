@@ -154,6 +154,18 @@ By the maintainer, 2026-11-23. These stand over the first position where the two
 
 Still open: how far presets widen to say this; how gravity is made while the assist's gyroscope is engaged and in average; the touchpad in average; steering by tilt outside toggle; the desktop's pointer.
 
+## What the spike found
+
+`spikes/motion` carried one real DualSense on USB, hidden by the installed hiding service, to a virtual DualSense: buttons and sticks from its event node, both sensors, their timestamp, the touchpad's contacts and click from its raw report. Run on 2026-11-23, on Linux 7.3. A game was not tried; the numbers are from the spike's own record of every report, about 350,000 of them.
+
+- **A virtual DualSense's sensors are taken for a pad's.** The kernel's driver made the motion, touchpad and headset nodes and its motion node followed the pad, seen in jstest-gtk; Steam's controller test showed the sensors and its motion calibration ran to its end as with a real pad.
+- **The pad's reports come every 4.00 ms on USB,** by its own clock and as they arrive, the two differing by 0.13 ms from report to report. Over turns of 22 s and 47 s the angle summed by the pad's clock and by the arrival time agreed to 0.01°. Which clock the virtual pad stamps with made no difference that could be measured here, with the machine idle; the longest gap between arrivals in the whole run was 9.5 ms.
+- **The pad's own calibration of scale is close enough to the usual pad's not to matter.** The three axes' scales differ from the nominal by under 0.4 %. The pad was spun flat on a desk against one straight edge, two full turns one way and one back: with the bias measured at rest taken off, the sums were 716.5° of 720° and 351.4° of 360°, within what turning by hand allows.
+- **The bias the pad was calibrated with is wrong, and is the whole of the error.** At rest this pad reads 4.5, 6.7 and 0.2 counts; its calibration says 4, 15 and -5. Taking the stored bias off, as SDL does, drifts 26° a minute one way; taking none off, as the kernel's driver does, drifts 24° a minute the other. The bias measured over 20 s at rest left under 1° a minute. Steam's calibration does this measuring for itself; a game that trusts the pad does not. So the research's point stands as a requirement: bias is measured at rest, per pad, by whoever combines pads, and what the virtual pad then says of its own calibration should be neutral.
+- **The desktop's pointer moved twice as fast from the pad's touchpad as from another pad's:** the hidden pad's touchpad and the virtual pad's both drive it. A setup that gives its virtual pad a touchpad must keep the hidden pad's from the compositor, by the rule telling libinput to ignore it; whether the virtual pad's own should drive the pointer is the question that was already open.
+
+Not found out: whether a game that reads the pad through SDL, or through Proton, aims and steers as with the real pad; anything on Bluetooth; anything with the machine busy, where the two clocks may part; a DualShock 4, whose report the spike doesn't read.
+
 ## Steps
 
 To be written once the open questions are answered. The first will be a spike: one real DualSense's sensors and touchpad carried to a virtual one, tried in a game that aims by gyro and one that steers by tilt.
