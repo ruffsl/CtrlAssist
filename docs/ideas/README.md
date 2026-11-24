@@ -29,6 +29,7 @@ Deferred work and designs set aside, one file each. An entry says what the idea 
 - [`virtual-pad-permissions.md`](virtual-pad-permissions.md) — access to virtual pads for other users or sandboxes.
 - [`hider-rebind-options.md`](hider-rebind-options.md) — the two ways an unprivileged hiding service can have a pad's driver re-bound, and the root kept and shrunk that was set aside.
 - [`uhid-behind-the-service.md`](uhid-behind-the-service.md) — the hiding service could make the virtual DualSense so the seat user needs no uhid grant; the form that closes the risk puts a process in every report's path.
+- [`hider-reload-on-upgrade.md`](hider-reload-on-upgrade.md) — a reload that has the hiding service exit once its last connection closes, so an upgrade shows no hidden pad.
 - [`steam-blacklist-consent.md`](steam-blacklist-consent.md) — a way to keep CtrlAssist out of Steam's config.
 - [`more-identities.md`](more-identities.md) — more virtual pad identities.
 - [`custom-modes.md`](custom-modes.md) — documenting custom modes.
