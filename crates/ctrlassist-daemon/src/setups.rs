@@ -44,7 +44,8 @@ struct Slot {
     pad: Option<String>,
     /// Whether the input thread holds that pad now.
     present: bool,
-    /// Whether the pad is being opened to go back.
+    /// Whether the pad is being opened to go back, or hidden where it
+    /// was grabbed for want of the hiding service.
     returning: bool,
     /// Whether it was asked for again while it was being opened: the
     /// pad may have come back meanwhile, so an opening that fails is
@@ -595,8 +596,21 @@ pub(crate) enum Done {
         /// The pad, by what it is known by.
         id: String,
         pad: Option<Box<Pad>>,
-        /// The hiding service's name for it, if it hid it just now; not
-        /// one the setup had, which it opened the pad again under.
+        /// The hiding service's name for it as it has it hidden now: the
+        /// one the setup had, which it opened the pad again under, or one
+        /// it hid it under just now; none for a pad only grabbed, or left
+        /// as it is.
+        token: Option<Token>,
+    },
+    /// A pad a setup holds grabbed for want of the hiding service has
+    /// been hidden now that the service is back, or couldn't be.
+    Rehidden {
+        name: String,
+        /// The setup that had it hidden.
+        setup: SetupId,
+        /// The pad, by what it is known by.
+        id: String,
+        /// The hiding service's name for it, if it hid it.
         token: Option<Token>,
     },
     /// A setup the input thread handed back is gone, virtual pads and
@@ -612,7 +626,8 @@ pub(crate) enum Done {
     Shown { pad: String },
     /// A connected pad was copied, or couldn't be.
     Copied(Option<DualSenseData>),
-    /// The hiding service has been looked for, as the daemon starts.
+    /// The hiding service has been looked for, as the daemon starts or as
+    /// its socket was made.
     Looked,
     /// Something was dropped where dropping may block, and then these
     /// pads are to be shown again.
@@ -767,6 +782,26 @@ fn give_raw(pad: &mut Pad, token: Token, (hiding, errand): Asking<'_>) {
     }
 }
 
+/// Opens the pad `wanted` where it was last seen: a descriptor on its
+/// node, and the pad read from it. The kernel hands a freed node to the
+/// next pad to connect, so what was opened is looked at before it is
+/// taken for the pad wanted.
+fn opened(wanted: &Wanted, database: &Database) -> Result<(OwnedFd, Pad), String> {
+    let node = wanted.node.as_path();
+    let fd = open(node)?;
+    let dup = fd.try_clone().map_err(|error| error.to_string())?;
+    let opened = read(dup, node, database)?;
+    let found = opened.identifiers().id().to_string();
+    if found != wanted.id {
+        return Err(format!(
+            "{} is {found} now, not {}",
+            node.display(),
+            wanted.id
+        ));
+    }
+    Ok((fd, opened))
+}
+
 /// Takes a pad for a setup, keeping it from games as far as the setup's
 /// profile asks: hidden by the hiding service, which hands back the
 /// only descriptor left open on it, or else grabbed; grabbed only; or
@@ -780,20 +815,7 @@ fn take(
 ) -> Result<(Pad, Option<Token>), String> {
     let (hiding, errand) = asking;
     let node = wanted.node.as_path();
-    let fd = open(node)?;
-    // The node is where the pad was last seen, and the kernel hands a
-    // freed node to the next pad to connect: what was opened is looked at
-    // before it is taken for the pad wanted.
-    let dup = fd.try_clone().map_err(|error| error.to_string())?;
-    let opened = read(dup, node, database)?;
-    let found = opened.identifiers().id().to_string();
-    if found != wanted.id {
-        return Err(format!(
-            "{} is {found} now, not {}",
-            node.display(),
-            wanted.id
-        ));
-    }
+    let (fd, opened) = opened(wanted, database)?;
     // Holding the pad open is what shows the service it is ours to hide.
     if hide == Hide::Full {
         match hiding.hide(errand, &wanted.id, fd.as_fd()) {
@@ -823,7 +845,9 @@ fn take(
 
 /// Takes back a pad that returned. One the service still has hidden is
 /// opened through it: the pad was never visible in between. Returns the
-/// daemon's name for the pad only if the service hid it afresh.
+/// daemon's name for the pad as the service has it hidden now: the one
+/// it had, or a new one; none for a pad only grabbed, as when the
+/// service was gone as it returned, or left as it is.
 fn retake(
     wanted: &Wanted,
     token: Option<Token>,
@@ -838,19 +862,46 @@ fn retake(
         // The service knows the pad by what it is, not by its node.
         return read(event, &wanted.node, database).map(|mut pad| {
             give_raw(&mut pad, token, asking);
-            (pad, None)
+            (pad, Some(token))
         });
     }
     let taken = take(wanted, database, asking, hide);
-    // Hidden afresh, under a new name: the old one is given up, so that
-    // what it hid isn't left for the connection's end to show again. Its
-    // pad was let go as it went, and has no writer to wait for.
-    if let (Ok((_, Some(new))), Some(old)) = (&taken, token)
-        && old != *new
+    // Taken, and not under the old name: hidden afresh, or grabbed. The
+    // old name is given up, so that what it hid isn't left for the
+    // connection's end to show again, nor the pad said to be hidden by
+    // it. Its pad was let go as it went, and has no writer to wait for.
+    if let (Ok((_, new)), Some(old)) = (&taken, token)
+        && *new != Some(old)
     {
         hiding.give_up(&wanted.id, old);
     }
     taken
+}
+
+/// Hides a pad a setup holds grabbed for want of the hiding service, now
+/// that the service is back: opened again beside the setup's own
+/// descriptor, checked to be the pad wanted, and hidden, which re-binds
+/// its driver. The re-bind removes the node the setup reads, so the
+/// setup loses the pad, and takes it back through the service under the
+/// name returned, as it takes back any hidden pad that returns. Returns
+/// none, the pad left grabbed, if it wasn't hidden.
+fn rehide(wanted: &Wanted, database: &Database, asking: Asking<'_>) -> Option<Token> {
+    let (hiding, errand) = asking;
+    let (fd, opened) = opened(wanted, database)
+        .inspect_err(|error| {
+            warn!(
+                error,
+                "a pad grabbed for want of the hiding service couldn't be hidden"
+            );
+        })
+        .ok()?;
+    let hidden = hiding.hide(errand, &wanted.id, fd.as_fd()).ok()?;
+    drop(opened);
+    drop(fd);
+    // Opened again by its name as the setup takes it back, once its old
+    // node has gone.
+    drop(hidden.event);
+    Some(hidden.hold.keep())
 }
 
 /// The address of the virtual pad `sink` of the setup `setup`: the same
@@ -2263,7 +2314,8 @@ impl Reactor {
         let Some((taking, source, slot)) = place else {
             // The setup went, failed, or gave the pad up, while the pad
             // was being opened: the pad is let go, and shown again if it
-            // was hidden afresh for this.
+            // was hidden afresh for this. Under the name it had, it was
+            // shown again as the setup let it go, and is so no more.
             let hidden: Vec<(String, Token)> =
                 token.map(|token| (id.clone(), token)).into_iter().collect();
             let mut shows = self.shows(hidden);
@@ -2279,10 +2331,12 @@ impl Reactor {
             }
             return;
         };
-        let newly_hidden = token.is_some() && slot.token != token;
-        slot.token = token.or(slot.token);
-        if newly_hidden {
-            self.book.set_hidden(&id, true);
+        // Hidden as it was, hidden afresh, or now only grabbed, as when
+        // the service was gone as it returned: said as it is.
+        let changed = slot.token.is_some() != token.is_some();
+        slot.token = token;
+        if changed {
+            self.book.set_hidden(&id, token.is_some());
             self.publish_pad_logged(&id).await;
         }
         if taking {
@@ -2312,6 +2366,111 @@ impl Reactor {
                     self.drop_off(command);
                 }
             }
+        }
+    }
+
+    /// Has each pad a running setup holds grabbed for want of the hiding
+    /// service hidden, now that the service is there: only for a setup
+    /// whose profile asks for its pads hidden, and not for a pad being
+    /// taken back already, which is hidden as it is taken if it can be.
+    /// Asked whenever work comes back, which is what finds the service,
+    /// so a pad grabbed as it returned while the service was being found
+    /// again is hidden too. While the pad is hidden it is noted as being
+    /// taken back, so that its setup, losing it to the hide's re-bind,
+    /// waits for the hide before taking it back.
+    fn hide_wanting(&mut self) {
+        let mut wanting = Vec::new();
+        for (name, entry) in &mut self.setups.entries {
+            let runs = matches!(entry.phase, Phase::Running | Phase::Held)
+                && entry.stopping.is_none()
+                && entry.taking.is_none()
+                && entry.hide == Hide::Full;
+            if !runs {
+                continue;
+            }
+            for slot in &mut entry.slots {
+                let Some(pad) = slot.pad.as_deref() else {
+                    continue;
+                };
+                if !slot.present || slot.returning || slot.token.is_some() {
+                    continue;
+                }
+                let Some(node) = self.book.node(pad) else {
+                    continue;
+                };
+                if !self.hiding.take_wanting(pad) {
+                    continue;
+                }
+                slot.returning = true;
+                let wanted = Wanted {
+                    id: pad.to_string(),
+                    node: node.to_path_buf(),
+                };
+                wanting.push((name.clone(), entry.id, Arc::clone(&entry.errand), wanted));
+            }
+        }
+        for (name, setup, errand, wanted) in wanting {
+            info!(
+                setup = name,
+                pad = wanted.id,
+                "the hiding service is there: a pad grabbed for want of it is hidden"
+            );
+            let (database, hiding) = (Arc::clone(&self.database), Arc::clone(&self.hiding));
+            self.work.spawn_blocking(move || {
+                let token = caught(
+                    "hiding a pad grabbed",
+                    || rehide(&wanted, &database, (&hiding, &errand)),
+                    || None,
+                );
+                Done::Rehidden {
+                    name,
+                    setup,
+                    id: wanted.id,
+                    token,
+                }
+            });
+        }
+    }
+
+    /// A pad grabbed for want of the hiding service is hidden, or not.
+    /// Hidden, its setup has it under the name the service gave it, and
+    /// takes it back through the service once the setup has lost it to
+    /// the re-bind, as it takes back any hidden pad that returns. A setup
+    /// that went or failed meanwhile, or gave the pad up, has it shown
+    /// again.
+    async fn rehidden(
+        &mut self,
+        (name, setup): (String, SetupId),
+        id: String,
+        token: Option<Token>,
+    ) {
+        let place = self.setups.entries.get_mut(&name).and_then(|entry| {
+            let runs = matches!(entry.phase, Phase::Running | Phase::Held);
+            if entry.id != setup || !runs {
+                return None;
+            }
+            let source = entry
+                .slots
+                .iter()
+                .position(|slot| slot.pad.as_deref() == Some(id.as_str()))?;
+            Some((source, entry.slots.get_mut(source)?))
+        });
+        let Some((source, slot)) = place else {
+            let hidden = token.map(|token| (id, token)).into_iter().collect();
+            let shows = self.shows(hidden);
+            return self.ask_shows(shows);
+        };
+        slot.returning = false;
+        let again = std::mem::take(&mut slot.again);
+        let present = slot.present;
+        if let Some(token) = token {
+            slot.token = Some(token);
+            self.book.set_hidden(&id, true);
+            self.publish_pad_logged(&id).await;
+        }
+        // Lost to the re-bind already, or sent for meanwhile.
+        if !present || again {
+            self.bring_back(&name, source);
         }
     }
 
@@ -2370,8 +2529,10 @@ impl Reactor {
     /// Work done off the reactor has come back.
     pub(crate) async fn done(&mut self, done: Done) {
         self.done_inner(done).await;
-        // Whatever was done may have found the hiding service.
+        // Whatever was done may have found the hiding service, and the
+        // pads grabbed for want of it are hidden once it has.
         self.publish_hiding().await;
+        self.hide_wanting();
     }
 
     async fn done_inner(&mut self, done: Done) {
@@ -2395,6 +2556,12 @@ impl Reactor {
                 pad,
                 token,
             } => self.returned((name, setup), id, pad, token).await,
+            Done::Rehidden {
+                name,
+                setup,
+                id,
+                token,
+            } => self.rehidden((name, setup), id, token).await,
             Done::Retaken {
                 name,
                 setup,
@@ -2461,7 +2628,7 @@ impl Reactor {
                 }
             }
             // What was found is published below.
-            Done::Looked => {}
+            Done::Looked => self.looked(),
         }
     }
 
@@ -4212,6 +4379,149 @@ mod tests {
         let asked = hider.asked();
         let restore = ctrlassist_test::Asked::Restore(String::new());
         asked.iter().filter(|asked| **asked == restore).count()
+    }
+
+    /// `couch` running, its primary pad taken grabbed for want of a
+    /// hiding service at a path where none is yet, and a stand-in for the
+    /// service made there.
+    async fn grabbed_for_want(rig: &mut Rig) -> FakeHider {
+        let path = rig._dir.path().join("hider.sock");
+        rig.reactor.hiding = Arc::new(Hiding::new(&path));
+        rig.reactor.look_for_the_hiding_service();
+        finish(&mut rig.reactor).await;
+        rig.reactor
+            .book
+            .arrived(&connecting(PRIMARY, "/nowhere/event1"));
+        follow(&mut rig.reactor, 7, Phase::Running);
+        let hiding = Arc::clone(&rig.reactor.hiding);
+        let errand = Arc::clone(&rig.reactor.setups.entries["couch"].errand);
+        let grabbed = tokio::task::spawn_blocking(move || {
+            let fd = File::open("/dev/null").unwrap();
+            hiding.hide(&errand, PRIMARY, fd.as_fd()).map(|_| ())
+        });
+        assert_eq!(grabbed.await.unwrap(), Err(Unhidden::Not));
+        rig.reactor.setups.entries.get_mut("couch").unwrap().slots[1].present = true;
+        FakeHider::scripted(&path, Script::default()).unwrap()
+    }
+
+    /// `couch`'s slot of its primary pad, its second by name.
+    fn primary(rig: &Rig) -> &Slot {
+        &rig.reactor.setups.entries["couch"].slots[1]
+    }
+
+    /// A pad a running setup holds grabbed for want of the hiding service
+    /// is hidden once the service is found there, as its socket is made,
+    /// and asked once; a setup whose profile asks only for a grab is left
+    /// as it is. A socket made while the service is known there asks
+    /// nothing, which would only start a service nothing needs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_grabbed_for_want_of_the_service_is_hidden_once_it_is_found() {
+        let mut rig = rig().await;
+        let hider = grabbed_for_want(&mut rig).await;
+        rig.reactor.setups.entries.get_mut("couch").unwrap().hide = Hide::Grab;
+        rig.reactor.saw(Seen::HiderSocket).await;
+        finish(&mut rig.reactor).await;
+        assert_eq!(rig.reactor.hiding.mechanism(), payload::Hiding::Service);
+        assert!(!primary(&rig).returning, "only grabbed, as asked");
+        assert!(rig.reactor.hiding.is_wanting(PRIMARY));
+        rig.reactor.saw(Seen::HiderSocket).await;
+        assert!(rig.reactor.work.is_empty(), "known there: not looked for");
+
+        // Gone, as a hide finds, and its socket made again.
+        drop(hider);
+        let hiding = Arc::clone(&rig.reactor.hiding);
+        tokio::task::spawn_blocking(move || {
+            let fd = File::open("/dev/null").unwrap();
+            hiding
+                .hide(&Arc::new(Errand::default()), ASSIST, fd.as_fd())
+                .map(|_| ())
+        })
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(rig.reactor.hiding.mechanism(), payload::Hiding::Grab);
+        let path = rig._dir.path().join("hider.sock");
+        let _hider = FakeHider::scripted(&path, Script::default()).unwrap();
+        rig.reactor.setups.entries.get_mut("couch").unwrap().hide = Hide::Full;
+        rig.reactor.saw(Seen::HiderSocket).await;
+        // Looked for, and once found, the pad sent to be hidden.
+        let looked = rig.reactor.work.join_next().await.unwrap().unwrap();
+        assert!(matches!(looked, Done::Looked));
+        rig.reactor.done(looked).await;
+        assert!(primary(&rig).returning, "being hidden");
+        assert!(!rig.reactor.hiding.is_wanting(PRIMARY), "asked once");
+        // Nothing is at its node in this test, so it stays grabbed, and
+        // isn't asked again.
+        finish(&mut rig.reactor).await;
+        let slot = primary(&rig);
+        assert!(!slot.returning && slot.present && slot.token.is_none());
+    }
+
+    /// A pad grabbed for want of the hiding service and hidden since is
+    /// its setup's under the service's name, said to be hidden, and
+    /// taken back through the service once the setup has lost it to the
+    /// hide's re-bind, whether that is heard of before the hide is back or
+    /// after. One hidden for a setup that went meanwhile is shown again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_hidden_where_it_was_grabbed_is_taken_back_through_the_service() {
+        for lost_first in [false, true] {
+            let mut rig = rig().await;
+            let hider = grabbed_for_want(&mut rig).await;
+            let hiding = Arc::clone(&rig.reactor.hiding);
+            tokio::task::spawn_blocking(move || hiding.look())
+                .await
+                .unwrap();
+            let token = hidden_by_the_hider(&rig, PRIMARY).await;
+            rig.reactor.setups.entries.get_mut("couch").unwrap().slots[1].returning = true;
+            let lost = |rig: &mut Rig| {
+                let entry = rig.reactor.setups.entries.get_mut("couch").unwrap();
+                entry.slots[1].present = false;
+                entry.settle();
+                rig.reactor.bring_back("couch", 1);
+            };
+            if lost_first {
+                lost(&mut rig);
+                assert!(primary(&rig).again, "waits for the hide");
+            }
+            rig.reactor
+                .done(Done::Rehidden {
+                    name: "couch".to_string(),
+                    setup: SetupId(7),
+                    id: PRIMARY.to_string(),
+                    token: Some(token),
+                })
+                .await;
+            assert_eq!(primary(&rig).token, Some(token));
+            assert!(rig.reactor.book.pad(PRIMARY).unwrap().hidden);
+            if !lost_first {
+                assert!(!primary(&rig).returning, "held as it is until lost");
+                lost(&mut rig);
+            }
+            assert!(primary(&rig).returning, "taken back");
+            finish(&mut rig.reactor).await;
+            let reopen = ctrlassist_test::Asked::Reopen(String::new());
+            assert!(hider.asked().contains(&reopen), "{:?}", hider.asked());
+            assert_eq!(primary(&rig).token, Some(token), "kept");
+        }
+
+        let mut rig = rig().await;
+        let hider = grabbed_for_want(&mut rig).await;
+        let hiding = Arc::clone(&rig.reactor.hiding);
+        tokio::task::spawn_blocking(move || hiding.look())
+            .await
+            .unwrap();
+        let token = hidden_by_the_hider(&rig, PRIMARY).await;
+        rig.reactor
+            .done(Done::Rehidden {
+                name: "couch".to_string(),
+                setup: SetupId(6),
+                id: PRIMARY.to_string(),
+                token: Some(token),
+            })
+            .await;
+        finish(&mut rig.reactor).await;
+        assert_eq!(restores(&hider), 1, "shown again");
+        assert_eq!(primary(&rig).token, None);
     }
 
     /// `couch`, running with both pads hidden by a stand-in, stopped by a

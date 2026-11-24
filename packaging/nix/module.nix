@@ -129,8 +129,9 @@ in
     # is running. Stopping the service shows again what it had hidden, and
     # the daemon takes each pad back into its setup as it comes back:
     # hidden again by the service started afresh, or grabbed if the
-    # socket isn't listening again yet, as after any switch that changes
-    # the package while the service runs, which restarts both itself.
+    # socket isn't listening again yet, and hidden once it is, as after
+    # any switch that changes the package while the service runs, which
+    # restarts both itself.
     systemd.services.ctrlassist-hider-socket-unit = lib.mkIf cfg.hiding {
       description = "Restart CtrlAssist's hiding service socket when its unit changes";
       wantedBy = [ "multi-user.target" ];

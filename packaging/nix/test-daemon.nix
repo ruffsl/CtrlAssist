@@ -499,13 +499,71 @@ pkgs.testers.runNixOSTest {
         assert service_said(TAKES)
         # Its stop showed the pad again, and the daemon took the pad back
         # into its setup as it came back: hidden again if the socket was
-        # listening by then, grabbed if not.
+        # listening by then, and if not grabbed until it is, and hidden
+        # then.
+        machine.wait_until_succeeds(f"[ $(journalctl _SYSTEMD_USER_UNIT=ctrlassist-daemon.service -o cat | grep -c '{RETURNED}') -gt {returned} ]")
+        retry(lambda _last: known()[HID]["hidden"])
+        machine.succeed("udevadm settle")
+        phase_is("running")
+        assert not alice_can_open(HID, "event") and not alice_can_open(HID, "js")
+        assert grabbed(PLAIN) and not known()[PLAIN]["hidden"]
+
+    def returns():
+        return daemon_journal().count(RETURNED)
+
+    def back_hidden(start):
+        """The setup's pad with a driver comes back hidden, the setup the same start throughout, running, and the pad the service refuses still grabbed."""
+        retry(lambda _last: known()[HID]["hidden"])
+        machine.succeed("udevadm settle")
+        phase_is("running")
+        assert setup()["start"] == start, setup()
+        assert all(source["present"] for source in setup()["sources"]), setup()
+        assert not alice_can_open(HID, "event") and not alice_can_open(HID, "js")
+        assert markers()
+        assert grabbed(PLAIN) and not known()[PLAIN]["hidden"]
+
+    with subtest("a pad back while the hiding service's socket is stopped is grabbed, and hidden once the socket listens again, its setup running throughout"):
+        ABSENT = "the hiding service isn't there"
+        start = setup()["start"]
+        returned, absent, before = returns(), daemon_journal().count(ABSENT), said()
+        # As a switch that stops the socket and the service, and starts
+        # the socket again only later: the service's stop shows the pad,
+        # and the daemon, finding no service, grabs it as it comes back.
+        machine.succeed("systemctl stop ctrlassist-hider.socket ctrlassist-hider.service")
         machine.wait_until_succeeds(f"[ $(journalctl _SYSTEMD_USER_UNIT=ctrlassist-daemon.service -o cat | grep -c '{RETURNED}') -gt {returned} ]")
         machine.succeed("udevadm settle")
         phase_is("running")
-        assert not alice_can_open(HID) or grabbed(HID), "the pad is open to games"
+        assert not known()[HID]["hidden"] and grabbed(HID), known()[HID]
+        assert markers() == [], markers()
+        assert daemon_journal().count(ABSENT) > absent
+        machine.succeed("systemctl start ctrlassist-hider.socket")
+        back_hidden(start)
+        # Hidden through a re-bind of the service's own, as a hide at a
+        # start is: the pad never said to have left or come.
+        machine.succeed("udevadm settle")
+        now = said()
+        assert now["a pad connected"] == before["a pad connected"] and now["a pad disconnected"] == before["a pad disconnected"], (before, now)
+
+    with subtest("a daemon started without the hiding service hides its setup's pads once the service's socket is made"):
+        # As a package installed after the daemon started: no socket, nor
+        # its directory, as the daemon starts the profile by itself.
+        machine.succeed(as_alice("systemctl --user stop ctrlassist-daemon.service"))
+        wait_restored()
+        machine.succeed("systemctl stop ctrlassist-hider.socket ctrlassist-hider.service")
+        machine.succeed("rm -r /run/ctrlassist")
+        machine.succeed(as_alice("systemctl --user start ctrlassist-daemon.service"))
+        daemon_is_up()
+        phase_is("running")
+        start = setup()["start"]
+        machine.succeed("udevadm settle")
+        assert not known()[HID]["hidden"] and grabbed(HID), known()[HID]
         assert grabbed(PLAIN)
-        print(f"through the switch the pad came back {'hidden' if known()[HID]['hidden'] else 'grabbed'}; the daemon: " + " | ".join(daemon_journal().splitlines()[-8:]))
+        before = said()
+        machine.succeed("systemctl start ctrlassist-hider.socket")
+        back_hidden(start)
+        machine.succeed("udevadm settle")
+        now = said()
+        assert now["a pad connected"] == before["a pad connected"] and now["a pad disconnected"] == before["a pad disconnected"], (before, now)
 
     with subtest("a switch that changes the socket's unit restarts it when the service isn't running"):
         cli("stop", "couch")

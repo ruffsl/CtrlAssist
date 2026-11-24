@@ -8,6 +8,7 @@ mod blacklist;
 mod book;
 mod copied;
 pub mod durable;
+mod hider_socket;
 mod hiding;
 mod hotplug;
 pub mod logging;
@@ -35,6 +36,7 @@ use zenoh::liveliness::LivelinessToken;
 
 use blacklist::Blacklist;
 use book::Book;
+use hider_socket::SocketWatch;
 use hiding::Hiding;
 use hotplug::Watch;
 use profiles::Profiles;
@@ -113,6 +115,9 @@ pub struct Daemon {
     /// The reactor, until it is seen to have ended.
     reactor: Option<JoinHandle<()>>,
     watch: Watch,
+    /// The watch on where the hiding service's socket is made, if it
+    /// could be started.
+    socket_watch: Option<SocketWatch>,
     session: Session,
     input: Arc<InputThread>,
 }
@@ -267,6 +272,7 @@ impl Daemon {
         .context("reading what the daemon keeps")?;
         // The pads remembered, then the pads connected now.
         let (changes, seen) = mpsc::unbounded_channel();
+        let socket_changes = changes.clone();
         let state_dir = paths.state.clone();
         let (watch, now) = tokio::task::spawn_blocking(move || Watch::start(changes))
             .await
@@ -274,8 +280,15 @@ impl Daemon {
             .context("watching udev for pads")?;
         // Looked for off the way to being up, once the reactor runs: a
         // service that doesn't answer holds up nothing but the setups
-        // that need it.
+        // that need it. Looked for again each time its socket is made
+        // while it isn't known to be there, which is watched for from before the first look, so that one
+        // made between the two is heard.
         let hiding = Hiding::new(&paths.hider);
+        let socket_watch = SocketWatch::start(&paths.hider, socket_changes)
+            .inspect_err(|error| {
+                warn!(%error, "the hiding service's socket can't be watched; the service is looked for only when it is next needed");
+            })
+            .ok();
         let mechanism = hiding.mechanism();
         let hider_version = hiding.service_release();
         let mut reactor = Reactor::new(
@@ -363,6 +376,7 @@ impl Daemon {
             stop,
             reactor: Some(reactor),
             watch,
+            socket_watch,
             session,
             input,
         })
@@ -400,6 +414,7 @@ impl Daemon {
             stop,
             reactor,
             watch,
+            socket_watch,
             session,
             input,
         } = self;
@@ -427,6 +442,7 @@ impl Daemon {
         // hold on the input thread went with the reactor.
         let _ = tokio::task::spawn_blocking(move || {
             drop(watch);
+            drop(socket_watch);
             drop(input);
             // Nothing runs any more: Steam is left as it was found.
             if let Ok(mut blacklist) = blacklist.lock() {

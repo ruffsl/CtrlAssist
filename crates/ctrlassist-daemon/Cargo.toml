@@ -16,7 +16,7 @@ ctrlassist-core = { workspace = true }
 ctrlassist-device = { workspace = true }
 ctrlassist-hider = { workspace = true }
 ctrlassist-protocol = { workspace = true }
-rustix = { workspace = true, features = ["event", "net"] }
+rustix = { workspace = true, features = ["event", "fs", "net"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

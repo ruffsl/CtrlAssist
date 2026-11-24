@@ -110,6 +110,10 @@ pub(crate) struct Reactor {
     pub(crate) owed: BTreeMap<Owing, Owed>,
     /// The last [`Owing`] noted.
     pub(crate) owings: u64,
+    /// Whether the hiding service is being looked for, and whether it is
+    /// to be looked for again once that look is back.
+    looking: bool,
+    look_again: bool,
 }
 
 impl std::fmt::Debug for Reactor {
@@ -184,6 +188,8 @@ impl Reactor {
             candidates: Vec::new(),
             owed: BTreeMap::new(),
             owings: 0,
+            looking: false,
+            look_again: false,
         }
     }
 
@@ -217,14 +223,31 @@ impl Reactor {
         }
     }
 
-    /// Looks for the hiding service, off the reactor, as the daemon
-    /// starts: what was found is published when the look comes back.
+    /// Looks for the hiding service, off the reactor: as the daemon
+    /// starts, and each time the service's socket is made or made to take
+    /// connections while it isn't known to be there. What was found is published when the look comes
+    /// back, and the pads grabbed for want of the service are hidden if
+    /// it is there. One look at a time: a socket made during one has
+    /// another once it is back.
     pub(crate) fn look_for_the_hiding_service(&mut self) {
+        if self.looking {
+            self.look_again = true;
+            return;
+        }
+        self.looking = true;
         let hiding = Arc::clone(&self.hiding);
         self.work.spawn_blocking(move || {
             hiding.look();
             Done::Looked
         });
+    }
+
+    /// A look for the hiding service is back.
+    pub(crate) fn looked(&mut self) {
+        self.looking = false;
+        if std::mem::take(&mut self.look_again) {
+            self.look_for_the_hiding_service();
+        }
     }
 
     /// Publishes what a virtual pad can present itself as, and whether
@@ -441,6 +464,14 @@ impl Reactor {
                 self.gone(gone).await;
             }
             Seen::Rebinding { anchor, present } => self.book.rebinding(&anchor, &present),
+            // Looked for unless it is there as far as the daemon knows: a
+            // look would start a service nothing needs. A service gone
+            // from under hidden pads is known gone as they come back.
+            Seen::HiderSocket => {
+                if self.hiding.mechanism() != payload::Hiding::Service {
+                    self.look_for_the_hiding_service();
+                }
+            }
             Seen::Rumble {
                 node,
                 syspath,

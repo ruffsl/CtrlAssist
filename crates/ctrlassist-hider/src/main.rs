@@ -713,6 +713,22 @@ fn listen_at(path: &Path) -> io::Result<OwnedFd> {
     rustix::process::umask(was);
     bound?;
     listen(&socket, 8)?;
+    // Touched once it listens, as systemd touches a socket unit's: a
+    // client that found it refusing between the bind and the listen
+    // hears that it takes connections now.
+    let now = rustix::fs::Timespec {
+        tv_sec: 0,
+        tv_nsec: rustix::fs::UTIME_NOW,
+    };
+    let times = rustix::fs::Timestamps {
+        last_access: now,
+        last_modification: now,
+    };
+    if let Err(error) =
+        rustix::fs::utimensat(rustix::fs::CWD, path, &times, rustix::fs::AtFlags::empty())
+    {
+        warn!(path = %path.display(), %error, "couldn't touch the socket once it listens; a client waiting for it hears of it when it next needs it");
+    }
     Ok(socket)
 }
 
