@@ -34,8 +34,12 @@
 //!
 //! Hiding a pad and showing it again re-bind its driver, which the
 //! [book](crate::book) knows by the device that stays.
+//!
+//! A pad a hide found the service absent for is noted as grabbed for
+//! want of it, until a hide of it is answered: once the service is
+//! there again, the setup that holds it has it hidden.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -262,6 +266,9 @@ struct State {
     /// its pad, and whose end the service hasn't been seen to close: a
     /// hide given up, or a hidden pad given up without a reading.
     closing: Vec<(String, Arc<Connection>)>,
+    /// The pads whose last hide found the service absent, or its
+    /// connection broken, so that they were grabbed for want of it.
+    wanting: BTreeSet<String>,
     /// Whether the daemon is stopping: nothing more is asked.
     closed: bool,
 }
@@ -485,6 +492,7 @@ impl Hiding {
                     readings: Vec::new(),
                     read: 0,
                     closing: Vec::new(),
+                    wanting: BTreeSet::new(),
                     closed: false,
                 }),
                 changed: Condvar::new(),
@@ -521,7 +529,7 @@ impl Hiding {
             match &found {
                 Found::There { release } => info!(release, "the hiding service is there"),
                 Found::Absent => {
-                    info!(socket = ?self.socket, "the hiding service isn't there; a setup's pads will be grabbed, which hides them from most games but not from a program that reads them some other way. It is looked for again each time it is needed");
+                    info!(socket = ?self.socket, "the hiding service isn't there; a setup's pads will be grabbed, which hides them from most games but not from a program that reads them some other way. It is looked for again each time it is needed and each time its socket is made, and the pads grabbed meanwhile are hidden once it is found");
                 }
                 Found::Looking => {}
             }
@@ -532,7 +540,9 @@ impl Hiding {
     }
 
     /// Looks for the service, as the daemon starts, and asks its release.
-    /// A start that needs it meanwhile waits for this.
+    /// A start that needs it meanwhile waits for this. Asked again each
+    /// time the service's socket is made, or made to take connections,
+    /// while the service isn't known to be there.
     pub(crate) fn look(&self) {
         let own = Arc::clone(&self.own);
         // What was found is noted as it is found.
@@ -601,7 +611,7 @@ impl Hiding {
 
     /// The mechanism, for the daemon's state: the service if it was
     /// there when last asked something. It is looked for again when it
-    /// is next needed, not here.
+    /// is next needed, or its socket is made, not here.
     pub(crate) fn mechanism(&self) -> payload::Hiding {
         match self.state().found {
             Found::Looking => payload::Hiding::Looking,
@@ -973,6 +983,8 @@ impl Hiding {
     /// for as the daemon starts, this waits for that; and while the pad
     /// is busy being shown again, for that: the service holds the pad
     /// until its re-bind is done, and would refuse it as busy meanwhile.
+    /// A pad not hidden as the service isn't there, or its connection
+    /// broke, is noted as grabbed for want of it.
     pub(crate) fn hide(
         &self,
         errand: &Arc<Errand>,
@@ -980,19 +992,22 @@ impl Hiding {
         fd: BorrowedFd<'_>,
     ) -> Result<Hidden, Unhidden> {
         self.wait_for(errand, pad)?;
-        let connection = match self.connect(errand) {
-            Ok(connection) => connection,
-            Err(Unasked::Ended) => return Err(Unhidden::Ended),
-            // Nothing was asked of a service that isn't there or refused
-            // to say its release.
-            Err(Unasked::Refused | Unasked::NotThere) => return Err(Unhidden::Not),
-        };
-        let hidden = match self.ask_hide(errand, &connection, pad, fd) {
+        // Nothing was asked of a service that isn't there or refused to
+        // say its release.
+        let hidden = self
+            .connect(errand)
+            .and_then(|connection| Ok((self.ask_hide(errand, &connection, pad, fd)?, connection)));
+        let (hidden, connection) = match hidden {
             Ok(hidden) => hidden,
             Err(Unasked::Ended) => return Err(Unhidden::Ended),
-            Err(Unasked::Refused | Unasked::NotThere) => return Err(Unhidden::Not),
+            Err(unasked) => {
+                // Grabbed for want of the service, or as it refused.
+                self.wanting(pad, matches!(unasked, Unasked::NotThere));
+                return Err(Unhidden::Not);
+            }
         };
         let mut state = self.state();
+        state.wanting.remove(pad);
         state.tokens += 1;
         let token = Token(state.tokens);
         state.held.insert(
@@ -1011,6 +1026,33 @@ impl Hiding {
                 kept: false,
             },
         })
+    }
+
+    /// Notes whether `pad`, which wasn't hidden, was grabbed for want of
+    /// the service.
+    fn wanting(&self, pad: &str, wanting: bool) {
+        let mut state = self.state();
+        if wanting {
+            state.wanting.insert(pad.to_string());
+        } else {
+            state.wanting.remove(pad);
+        }
+    }
+
+    /// Whether `pad` was grabbed for want of the service, which is there
+    /// now: then it is to be hidden, and is noted so no longer, so that it
+    /// is asked once; a hide that finds the service gone again notes it
+    /// again.
+    pub(crate) fn take_wanting(&self, pad: &str) -> bool {
+        let mut state = self.state();
+        matches!(state.found, Found::There { .. }) && state.wanting.remove(pad)
+    }
+
+    /// Whether `pad` is noted as grabbed for want of the service, there
+    /// or not, leaving the note as it is.
+    #[cfg(test)]
+    pub(crate) fn is_wanting(&self, pad: &str) -> bool {
+        self.state().wanting.contains(pad)
     }
 
     /// The connection a hidden pad was hidden on.
@@ -1251,6 +1293,65 @@ mod tests {
         );
         assert!(hiding.show("pad", Token(1)).is_none());
         assert!(hiding.reopen(&errand, Token(1)).is_none());
+    }
+
+    /// A pad not hidden as the service isn't there is grabbed for want of
+    /// it, and is to be hidden once the service is found there, once; one
+    /// the service refused isn't. A hide that finds the service gone
+    /// again notes the pad again, and one answered notes it no longer.
+    #[test]
+    fn a_pad_grabbed_for_want_of_the_service_is_hidden_once_it_is_there() {
+        let dir = a_dir();
+        let path = dir.path().join("hider.sock");
+        let hiding = Hiding::new(&path);
+        hiding.look();
+        let (errand, fd) = (Arc::new(Errand::default()), a_descriptor());
+        let hide = |pad| {
+            hiding
+                .hide(&errand, pad, fd.as_fd())
+                .map(|hidden| hidden.hold.keep())
+        };
+        assert_eq!(hide("pad"), Err(Unhidden::Not));
+        assert!(!hiding.take_wanting("pad"), "not while it isn't there");
+
+        // There, refusing a caller not in front of a seat once.
+        let hider = FakeHider::scripted(
+            &path,
+            Script {
+                refuse: 1,
+                ..Script::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hide("refused"), Err(Unhidden::Not));
+        assert_eq!(
+            hiding.mechanism(),
+            payload::Hiding::Grab,
+            "a refusal says nothing"
+        );
+        assert!(!hiding.take_wanting("pad"), "not until it is found");
+        hiding.look();
+        assert_eq!(hiding.mechanism(), payload::Hiding::Service);
+        assert!(!hiding.take_wanting("refused"), "refused, not wanting");
+        assert!(hiding.take_wanting("pad"));
+        assert!(!hiding.take_wanting("pad"), "once");
+
+        // Gone again before it was hidden: noted again.
+        drop(hider);
+        assert_eq!(hide("pad"), Err(Unhidden::Not));
+        assert_eq!(hiding.mechanism(), payload::Hiding::Grab);
+        let again = FakeHider::scripted(&path, Script::default()).unwrap();
+        hiding.look();
+        assert!(hiding.take_wanting("pad"));
+
+        // Hidden by a hide of its own meanwhile, as when it returned:
+        // noted no longer.
+        drop(again);
+        assert_eq!(hide("pad"), Err(Unhidden::Not));
+        let _third = FakeHider::scripted(&path, Script::default()).unwrap();
+        assert!(hide("pad").is_ok());
+        assert!(!hiding.take_wanting("pad"));
+        hiding.close();
     }
 
     /// A hide given up as it is asked is hung up on, and the service

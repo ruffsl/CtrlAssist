@@ -55,6 +55,9 @@ pub(crate) enum Seen {
         connected: Vec<Found>,
         anchors: Vec<Anchor>,
     },
+    /// The hiding service's socket was made, or made to take
+    /// connections, as the [socket's watch](crate::hider_socket) heard.
+    HiderSocket,
 }
 
 /// Whether the pad on `node`, at `syspath`, can rumble; `None` when it
