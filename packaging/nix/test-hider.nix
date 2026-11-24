@@ -1062,13 +1062,27 @@ pkgs.testers.runNixOSTest {
         assert markers() == [], markers()
         machine.succeed("systemctl stop pad-plain")
 
+    def watching(unit):
+        """Starts the daemon's monitor, as the fixture's watch, writing what it hears to /tmp/<unit>."""
+        machine.succeed(f"systemd-run --unit {unit} -p StandardOutput=file:/tmp/{unit} ctrlassist-fixture watch")
+        machine.wait_until_succeeds(f"grep -qx watching /tmp/{unit}")
+
+    def heard(unit, pattern):
+        """Waits for the monitor of `watching` to have said a line `pattern`, an extended regular expression, matches whole."""
+        machine.wait_until_succeeds(f"grep -qxE {shlex.quote(pattern)} /tmp/{unit}")
+
     with subtest("an Xbox 360 pad on USB under xpad is hidden and shown again by re-binding its USB interface"):
+        watching("watch-xpad")
         machine.succeed("systemd-run --unit xpad-gadget usb-gadget xpad xpad XPADFIXTURE1 0")
         machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c X-Box", timeout=60)
         machine.succeed("udevadm settle")
         key = [key for key in pads() if "X-Box" in key][0]
         node = pads()[key]["event"][0]
         sysname = node.split("/")[-1]
+        # The daemon's monitor anchors a pad with no HID device to its USB
+        # interface, the device the service re-binds.
+        interface = sysfs(node, "device")
+        heard("watch-xpad", f"arrived {node} \\S+ anchor={interface}")
         print("xpad pad: " + machine.succeed(
             f"udevadm info -q property -n {node} | grep -E '^(ID_SERIAL_SHORT|ID_BUS|CURRENT_TAGS)='"
         ).replace("\n", " ") + " driver=" + machine.succeed(f"basename $(readlink -f /sys/class/input/{sysname}/device/device/driver)").strip())
@@ -1083,6 +1097,12 @@ pkgs.testers.runNixOSTest {
         # its serial number as it comes back, and opened again.
         replug("xpad", 0, "X-Box")
         assert not alice_can_open(key, "event") and not alice_can_open(key, "js"), "an xpad pad that came back"
+        # Taken out, its anchor is heard to go, the pad unplugged; back in
+        # the same port, it is anchored there again.
+        heard("watch-xpad", f"unplugged {interface}")
+        machine.succeed("systemctl stop watch-xpad")
+        print("the monitor through the xpad pad's hide and replug:\n" + machine.succeed("cat /tmp/watch-xpad"))
+        assert machine.succeed("tac /tmp/watch-xpad | grep -m1 '^arrived '").strip().endswith(f" anchor={interface}")
         assert order(control, "reopen").startswith("ok")
         assert order(control, "restore").startswith("ok")
         machine.succeed("udevadm settle")
@@ -1099,12 +1119,17 @@ pkgs.testers.runNixOSTest {
 
     with subtest("a HID pad on USB is found again by its serial number after reconnecting, its raw node hidden throughout"):
         name = "Fixture Serial Pad"
+        watching("watch-serial")
         machine.succeed("systemd-run --unit gadget-serial usb-gadget hid serial HIDFIXTURE1 1 0x5ef0 'Serial Pad'")
         machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -c '{name}'", timeout=60)
         machine.succeed("udevadm settle")
         nodes = by_name(name, "alice")
         assert {"event", "js", "hidraw"} <= nodes.keys() and all_are(nodes, "open"), nodes
         interface = sysfs(nodes["event"][0], "device/..").split("/")[-1]
+        # A HID pad on USB is anchored to its HID device, not the USB
+        # interface above it.
+        hid_device = sysfs(nodes["event"][0], "device")
+        heard("watch-serial", f"arrived {nodes['event'][0]} \\S+ anchor={hid_device}")
         control, told = hide("hide-serial", nodes["event"][0])
         assert told.startswith("ok"), told
         found = markers()
@@ -1115,6 +1140,9 @@ pkgs.testers.runNixOSTest {
         replug("serial", 1, name)
         nodes = by_name(name, "alice")
         assert all_are(nodes, "denied"), f"a pad that came back on another HID device: {nodes}"
+        # Taken out, its HID device is heard to go, the pad unplugged.
+        heard("watch-serial", f"unplugged {hid_device}")
+        machine.succeed("systemctl stop watch-serial")
         assert order(control, "reopen").startswith("ok")
         assert order(control, "restore").startswith("ok")
         machine.succeed("udevadm settle")
