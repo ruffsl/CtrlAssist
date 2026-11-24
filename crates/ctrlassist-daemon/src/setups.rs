@@ -456,7 +456,7 @@ impl Setups {
 /// Runs `work`, or if it panics, logs that and runs `instead`: work done
 /// off the reactor comes back to it whatever happens, or what waits on
 /// it waits for good.
-fn caught<T>(what: &str, work: impl FnOnce() -> T, instead: impl FnOnce() -> T) -> T {
+pub(crate) fn caught<T>(what: &str, work: impl FnOnce() -> T, instead: impl FnOnce() -> T) -> T {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|_| {
         error!(work = what, "work done off the reactor panicked");
         instead()
@@ -4410,12 +4410,14 @@ mod tests {
     }
 
     /// A pad a running setup holds grabbed for want of the hiding service
-    /// is hidden once the service is found there, as its socket is made,
-    /// and asked once; a setup whose profile asks only for a grab is left
-    /// as it is. A socket made while the service is known there asks
-    /// nothing, which would only start a service nothing needs.
+    /// is sent to be hidden once the service is found there, as its
+    /// socket is made, and asked once; a setup whose profile asks only for
+    /// a grab is left as it is. A socket made while the service is known
+    /// there asks nothing, which would only start a service nothing needs.
+    /// One that can't be opened again stays grabbed, and isn't asked
+    /// again.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_pad_grabbed_for_want_of_the_service_is_hidden_once_it_is_found() {
+    async fn a_pad_grabbed_for_want_of_the_service_is_sent_to_be_hidden_once_it_is_found() {
         let mut rig = rig().await;
         let hider = grabbed_for_want(&mut rig).await;
         rig.reactor.setups.entries.get_mut("couch").unwrap().hide = Hide::Grab;
@@ -4455,6 +4457,72 @@ mod tests {
         finish(&mut rig.reactor).await;
         let slot = primary(&rig);
         assert!(!slot.returning && slot.present && slot.token.is_none());
+    }
+
+    /// A pad a running setup holds grabbed for want of the hiding service
+    /// is hidden once the service is found there: opened again at its
+    /// node, checked to be the pad, and hidden, it is its setup's under
+    /// the service's name, and said to be hidden. The stand-in re-binds
+    /// nothing, so the pad stays where it is. Needs a pad to open.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_grabbed_for_want_of_the_service_is_hidden_once_it_is_found() {
+        const TEST: &str = "a_pad_grabbed_for_want_of_the_service_is_hidden_once_it_is_found";
+        let mut rig = rig().await;
+        let Some((fake, _)) = a_pad(TEST, "Daemon Wanting Pad") else {
+            return;
+        };
+        let found = ctrlassist_device::connected()
+            .unwrap()
+            .into_iter()
+            .find(|found| found.node == fake.event_node())
+            .unwrap();
+        let id = found.identifiers.id().to_string();
+        rig.reactor.book.arrived(&found);
+        let path = rig._dir.path().join("hider.sock");
+        rig.reactor.hiding = Arc::new(Hiding::new(&path));
+        rig.reactor.look_for_the_hiding_service();
+        finish(&mut rig.reactor).await;
+        follow(&mut rig.reactor, 7, Phase::Running);
+        let entry = rig.reactor.setups.entries.get_mut("couch").unwrap();
+        entry.hide = Hide::Full;
+        entry.slots[1].pad = Some(id.clone());
+        entry.slots[1].present = true;
+        let (hiding, errand) = (Arc::clone(&rig.reactor.hiding), Arc::clone(&entry.errand));
+        let wanted = id.clone();
+        let grabbed = tokio::task::spawn_blocking(move || {
+            let fd = File::open("/dev/null").unwrap();
+            hiding.hide(&errand, &wanted, fd.as_fd()).map(|_| ())
+        });
+        assert_eq!(grabbed.await.unwrap(), Err(Unhidden::Not));
+        assert!(rig.reactor.hiding.is_wanting(&id));
+
+        let hider = FakeHider::scripted(&path, Script::default()).unwrap();
+        rig.reactor.saw(Seen::HiderSocket).await;
+        finish(&mut rig.reactor).await;
+        let hide = ctrlassist_test::Asked::Hide(String::new());
+        assert_eq!(hider.asked(), [hide]);
+        let slot = primary(&rig);
+        assert!(!slot.returning && slot.present);
+        assert!(slot.token.is_some(), "its setup's under the service's name");
+        assert!(rig.reactor.book.pad(&id).unwrap().hidden);
+        assert!(!rig.reactor.hiding.is_wanting(&id));
+        drop(hider);
+    }
+
+    /// A look for the hiding service that panics ends as one that found
+    /// nothing: it comes back, the pads are grabbed, and the next socket
+    /// made is looked at.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_look_that_panics_has_found_nothing() {
+        let mut rig = rig().await;
+        let path = rig._dir.path().join("hider.sock");
+        rig.reactor.hiding = Arc::new(Hiding::new(&path));
+        rig.reactor.look_with(|_| panic!("as a test"));
+        finish(&mut rig.reactor).await;
+        assert_eq!(rig.reactor.hiding.mechanism(), payload::Hiding::Grab);
+        rig.reactor.saw(Seen::HiderSocket).await;
+        assert!(!rig.reactor.work.is_empty(), "looked for again");
+        finish(&mut rig.reactor).await;
     }
 
     /// A pad grabbed for want of the hiding service and hidden since is
