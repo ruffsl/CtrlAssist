@@ -17,12 +17,20 @@
 //! same pad: the pad's raw HID node, which a seat user can't open on a
 //! clean machine, for the kinds of pad named in the service. A virtual
 //! pad that is to pass as such a pad is made from what that node says.
+//!
+//! The service takes no descriptor on a connection until it has admitted
+//! it, where the kernel can refuse them (Linux 6.16 and later): a send
+//! that carries one fails until then. Its first reply on a connection
+//! says it was admitted, so the client has had one before it sends a
+//! descriptor.
 
+mod rights;
 mod wire;
 
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::io::Errno;
@@ -31,6 +39,8 @@ use rustix::net::{
     socket_with,
 };
 
+#[doc(hidden)]
+pub use rights::{is_unknown_to_the_kernel, take_descriptors, takes_descriptors};
 pub use wire::{Refusal, Token};
 #[doc(hidden)]
 pub use wire::{Reply, Request, pack_release, receive, send};
@@ -105,6 +115,11 @@ pub struct Hidden {
 #[must_use = "dropping the client closes the connection, which restores every pad hidden through it"]
 pub struct Client {
     socket: OwnedFd,
+    /// Whether anything has been sent on it.
+    asked: AtomicBool,
+    /// Whether the service has answered on it, which says it admitted
+    /// the connection: until then no descriptor is sent.
+    admitted: AtomicBool,
 }
 
 impl Client {
@@ -125,7 +140,15 @@ impl Client {
         let socket = socket_with(AddressFamily::UNIX, SocketType::SEQPACKET, flags, None)?;
         connect(&socket, &SocketAddrUnix::new(path)?)?;
         rustix::io::ioctl_fionbio(&socket, false)?;
-        Ok(Self { socket })
+        Ok(Self::on(socket))
+    }
+
+    fn on(socket: OwnedFd) -> Self {
+        Self {
+            socket,
+            asked: AtomicBool::new(false),
+            admitted: AtomicBool::new(false),
+        }
     }
 
     /// Connects to the service at `path`, waiting while its queue of
@@ -147,7 +170,7 @@ impl Client {
         let address = SocketAddrUnix::new(path)?;
         loop {
             match connect(&socket, &address) {
-                Ok(()) => return Ok(Self { socket }),
+                Ok(()) => return Ok(Self::on(socket)),
                 // A Unix socket left unconnected by a signal is asked
                 // again as it was.
                 Err(Errno::INTR) => {}
@@ -177,10 +200,33 @@ impl Client {
 
     fn send(&self, request: Request, pad: Option<BorrowedFd<'_>>) -> Result<(), Error> {
         let fds: &[BorrowedFd<'_>] = match &pad {
-            Some(pad) => std::slice::from_ref(pad),
+            Some(pad) => {
+                self.admit()?;
+                std::slice::from_ref(pad)
+            }
             None => &[],
         };
         send(self.socket.as_fd(), &request.encode(), fds)?;
+        self.asked.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Waits, on a connection the service hasn't answered yet, until it
+    /// has: with nothing sent, asks the release and reads the reply;
+    /// with a request sent, waits for its reply to come, and leaves it to
+    /// be read. Only hanging up ends the wait.
+    fn admit(&self) -> Result<(), Error> {
+        if self.admitted.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        if self.asked.load(Ordering::Relaxed) {
+            self.wait(None)?;
+        } else {
+            // Whatever it says, a refusal among it, it has answered.
+            self.send(Request::Version, None)?;
+            self.reply()?;
+        }
+        self.admitted.store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -188,6 +234,11 @@ impl Client {
     fn reply(&self) -> Result<(Reply, Vec<OwnedFd>), Error> {
         let mut buffer = [0u8; Reply::SIZE];
         let (length, fds) = receive(self.socket.as_fd(), &mut buffer)?;
+        // Anything the service says, understood or not, says it admitted
+        // the connection; nothing at all is its end.
+        if length > 0 {
+            self.admitted.store(true, Ordering::Relaxed);
+        }
         let reply = buffer
             .get(..length)
             .and_then(Reply::decode)
@@ -244,7 +295,9 @@ impl Client {
         })
     }
 
-    /// Hides the pad whose event node `pad` is open on.
+    /// Hides the pad whose event node `pad` is open on. On a connection
+    /// the service hasn't answered yet, asks its release first, as
+    /// [`send_hide`](Self::send_hide) does.
     ///
     /// # Errors
     ///
@@ -260,6 +313,12 @@ impl Client {
     /// on, and returns without waiting for the reply: [`wait`](Self::wait)
     /// waits for it and [`hid`](Self::hid) reads it, or hanging up gives
     /// the hide up meanwhile.
+    ///
+    /// On a connection the service hasn't answered yet, first asks its
+    /// release and waits for the reply, which only hanging up ends: the
+    /// service takes no descriptor on a connection until it has admitted
+    /// it. A caller that must be able to give that wait up some other way
+    /// asks the [release](Self::version) itself first.
     ///
     /// # Errors
     ///
@@ -333,7 +392,9 @@ impl Client {
     }
 
     /// Opens the raw HID node of the pad whose event node `pad` is open
-    /// on, for reading and writing.
+    /// on, for reading and writing. On a connection the service hasn't
+    /// answered yet, asks its release first, as
+    /// [`send_hide`](Self::send_hide) does.
     ///
     /// # Errors
     ///

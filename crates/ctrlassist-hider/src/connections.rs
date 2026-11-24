@@ -10,10 +10,13 @@
 //! can log in at a seat as a subordinate user ID.
 //!
 //! A connection the service won't serve is closed on a thread of its own.
-//! A client may send descriptors as soon as it has connected, before it
-//! is accepted, and closing its connection releases them on the thread
-//! that closes it, which one whose release blocks (a TCP socket made to
-//! linger) holds there. So the main thread, which accepts, closes none.
+//! Where the kernel can't refuse descriptors to a connection not yet
+//! admitted (before Linux 6.16), a client may send them as soon as it has
+//! connected, before it is accepted, and closing its connection releases
+//! them on the thread that closes it, which one whose release blocks (a
+//! TCP socket made to linger) holds there. So the main thread, which
+//! accepts, closes none. Where it can, the listener refuses them, and a
+//! connection not served carries none.
 
 use std::collections::BTreeMap;
 use std::io;

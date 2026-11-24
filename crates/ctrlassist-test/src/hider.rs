@@ -10,7 +10,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
 use ctrlassist_device::PadId;
-use ctrlassist_hider::{Refusal, Reply, Request, Token, receive, send};
+use ctrlassist_hider::{
+    Refusal, Reply, Request, Token, is_unknown_to_the_kernel, receive, send, take_descriptors,
+};
+use rustix::event::{PollFd, PollFlags, poll};
 use rustix::net::{
     AddressFamily, Shutdown, SocketAddrUnix, SocketType, accept, bind, connect, listen, shutdown,
     socket,
@@ -178,6 +181,19 @@ fn open(node: &Path) -> Option<OwnedFd> {
         .open(node)
         .ok()
         .map(OwnedFd::from)
+}
+
+/// Lets `connection` pass descriptors, as the real service does once it
+/// has admitted a connection: here only once the client has sent
+/// something, or gone, so that a client that sends a descriptor before
+/// it has had a reply fails every time, and not only when it is quicker
+/// than the accept. Nothing to do on a kernel that can't refuse them.
+fn admit(connection: &OwnedFd) {
+    let mut fds = [PollFd::new(connection, PollFlags::IN)];
+    // A wait that fails is a connection that is broken, which serving
+    // finds out.
+    let _ = poll(&mut fds, None);
+    let _ = take_descriptors(connection.as_fd(), true);
 }
 
 /// A reply that did as asked.
@@ -464,6 +480,11 @@ impl FakeHider {
 
     fn serving(path: &Path, hold: Option<Arc<Hold>>) -> io::Result<Self> {
         let listener = socket(AddressFamily::UNIX, SocketType::SEQPACKET, None)?;
+        // As the real service's, where the kernel can refuse them.
+        match take_descriptors(listener.as_fd(), false) {
+            Err(error) if !is_unknown_to_the_kernel(&error) => return Err(error),
+            _ => {}
+        }
         bind(&listener, &SocketAddrUnix::new(path)?)?;
         listen(&listener, 16)?;
         let asked = Arc::new(Mutex::new(Vec::new()));
@@ -495,6 +516,7 @@ impl FakeHider {
                         let served = std::thread::Builder::new()
                             .name("fake-hider-client".into())
                             .spawn(move || {
+                                admit(&connection);
                                 match hold {
                                     Some(hold) => serve_scripted(&connection, &asked, &hold),
                                     None => serve(&connection, &asked, &before_restore),

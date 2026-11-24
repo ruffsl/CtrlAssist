@@ -862,9 +862,13 @@ impl Hiding {
         connection.wait_closed(None, &|| false);
     }
 
-    /// A new connection to the service, for `errand`. The first, and the
-    /// first after the service was found gone, asks its release, which
-    /// the daemon publishes.
+    /// A new connection to the service, for `errand`, on which the
+    /// service's release has been asked, and noted for the daemon to
+    /// publish. Asked first on every connection, as any request is, so
+    /// that ending the errand meanwhile hangs it up: the service takes
+    /// no descriptor on a connection until it has admitted it, which its
+    /// first reply says, and the client library would otherwise ask it
+    /// itself, in a wait only hanging up ends.
     fn connect(&self, errand: &Arc<Errand>) -> Result<Arc<Connection>, Unasked> {
         let socket = self.socket.as_deref().ok_or(Unasked::NotThere)?;
         if self.state().closed || errand.has_ended() {
@@ -887,9 +891,6 @@ impl Hiding {
             }
         };
         let connection = Connection::new(client);
-        if matches!(self.state().found, Found::There { .. }) {
-            return Ok(connection);
-        }
         match self.ask(errand, &connection, Client::version) {
             Ok(release) => self.found(Found::There {
                 release: Some(release),
