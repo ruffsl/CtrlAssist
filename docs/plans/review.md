@@ -699,6 +699,8 @@ Each area is fixed on a branch of its own and merged here as it comes back; a fi
 
 - **Third run on real pads, from the NixOS module (2026-11-23), tree `0a0f6b7`,** which all six VM checks and the whole suite had passed at `4bb9adb`, the commits since being of documents alone. The switch restarted the socket, and the service said connections pass no descriptor until admitted. A hidden DualSense's touchpad: KWin's list of devices had it while shown and not while hidden, nor after the cable was pulled and put back as the setup ran, its node carrying the mark for libinput each time. An Xbox One pad on USB (`045e:02dd`, the xpad driver, no HID device): hidden and shown by its USB interface's re-bind, logged as back from a re-bind and never as connected; pulled and put back as the setup ran, twice in a second by a loose port, it left and returned to its setup each time, hidden. udev marks that pad a joystick alone, with no key; an Xbox Series pad was not to hand, so 2P-6 stays open for it.
 
+- **Decided by the maintainer after the seventh review's fixes:** a system call outside the hiding service's filter fails and doesn't kill the service, `SystemCallErrorNumber=EPERM` staying; the motion build's virtual pad gives a neutral calibration, recorded with its comparison in the motion plan; an Xbox Series pad stays grabbed while what udev marks as a key is researched.
+
 
 **Where this stands, for whoever takes it up next (2026-11-23, late).** State above is a record in order, and its earlier entries describe code since replaced; what is true now is the code, `docs/architecture.md`, `docs/plans/rebind-by-identity.md` and `docs/plans/hider-rootless.md`.
 
