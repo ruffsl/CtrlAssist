@@ -5,7 +5,7 @@ Things the design depends on that have not been observed, or risks accepted for 
 ## Open
 
 - [`hiding-untested-drivers.md`](hiding-untested-drivers.md) — hiding by re-bind is unobserved for an Xbox pad over Bluetooth.
-- [`pad-marked-as-keyboard.md`](pad-marked-as-keyboard.md) — a pad udev also marks as having keyboard keys, as an Xbox Series pad's Share button may, is grabbed, not hidden.
+- [`pad-marked-as-keyboard.md`](pad-marked-as-keyboard.md) — a pad with a keyboard's key on its own node, as a Stadia pad's volume keys or an Elite Series 2's keyboard collection over Bluetooth, is grabbed, not hidden; a share button, above the keyboard's keys, is hidden with its pad.
 - [`pad-identity-across-transports.md`](pad-identity-across-transports.md) — a pad's identifier is unverified across transports.
 - [`suspend-and-reconnect.md`](suspend-and-reconnect.md) — suspend, resume and a Bluetooth drop are untested.
 - [`realtime-refused.md`](realtime-refused.md) — without real-time scheduling the latency tail is not dependable under load.

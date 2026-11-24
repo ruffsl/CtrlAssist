@@ -40,7 +40,23 @@ ENV{ID_INPUT_POINTINGSTICK}=="1", GOTO="ctrlassist_hide_end"
 # A pad: a joystick that is nothing a keystroke or a pointer could come
 # from, as the service itself checks. Any other node is one of a pad's
 # other nodes, if it is a pad's at all.
-ENV{ID_INPUT_JOYSTICK}=="1", ENV{ID_INPUT_KEY}!="1", ENV{ID_INPUT_TOUCHPAD}!="1", GOTO="ctrlassist_hide_pad"
+ENV{ID_INPUT_JOYSTICK}!="1", GOTO="ctrlassist_hide_other"
+ENV{ID_INPUT_TOUCHPAD}=="1", GOTO="ctrlassist_hide_other"
+ENV{ID_INPUT_KEY}!="1", GOTO="ctrlassist_hide_pad"
+# A joystick udev marks as having keys is a pad where every key is at
+# code 128 or above, as a share button (KEY_RECORD) or a menu key is:
+# below are every typing, editing, arrow, modifier, Enter, Esc and
+# function key. The input device's keys are a bitmap in hex words, most
+# significant first, from the highest with a key in it, each a long of
+# the process reading it, udev's here: 64 bits, or 32 for a 32-bit
+# process. Keys below 128 are the last four words of 32 bits, or the
+# last two of 64, and a word of more than eight digits can only be of
+# 64. Where none is that wide, four words must be clear, which on 64 bits
+# refuses keys below 256 as well: a pad with a joystick's or a game pad's
+# button (0x120 to 0x13f) has a wide word. The service reads the same
+# file the same way.
+ATTRS{capabilities/key}=="* 0 0 0 0", GOTO="ctrlassist_hide_pad"
+ATTRS{capabilities/key}=="*[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]* 0 0", GOTO="ctrlassist_hide_pad"
 GOTO="ctrlassist_hide_other"
 
 # Which devices the service may ask to re-bind: the HID device, or with
@@ -64,16 +80,16 @@ SUBSYSTEMS=="usb", DRIVERS=="?*", \
   RUN+="/usr/bin/chmod g+w /sys/bus/usb/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
 
 # A pad's other nodes: its touchpad, its motion sensors, the mouse node a
-# touchpad has, and a joystick the service wouldn't take for a pad, as
-# one udev marks as having keys is (an Xbox Series pad's share button is
-# a key). Only under a device known for a pad's, whose uevent file the
-# lines above have given the group, which shows as the file's
-# group-write bit: such a joystick hidden by another pad's marker alone
-# would stay hidden, the service finding no pad in it to show again. At
-# a device's first enumeration, a pad plugged in, udev runs these nodes'
-# events beside the joystick's, which sets the bit, and not after it:
-# those that came too early are taken again by the change event the
-# joystick's own event has udev send them once the bit is set.
+# touchpad has, and a joystick the service wouldn't take for a pad, one
+# with a key below 128 or a touchpad's axes. Only under a device known
+# for a pad's, whose uevent file the lines above have given the group,
+# which shows as the file's group-write bit: such a joystick hidden by
+# another pad's marker alone would stay hidden, the service finding no
+# pad in it to show again. At a device's first enumeration, a pad
+# plugged in, udev runs these nodes' events beside the joystick's, which
+# sets the bit, and not after it: those that came too early are taken
+# again by the change event the joystick's own event has udev send them
+# once the bit is set.
 LABEL="ctrlassist_hide_other"
 SUBSYSTEMS=="hid", TEST{0020}=="/sys/bus/hid/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
 SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST{0020}=="/sys/bus/usb/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
