@@ -53,11 +53,15 @@ struct Heard {
 }
 
 impl Watched {
-    /// Watches for the socket at `socket` being made.
+    /// Watches for the socket at `socket` being made. A relative path is
+    /// taken from the daemon's working directory, as connecting to it
+    /// takes it: a bare file name has an empty directory, which can't be
+    /// watched.
     fn new(socket: &Path) -> io::Result<Self> {
+        let socket = std::path::absolute(socket).unwrap_or_else(|_| socket.to_path_buf());
         let mut watched = Self {
             inotify: inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK)?,
-            socket: socket.to_path_buf(),
+            socket,
             dir: None,
         };
         watched.place();
@@ -83,10 +87,21 @@ impl Watched {
             if Some(at) == own {
                 flags |= WatchFlags::ATTRIB;
             }
-            if let Ok(watch) = inotify::add_watch(&self.inotify, at, flags) {
-                debug!(dir = %at.display(), "watching for the hiding service's socket");
-                self.dir = Some((watch, at.to_path_buf()));
-                break;
+            match inotify::add_watch(&self.inotify, at, flags) {
+                Ok(watch) => {
+                    debug!(dir = %at.display(), "watching for the hiding service's socket");
+                    self.dir = Some((watch, at.to_path_buf()));
+                    break;
+                }
+                // Not there yet: the one above is watched for it.
+                Err(rustix::io::Errno::NOENT | rustix::io::Errno::NOTDIR) => {}
+                // There, and not to be watched, as for want of permission
+                // or of watches left: a watch above would wait for it to
+                // be made, which it never is.
+                Err(error) => {
+                    warn!(dir = %at.display(), %error, "the hiding service's socket's directory can't be watched; the daemon won't notice the service appearing, and looks for it only when it is next needed");
+                    return self.socket.symlink_metadata().is_ok();
+                }
             }
             dir = at.parent();
         }
@@ -189,8 +204,14 @@ impl SocketWatch {
                         PollFd::new(&watched.inotify, PollFlags::IN),
                         PollFd::new(&stop, PollFlags::IN),
                     ];
-                    if poll(&mut fds, None).is_err() {
-                        continue;
+                    match poll(&mut fds, None) {
+                        Ok(_) => {}
+                        Err(rustix::io::Errno::INTR) => continue,
+                        // Any other stays, and waiting again would spin.
+                        Err(error) => {
+                            warn!(%error, "the hiding service's socket can't be waited on any more; it is looked for only when it is next needed");
+                            return;
+                        }
                     }
                     if !fds[1].revents().is_empty() {
                         return;
@@ -347,15 +368,56 @@ mod tests {
 
     /// The running watch says each socket made to the daemon, and stops
     /// as it is dropped.
-    #[test]
-    fn the_running_watch_says_so_and_stops_when_dropped() {
+    #[tokio::test]
+    async fn the_running_watch_says_so_and_stops_when_dropped() {
+        // A bound on each wait, past which the test fails rather than
+        // hangs: what passes never waits for it.
+        const BOUND: std::time::Duration = std::time::Duration::from_secs(10);
         let dir = a_dir();
         let path = dir.path().join("hider.sock");
         let (seen, mut said) = unbounded_channel();
         let watch = SocketWatch::start(&path, seen).unwrap();
         let _listener = bound(&path);
-        assert!(matches!(said.blocking_recv(), Some(Seen::HiderSocket)));
+        let heard = tokio::time::timeout(BOUND, said.recv())
+            .await
+            .expect("the socket made is said");
+        assert!(matches!(heard, Some(Seen::HiderSocket)));
         drop(watch);
-        assert!(said.blocking_recv().is_none(), "its sender gone with it");
+        let after = tokio::time::timeout(BOUND, said.recv())
+            .await
+            .expect("the watch stops as it is dropped");
+        assert!(after.is_none(), "its sender gone with it");
+    }
+
+    /// A socket given by a bare file name is in the daemon's working
+    /// directory, which is watched for it, as connecting to it finds it
+    /// there.
+    #[test]
+    fn a_socket_given_relative_is_watched_for_where_it_is_connected_to() {
+        let watched = Watched::new(Path::new("hider.sock")).unwrap();
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(watched.socket, here.join("hider.sock"));
+        assert_eq!(watched.dir.map(|(_, dir)| dir), Some(here));
+    }
+
+    /// A socket's directory that is there and can't be watched, here for
+    /// want of permission to read it, isn't waited for from above, where
+    /// it would never be made: nothing is watched.
+    #[test]
+    fn a_directory_there_that_can_t_be_watched_is_not_waited_for_from_above() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = a_dir();
+        let own = dir.path().join("ctrlassist");
+        std::fs::create_dir(&own).unwrap();
+        std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Read all the same by a user who may read anything.
+        if std::fs::read_dir(&own).is_ok() {
+            return;
+        }
+        let watched = Watched::new(&own.join("hider.sock")).unwrap();
+        // Readable again, for the directory to be removed with the test.
+        std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(watched.dir.is_none(), "{:?}", watched.dir);
     }
 }
