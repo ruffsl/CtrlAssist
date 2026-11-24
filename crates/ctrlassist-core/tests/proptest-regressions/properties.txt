@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 23fd9a00cc9f8c2598e8fdee1a13753a4ab0843c5e549a8bde9c7774f344e017 # shrinks to steps = [Some((0, PadState { buttons: 0, axes: [-1.0, -1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], motion: Motion { gyro: [-2000.0, -2000.0, -2000.0], accel: [-1.0, -1.0, -1.0], readings: 0, interval_us: 0 }, touchpad: Touchpad { contacts: [Contact { down: false, x: 0.0, y: 0.0 }, Contact { down: false, x: 0.0, y: 0.0 }] } })), None]
