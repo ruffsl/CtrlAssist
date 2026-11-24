@@ -7,7 +7,10 @@ Requires=ctrlassist-hider.socket
 # is left as it is: a start that keeps failing (no such user, no binary)
 # fails the socket after five in ten seconds, by default, and the client
 # waiting is let go, rather than started again for as long as anything
-# is queued on the socket.
+# is queued on the socket. The limit counts starts, however each run
+# ended, so no setting here tells a start that fails from a service a
+# client ended: nothing a client does may end it, and a panic serving one
+# ends that connection alone.
 
 [Service]
 ExecStart=/usr/bin/ctrlassist-hider
@@ -79,3 +82,7 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
+# A call outside the filter fails, rather than ending the service with
+# SIGSYS: on a path no check takes, such as a library's fallback, ending
+# it would show every pad it hides, for every user, and count as a start.
+SystemCallErrorNumber=EPERM
