@@ -18,7 +18,8 @@ DirectoryMode=0755
 AcceptFileDescriptors=no
 # The limits on how often the socket starts the service are systemd's
 # own: the service stays once started, so they are reached only by a
-# start that keeps failing, which they stop.
+# start that keeps failing, which they stop, or by a service that keeps
+# ending, which nothing a client does may make it.
 
 [Install]
 WantedBy=sockets.target

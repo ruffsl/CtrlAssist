@@ -515,35 +515,37 @@ pub(crate) fn open_under(
 }
 
 /// The device of each pad, and of each raw node, the rule hides that
-/// nothing should, with every marker the rule would hide it by: one that
-/// no pad in `held` is and that no marker in `markers` names, as a pad
-/// sharing an address with one that was hidden, or plugged into its port
-/// while it was away. A pad's event nodes hidden are known by their
-/// group; a raw node by what the rule sets on a node it hides.
-pub(crate) fn unnamed(
-    group: u32,
+/// nothing should: one that no pad in `held` is and whose pad's nodes, or
+/// raw node, no marker in `markers` names, as a pad sharing an address
+/// with one that was hidden, or plugged into its port while it was away.
+/// A pad's event nodes hidden are known by their group; a raw node by
+/// what the rule sets on a node it hides.
+pub(crate) fn unnamed(group: u32, held: &[&Path], markers: &BTreeSet<String>) -> Vec<Device> {
+    let pads = pad::hidden(group)
+        .into_iter()
+        .map(|pad| (pad.parent, pad.named_by));
+    unnamed_of(pads.chain(pad::hidden_raw()), held, markers)
+}
+
+/// Of `hidden`, the device of each pad's nodes or raw node the rule hides
+/// with the markers that would hide them now, those [`unnamed`] says, each
+/// once. A device is to be shown again if either is named by nothing: the
+/// re-bind makes both afresh, and the rule hides again whichever a marker
+/// still names.
+fn unnamed_of(
+    hidden: impl IntoIterator<Item = (Device, BTreeSet<String>)>,
     held: &[&Path],
     markers: &BTreeSet<String>,
-) -> Vec<(Device, BTreeSet<String>)> {
-    let mut found: Vec<(Device, BTreeSet<String>)> = pad::hidden(group)
-        .into_iter()
-        .map(|pad| (pad.parent, pad.named_by))
-        .collect();
-    for (device, names) in pad::hidden_raw() {
-        match found
-            .iter_mut()
-            .find(|(other, _)| other.path == device.path)
-        {
-            Some((_, markers)) => markers.extend(names),
-            None => found.push((device, names)),
+) -> Vec<Device> {
+    let mut found: Vec<Device> = Vec::new();
+    for (device, names) in hidden {
+        let unheld = !held.contains(&device.path.as_path());
+        let new = !found.iter().any(|other| other.path == device.path);
+        if unheld && new && names.is_disjoint(markers) {
+            found.push(device);
         }
     }
     found
-        .into_iter()
-        .filter(|(device, names)| {
-            !held.contains(&device.path.as_path()) && names.is_disjoint(markers)
-        })
-        .collect()
 }
 
 /// Asks for each pad the rule hides that nothing should, as [`unnamed`]
@@ -560,7 +562,7 @@ pub(crate) fn unnamed(
 /// later re-bind of the device, such as a hide's, runs after this one and
 /// is judged on its own answer.
 pub(crate) fn sweep(group: u32, held: &[&Path], markers: &BTreeSet<String>) {
-    for (device, _) in unnamed(group, held, markers) {
+    for device in unnamed(group, held, markers) {
         if pad::shares_with_keyboard_or_pointer(&device.path) {
             warn!(
                 device = %device.path.display(),
@@ -789,6 +791,55 @@ mod tests {
             assert_eq!(rebound.outcome, Err(Refusal::Failed));
             assert!(!rebound.asked);
         }
+    }
+
+    /// A HID pad on USB with no address, hidden by a port marker of a pad
+    /// since shown again, and its raw node by a raw marker of another, of
+    /// its model, hidden in that port and away: its pad's nodes are named
+    /// by nothing now, so the device is shown again, though its raw node
+    /// is named still, which the rule hides again as the re-bind makes it.
+    #[test]
+    fn a_device_is_shown_again_when_any_of_its_hidden_nodes_is_named_by_nothing() {
+        let names = pad::Names {
+            vendor: Some(0x1209),
+            product: Some(0x5ef0),
+            hid: Some("0003:1209:5EF0.0007".into()),
+            hid_id: Some("0003:00001209:00005EF0".into()),
+            interface: Some("2-1:1.0".into()),
+            ..pad::Names::default()
+        };
+        let device = Device {
+            path: PathBuf::from("/sys/devices/pci0000:00/usb2/2-1/2-1:1.0/0003:1209:5EF0.0007"),
+            enumeration: Some(1),
+        };
+        let hidden = || {
+            [
+                (device.clone(), pad::named_by(&names)),
+                (device.clone(), pad::raw_markers(&names)),
+            ]
+        };
+        // The other pad of the model, with an address, hidden in the port.
+        let away = pad::Names {
+            uniq: Some("0a:1b:2c:3d:4e:14".into()),
+            hid: Some("0003:1209:5EF0.0005".into()),
+            ..names.clone()
+        };
+        let markers = pad::markers(&away);
+        assert!(!markers.is_disjoint(&pad::raw_markers(&names)));
+        assert_eq!(
+            unnamed_of(hidden(), &[], &markers),
+            std::slice::from_ref(&device)
+        );
+        // Named both ways, or held: left alone.
+        let mut both = markers.clone();
+        both.insert("port-2-1:1.0".into());
+        assert_eq!(unnamed_of(hidden(), &[], &both), []);
+        assert_eq!(unnamed_of(hidden(), &[&device.path], &markers), []);
+        // Named by nothing at all: asked once.
+        assert_eq!(
+            unnamed_of(hidden(), &[], &BTreeSet::new()),
+            std::slice::from_ref(&device)
+        );
     }
 
     #[test]

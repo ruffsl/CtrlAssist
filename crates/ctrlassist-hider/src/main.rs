@@ -17,6 +17,14 @@
 //! holds while it waits on a client or on udev. A connection owns the
 //! pads it has hidden; when it closes, for any reason, they are shown
 //! again.
+//!
+//! Nothing a client does may end the service: it is every user's, and
+//! systemd starts it again only so often, five starts in ten seconds by
+//! default, whatever ended each run, before it fails its socket for
+//! everyone until root resets it. So a panic serving a connection ends
+//! that connection alone, the pads it hid shown again, and the shared
+//! state stays usable after a thread panicked holding it. The packages'
+//! profile unwinds on panic, which is what lets a panic be contained.
 
 mod activation;
 mod connections;
@@ -29,10 +37,11 @@ use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::mem::ManuallyDrop;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{self, SendError};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use ctrlassist_hider::{
     Refusal, Reply, Request, Token, is_unknown_to_the_kernel, pack_release, receive, send,
@@ -101,21 +110,43 @@ impl State {
             .map(|entry| entry.pad.parent.path.clone())
             .collect()
     }
+
+    /// The token of every pad connection `owner` has, being shown or not.
+    /// Only the connection's own thread, and the threads it waits for,
+    /// show its pads, so once it is done with them one still being shown
+    /// is one whose showing a panic cut short.
+    fn owned_by(&self, owner: u64) -> Vec<u32> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.owner == owner)
+            .map(|entry| entry.token)
+            .collect()
+    }
 }
 
 #[derive(Debug)]
 struct Shared {
     state: Mutex<State>,
-    /// Written when a connection closes, which may let the service stop,
-    /// or let it accept again after running out of room to.
+    /// Written when a connection closes, which may let the service accept
+    /// again after running out of room to.
     closed: OwnedFd,
 }
 
 impl Shared {
+    fn new() -> io::Result<Self> {
+        Ok(Self {
+            state: Mutex::new(State::default()),
+            // Blocking: it is read only once a connection has closed, or
+            // when waiting on that alone.
+            closed: eventfd(0, EventfdFlags::CLOEXEC)?,
+        })
+    }
+
+    /// The shared state, even after a thread panicked holding it: it is
+    /// still the record of what is hidden, which every other connection
+    /// needs, and nothing under the lock leaves it unusable half done.
     fn state(&self) -> MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .expect("nothing panics while the service's state is held")
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Wakes the main thread: a connection has closed.
@@ -193,6 +224,82 @@ fn show(shared: &Arc<Shared>, token: u32, client: Option<BorrowedFd<'_>>, rebind
     });
     shared.state().entries.retain(|entry| entry.token != token);
     sweep(shared, asked.as_deref());
+}
+
+/// Runs `work`, and returns `None` if it panicked, having said so: a panic
+/// ends what it was doing, never the service. The panic itself is told
+/// by the standard hook, on stderr.
+fn contained<T>(what: &str, work: impl FnOnce() -> T) -> Option<T> {
+    let done = std::panic::catch_unwind(AssertUnwindSafe(work)).ok();
+    if done.is_none() {
+        error!(
+            what,
+            "panicked; that alone is given up, and the service goes on"
+        );
+    }
+    done
+}
+
+/// Shows a pad again as [`show`] does, a panic in that ending it for this
+/// pad alone: the pad is then forgotten, with the markers no other pad
+/// has, so that nothing holds it hidden or busy, and the rule shows it at
+/// its next event, or the next sweep has it re-bound.
+fn show_contained(shared: &Arc<Shared>, token: u32) {
+    if contained("showing a pad again", || show(shared, token, None, true)).is_some() {
+        return;
+    }
+    let mut state = shared.state();
+    let Some(index) = state.entries.iter().position(|entry| entry.token == token) else {
+        return;
+    };
+    let entry = state.entries.remove(index);
+    let remaining = state.markers();
+    for marker in entry.pad.markers.difference(&remaining) {
+        hide::delete(marker);
+    }
+}
+
+/// Shows again every pad connection `owner` hid, each on a thread of its
+/// own, so that one whose re-bind never ends holds none of the others up;
+/// none holds the lock as it waits.
+fn show_all(shared: &Arc<Shared>, owner: u64) {
+    let mine = shared.state().owned_by(owner);
+    std::thread::scope(|scope| {
+        for token in mine {
+            info!(token, "a client has gone; showing the pad it hid again");
+            let spawned = std::thread::Builder::new()
+                .name("show".into())
+                .spawn_scoped(scope, move || show_contained(shared, token));
+            if let Err(error) = spawned {
+                warn!(token, %error, "couldn't start a thread to show a pad again; showing it here");
+                show_contained(shared, token);
+            }
+        }
+    });
+}
+
+/// A connection admitted, on its own thread: lets it pass descriptors,
+/// if the listener refused them, now that a thread is here to take and
+/// close them; has `serving` serve it until it closes; then shows again
+/// what it hid, before its end is closed. A panic in serving it ends the
+/// connection alone, what it hid shown again all the same.
+fn connection(
+    shared: &Arc<Shared>,
+    socket: BorrowedFd<'_>,
+    owner: u64,
+    refusing: bool,
+    serving: impl FnOnce(),
+) {
+    if refusing && let Err(error) = take_descriptors(socket, true) {
+        warn!(%error, "couldn't let an admitted connection pass descriptors; it can have nothing hidden");
+    }
+    if contained("serving a client", serving).is_none() {
+        warn!(
+            owner,
+            "a client's connection ended by a panic in serving it; showing what it hid again"
+        );
+    }
+    show_all(shared, owner);
 }
 
 /// Shows again what the rule hides that nothing should, waiting for none
@@ -363,7 +470,8 @@ fn raw_of(parent: &Device) -> Result<OwnedFd, Refusal> {
     hide::open_under(&node, parent, None)
 }
 
-/// Serves one client until it closes, then shows again what it hid.
+/// Serves one client until it closes. What it hid is shown again by
+/// [`connection`] after.
 fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) {
     let socket = socket.as_fd();
     // A client found to be in front stays permitted: one that later
@@ -445,27 +553,6 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
             None => refuse(socket, Refusal::BadRequest),
         }
     }
-    let mine: Vec<u32> = shared
-        .state()
-        .entries
-        .iter()
-        .filter(|entry| entry.owner == owner && !entry.showing)
-        .map(|entry| entry.token)
-        .collect();
-    // Each on a thread of its own, so that one whose re-bind never ends
-    // holds none of the others up; none holds the lock as it waits.
-    std::thread::scope(|scope| {
-        for token in mine {
-            info!(token, "a client has gone; showing the pad it hid again");
-            let spawned = std::thread::Builder::new()
-                .name("show".into())
-                .spawn_scoped(scope, move || show(shared, token, None, true));
-            if let Err(error) = spawned {
-                warn!(token, %error, "couldn't start a thread to show a pad again; showing it here");
-                show(shared, token, None, true);
-            }
-        }
-    });
 }
 
 /// What woke the main thread.
@@ -576,12 +663,7 @@ fn refusing(listener: BorrowedFd<'_>) -> bool {
 /// thread that closes it, which a lingering socket would hold there.
 fn run(listener: &OwnedFd) -> io::Result<()> {
     let refusing = refusing(listener.as_fd());
-    let shared = Arc::new(Shared {
-        state: Mutex::new(State::default()),
-        // Blocking: it is read only once a connection has closed, or when
-        // waiting on that alone.
-        closed: eventfd(0, EventfdFlags::CLOEXEC)?,
-    });
+    let shared = Arc::new(Shared::new()?);
     // Woken after each close the closer makes, the main thread hands it
     // any connection it kept for want of room.
     let closing = Arc::clone(&shared);
@@ -656,20 +738,20 @@ fn run(listener: &OwnedFd) -> io::Result<()> {
             state.next_connection += 1;
             (state.next_connection, holder)
         };
-        // Admitted: its requests may carry descriptors from here on. The
-        // client sends one only once it has had a reply, which comes after.
-        if refusing && let Err(error) = take_descriptors(socket.as_fd(), true) {
-            warn!(%error, "couldn't let an admitted connection pass descriptors; it can have nothing hidden");
-        }
         // The connection is handed over once the thread runs, so that one
-        // whose thread couldn't be started is still here, for the closer.
+        // whose thread couldn't be started is still here, for the closer;
+        // and only its thread lets it pass descriptors, so the closer is
+        // never handed one that could carry them. The client sends one
+        // only once it has had a reply, which comes after.
         let (hand, handed) = mpsc::channel::<OwnedFd>();
         let client = Arc::clone(&shared);
         let spawned = std::thread::Builder::new()
             .name("client".into())
             .spawn(move || {
                 if let Ok(socket) = handed.recv() {
-                    serve(&client, &socket, owner, user);
+                    connection(&client, socket.as_fd(), owner, refusing, || {
+                        serve(&client, &socket, owner, user);
+                    });
                 }
                 client.state().connections.release(holder);
                 client.say_closed();
@@ -745,9 +827,11 @@ fn unprivileged() -> io::Result<()> {
 
 /// Logs to stderr, which systemd gives the journal: as lines with each
 /// field as `name=value`, with no time, which the journal adds. A failed
-/// write is dropped, not a panic.
+/// write is dropped, not a panic: by default the subscriber reports one
+/// with `eprintln!`, which panics when stderr fails too.
 fn logging() {
     let _ = tracing_subscriber::fmt()
+        .log_internal_errors(false)
         .with_writer(io::stderr)
         .with_ansi(false)
         .without_time()
@@ -792,5 +876,95 @@ fn main() -> ExitCode {
             error!(%error, "ctrlassist-hider");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
+
+    use super::*;
+    use crate::pad::Identity;
+
+    fn pair() -> (OwnedFd, OwnedFd) {
+        socketpair(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Sends a request with a descriptor beside it, as a hide does.
+    fn passes(client: &OwnedFd) -> rustix::io::Result<()> {
+        let null = std::fs::File::open("/dev/null").unwrap();
+        send(client.as_fd(), &Request::Hide.encode(), &[null.as_fd()])
+    }
+
+    fn entry(token: u32, owner: u64, showing: bool) -> Entry {
+        Entry {
+            token,
+            owner,
+            pad: Pad {
+                parent: Device {
+                    path: PathBuf::from("/sys/devices/virtual/ctrlassist-test-no-such-device"),
+                    enumeration: None,
+                },
+                ordinal: 0,
+                identity: Identity {
+                    bus: 3,
+                    vendor: 0x054c,
+                    product: 0x0ce6,
+                    seat: "seat0".into(),
+                    virtual_device: true,
+                },
+                markers: BTreeSet::new(),
+                named_by: BTreeSet::new(),
+            },
+            showing,
+        }
+    }
+
+    /// A panic serving a connection, even with the shared state held,
+    /// ends that connection and nothing else: the state is still there
+    /// for every other connection, and the thread goes on to show again
+    /// what it hid. Its thread, not the one that accepted it, lets it
+    /// pass descriptors.
+    #[test]
+    fn a_panic_serving_a_client_ends_its_connection_alone() {
+        let shared = Arc::new(Shared::new().unwrap());
+        let (service, client) = pair();
+        // Refused, as a connection is left by a listener that refuses
+        // them, where the kernel can.
+        let refusing = take_descriptors(service.as_fd(), false).is_ok();
+        if refusing {
+            assert_eq!(passes(&client), Err(Errno::PERM));
+        }
+        let other = entry(2, 8, false);
+        shared.state().entries.push(other);
+        connection(&shared, service.as_fd(), 7, refusing, || {
+            passes(&client).expect("an admitted connection passes descriptors as it is served");
+            let _held = shared.state();
+            panic!("a request went wrong");
+        });
+        assert_eq!(
+            shared.state().owned_by(8),
+            [2],
+            "another connection's pad stays"
+        );
+    }
+
+    /// Once a connection's thread is done serving it, a pad of it still
+    /// being shown is one a panic cut short, and is shown again too.
+    #[test]
+    fn a_connection_s_pads_are_all_shown_again_being_shown_or_not() {
+        let mut state = State::default();
+        state.entries.push(entry(1, 7, false));
+        state.entries.push(entry(2, 7, true));
+        state.entries.push(entry(3, 8, false));
+        assert_eq!(state.owned_by(7), [1, 2]);
     }
 }

@@ -16,18 +16,14 @@ use std::os::fd::{AsRawFd, BorrowedFd};
 
 use libc::c_int;
 
-/// `SO_PASSRIGHTS`, which libc doesn't name yet for these architectures:
-/// its number in the kernel's generic socket header, the one every
-/// architecture but Alpha, MIPS, PA-RISC and SPARC uses.
-#[cfg(not(any(
-    target_arch = "mips",
-    target_arch = "mips32r6",
-    target_arch = "mips64",
-    target_arch = "mips64r6",
-    target_arch = "sparc",
-    target_arch = "sparc64"
-)))]
+/// `SO_PASSRIGHTS`, which libc doesn't name yet, as the kernel's uapi
+/// headers number it (read in Linux 7.3): 83 in the generic socket
+/// header, and in Alpha's and MIPS's own, which follow it here; `0x4051`
+/// on PA-RISC, for which Rust has no target; and `0x5c` on SPARC.
+#[cfg(not(any(target_arch = "sparc", target_arch = "sparc64")))]
 const SO_PASSRIGHTS: c_int = 83;
+#[cfg(any(target_arch = "sparc", target_arch = "sparc64"))]
+const SO_PASSRIGHTS: c_int = 0x5c;
 
 /// The length of the option's value, an `int`.
 fn length() -> libc::socklen_t {
