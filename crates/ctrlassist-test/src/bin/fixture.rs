@@ -80,6 +80,8 @@ enum Command {
     /// that period in milliseconds. It has the address of one of the
     /// daemon's own virtual pads unless --real, which gives it one a
     /// real pad could have, so that it stands in for a connected one.
+    /// With --motion, each press and release is a reading of its sensors
+    /// and touchpad as well: see `moving`.
     FakeDualsense {
         #[arg(long)]
         real: bool,
@@ -87,6 +89,8 @@ enum Command {
         number: u8,
         #[arg(long, default_value_t = 0)]
         pulse: u64,
+        #[arg(long)]
+        motion: bool,
     },
     /// List pads, one per line: name, uniq, vendor:product, then each node
     /// with whether the caller can open it.
@@ -205,6 +209,38 @@ fn hold(pulse: u64, mut edge: impl FnMut(bool) -> io::Result<()>) -> Result<()> 
     }
 }
 
+/// What `fake-dualsense --motion` reports as its `readings`th reading,
+/// from 1: the odd ones pressed, the even ones released, each 4 ms after
+/// the one before by the pad's own clock, as a DualSense's on USB,
+/// whatever the pulse. Pressed, it turns at 12.5, -250 and 1000 °/s and
+/// feels 0.25, -1 and 2.5 g, its touchpad is clicked, a finger is on the
+/// first contact at (0.25, 0.5), and another is put on the second, at
+/// (0.75, 1) and (1, 0.75) by turns. Released, it turns at -0.5, 90 and
+/// -1999 °/s and feels -0.5, 0.75 and -3.9 g, the first finger is at
+/// (0.5, 0) and the second is lifted. Each value differs from the one
+/// before it, so a reader of the kernel's nodes is given every one.
+fn moving(state: ctrlassist_core::PadState, readings: u32) -> ctrlassist_core::PadState {
+    use ctrlassist_core::{Contact, Motion, Touchpad};
+    let pressed = readings % 2 == 1;
+    let (gyro, accel, first, second) = if pressed {
+        let second = if readings % 4 == 1 {
+            Contact::new(true, 0.75, 1.0)
+        } else {
+            Contact::new(true, 1.0, 0.75)
+        };
+        let first = Contact::new(true, 0.25, 0.5);
+        ([12.5, -250.0, 1000.0], [0.25, -1.0, 2.5], first, second)
+    } else {
+        let first = Contact::new(true, 0.5, 0.0);
+        let second = Contact::new(false, 1.0, 0.75);
+        ([-0.5, 90.0, -1999.0], [-0.5, 0.75, -3.9], first, second)
+    };
+    state
+        .with(gamepad::TOUCHPAD, f32::from(u8::from(pressed)))
+        .with_motion(Motion::new(gyro, accel, readings, 4000))
+        .with_touchpad(Touchpad::new([first, second]))
+}
+
 /// How many reads the service's descriptor yields in half a second.
 fn count_from(hidden: &Hidden) -> Result<usize> {
     let mut file = File::from(hidden.event.try_clone()?);
@@ -315,6 +351,7 @@ fn run(command: Command) -> Result<()> {
             real,
             number,
             pulse,
+            motion,
         } => {
             let address = if real {
                 [0x02, 0xca, 0x7e, 0x00, 0x00, number]
@@ -326,6 +363,7 @@ fn run(command: Command) -> Result<()> {
                 VirtualPad::dualsense(&data, address).context("creating the virtual DualSense")?;
             say(format_args!("node {}", pad.event_node().display()))?;
             let mut pressed = false;
+            let mut readings = 0u32;
             loop {
                 // Whatever reads the pad's raw node is answered at once;
                 // the press waits its turn.
@@ -338,8 +376,14 @@ fn run(command: Command) -> Result<()> {
                 pad.serve(|_| Ok(()))?;
                 if ready == 0 {
                     pressed = !pressed;
+                    readings = readings.wrapping_add(1);
                     let state = ctrlassist_core::PadState::NEUTRAL
                         .with(gamepad::SOUTH, f32::from(u8::from(pressed)));
+                    let state = if motion {
+                        moving(state, readings)
+                    } else {
+                        state
+                    };
                     pad.write(&state)?;
                 }
             }
