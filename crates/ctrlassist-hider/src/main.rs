@@ -151,11 +151,10 @@ fn refuse(socket: BorrowedFd<'_>, refusal: Refusal) {
 }
 
 /// A reply that did as asked.
-fn ok(token: u32, dislodged: bool) -> Reply {
+fn ok(token: u32) -> Reply {
     Reply {
         refusal: None,
         token: Token(token),
-        dislodged,
     }
 }
 
@@ -404,11 +403,7 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
         }
         match request {
             Some(Request::Version) => {
-                reply(
-                    socket,
-                    ok(pack_release(env!("CARGO_PKG_VERSION")), false),
-                    None,
-                );
+                reply(socket, ok(pack_release(env!("CARGO_PKG_VERSION"))), None);
             }
             Some(Request::Hide) => {
                 let Some(fd) = fd else {
@@ -418,9 +413,7 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
                 match hide_pad(shared, socket, owner, user, fd) {
                     Ok((token, event)) => {
                         info!(token, "hid a pad");
-                        // Every pad hidden is cut off by a re-bind, and
-                        // shown again by another.
-                        reply(socket, ok(token, true), Some(&event));
+                        reply(socket, ok(token), Some(&event));
                     }
                     // A request sent during the hide is served next, in
                     // order.
@@ -428,14 +421,14 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
                 }
             }
             Some(Request::Reopen(Token(token))) => match reopen(shared, owner, user, token) {
-                Ok(event) => reply(socket, ok(token, true), Some(&event)),
+                Ok(event) => reply(socket, ok(token), Some(&event)),
                 Err(refusal) => refuse(socket, refusal),
             },
             Some(Request::Restore(Token(token))) => {
                 if hidden_parent(shared, owner, token).is_ok() {
                     show(shared, token, Some(socket), true);
                     info!(token, "showed a pad again");
-                    reply(socket, ok(token, false), None);
+                    reply(socket, ok(token), None);
                 } else {
                     refuse(socket, Refusal::UnknownToken);
                 }
@@ -446,13 +439,13 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
                     continue;
                 };
                 match presented(user, fd.as_fd()).and_then(|pad| raw_of(&pad.parent)) {
-                    Ok(raw) => reply(socket, ok(0, false), Some(&raw)),
+                    Ok(raw) => reply(socket, ok(0), Some(&raw)),
                     Err(refusal) => refuse(socket, refusal),
                 }
             }
             Some(Request::RawOf(Token(token))) => {
                 match hidden_parent(shared, owner, token).and_then(|parent| raw_of(&parent)) {
-                    Ok(raw) => reply(socket, ok(token, false), Some(&raw)),
+                    Ok(raw) => reply(socket, ok(token), Some(&raw)),
                     Err(refusal) => refuse(socket, refusal),
                 }
             }

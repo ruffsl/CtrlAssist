@@ -201,7 +201,6 @@ fn done(token: Token) -> Reply {
     Reply {
         refusal: None,
         token,
-        dislodged: false,
     }
 }
 
@@ -247,11 +246,7 @@ fn serve_scripted(connection: &OwnedFd, asked: &Mutex<Vec<Asked>>, hold: &Hold) 
                 // The pad's descriptor goes back, as the real service
                 // passes the new node's.
                 let fd = fds.swap_remove(0);
-                let reply = Reply {
-                    dislodged: true,
-                    ..done(Token(tokens))
-                };
-                let answered = answer(reply, &[fd.as_fd()]);
+                let answered = answer(done(Token(tokens)), &[fd.as_fd()]);
                 hidden.insert(tokens, fd);
                 answered
             }

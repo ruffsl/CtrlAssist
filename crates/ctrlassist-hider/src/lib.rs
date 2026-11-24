@@ -98,13 +98,10 @@ pub struct Hidden {
     /// Names the pad in later requests on the same connection.
     pub token: Token,
     /// The pad's event node, opened by the service after hiding it.
+    /// Whatever had the pad open before was cut off, by a re-bind of its
+    /// driver, which showing it again repeats: a pad the service can't
+    /// re-bind, it refuses to hide.
     pub event: OwnedFd,
-    /// Whether whatever had the pad open before was cut off, by a re-bind
-    /// of its driver, which showing it again repeats. A service that
-    /// can't re-bind a pad refuses to hide it, so a pad it hid always has
-    /// been; a service from before that said false for such a pad, which
-    /// stayed readable by programs that already had it open.
-    pub dislodged: bool,
 }
 
 /// A connection to the hiding service.
@@ -291,7 +288,6 @@ impl Client {
         Ok(Hidden {
             token: reply.token,
             event,
-            dislodged: reply.dislodged,
         })
     }
 

@@ -840,7 +840,7 @@ pkgs.testers.runNixOSTest {
         node = pads()[A]["event"][0]
         listening("early", node)
         control, told = hide("client", node)
-        assert told.startswith("ok") and "dislodged=true" in told, told
+        assert told.startswith("ok"), told
         assert cut_off("early"), "the early reader kept reading"
         assert not alice_can_open(A, "event") and not alice_can_open(A, "js")
         found = markers()
@@ -1021,7 +1021,7 @@ pkgs.testers.runNixOSTest {
         )
         machine.wait_for_file("/tmp/by-hand/hide.done")
         told = machine.succeed("cat /tmp/by-hand/hide.done")
-        assert told.startswith("ok") and "dislodged=true" in told, told
+        assert told.startswith("ok"), told
         assert not alice_can_open(A)
         assert order("/tmp/by-hand", "restore").startswith("ok")
         assert alice_can_open(A)
@@ -1052,7 +1052,7 @@ pkgs.testers.runNixOSTest {
         assert alice_can_open(key, "event")
         listening("early-xpad", node)
         control, told = hide("xpad", node)
-        assert told.startswith("ok") and "dislodged=true" in told, told
+        assert told.startswith("ok"), told
         assert cut_off("early-xpad"), "the early reader kept reading"
         assert not alice_can_open(key, "event") and not alice_can_open(key, "js")
         assert "./serial-045e-028e-XPADFIXTURE1" in markers(), markers()
