@@ -515,11 +515,11 @@ pub(crate) fn open_under(
 }
 
 /// The device of each pad, and of each raw node, the rule hides that
-/// nothing should, with the markers that would name it: one that no pad
-/// in `held` is and that no marker in `markers` names, as a pad sharing
-/// an address with one that was hidden, or plugged into its port while
-/// it was away. A pad's event nodes hidden are known by their group; a
-/// raw node by what the rule sets on a node it hides.
+/// nothing should, with every marker the rule would hide it by: one that
+/// no pad in `held` is and that no marker in `markers` names, as a pad
+/// sharing an address with one that was hidden, or plugged into its port
+/// while it was away. A pad's event nodes hidden are known by their
+/// group; a raw node by what the rule sets on a node it hides.
 pub(crate) fn unnamed(
     group: u32,
     held: &[&Path],
@@ -527,7 +527,7 @@ pub(crate) fn unnamed(
 ) -> Vec<(Device, BTreeSet<String>)> {
     let mut found: Vec<(Device, BTreeSet<String>)> = pad::hidden(group)
         .into_iter()
-        .map(|pad| (pad.parent, pad.markers))
+        .map(|pad| (pad.parent, pad.named_by))
         .collect();
     for (device, names) in pad::hidden_raw() {
         match found
