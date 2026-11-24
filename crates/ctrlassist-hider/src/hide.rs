@@ -163,7 +163,9 @@ enum Progress {
 #[derive(Debug)]
 pub(crate) struct Rebound {
     pub(crate) outcome: Result<(), Refusal>,
-    /// Whether udev was asked for it.
+    /// Whether udev was asked for it. A wait given up before udev's
+    /// answer leaves the request in udev's queue, and the device's next
+    /// re-bind, such as the one that shows the pad again, is run after it.
     pub(crate) asked: bool,
 }
 
@@ -172,6 +174,13 @@ impl Rebound {
         Self {
             outcome: Err(refusal),
             asked: false,
+        }
+    }
+
+    fn asked(outcome: Result<(), Refusal>) -> Self {
+        Self {
+            outcome,
+            asked: true,
         }
     }
 }
@@ -344,17 +353,6 @@ impl Watch {
             self.overran,
         )
     }
-
-    /// Ends the wait with `outcome`, the request asked: a wait given up
-    /// before udev's answer leaves the request in udev's queue, and the
-    /// device's next re-bind, such as the one that shows the pad again, is
-    /// run after it.
-    fn end(self, outcome: Result<(), Refusal>) -> Rebound {
-        Rebound {
-            outcome,
-            asked: true,
-        }
-    }
 }
 
 /// What a wait polls a client's socket for: its hanging up alone, so that
@@ -425,7 +423,7 @@ pub(crate) fn rebind(device: &Device, leave: Leave, client: Option<BorrowedFd<'_
             Err(error) => {
                 drop(fds);
                 warn!(device = %shown, %error, "couldn't wait on udev for the pad's driver to be re-bound");
-                return watch.end(Err(Refusal::Failed));
+                return Rebound::asked(Err(Refusal::Failed));
             }
         }
         let gone = fds.get(1).is_some_and(|fd| hung_up(fd.revents()));
@@ -435,12 +433,12 @@ pub(crate) fn rebind(device: &Device, leave: Leave, client: Option<BorrowedFd<'_
         watch.drain();
         match watch.progress(leave) {
             Progress::Waiting => {}
-            Progress::Done => return watch.end(Ok(())),
-            Progress::Failed(refusal) => return watch.end(Err(refusal)),
+            Progress::Done => return Rebound::asked(Ok(())),
+            Progress::Failed(refusal) => return Rebound::asked(Err(refusal)),
         }
         if gone {
             debug!(device = %shown, "the client hung up as the pad's driver was re-bound");
-            return watch.end(Err(Refusal::Failed));
+            return Rebound::asked(Err(Refusal::Failed));
         }
     }
 }
@@ -517,11 +515,11 @@ pub(crate) fn open_under(
 }
 
 /// The device of each pad, and of each raw node, the rule hides that
-/// nothing should, with the markers that would name it: one that no pad
-/// in `held` is and that no marker in `markers` names, as a pad sharing
-/// an address with one that was hidden, or plugged into its port while
-/// it was away. A pad's event nodes hidden are known by their group; a
-/// raw node by what the rule sets on a node it hides.
+/// nothing should, with every marker the rule would hide it by: one that
+/// no pad in `held` is and that no marker in `markers` names, as a pad
+/// sharing an address with one that was hidden, or plugged into its port
+/// while it was away. A pad's event nodes hidden are known by their
+/// group; a raw node by what the rule sets on a node it hides.
 pub(crate) fn unnamed(
     group: u32,
     held: &[&Path],
@@ -529,7 +527,7 @@ pub(crate) fn unnamed(
 ) -> Vec<(Device, BTreeSet<String>)> {
     let mut found: Vec<(Device, BTreeSet<String>)> = pad::hidden(group)
         .into_iter()
-        .map(|pad| (pad.parent, pad.markers))
+        .map(|pad| (pad.parent, pad.named_by))
         .collect();
     for (device, names) in pad::hidden_raw() {
         match found
@@ -650,11 +648,19 @@ mod tests {
         }
     }
 
+    /// [`now`] is the monotonic clock in microseconds, as the kernel says
+    /// it in seconds either side. That udev stamps a device by that clock
+    /// is from its source, and not checked here.
     #[test]
-    fn udev_s_clock_is_the_monotonic_one_in_microseconds() {
-        let first = now();
-        let second = now();
-        assert!(first > 0 && second >= first);
+    fn now_is_the_monotonic_clock_in_microseconds() {
+        let before = clock_gettime(ClockId::Monotonic).tv_sec;
+        let now = now();
+        let after = clock_gettime(ClockId::Monotonic).tv_sec;
+        let seconds = i64::try_from(now / 1_000_000).unwrap();
+        assert!(
+            (before..=after).contains(&seconds),
+            "{before} {now} {after}"
+        );
     }
 
     /// A device every machine has, with no driver and no `uevent` file the
@@ -730,12 +736,14 @@ mod tests {
         poll(&mut fds, Some(&now)).unwrap() > 0 && hung_up(fds[0].revents())
     }
 
-    /// Only a hang-up ends a wait on a client's behalf, whole or of its
-    /// sending alone. What it sends meanwhile, a request, an empty message
-    /// or what isn't a request at all, stays queued, for `serve` to read
-    /// in its turn.
+    /// What a wait on a client's behalf polls for sees only a hang-up,
+    /// whole or of its sending alone. What it sends meanwhile, a request,
+    /// an empty message or what isn't a request at all, stays queued, for
+    /// `serve` to read in its turn. The wait itself, in [`rebind`], needs
+    /// a device the service may re-bind, which the virtual machine check
+    /// has.
     #[test]
-    fn only_a_hang_up_ends_a_wait_and_what_is_sent_meanwhile_stays_queued() {
+    fn only_a_hang_up_is_seen_as_one_and_what_is_sent_meanwhile_stays_queued() {
         use std::os::fd::AsFd;
 
         let (service, client) = pair();
@@ -763,13 +771,24 @@ mod tests {
         assert!(has_hung_up(&service));
     }
 
-    /// A re-bind the service may not ask is never asked: here the device's
-    /// `uevent` file isn't the group's.
+    /// A re-bind the service may not ask is never asked: here the device
+    /// is gone, and, for a user that isn't root, as the service never is,
+    /// the device's `uevent` file isn't the group's. Root may write any
+    /// device's, so as root that half would ask a re-bind of the stand-in.
     #[test]
     fn a_re_bind_the_service_may_not_ask_is_not_asked() {
-        let rebound = rebind(&stand_in(), Leave::AsTheRuleSays, None);
-        assert_eq!(rebound.outcome, Err(Refusal::Failed));
+        let gone = Device {
+            path: PathBuf::from("/sys/devices/virtual/ctrlassist-test-no-such-device"),
+            enumeration: None,
+        };
+        let rebound = rebind(&gone, Leave::AsTheRuleSays, None);
+        assert_eq!(rebound.outcome, Err(Refusal::Absent));
         assert!(!rebound.asked);
+        if !rustix::process::geteuid().is_root() {
+            let rebound = rebind(&stand_in(), Leave::AsTheRuleSays, None);
+            assert_eq!(rebound.outcome, Err(Refusal::Failed));
+            assert!(!rebound.asked);
+        }
     }
 
     #[test]

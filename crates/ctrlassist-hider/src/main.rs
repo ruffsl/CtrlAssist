@@ -50,24 +50,18 @@ use crate::connections::{CLOSING, Closer, Connections};
 use crate::hide::Leave;
 use crate::pad::{Device, Pad};
 
-/// Where a hidden pad is in its life.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Phase {
-    /// Its markers are made and its driver is being re-bound.
-    Hiding,
-    Hidden,
-    /// Its markers are gone and its driver is being re-bound to show it.
-    Showing,
-}
-
-/// A pad a connection has hidden.
+/// A pad a connection has hidden, from when its markers are made. Until
+/// the re-bind that hides it is done, nobody can name it: only its
+/// connection is told its token, whose thread is in the hide meanwhile.
 #[derive(Debug)]
 struct Entry {
     token: u32,
     /// The connection that hid it.
     owner: u64,
     pad: Pad,
-    phase: Phase,
+    /// Whether its markers are gone and its driver is being re-bound to
+    /// show it.
+    showing: bool,
 }
 
 /// What every connection shares.
@@ -95,12 +89,12 @@ impl State {
     fn markers(&self) -> BTreeSet<String> {
         self.entries
             .iter()
-            .filter(|entry| entry.phase != Phase::Showing)
+            .filter(|entry| !entry.showing)
             .flat_map(|entry| entry.pad.markers.iter().cloned())
             .collect()
     }
 
-    /// The device of every pad the service has, in whatever phase.
+    /// The device of every pad the service has, being shown or not.
     fn held(&self) -> Vec<PathBuf> {
         self.entries
             .iter()
@@ -151,11 +145,10 @@ fn refuse(socket: BorrowedFd<'_>, refusal: Refusal) {
 }
 
 /// A reply that did as asked.
-fn ok(token: u32, dislodged: bool) -> Reply {
+fn ok(token: u32) -> Reply {
     Reply {
         refusal: None,
         token: Token(token),
-        dislodged,
     }
 }
 
@@ -167,14 +160,16 @@ fn ok(token: u32, dislodged: bool) -> Reply {
 /// the wait for it ends when udev is done, the pad is unplugged, or
 /// `client`, the one that asked, hangs up. A hide of the pad once the
 /// entry has gone asks its re-bind after this one's, which udev runs
-/// first.
+/// first. A re-bind asked is run whether or not it was waited for to its
+/// end, and shows the pad, its markers gone: the sweep after leaves that
+/// device to it, rather than ask another.
 fn show(shared: &Arc<Shared>, token: u32, client: Option<BorrowedFd<'_>>, rebind: bool) {
     let parent = {
         let mut state = shared.state();
         let Some(entry) = state.entries.iter_mut().find(|entry| entry.token == token) else {
             return;
         };
-        entry.phase = Phase::Showing;
+        entry.showing = true;
         let markers = entry.pad.markers.clone();
         let parent = (rebind && entry.pad.parent.is_there()).then(|| entry.pad.parent.clone());
         let remaining = state.markers();
@@ -183,28 +178,33 @@ fn show(shared: &Arc<Shared>, token: u32, client: Option<BorrowedFd<'_>>, rebind
         }
         parent
     };
-    if let Some(parent) = parent {
+    let asked = parent.and_then(|parent| {
         let rebound = hide::rebind(&parent, Leave::AsTheRuleSays, client);
         if let Err(refusal) = rebound.outcome {
             warn!(
                 token,
                 device = %parent.path.display(),
                 %refusal,
-                "the pad's driver wasn't re-bound to show it again; it is shown at its next event"
+                asked = rebound.asked,
+                "the pad's driver wasn't seen re-bound to show it again; it is shown by the re-bind if one was asked, else at its next event"
             );
         }
-    }
+        rebound.asked.then_some(parent.path)
+    });
     shared.state().entries.retain(|entry| entry.token != token);
-    sweep(shared);
+    sweep(shared, asked.as_deref());
 }
 
 /// Shows again what the rule hides that nothing should, waiting for none
 /// of it. Holds the state as it asks, so that a hide of one of those
 /// devices is either in the state, and the device left alone, or asks
-/// its own re-bind after this one, which udev runs after it.
-fn sweep(shared: &Shared) {
+/// its own re-bind after this one, which udev runs after it. The device
+/// at `asked` has a re-bind asked already that shows it, and is left to
+/// that.
+fn sweep(shared: &Shared, asked: Option<&Path>) {
     let state = shared.state();
-    let held = state.held();
+    let mut held = state.held();
+    held.extend(asked.map(Path::to_path_buf));
     let held: Vec<&Path> = held.iter().map(PathBuf::as_path).collect();
     hide::sweep(group(), &held, &state.markers());
 }
@@ -239,13 +239,7 @@ fn hide_pad(
     let (token, pad) = marked(shared, owner, user, fd)?;
     let (opened, rebound) = hide::cut_off(&pad, group(), socket);
     match opened {
-        Ok(event) => {
-            let mut state = shared.state();
-            if let Some(entry) = state.entries.iter_mut().find(|entry| entry.token == token) {
-                entry.phase = Phase::Hidden;
-            }
-            Ok((token, event))
-        }
+        Ok(event) => Ok((token, event)),
         Err(refusal) => {
             // Shown again with a re-bind only if hiding it asked for one,
             // so the pad is left as it was.
@@ -293,7 +287,7 @@ fn marked(
             token,
             owner,
             pad: pad.clone(),
-            phase: Phase::Hiding,
+            showing: false,
         });
         token
     };
@@ -324,9 +318,7 @@ fn reopen(shared: &Shared, owner: u64, user: Option<u32>, token: u32) -> Result<
         let entry = state
             .entries
             .iter_mut()
-            .find(|entry| {
-                entry.token == token && entry.owner == owner && entry.phase == Phase::Hidden
-            })
+            .find(|entry| entry.token == token && entry.owner == owner && !entry.showing)
             .ok_or(Refusal::UnknownToken)?;
         if !entry.pad.parent.is_there() {
             if !seats.contains(&entry.pad.identity.seat) {
@@ -360,7 +352,7 @@ fn hidden_parent(shared: &Shared, owner: u64, token: u32) -> Result<Device, Refu
         .state()
         .entries
         .iter()
-        .find(|entry| entry.token == token && entry.owner == owner && entry.phase == Phase::Hidden)
+        .find(|entry| entry.token == token && entry.owner == owner && !entry.showing)
         .map(|entry| entry.pad.parent.clone())
         .ok_or(Refusal::UnknownToken)
 }
@@ -404,11 +396,7 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
         }
         match request {
             Some(Request::Version) => {
-                reply(
-                    socket,
-                    ok(pack_release(env!("CARGO_PKG_VERSION")), false),
-                    None,
-                );
+                reply(socket, ok(pack_release(env!("CARGO_PKG_VERSION"))), None);
             }
             Some(Request::Hide) => {
                 let Some(fd) = fd else {
@@ -418,9 +406,7 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
                 match hide_pad(shared, socket, owner, user, fd) {
                     Ok((token, event)) => {
                         info!(token, "hid a pad");
-                        // Every pad hidden is cut off by a re-bind, and
-                        // shown again by another.
-                        reply(socket, ok(token, true), Some(&event));
+                        reply(socket, ok(token), Some(&event));
                     }
                     // A request sent during the hide is served next, in
                     // order.
@@ -428,14 +414,14 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
                 }
             }
             Some(Request::Reopen(Token(token))) => match reopen(shared, owner, user, token) {
-                Ok(event) => reply(socket, ok(token, true), Some(&event)),
+                Ok(event) => reply(socket, ok(token), Some(&event)),
                 Err(refusal) => refuse(socket, refusal),
             },
             Some(Request::Restore(Token(token))) => {
                 if hidden_parent(shared, owner, token).is_ok() {
                     show(shared, token, Some(socket), true);
                     info!(token, "showed a pad again");
-                    reply(socket, ok(token, false), None);
+                    reply(socket, ok(token), None);
                 } else {
                     refuse(socket, Refusal::UnknownToken);
                 }
@@ -446,13 +432,13 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
                     continue;
                 };
                 match presented(user, fd.as_fd()).and_then(|pad| raw_of(&pad.parent)) {
-                    Ok(raw) => reply(socket, ok(0, false), Some(&raw)),
+                    Ok(raw) => reply(socket, ok(0), Some(&raw)),
                     Err(refusal) => refuse(socket, refusal),
                 }
             }
             Some(Request::RawOf(Token(token))) => {
                 match hidden_parent(shared, owner, token).and_then(|parent| raw_of(&parent)) {
-                    Ok(raw) => reply(socket, ok(token, false), Some(&raw)),
+                    Ok(raw) => reply(socket, ok(token), Some(&raw)),
                     Err(refusal) => refuse(socket, refusal),
                 }
             }
@@ -463,7 +449,7 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
         .state()
         .entries
         .iter()
-        .filter(|entry| entry.owner == owner && entry.phase != Phase::Showing)
+        .filter(|entry| entry.owner == owner && !entry.showing)
         .map(|entry| entry.token)
         .collect();
     // Each on a thread of its own, so that one whose re-bind never ends
@@ -528,9 +514,12 @@ fn wait(shared: &Shared, listener: &OwnedFd, exhausted: bool) -> Woken {
 /// could block the closer. Asked of the listener once, and said: a kernel
 /// from before Linux 6.16 has no such setting, and every connection may
 /// pass descriptors as soon as it has connected, leaving the closer the
-/// only defense against a close that blocks. A listener that takes them,
-/// as one from systemd before 258 does, the unit's setting unknown to it,
-/// is made to refuse them here, for the connections queued from now on.
+/// only defense against a close that blocks. A listener that takes them
+/// although the socket unit refuses them is made to refuse them here, for
+/// the connections queued from now on: systemd before 258 doesn't know
+/// the unit's setting, and a socket not restarted since its unit gained
+/// it keeps the listener it made before. Which it was can't be told from
+/// here, so both are said.
 fn refusing(listener: BorrowedFd<'_>) -> bool {
     match takes_descriptors(listener) {
         Ok(false) => {
@@ -540,7 +529,7 @@ fn refusing(listener: BorrowedFd<'_>) -> bool {
         Ok(true) => match take_descriptors(listener, false) {
             Ok(()) => {
                 warn!(
-                    "the listener took descriptors, as systemd before 258 leaves it; it refuses them from now on, but a connection queued before now may still carry them, for the closer to close"
+                    "the listener took descriptors although the socket unit refuses them: systemd before 258 ignores that setting, and a socket not restarted since its unit gained it keeps its listener as it was; it refuses them from now on, but a connection queued before now may still carry them, for the closer to close"
                 );
                 true
             }
@@ -600,7 +589,7 @@ fn run(listener: &OwnedFd) -> io::Result<()> {
     // Nothing is connected yet, so anything still hidden was left by a
     // service that died.
     hide::clear();
-    sweep(&shared);
+    sweep(&shared, None);
     // Out of descriptors or memory, accepting is left until a connection
     // closes, which frees both.
     let mut exhausted = false;

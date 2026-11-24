@@ -50,11 +50,10 @@ fn next(connection: &OwnedFd) -> (Request, Vec<OwnedFd>) {
 }
 
 /// A reply that did as asked.
-fn ok(token: u32, dislodged: bool) -> Reply {
+fn ok(token: u32) -> Reply {
     Reply {
         refusal: None,
         token: Token(token),
-        dislodged,
     }
 }
 
@@ -63,7 +62,7 @@ fn ok(token: u32, dislodged: bool) -> Reply {
 fn admit(connection: &OwnedFd) {
     let (request, fds) = next(connection);
     assert_eq!((request, fds.len()), (Request::Version, 0));
-    let release = ok(pack_release("1.2.3"), false);
+    let release = ok(pack_release("1.2.3"));
     send(connection.as_fd(), &release.encode(), &[]).unwrap();
 }
 
@@ -113,13 +112,15 @@ fn every_request_and_reply_survives_the_wire() {
         assert_eq!(Reply::decode(&reply.encode()), Some(reply));
         assert!(!refusal.to_string().is_empty());
     }
-    for reply in [ok(1, true), ok(0xdead_beef, false)] {
+    for reply in [ok(1), ok(0xdead_beef)] {
         assert_eq!(Reply::decode(&reply.encode()), Some(reply));
     }
-    // The flags say whether the pad was dislodged, in bit 0, and nothing
-    // else is read from them.
-    assert_eq!(ok(3, true).encode()[5], 1);
-    assert_eq!(Reply::decode(&[0, 3, 0, 0, 0, 0xff]), Some(ok(3, true)));
+    // The flags byte has no bit set, and none is read: a reply from a
+    // service of an earlier release, which set bit 0 for a pad hidden,
+    // reads the same.
+    assert_eq!(ok(3).encode()[5], 0);
+    assert_eq!(Reply::decode(&[0, 3, 0, 0, 0, 1]), Some(ok(3)));
+    assert_eq!(Reply::decode(&[0, 3, 0, 0, 0, 0xff]), Some(ok(3)));
 }
 
 #[test]
@@ -156,7 +157,7 @@ fn the_service_s_release_travels_where_a_token_goes() {
         assert_eq!(request, Request::Version);
         assert!(fds.is_empty());
         let packed = pack_release("12.34.56-rc.1+build");
-        send(connection.as_fd(), &ok(packed, false).encode(), &[]).unwrap();
+        send(connection.as_fd(), &ok(packed).encode(), &[]).unwrap();
         let (request, _) = next(&connection);
         assert_eq!(request, Request::Version);
         let refused = Reply::refused(Refusal::BadRequest);
@@ -186,13 +187,12 @@ fn hide_passes_the_pad_s_descriptor_and_gets_one_back() {
         let [pad] = <[OwnedFd; 1]>::try_from(fds).expect("exactly the pad's descriptor");
         assert_eq!(read_all(pad), "the pad");
         let event = readable("hidden");
-        send(connection.as_fd(), &ok(7, true).encode(), &[event.as_fd()]).unwrap();
+        send(connection.as_fd(), &ok(7).encode(), &[event.as_fd()]).unwrap();
     });
     let client = Client::connect(&path).unwrap();
     let pad = readable("the pad");
     let hidden = client.hide(pad.as_fd()).unwrap();
     assert_eq!(hidden.token, Token(7));
-    assert!(hidden.dislodged);
     assert_eq!(read_all(hidden.event), "hidden");
     service.join().unwrap();
 }
@@ -204,11 +204,11 @@ fn reopen_and_restore_name_the_pad_by_its_token() {
         assert_eq!(request, Request::Reopen(Token(3)));
         assert!(fds.is_empty());
         let event = readable("again");
-        send(connection.as_fd(), &ok(3, true).encode(), &[event.as_fd()]).unwrap();
+        send(connection.as_fd(), &ok(3).encode(), &[event.as_fd()]).unwrap();
 
         let (request, _) = next(&connection);
         assert_eq!(request, Request::Restore(Token(3)));
-        send(connection.as_fd(), &ok(3, false).encode(), &[]).unwrap();
+        send(connection.as_fd(), &ok(3).encode(), &[]).unwrap();
     });
     let client = Client::connect(&path).unwrap();
     let hidden = client.reopen(Token(3)).unwrap();
@@ -255,7 +255,7 @@ fn an_answer_that_makes_no_sense_is_a_protocol_error() {
         send(connection.as_fd(), b"nonsense", &[]).unwrap();
         // A success that should carry a descriptor and doesn't.
         let _ = next(&connection);
-        send(connection.as_fd(), &ok(1, true).encode(), &[]).unwrap();
+        send(connection.as_fd(), &ok(1).encode(), &[]).unwrap();
     });
     let client = Client::connect(&path).unwrap();
     let pad = readable("the pad");
@@ -297,7 +297,7 @@ fn a_hide_sent_is_waited_for_and_read_and_a_reply_given_up_is_read_past() {
         assert_eq!((request, fds.len()), (Request::Hide, 1));
         held.recv().unwrap();
         let event = readable("hidden");
-        send(connection.as_fd(), &ok(2, true).encode(), &[event.as_fd()]).unwrap();
+        send(connection.as_fd(), &ok(2).encode(), &[event.as_fd()]).unwrap();
         let _ = next(&connection);
         let refused = Reply::refused(Refusal::Failed);
         send(connection.as_fd(), &refused.encode(), &[]).unwrap();
@@ -305,10 +305,10 @@ fn a_hide_sent_is_waited_for_and_read_and_a_reply_given_up_is_read_past() {
         let (request, _) = next(&connection);
         assert_eq!(request, Request::Reopen(Token(2)));
         let event = readable("again");
-        send(connection.as_fd(), &ok(2, true).encode(), &[event.as_fd()]).unwrap();
+        send(connection.as_fd(), &ok(2).encode(), &[event.as_fd()]).unwrap();
         let (request, _) = next(&connection);
         assert_eq!(request, Request::Restore(Token(2)));
-        send(connection.as_fd(), &ok(2, false).encode(), &[]).unwrap();
+        send(connection.as_fd(), &ok(2).encode(), &[]).unwrap();
     });
     let client = Client::connect(&path).unwrap();
     let pad = readable("the pad");
@@ -366,15 +366,10 @@ fn a_hide_on_a_new_connection_waits_for_a_first_reply() {
         let (request, fds) = next(&connection);
         assert_eq!(request, Request::Hide);
         let [pad] = <[OwnedFd; 1]>::try_from(fds).expect("exactly the pad's descriptor");
-        send(connection.as_fd(), &ok(7, true).encode(), &[pad.as_fd()]).unwrap();
+        send(connection.as_fd(), &ok(7).encode(), &[pad.as_fd()]).unwrap();
         let (request, fds) = next(&connection);
         assert_eq!((request, fds.len()), (Request::Raw, 1));
-        send(
-            connection.as_fd(),
-            &ok(0, false).encode(),
-            &[fds[0].as_fd()],
-        )
-        .unwrap();
+        send(connection.as_fd(), &ok(0).encode(), &[fds[0].as_fd()]).unwrap();
     }) else {
         return;
     };
@@ -402,7 +397,7 @@ fn a_descriptor_sent_behind_a_request_waits_for_that_request_s_reply() {
         .unwrap();
         let (request, fds) = next(&connection);
         assert_eq!((request, fds.len()), (Request::Hide, 1));
-        send(connection.as_fd(), &ok(5, true).encode(), &[fds[0].as_fd()]).unwrap();
+        send(connection.as_fd(), &ok(5).encode(), &[fds[0].as_fd()]).unwrap();
     }) else {
         return;
     };

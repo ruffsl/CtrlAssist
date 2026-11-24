@@ -129,7 +129,7 @@ fn main() -> anyhow::Result<()> {
             }
             let hidden = client.hide(event.as_fd()).context("hiding the pad")?;
             drop(event);
-            tracing::info!(dislodged = hidden.dislodged, "hidden");
+            tracing::info!(token = hidden.token.0, "hidden");
             let raw = client.raw_of(hidden.token).context("the pad's raw node")?;
             let raw_out = client.raw_of(hidden.token).ok();
             (Some(client), hidden.event, raw, raw_out)

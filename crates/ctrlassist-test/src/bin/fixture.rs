@@ -239,10 +239,7 @@ fn hide(node: &Path, socket: &Path, control: &Path) -> Result<()> {
         Err(error) => return done("hide", format!("refused: {error}")),
     };
     drop(pad);
-    done(
-        "hide",
-        format!("ok token={} dislodged={}", hidden.token.0, hidden.dislodged),
-    )?;
+    done("hide", format!("ok token={}", hidden.token.0))?;
     loop {
         for order in ["reopen", "restore", "raw", "count"] {
             let trigger = control.join(order);

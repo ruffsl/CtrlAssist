@@ -144,7 +144,9 @@ impl Connection {
 
     /// Hangs up sending alone: what the service says until it closes
     /// its end can still be read, and its closing is that it has shown
-    /// again what was hidden through the connection.
+    /// again what was hidden through the connection, or for a pad whose
+    /// showing it gave up waiting for, asked udev for the re-bind that
+    /// does, which udev runs before any a later hide asks.
     fn stop_sending(&self) {
         self.hung_up.store(true, Ordering::Relaxed);
         self.client.stop_sending();
@@ -202,9 +204,8 @@ enum Found {
     Looking,
     /// It wasn't there when last looked for, or its connection broke.
     Absent,
-    /// It was there when last asked something, and said this release, or
-    /// none from one too old to be asked.
-    There { release: Option<String> },
+    /// It was there when last asked something, and said this release.
+    There { release: String },
 }
 
 /// What a request under way is, and so how ending its errand gives it
@@ -317,8 +318,8 @@ enum Unasked {
     /// Its errand ended, or its connection was hung up, before it was
     /// asked or as it was.
     Ended,
-    /// The service refused, as this says.
-    Refused(Refusal),
+    /// The service refused, as logged where it did.
+    Refused,
     /// The service isn't there, or its connection broke.
     NotThere,
 }
@@ -518,7 +519,7 @@ impl Hiding {
         let mut state = self.state();
         if state.found != found {
             match &found {
-                Found::There { release } => info!(?release, "the hiding service is there"),
+                Found::There { release } => info!(release, "the hiding service is there"),
                 Found::Absent => {
                     info!(socket = ?self.socket, "the hiding service isn't there; a setup's pads will be grabbed, which hides them from most games but not from a program that reads them some other way. It is looked for again each time it is needed");
                 }
@@ -610,10 +611,10 @@ impl Hiding {
     }
 
     /// The found service's release, for the daemon's state: none with
-    /// no service, or from one too old to say.
+    /// no service.
     pub(crate) fn service_release(&self) -> Option<String> {
         match &self.state().found {
-            Found::There { release } => release.clone(),
+            Found::There { release } => Some(release.clone()),
             Found::Looking | Found::Absent => None,
         }
     }
@@ -727,11 +728,11 @@ impl Hiding {
             // usual case of a pad leaving a setup, and nothing wrong.
             Some(Err(Error::Refused(Refusal::Absent))) => {
                 debug!("the hiding service has nothing to open: the pad isn't connected");
-                Err(Unasked::Refused(Refusal::Absent))
+                Err(Unasked::Refused)
             }
             Some(Err(Error::Refused(refusal))) => {
                 warn!(%refusal, "the hiding service didn't do as asked");
-                Err(Unasked::Refused(refusal))
+                Err(Unasked::Refused)
             }
             Some(Err(error)) => {
                 // A connection that broke is given up: the service shows
@@ -789,7 +790,7 @@ impl Hiding {
             } else {
                 warn!(pad, %refusal, "the hiding service didn't do as asked");
             }
-            return Err(Unasked::Refused(refusal));
+            return Err(Unasked::Refused);
         }
         self.answered(connection, Some(outcome))
     }
@@ -891,19 +892,13 @@ impl Hiding {
             }
         };
         let connection = Connection::new(client);
-        match self.ask(errand, &connection, Client::version) {
-            Ok(release) => self.found(Found::There {
-                release: Some(release),
-            }),
-            // Not understood: a service from before it could be asked.
-            Err(Unasked::Refused(Refusal::BadRequest)) => {
-                self.found(Found::There { release: None });
-            }
-            // Any other refusal, as of a caller not in front of a seat,
-            // says nothing of what the service is: what is known of it
-            // stays as it was, and the next connection asks again.
-            Err(unasked) => return Err(unasked),
-        }
+        // A refusal, as of a caller not in front of a seat, says nothing
+        // of what the service is: what is known of it stays as it was,
+        // and the next connection asks again. A service that doesn't
+        // understand the question is of a release from before the wire
+        // as it is, and is refused in turn: the pads are grabbed.
+        let release = self.ask(errand, &connection, Client::version)?;
+        self.found(Found::There { release });
         Ok(connection)
     }
 
@@ -990,12 +985,12 @@ impl Hiding {
             Err(Unasked::Ended) => return Err(Unhidden::Ended),
             // Nothing was asked of a service that isn't there or refused
             // to say its release.
-            Err(Unasked::Refused(_) | Unasked::NotThere) => return Err(Unhidden::Not),
+            Err(Unasked::Refused | Unasked::NotThere) => return Err(Unhidden::Not),
         };
         let hidden = match self.ask_hide(errand, &connection, pad, fd) {
             Ok(hidden) => hidden,
             Err(Unasked::Ended) => return Err(Unhidden::Ended),
-            Err(Unasked::Refused(_) | Unasked::NotThere) => return Err(Unhidden::Not),
+            Err(Unasked::Refused | Unasked::NotThere) => return Err(Unhidden::Not),
         };
         let mut state = self.state();
         state.tokens += 1;
@@ -1211,7 +1206,9 @@ mod tests {
         let (_dir, _listener, path) = silent();
         let hiding = Arc::new(Hiding::new(&path));
         // Found already, so no start waits for the look.
-        hiding.found(Found::There { release: None });
+        hiding.found(Found::There {
+            release: "1.2.3".to_string(),
+        });
         let (first, second) = (Arc::new(Errand::default()), Arc::new(Errand::default()));
         let (one, other) = (
             hiding_aside(&hiding, &first, "pad"),
@@ -1472,10 +1469,24 @@ mod tests {
         });
         assert!(looking.recv_timeout(SETTLE).is_err(), "it waits");
         assert_eq!(hiding.mechanism(), payload::Hiding::Looking);
-        // Room: the daemon's connection is made and accepted.
+        // Room: the daemon's connection is made and accepted, and asks
+        // the release, which found, the service is there.
         drop(accept(&listener).unwrap());
-        drop(accept(&listener).unwrap());
-        hiding.close();
+        let daemon = accept(&listener).unwrap();
+        let mut asked = [0u8; ctrlassist_hider::Request::SIZE];
+        let (length, _) = ctrlassist_hider::receive(daemon.as_fd(), &mut asked).unwrap();
+        assert_eq!(
+            ctrlassist_hider::Request::decode(&asked[..length]),
+            Some(ctrlassist_hider::Request::Version)
+        );
+        let release = ctrlassist_hider::Reply {
+            refusal: None,
+            token: ctrlassist_hider::Token(ctrlassist_hider::pack_release("1.2.3")),
+        };
+        ctrlassist_hider::send(daemon.as_fd(), &release.encode(), &[]).unwrap();
         looking.recv().unwrap();
+        assert_eq!(hiding.mechanism(), payload::Hiding::Service);
+        assert_eq!(hiding.service_release().as_deref(), Some("1.2.3"));
+        hiding.close();
     }
 }

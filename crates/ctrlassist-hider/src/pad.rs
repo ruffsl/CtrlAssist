@@ -92,6 +92,8 @@ pub(crate) struct Pad {
     pub(crate) identity: Identity,
     /// The marker files that hide it, by name.
     pub(crate) markers: BTreeSet<String>,
+    /// Every marker the rule hides it by, as [`named_by`] says.
+    pub(crate) named_by: BTreeSet<String>,
 }
 
 /// `aa:bb:cc:dd:ee:ff`, lowercase.
@@ -217,6 +219,23 @@ pub(crate) fn markers(names: &Names) -> BTreeSet<String> {
         markers.insert(format!("port-{interface}"));
     }
     markers
+}
+
+/// Every marker the rule hides a pad's nodes by, from what its devices
+/// say: those [`markers`] makes for it, and the rest the rule tests as
+/// well, its serial number beside its address and its port beside
+/// either. A pad is hidden while any of these is there, though a hide of
+/// it makes only the first.
+pub(crate) fn named_by(names: &Names) -> BTreeSet<String> {
+    let mut named = markers(names);
+    let serial = names.serial.as_deref().filter(|serial| is_serial(serial));
+    if let (Some(serial), Some(vendor), Some(product)) = (serial, names.vendor, names.product) {
+        named.insert(format!("serial-{vendor:04x}-{product:04x}-{serial}"));
+    }
+    if let Some(interface) = interface(names) {
+        named.insert(format!("port-{interface}"));
+    }
+    named
 }
 
 /// The USB interface `names` hang from, if its name is the kernel's.
@@ -432,7 +451,8 @@ fn classify(event: &udev::Device, tagged: bool) -> Result<Pad, Refusal> {
         .iter()
         .position(|joystick| joystick.syspath() == event.syspath())
         .ok_or(Refusal::NotAPad)?;
-    let markers = markers(&names_of(event, &input, hid.as_ref()));
+    let names = names_of(event, &input, hid.as_ref());
+    let (markers, named_by) = (markers(&names), named_by(&names));
     let identity = Identity {
         bus: hex(&attribute(&input, "id/bustype").ok_or(Refusal::NotAPad)?)
             .ok_or(Refusal::NotAPad)?,
@@ -451,6 +471,7 @@ fn classify(event: &udev::Device, tagged: bool) -> Result<Pad, Refusal> {
         ordinal,
         identity,
         markers,
+        named_by,
     })
 }
 
@@ -791,6 +812,7 @@ mod tests {
                 virtual_device: false,
             },
             markers: markers.iter().map(ToString::to_string).collect(),
+            named_by: markers.iter().map(ToString::to_string).collect(),
         }
     }
 
@@ -899,6 +921,42 @@ mod tests {
             ..names()
         };
         assert_eq!(markers(&xpad), set(&["serial-045e-028e-XPADFIXTURE1"]));
+    }
+
+    /// The rule hides a pad by its port's marker, and by its serial
+    /// number's beside its address's, though a hide of it makes neither:
+    /// a pad with a serial number plugged into the port of one hidden by
+    /// its port is hidden by that marker, which the sweep is to see.
+    #[test]
+    fn a_pad_is_named_by_every_marker_the_rule_tests_for_it() {
+        let xpad = Names {
+            serial: Some("XPADFIXTURE1".into()),
+            interface: Some("1-1:1.0".into()),
+            ..names()
+        };
+        assert_eq!(
+            named_by(&xpad),
+            set(&["serial-045e-028e-XPADFIXTURE1", "port-1-1:1.0"])
+        );
+        let both = Names {
+            uniq: Some("0a:1b:2c:3d:4e:14".into()),
+            hid: Some("0003:054C:0CE6.0017".into()),
+            hid_id: Some("0003:0000054C:00000CE6".into()),
+            ..xpad
+        };
+        assert_eq!(
+            named_by(&both),
+            set(&[
+                "addr-0a:1b:2c:3d:4e:14",
+                "serial-045e-028e-XPADFIXTURE1",
+                "port-1-1:1.0",
+                "hid-0003:054C:0CE6.0017",
+                "raw-1-1:1.0-0003:0000054C:00000CE6",
+            ])
+        );
+        assert!(markers(&both).is_subset(&named_by(&both)));
+        // With nothing the rule can name, nothing.
+        assert_eq!(named_by(&names()), set(&[]));
     }
 
     #[test]

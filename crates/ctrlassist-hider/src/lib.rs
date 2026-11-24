@@ -98,13 +98,10 @@ pub struct Hidden {
     /// Names the pad in later requests on the same connection.
     pub token: Token,
     /// The pad's event node, opened by the service after hiding it.
+    /// Whatever had the pad open before was cut off, by a re-bind of its
+    /// driver, which showing it again repeats: a pad the service can't
+    /// re-bind, it refuses to hide.
     pub event: OwnedFd,
-    /// Whether whatever had the pad open before was cut off, by a re-bind
-    /// of its driver, which showing it again repeats. A service that
-    /// can't re-bind a pad refuses to hide it, so a pad it hid always has
-    /// been; a service from before that said false for such a pad, which
-    /// stayed readable by programs that already had it open.
-    pub dislodged: bool,
 }
 
 /// A connection to the hiding service.
@@ -191,8 +188,11 @@ impl Client {
 
     /// Hangs up sending alone, from any thread: the service takes it as
     /// a hang-up, and closes its end once it has answered what it was
-    /// asked and shown again every pad hidden through the connection.
-    /// Until then replies are read as before; after it, reading fails.
+    /// asked and shown again every pad hidden through the connection. A
+    /// pad whose showing again was under way as it hung up may then have
+    /// its re-bind still in udev's queue, which udev runs before any a
+    /// later hide of the pad asks. Until then replies are read as before;
+    /// after it, reading fails.
     pub fn stop_sending(&self) {
         // As for `hang_up`.
         let _ = shutdown(&self.socket, Shutdown::Write);
@@ -291,7 +291,6 @@ impl Client {
         Ok(Hidden {
             token: reply.token,
             event,
-            dislodged: reply.dislodged,
         })
     }
 

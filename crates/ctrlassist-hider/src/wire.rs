@@ -181,8 +181,6 @@ pub struct Reply {
     pub refusal: Option<Refusal>,
     /// The pad's token.
     pub token: Token,
-    /// Whether programs that had the pad open were cut off.
-    pub dislodged: bool,
 }
 
 impl Reply {
@@ -195,41 +193,34 @@ impl Reply {
         Self {
             refusal: Some(refusal),
             token: Token(0),
-            dislodged: false,
         }
     }
 
-    /// The reply as bytes: the flags are whether the pad was dislodged, in
-    /// bit 0, and nothing else.
+    /// The reply as bytes: a status, the token, and a flags byte with no
+    /// bit set.
     #[must_use]
     pub fn encode(self) -> [u8; Self::SIZE] {
         let status = self.refusal.map_or(0, Refusal::code);
         let token = self.token.0.to_le_bytes();
-        [
-            status,
-            token[0],
-            token[1],
-            token[2],
-            token[3],
-            u8::from(self.dislodged),
-        ]
+        [status, token[0], token[1], token[2], token[3], 0]
     }
 
     /// The reply in `bytes`, if they are one.
     #[must_use]
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        let [status, a, b, c, d, flags] = *bytes else {
+        // The flags are not read. A service of an earlier release set bit
+        // 0 in a reply to a hide or a reopen, for a pad whose driver it
+        // re-bound, which every pad it hid was: nothing read it.
+        let [status, a, b, c, d, _flags] = *bytes else {
             return None;
         };
         let refusal = match status {
             0 => None,
             code => Some(*Refusal::ALL.iter().find(|refusal| refusal.code() == code)?),
         };
-        // The flags' other bits are set by no service, and not read.
         Some(Self {
             refusal,
             token: Token(u32::from_le_bytes([a, b, c, d])),
-            dislodged: flags & 1 != 0,
         })
     }
 }

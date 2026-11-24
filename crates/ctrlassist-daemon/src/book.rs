@@ -281,42 +281,46 @@ impl Book {
     }
 
     /// The pad on the event node at `syspath` has gone. Returns its id if
-    /// it has left; it stays remembered. Nothing for a node gone for a
-    /// re-bind the hiding service asked, which leaves the pad away. The
-    /// node is told by its place, not its name: a removal can be heard
-    /// after another node has taken the name, at start, where what was
-    /// queued as the list was made is heard after it.
+    /// that leaves it no longer connected, as it is published: a pad of a
+    /// row with another node, or another away, is still there. It stays
+    /// remembered. Nothing for a node gone for a re-bind the hiding
+    /// service asked, which leaves the pad away. The node is told by its
+    /// place, not its name: a removal can be heard after another node has
+    /// taken the name, at start, where what was queued as the list was
+    /// made is heard after it.
     pub(crate) fn left(&mut self, syspath: &Path) -> Option<String> {
-        self.rows.iter_mut().find_map(|(id, row)| {
-            let at = row.nodes.iter().position(|held| held.syspath == syspath)?;
-            match row.nodes.remove(at) {
-                Held {
-                    anchor: Some(anchor),
-                    rebinding: true,
-                    ..
-                } => {
-                    row.away.push(anchor);
-                    None
-                }
-                _ => Some(id.clone()),
+        let (id, row) = self
+            .rows
+            .iter_mut()
+            .find(|(_, row)| row.nodes.iter().any(|held| held.syspath == syspath))?;
+        let at = row.nodes.iter().position(|held| held.syspath == syspath)?;
+        match row.nodes.remove(at) {
+            Held {
+                anchor: Some(anchor),
+                rebinding: true,
+                ..
+            } => {
+                row.away.push(anchor);
+                None
             }
-        })
+            _ => (!row.connected()).then(|| id.clone()),
+        }
     }
 
     /// The device at `path` has gone, which unplugs each pad anchored to
     /// it or to a device under it: its nodes have gone before it. Returns
-    /// each pad unplugged, once: what was anchored there is no more.
+    /// each pad that leaves no longer connected, once: what was anchored
+    /// there is no more.
     pub(crate) fn unplugged(&mut self, path: &Path) -> Vec<String> {
         let under = |anchor: &Anchor| anchor.path.starts_with(path);
         self.rows
             .iter_mut()
             .filter_map(|(id, row)| {
-                let (nodes, away) = (row.nodes.len(), row.away.len());
+                let was = row.connected();
                 row.away.retain(|anchor| !under(anchor));
                 row.nodes
                     .retain(|held| !held.anchor.as_ref().is_some_and(under));
-                let gone = (nodes, away) != (row.nodes.len(), row.away.len());
-                gone.then(|| id.clone())
+                (was && !row.connected()).then(|| id.clone())
             })
             .collect()
     }
@@ -699,10 +703,11 @@ mod tests {
             }]
         );
         assert_eq!(book.known().len(), 1);
-        book.left(&syspath("/dev/input/event5"));
+        // One going leaves the row connected, and isn't told as gone.
+        assert_eq!(book.left(&syspath("/dev/input/event5")), None);
         assert!(book.pad(&id).unwrap().connected, "one of the two is left");
         assert_eq!(book.node(&id), Some(Path::new("/dev/input/event6")));
-        book.left(&syspath("/dev/input/event6"));
+        assert_eq!(book.left(&syspath("/dev/input/event6")), Some(id.clone()));
         assert!(!book.pad(&id).unwrap().connected);
     }
 
@@ -1042,7 +1047,8 @@ mod tests {
 
     /// Two pads that share a row are told apart by their anchors: one
     /// away and back while the other is unplugged, each is seen for what
-    /// it does, and the row is connected while either is.
+    /// it does, and the row is connected while either is, and told as
+    /// gone only once neither is.
     #[test]
     fn two_pads_of_one_row_are_told_apart_by_their_anchors() {
         let mut book = Book::default();
@@ -1057,7 +1063,9 @@ mod tests {
         book.rebinding(&other.path, &[]);
         assert_eq!(book.left(&syspath("/dev/input/event5")), None, "away");
         assert_eq!(book.left(&syspath("/dev/input/event6")), None, "away");
-        assert_eq!(book.unplugged(&other.path), std::slice::from_ref(&id));
+        // Unplugged, the other leaves the row connected through the one
+        // away, and isn't told as gone.
+        assert!(book.unplugged(&other.path).is_empty());
         assert!(book.pad(&id).unwrap().connected, "the one away is there");
         book.arrived(&pad("/dev/input/event7", &one));
         assert!(book.was_restored(&id), "back, not plugged in");

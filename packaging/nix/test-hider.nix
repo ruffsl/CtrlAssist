@@ -211,6 +211,10 @@ let
   #       until the service closes its end; then hides the pad again on
   #       a new connection; says each status, and whether the descriptor
   #       the second hide passed back still reads
+  #   hider-probe restore-then-stop <socket> <node> <fifo>
+  #       hides <node>, says the status, and once something is written to
+  #       <fifo> asks for it to be shown again and at once stops sending;
+  #       reads until the service closes its end, and says each status
   #   hider-probe uevent <text>
   #       ends once the kernel sends an event with <text> in it
   #   hider-probe rebinds <count>
@@ -487,6 +491,25 @@ let
             except OSError:
                 live = False
             print(f"hide={','.join(told)} again={data[0]} live={live}", flush=True)
+        case ["restore-then-stop", path, node, go]:
+            peer = admitted(path)
+            fd = os.open(node, os.O_RDONLY)
+            status, token, fds = ask(peer, 1, fd)
+            os.close(fd)
+            for fd in fds:
+                os.close(fd)
+            print(f"hidden={status}", flush=True)
+            with open(go) as waited:
+                waited.read()
+            peer.send(struct.pack("<BI", 3, token))
+            peer.shutdown(socket.SHUT_WR)
+            told = []
+            while True:
+                data, fds, _, _ = socket.recv_fds(peer, 6, 2)
+                if not data:
+                    break
+                told.append(str(data[0]))
+            print(f"restore={','.join(told)}", flush=True)
         case ["uevent", match]:
             # Says "seen" and ends once the kernel sends an event with
             # <match> in it, before udev has taken it.
@@ -522,7 +545,7 @@ let
                 elif action in ("unbind", "bind"):
                     print(f"{source} {action}", flush=True)
         case _:
-            sys.exit("usage: hider-probe eager|opath|hide|long|silent|idle|uids|lingering|churn|uhid|hang-up|stop-then-hide|uevent|rebinds ...")
+            sys.exit("usage: hider-probe eager|opath|hide|long|silent|idle|uids|lingering|churn|uhid|hang-up|stop-then-hide|restore-then-stop|uevent|rebinds ...")
   '';
 in
 pkgs.testers.runNixOSTest {
@@ -840,7 +863,7 @@ pkgs.testers.runNixOSTest {
         node = pads()[A]["event"][0]
         listening("early", node)
         control, told = hide("client", node)
-        assert told.startswith("ok") and "dislodged=true" in told, told
+        assert told.startswith("ok"), told
         assert cut_off("early"), "the early reader kept reading"
         assert not alice_can_open(A, "event") and not alice_can_open(A, "js")
         found = markers()
@@ -1021,7 +1044,7 @@ pkgs.testers.runNixOSTest {
         )
         machine.wait_for_file("/tmp/by-hand/hide.done")
         told = machine.succeed("cat /tmp/by-hand/hide.done")
-        assert told.startswith("ok") and "dislodged=true" in told, told
+        assert told.startswith("ok"), told
         assert not alice_can_open(A)
         assert order("/tmp/by-hand", "restore").startswith("ok")
         assert alice_can_open(A)
@@ -1039,20 +1062,34 @@ pkgs.testers.runNixOSTest {
         assert markers() == [], markers()
         machine.succeed("systemctl stop pad-plain")
 
+    def watching(unit):
+        """Starts the daemon's monitor, as the fixture's watch, writing what it hears to /tmp/<unit>."""
+        machine.succeed(f"systemd-run --unit {unit} -p StandardOutput=file:/tmp/{unit} ctrlassist-fixture watch")
+        machine.wait_until_succeeds(f"grep -qx watching /tmp/{unit}")
+
+    def heard(unit, pattern):
+        """Waits for the monitor of `watching` to have said a line `pattern`, an extended regular expression, matches whole."""
+        machine.wait_until_succeeds(f"grep -qxE {shlex.quote(pattern)} /tmp/{unit}")
+
     with subtest("an Xbox 360 pad on USB under xpad is hidden and shown again by re-binding its USB interface"):
+        watching("watch-xpad")
         machine.succeed("systemd-run --unit xpad-gadget usb-gadget xpad xpad XPADFIXTURE1 0")
         machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c X-Box", timeout=60)
         machine.succeed("udevadm settle")
         key = [key for key in pads() if "X-Box" in key][0]
         node = pads()[key]["event"][0]
         sysname = node.split("/")[-1]
+        # The daemon's monitor anchors a pad with no HID device to its USB
+        # interface, the device the service re-binds.
+        interface = sysfs(node, "device")
+        heard("watch-xpad", f"arrived {node} \\S+ anchor={interface}")
         print("xpad pad: " + machine.succeed(
             f"udevadm info -q property -n {node} | grep -E '^(ID_SERIAL_SHORT|ID_BUS|CURRENT_TAGS)='"
         ).replace("\n", " ") + " driver=" + machine.succeed(f"basename $(readlink -f /sys/class/input/{sysname}/device/device/driver)").strip())
         assert alice_can_open(key, "event")
         listening("early-xpad", node)
         control, told = hide("xpad", node)
-        assert told.startswith("ok") and "dislodged=true" in told, told
+        assert told.startswith("ok"), told
         assert cut_off("early-xpad"), "the early reader kept reading"
         assert not alice_can_open(key, "event") and not alice_can_open(key, "js")
         assert "./serial-045e-028e-XPADFIXTURE1" in markers(), markers()
@@ -1060,6 +1097,12 @@ pkgs.testers.runNixOSTest {
         # its serial number as it comes back, and opened again.
         replug("xpad", 0, "X-Box")
         assert not alice_can_open(key, "event") and not alice_can_open(key, "js"), "an xpad pad that came back"
+        # Taken out, its anchor is heard to go, the pad unplugged; back in
+        # the same port, it is anchored there again.
+        heard("watch-xpad", f"unplugged {interface}")
+        machine.succeed("systemctl stop watch-xpad")
+        print("the monitor through the xpad pad's hide and replug:\n" + machine.succeed("cat /tmp/watch-xpad"))
+        assert machine.succeed("tac /tmp/watch-xpad | grep -m1 '^arrived '").strip().endswith(f" anchor={interface}")
         assert order(control, "reopen").startswith("ok")
         assert order(control, "restore").startswith("ok")
         machine.succeed("udevadm settle")
@@ -1076,12 +1119,17 @@ pkgs.testers.runNixOSTest {
 
     with subtest("a HID pad on USB is found again by its serial number after reconnecting, its raw node hidden throughout"):
         name = "Fixture Serial Pad"
+        watching("watch-serial")
         machine.succeed("systemd-run --unit gadget-serial usb-gadget hid serial HIDFIXTURE1 1 0x5ef0 'Serial Pad'")
         machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -c '{name}'", timeout=60)
         machine.succeed("udevadm settle")
         nodes = by_name(name, "alice")
         assert {"event", "js", "hidraw"} <= nodes.keys() and all_are(nodes, "open"), nodes
         interface = sysfs(nodes["event"][0], "device/..").split("/")[-1]
+        # A HID pad on USB is anchored to its HID device, not the USB
+        # interface above it.
+        hid_device = sysfs(nodes["event"][0], "device")
+        heard("watch-serial", f"arrived {nodes['event'][0]} \\S+ anchor={hid_device}")
         control, told = hide("hide-serial", nodes["event"][0])
         assert told.startswith("ok"), told
         found = markers()
@@ -1092,6 +1140,9 @@ pkgs.testers.runNixOSTest {
         replug("serial", 1, name)
         nodes = by_name(name, "alice")
         assert all_are(nodes, "denied"), f"a pad that came back on another HID device: {nodes}"
+        # Taken out, its HID device is heard to go, the pad unplugged.
+        heard("watch-serial", f"unplugged {hid_device}")
+        machine.succeed("systemctl stop watch-serial")
         assert order(control, "reopen").startswith("ok")
         assert order(control, "restore").startswith("ok")
         machine.succeed("udevadm settle")
@@ -1518,6 +1569,42 @@ pkgs.testers.runNixOSTest {
         assert input_number() - before == 4
         assert alice_can_open(uniq)
         machine.succeed("systemctl stop pad-held")
+
+    with subtest("a showing again given up by hanging up asks one re-bind, which shows the pad, and the sweep asks none of its own"):
+        uniq = "02:00:00:00:03:02"
+        fake("pad-restored", "fake-hid", "--name", "Restored Pad", "--uniq", uniq, "--pulse", "20")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 'Restored Pad'")
+        machine.succeed("udevadm settle")
+        sysname = pads()[uniq]["event"][0].split("/")[-1]
+        hid = machine.succeed(f"basename $(readlink -f /sys/class/input/{sysname}/device/device)").strip()
+        inputs = f"ls /sys/bus/hid/devices/{hid}/input | tr -dc 0-9"
+        machine.succeed("mkfifo -m 0666 /run/go")
+        machine.succeed(f"systemd-run --unit restore-given-up --uid alice hider-probe restore-then-stop {SOCKET} {pads()[uniq]['event'][0]} /run/go")
+        machine.wait_until_succeeds("journalctl -u restore-given-up -o cat | grep -qx hidden=0")
+        machine.succeed("udevadm settle")
+        before = int(machine.succeed(inputs))
+        # udev held on an earlier event of the pad's HID device, so the
+        # showing's re-bind waits in its queue; then the restore, and the
+        # hang-up behind it.
+        machine.succeed("mkfifo -m 0600 /run/hold-early")
+        machine.succeed(f"echo \"change $(cat /proc/sys/kernel/random/uuid) TESTHOLD=1\" > /sys/bus/hid/devices/{hid}/uevent")
+        machine.wait_until_succeeds("pgrep -f '/bin/cat /run/hold-early$'")
+        machine.succeed("echo > /run/go")
+        # The service stops waiting, answers and closes its end with its
+        # re-bind still queued, its markers gone.
+        machine.wait_until_succeeds("journalctl -u restore-given-up -o cat | grep -q restore=")
+        told = machine.succeed("journalctl -u restore-given-up -o cat | grep restore=").strip()
+        assert told == "restore=0", told
+        assert int(machine.succeed(inputs)) == before, "udev is still held"
+        assert markers() == [], markers()
+        machine.succeed("echo > /run/hold-early && rm /run/hold-early /run/go")
+        wait_restored()
+        after = int(machine.succeed(inputs))
+        print(f"a showing again given up by hanging up: the pad's input went from input{before} to input{after}")
+        # The one re-bind asked showed it; the sweep after asked no other.
+        assert after - before == 1, (before, after)
+        assert alice_can_open(uniq) and alice_can_open(uniq, "js")
+        machine.succeed("systemctl stop pad-restored")
 
     with subtest("two re-binds of a pad asked back to back are run one after the other, and a hide asked behind another is done on its own"):
         uniq = "02:00:00:00:04:01"
