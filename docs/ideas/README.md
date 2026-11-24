@@ -18,6 +18,7 @@ Deferred work and designs set aside, one file each. An entry says what the idea 
 - [`choice-descriptions.md`](choice-descriptions.md) — a choice's own sentence, where it is chosen.
 - [`restart-warning.md`](restart-warning.md) — saying that a game may need restarting after its virtual pad is replaced.
 - [`relative-controls.md`](relative-controls.md) — gyro, touchpad, mouse and keyboard.
+- [`gyro-bias-at-rest.md`](gyro-bias-at-rest.md) — measuring each pad's gyroscope bias while it lies still, in place of the bias the pad stores.
 - [`larger-pad-state.md`](larger-pad-state.md) — more than 64 buttons or 16 axes.
 - [`split-preset.md`](split-preset.md) — a preset for splitting one pad into several.
 
