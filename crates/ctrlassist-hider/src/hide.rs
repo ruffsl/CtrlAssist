@@ -648,11 +648,19 @@ mod tests {
         }
     }
 
+    /// [`now`] is the monotonic clock in microseconds, as the kernel says
+    /// it in seconds either side. That udev stamps a device by that clock
+    /// is from its source, and not checked here.
     #[test]
-    fn udev_s_clock_is_the_monotonic_one_in_microseconds() {
-        let first = now();
-        let second = now();
-        assert!(first > 0 && second >= first);
+    fn now_is_the_monotonic_clock_in_microseconds() {
+        let before = clock_gettime(ClockId::Monotonic).tv_sec;
+        let now = now();
+        let after = clock_gettime(ClockId::Monotonic).tv_sec;
+        let seconds = i64::try_from(now / 1_000_000).unwrap();
+        assert!(
+            (before..=after).contains(&seconds),
+            "{before} {now} {after}"
+        );
     }
 
     /// A device every machine has, with no driver and no `uevent` file the
@@ -728,12 +736,14 @@ mod tests {
         poll(&mut fds, Some(&now)).unwrap() > 0 && hung_up(fds[0].revents())
     }
 
-    /// Only a hang-up ends a wait on a client's behalf, whole or of its
-    /// sending alone. What it sends meanwhile, a request, an empty message
-    /// or what isn't a request at all, stays queued, for `serve` to read
-    /// in its turn.
+    /// What a wait on a client's behalf polls for sees only a hang-up,
+    /// whole or of its sending alone. What it sends meanwhile, a request,
+    /// an empty message or what isn't a request at all, stays queued, for
+    /// `serve` to read in its turn. The wait itself, in [`rebind`], needs
+    /// a device the service may re-bind, which the virtual machine check
+    /// has.
     #[test]
-    fn only_a_hang_up_ends_a_wait_and_what_is_sent_meanwhile_stays_queued() {
+    fn only_a_hang_up_is_seen_as_one_and_what_is_sent_meanwhile_stays_queued() {
         use std::os::fd::AsFd;
 
         let (service, client) = pair();
@@ -761,13 +771,24 @@ mod tests {
         assert!(has_hung_up(&service));
     }
 
-    /// A re-bind the service may not ask is never asked: here the device's
-    /// `uevent` file isn't the group's.
+    /// A re-bind the service may not ask is never asked: here the device
+    /// is gone, and, for a user that isn't root, as the service never is,
+    /// the device's `uevent` file isn't the group's. Root may write any
+    /// device's, so as root that half would ask a re-bind of the stand-in.
     #[test]
     fn a_re_bind_the_service_may_not_ask_is_not_asked() {
-        let rebound = rebind(&stand_in(), Leave::AsTheRuleSays, None);
-        assert_eq!(rebound.outcome, Err(Refusal::Failed));
+        let gone = Device {
+            path: PathBuf::from("/sys/devices/virtual/ctrlassist-test-no-such-device"),
+            enumeration: None,
+        };
+        let rebound = rebind(&gone, Leave::AsTheRuleSays, None);
+        assert_eq!(rebound.outcome, Err(Refusal::Absent));
         assert!(!rebound.asked);
+        if !rustix::process::geteuid().is_root() {
+            let rebound = rebind(&stand_in(), Leave::AsTheRuleSays, None);
+            assert_eq!(rebound.outcome, Err(Refusal::Failed));
+            assert!(!rebound.asked);
+        }
     }
 
     #[test]

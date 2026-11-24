@@ -3960,7 +3960,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_start_that_fails_after_hiding_a_pad_is_not_started_again_by_it() {
         let mut rig = rig().await;
-        let _hider = with_hider(&mut rig, Script::default()).await;
+        let hider = with_hider(&mut rig, Script::default()).await;
         let [_, node] = managed_with_both_pads(&mut rig);
         follow(&mut rig.reactor, 7, Phase::Starting);
         let token = hidden_by_the_hider(&rig, PRIMARY).await;
@@ -3980,6 +3980,7 @@ mod tests {
         assert_eq!(rig.reactor.book.user(PRIMARY), None);
         goes_and_comes_back(&mut rig, node, 2).await;
         finish(&mut rig.reactor).await;
+        assert_eq!(restores(&hider), 1, "the pad hidden was shown again");
         unplugged(&mut rig, node).await;
     }
 

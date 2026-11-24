@@ -1467,10 +1467,24 @@ mod tests {
         });
         assert!(looking.recv_timeout(SETTLE).is_err(), "it waits");
         assert_eq!(hiding.mechanism(), payload::Hiding::Looking);
-        // Room: the daemon's connection is made and accepted.
+        // Room: the daemon's connection is made and accepted, and asks
+        // the release, which found, the service is there.
         drop(accept(&listener).unwrap());
-        drop(accept(&listener).unwrap());
-        hiding.close();
+        let daemon = accept(&listener).unwrap();
+        let mut asked = [0u8; ctrlassist_hider::Request::SIZE];
+        let (length, _) = ctrlassist_hider::receive(daemon.as_fd(), &mut asked).unwrap();
+        assert_eq!(
+            ctrlassist_hider::Request::decode(&asked[..length]),
+            Some(ctrlassist_hider::Request::Version)
+        );
+        let release = ctrlassist_hider::Reply {
+            refusal: None,
+            token: ctrlassist_hider::Token(ctrlassist_hider::pack_release("1.2.3")),
+        };
+        ctrlassist_hider::send(daemon.as_fd(), &release.encode(), &[]).unwrap();
         looking.recv().unwrap();
+        assert_eq!(hiding.mechanism(), payload::Hiding::Service);
+        assert_eq!(hiding.service_release().as_deref(), Some("1.2.3"));
+        hiding.close();
     }
 }
