@@ -124,12 +124,26 @@ impl std::fmt::Debug for Reactor {
     }
 }
 
+/// What `identify` buzzes: an event node, and for a pad the place in
+/// sysfs it was found at, so that a node given its name since, another
+/// pad's, is refused rather than buzzed. A virtual pad's node is the
+/// setup's own, and has none.
+#[derive(Debug)]
+pub(crate) struct ToBuzz {
+    node: PathBuf,
+    syspath: Option<PathBuf>,
+}
+
 /// Starts a pad buzzing and keeps it buzzing for `millis`. The reply
 /// goes once the pad has taken its effect and been told the level,
 /// which a thread of the pad's own then sends it, or with why it can't.
-async fn buzz(node: PathBuf, millis: u32, responder: Responder<pad::Identify>) {
+async fn buzz(to: ToBuzz, millis: u32, responder: Responder<pad::Identify>) {
     let started = tokio::task::spawn_blocking(move || {
-        let file = OpenOptions::new().read(true).write(true).open(&node)?;
+        let options = OpenOptions::new().read(true).write(true).clone();
+        let file = match &to.syspath {
+            Some(syspath) => ctrlassist_device::open_node(&to.node, syspath, &options)?,
+            None => options.open(&to.node)?,
+        };
         let mut pad = Pad::from_fd(OwnedFd::from(file))?;
         pad.rumble(BUZZ)?;
         Ok::<_, ctrlassist_device::PadError>(pad)
@@ -613,7 +627,7 @@ impl Reactor {
     pub(crate) fn buzzable(
         &self,
         request: &rpc::IdentifyRequest,
-    ) -> Result<Option<PathBuf>, WireError> {
+    ) -> Result<Option<ToBuzz>, WireError> {
         if !(1..=rpc::IDENTIFY_MAX_MS).contains(&request.millis) {
             return Err(WireError::bad_request(format!(
                 "a buzz lasts from 1 to {} ms, not {}",
@@ -630,7 +644,10 @@ impl Reactor {
                 .and_then(|setup| setup.sinks.into_iter().find(|made| made.name == sink))
                 .and_then(|made| made.node);
             return match node {
-                Some(node) => Ok(Some(PathBuf::from(node))),
+                Some(node) => Ok(Some(ToBuzz {
+                    node: PathBuf::from(node),
+                    syspath: None,
+                })),
                 None => Err(WireError::refusal(
                     ErrorCode::UnknownPad,
                     format!("no setup has a virtual pad {setup}/{sink} now"),
@@ -649,7 +666,7 @@ impl Reactor {
                     format!("{id} is away for a moment, its driver being re-bound; try again"),
                 ));
             }
-            None => Some(self.book.node(id).ok_or_else(|| {
+            None => Some(self.book.placed_node(id).ok_or_else(|| {
                 WireError::refusal(ErrorCode::PadDisconnected, format!("{id} isn't connected"))
             })?),
         };
@@ -659,19 +676,22 @@ impl Reactor {
                 format!("{id} has no rumble to buzz with"),
             ));
         }
-        let Some(node) = node else {
+        let Some((node, syspath)) = node else {
             let setup = self.book.user(id).unwrap_or_default();
             return self.buzz(setup, id, BUZZ, request.millis).map(|()| None);
         };
-        Ok(Some(node.to_path_buf()))
+        Ok(Some(ToBuzz {
+            node: node.to_path_buf(),
+            syspath: Some(syspath.to_path_buf()),
+        }))
     }
 
     async fn pad_rpc(&mut self, query: Query) {
         match pad::Incoming::receive(query).await {
             Some(((), pad::Incoming::Identify(request, responder))) => {
                 match self.buzzable(&request) {
-                    Ok(Some(node)) => {
-                        self.buzzes.spawn(buzz(node, request.millis, responder));
+                    Ok(Some(to)) => {
+                        self.buzzes.spawn(buzz(to, request.millis, responder));
                     }
                     Ok(None) => responder.ok(&rpc::Ack {}).await,
                     Err(refusal) => responder.err(&refusal).await,

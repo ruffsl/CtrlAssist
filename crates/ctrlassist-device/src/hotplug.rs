@@ -4,7 +4,7 @@
 //! reported once its nodes and their permissions are in place, so it can
 //! be opened at once.
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
@@ -189,8 +189,8 @@ pub fn connected() -> io::Result<Vec<Found>> {
         .collect())
 }
 
-/// Opens the event node `node` for reading, as the node at `syspath` in
-/// sysfs. A node's name is handed on: one opened a while after it was
+/// Opens the event node `node` with `options`, as the node at `syspath`
+/// in sysfs. A node's name is handed on: one opened a while after it was
 /// found may be another pad's by then, which is refused. Opened first and
 /// then looked up, it is the one at `syspath` if that is still there with
 /// the opened file's number, a number being one device's for as long as
@@ -200,8 +200,8 @@ pub fn connected() -> io::Result<Vec<Found>> {
 ///
 /// Fails if the node can't be opened, or is no longer the one at
 /// `syspath`.
-pub fn open_node(node: &Path, syspath: &Path) -> io::Result<File> {
-    let file = File::open(node)?;
+pub fn open_node(node: &Path, syspath: &Path, options: &OpenOptions) -> io::Result<File> {
+    let file = options.open(node)?;
     let opened = rustix::fs::fstat(&file)?.st_rdev;
     let there = udev::Device::from_syspath(syspath)?.devnum();
     if there != Some(opened) {
@@ -430,10 +430,13 @@ mod tests {
     #[test]
     fn a_node_is_opened_only_as_the_device_it_was_found_as() {
         let null = Path::new("/dev/null");
-        open_node(null, Path::new("/sys/devices/virtual/mem/null")).unwrap();
-        let refused = open_node(null, Path::new("/sys/devices/virtual/mem/zero")).unwrap_err();
+        let options = OpenOptions::new().read(true).write(true).clone();
+        open_node(null, Path::new("/sys/devices/virtual/mem/null"), &options).unwrap();
+        let refused =
+            open_node(null, Path::new("/sys/devices/virtual/mem/zero"), &options).unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::NotFound, "{refused}");
-        assert!(open_node(null, Path::new("/sys/devices/virtual/mem/gone")).is_err());
+        let gone = Path::new("/sys/devices/virtual/mem/gone");
+        assert!(open_node(null, gone, &options).is_err());
     }
 
     /// A socket is readable while something is queued on it, and asking
