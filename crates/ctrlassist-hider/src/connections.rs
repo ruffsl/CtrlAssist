@@ -177,6 +177,7 @@ mod tests {
     use std::io::Write;
     use std::net::{TcpListener, TcpStream};
     use std::os::fd::AsFd;
+    use std::path::{Path, PathBuf};
     use std::time::Duration;
 
     use rustix::event::{PollFd, PollFlags, poll};
@@ -224,20 +225,35 @@ mod tests {
         rustix::net::recv(client, &mut [0u8; 8], RecvFlags::DONTWAIT) == Err(Errno::AGAIN)
     }
 
-    /// Where the closer's thread sleeps, as the kernel names it: `0` while
-    /// it runs. No other test in this binary starts a closer.
-    fn closer_sleeps_in() -> String {
-        let mut found = Vec::new();
-        for task in std::fs::read_dir("/proc/self/task").unwrap() {
-            let task = task.unwrap().path();
-            if std::fs::read_to_string(task.join("comm")).unwrap().trim() == "closer" {
-                found.push(task);
-            }
-        }
+    /// The closer's thread, in `/proc/self/task`. No other test in this
+    /// binary starts a closer; the threads of the others come and go.
+    fn closer_task() -> PathBuf {
+        let found: Vec<PathBuf> = std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .flatten()
+            .map(|task| task.path())
+            .filter(|task| {
+                std::fs::read_to_string(task.join("comm")).is_ok_and(|name| name.trim() == "closer")
+            })
+            .collect();
         let [task] = found.as_slice() else {
             panic!("one closer's thread, not {}", found.len());
         };
-        std::fs::read_to_string(task.join("wchan")).unwrap()
+        task.clone()
+    }
+
+    /// What `task` is doing, as the kernel says: `Some(Some(call))` while
+    /// it is asleep in system call `call`, `Some(None)` while it runs or
+    /// sleeps outside one, and `None` where the kernel doesn't say, having
+    /// no `syscall` file for a task.
+    fn asleep_in(task: &Path) -> Option<Option<libc::c_long>> {
+        let said = std::fs::read_to_string(task.join("syscall")).ok()?;
+        Some(
+            said.split_whitespace()
+                .next()
+                .and_then(|call| call.parse().ok())
+                .filter(|call: &libc::c_long| *call >= 0),
+        )
     }
 
     #[test]
@@ -249,19 +265,31 @@ mod tests {
         closer.close(service);
         // The closer has begun closing it: its end is gone.
         poll(&mut [PollFd::new(&blocked, PollFlags::IN)], None).unwrap();
+        let task = closer_task();
         // And is held in the close, waiting for the lingering socket's data
-        // to go: either it is found asleep there, or the close has ended
-        // and it has said so.
+        // to go, which the close's release of what the connection carried
+        // runs on its way out: either it is found asleep there, or the
+        // close has ended and it has said so. It has nowhere else to sleep
+        // until it has said so.
         loop {
             assert_eq!(
                 closed.try_recv(),
                 Err(mpsc::TryRecvError::Empty),
                 "the close didn't block"
             );
-            if closer_sleeps_in() == "wait_woken" {
-                break;
+            match asleep_in(&task) {
+                Some(Some(libc::SYS_close)) => break,
+                Some(_) => std::thread::yield_now(),
+                None => {
+                    let _ = writeln!(
+                        io::stderr(),
+                        "skipped: this kernel doesn't say which system call a thread is asleep in (no /proc/self/task/*/syscall), so the closer can't be seen held in its close"
+                    );
+                    drop(peer);
+                    closed.recv().unwrap();
+                    return;
+                }
             }
-            std::thread::yield_now();
         }
         // Each handed over at once all the same: two have room behind it,
         // and the next is kept, with nothing more to be accepted.
