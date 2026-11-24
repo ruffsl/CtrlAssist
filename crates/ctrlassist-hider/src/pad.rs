@@ -309,16 +309,58 @@ fn is_event(device: &udev::Device) -> bool {
 }
 
 /// A joystick, and nothing a keystroke or a pointer could come from: one
-/// HID interface can carry a keyboard beside a joystick. The rule that
+/// HID interface can carry a keyboard beside a joystick. One udev marks
+/// as having keys is a pad where they are all at code 128 or above, as
+/// [`keys_all_high`] tells from its input device's keys. The rule that
 /// lets the service ask for a re-bind makes the same test.
 fn is_only_a_pad(event: &udev::Device) -> bool {
     is_event(event)
         && flag(event, "ID_INPUT_JOYSTICK")
         && !flag(event, "ID_INPUT_KEYBOARD")
-        && !flag(event, "ID_INPUT_KEY")
         && !flag(event, "ID_INPUT_MOUSE")
         && !flag(event, "ID_INPUT_TOUCHPAD")
         && !flag(event, "ID_INPUT_TABLET")
+        && !flag(event, "ID_INPUT_POINTINGSTICK")
+        && (!flag(event, "ID_INPUT_KEY")
+            || event
+                .parent()
+                .and_then(|input| attribute(&input, "capabilities/key"))
+                .is_some_and(|keys| keys_all_high(&keys)))
+}
+
+/// Whether an input device's keys, as its `capabilities/key` file in
+/// sysfs gives them, are all at code 128 or above, with at least one:
+/// below that are every typing, editing, arrow, modifier, Enter, Esc and
+/// function key, and a pad's share button (`KEY_RECORD`) or menu key is
+/// above. A pad's own buttons are at 0x100 and up.
+///
+/// The file is a bitmap in hex words, most significant first, without
+/// the words above the highest key, each word a `long` of whoever reads
+/// it: 64 bits for a 64-bit process on a 64-bit kernel, 32 bits for a
+/// 32-bit one on either kernel. udev reads it as itself, which the rule
+/// can't know, so this tells without the word size: keys below 128 are
+/// in the last two words of 64 bits or the last four of 32, and a word of
+/// more than eight digits can only be one of 64. With none such, the last
+/// four words must be zero, which on 64 bits asks keys below 256 be
+/// absent too: a pad with a joystick's or a game pad's button (0x120 to
+/// 0x13f) has a word of 64 bits with its high half set, and one with
+/// none is refused. A short string, fewer words than the keys below 128
+/// fill, has those keys alone, and is refused, as is anything not shaped
+/// so. The rule's two patterns for the file say the same, word for word.
+fn keys_all_high(bitmap: &str) -> bool {
+    let words: Vec<&str> = bitmap.split(' ').collect();
+    let shaped = words.iter().all(|word| {
+        (1..=16).contains(&word.len())
+            && word
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    });
+    let low = if words.iter().any(|word| word.len() > 8) {
+        2
+    } else {
+        4
+    };
+    shaped && words.len() > low && words.iter().rev().take(low).all(|word| *word == "0")
 }
 
 /// A keyboard or a pointer, as udev classifies an input. A pad's own
@@ -1079,6 +1121,203 @@ mod tests {
             "1234-2:1.0",
         ] {
             assert!(!is_usb_interface(hostile), "{hostile:?}");
+        }
+    }
+
+    /// The `capabilities/key` file the kernel writes for `keys`, in words
+    /// of `bits`: most significant first, from the highest word with a key
+    /// in it, or `0` with none.
+    fn bitmap(keys: &[usize], bits: usize) -> String {
+        // KEY_CNT.
+        let mut words = vec![0u64; 0x300 / bits];
+        for key in keys {
+            words[key / bits] |= 1 << (key % bits);
+        }
+        let written: Vec<String> = words
+            .iter()
+            .rev()
+            .skip_while(|word| **word == 0)
+            .map(|word| format!("{word:x}"))
+            .collect();
+        if written.is_empty() {
+            "0".to_string()
+        } else {
+            written.join(" ")
+        }
+    }
+
+    /// A game pad's own buttons: south, east, north, west, the shoulders,
+    /// select, start, mode and the thumbs.
+    const BUTTONS: [usize; 11] = [
+        0x130, 0x131, 0x133, 0x134, 0x136, 0x137, 0x13a, 0x13b, 0x13c, 0x13d, 0x13e,
+    ];
+
+    /// Each pad's keys, with whether they are all at 128 or above.
+    fn pads_keys() -> Vec<(&'static str, Vec<usize>, bool)> {
+        let with = |keys: &[usize]| BUTTONS.iter().chain(keys).copied().collect::<Vec<_>>();
+        vec![
+            // KEY_RECORD, by xpad on USB and hid-microsoft on Bluetooth.
+            ("an Xbox Series pad's share button", with(&[167]), true),
+            // KEY_MENU.
+            ("an 8BitDo pad's menu key", with(&[139]), true),
+            // KEY_STOP, the first above the line.
+            ("the lowest key allowed", with(&[128]), true),
+            // KEY_BACK and KEY_HOMEPAGE, and the share button.
+            ("three media keys", with(&[158, 167, 172]), true),
+            // KEY_VOLUMEDOWN, KEY_VOLUMEUP and KEY_PLAYPAUSE.
+            ("a Stadia pad's volume keys", with(&[114, 115, 164]), false),
+            ("Enter", with(&[28]), false),
+            // KEY_UP: in the second word of 64 bits, the fourth of 32.
+            ("an arrow", with(&[103]), false),
+            ("Esc and F12", with(&[1, 88]), false),
+            // KEY_COMPOSE, the last below the line.
+            ("the highest key refused", with(&[127]), false),
+            ("KEY_RESERVED", with(&[0]), false),
+            // The boot keyboard an Elite Series 2 carries over Bluetooth.
+            (
+                "a keyboard's keys",
+                with(&(1..=101).collect::<Vec<_>>()),
+                false,
+            ),
+            ("a low key alone", vec![103], false),
+            ("no key at all", vec![], false),
+            ("buttons alone", BUTTONS.to_vec(), true),
+        ]
+    }
+
+    #[test]
+    fn a_pad_s_keys_are_all_high_in_words_of_either_size() {
+        for (what, keys, high) in pads_keys() {
+            for bits in [64, 32] {
+                let written = bitmap(&keys, bits);
+                assert_eq!(
+                    keys_all_high(&written),
+                    high,
+                    "{what} in words of {bits}: {written}"
+                );
+            }
+        }
+        // As the kernel writes an Xbox Series pad's, to either reader.
+        let series: Vec<usize> = BUTTONS.iter().copied().chain([167]).collect();
+        assert_eq!(bitmap(&series, 64), "7cdb000000000000 0 8000000000 0 0");
+        assert_eq!(bitmap(&series, 32), "7cdb0000 0 0 0 80 0 0 0 0 0");
+    }
+
+    /// Where the word size can't be told, as for keys whose words of 64
+    /// bits each have only their low half set, keys below 256 refuse: a
+    /// pad with no joystick's or game pad's button, its buttons being
+    /// BTN_TRIGGER_HAPPY's, is refused with a menu key on a 64-bit reader,
+    /// and taken on a 32-bit one, whose words say more. Either way a low
+    /// key is never taken.
+    #[test]
+    fn keys_whose_word_size_cant_be_told_refuse_what_would_be_low_in_either() {
+        let happy = [0x2c0, 0x2c1, 139];
+        assert!(!keys_all_high(&bitmap(&happy, 64)));
+        assert!(keys_all_high(&bitmap(&happy, 32)));
+        // A short string: the keys it has are all in the low words.
+        for short in ["0", "1", "80", "8000000000 0", "1 0 0 0", "80000000 0 0 0"] {
+            assert!(!keys_all_high(short), "{short}");
+        }
+        // Words of 64 bits, the low two clear, one wide enough to tell.
+        assert!(keys_all_high("100000000 0 0"));
+        // And with none so wide, four words must be clear.
+        assert!(!keys_all_high("80 0 0"));
+        assert!(keys_all_high("80 0 0 0 0"));
+    }
+
+    #[test]
+    fn a_key_bitmap_not_shaped_as_the_kernel_writes_one_is_refused() {
+        for hostile in [
+            "",
+            " ",
+            "7fdb000000000000  0 8000000000 0 0",
+            " 7fdb000000000000 0 8000000000 0 0",
+            "7fdb000000000000 0 8000000000 0 0 ",
+            "7FDB000000000000 0 8000000000 0 0",
+            "0x7fdb 0 0 0 0",
+            "17fdb000000000000 0 0",
+            "7fdb0000\t0 0 0 0",
+            "z 0 0 0 0",
+            "-1 0 0 0 0",
+        ] {
+            assert!(!keys_all_high(hostile), "{hostile:?}");
+        }
+    }
+
+    /// Whether `text` matches a udev pattern, as `fnmatch` without flags
+    /// takes one: `*`, and `[...]` with ranges, which are all the rule's
+    /// patterns for keys use.
+    fn glob(pattern: &[u8], text: &[u8]) -> bool {
+        match pattern.split_first() {
+            None => text.is_empty(),
+            Some((b'*', rest)) => (0..=text.len()).any(|skip| glob(rest, &text[skip..])),
+            Some((b'[', rest)) => {
+                let end = rest
+                    .iter()
+                    .position(|byte| *byte == b']')
+                    .expect("the rule closes every class it opens");
+                let (class, rest) = (&rest[..end], &rest[end + 1..]);
+                let within = |byte: u8| {
+                    class
+                        .windows(3)
+                        .any(|range| range[1] == b'-' && (range[0]..=range[2]).contains(&byte))
+                };
+                text.split_first()
+                    .is_some_and(|(first, text)| within(*first) && glob(rest, text))
+            }
+            Some((literal, rest)) => text
+                .split_first()
+                .is_some_and(|(first, text)| first == literal && glob(rest, text)),
+        }
+    }
+
+    /// The rule's patterns for a pad's keys, each line's alternatives.
+    fn rule_s_patterns() -> Vec<String> {
+        const RULE: &str = include_str!("../../../packaging/udev/72-ctrlassist-hide.rules");
+        let key = "ATTRS{capabilities/key}==\"";
+        RULE.lines()
+            .filter(|line| !line.starts_with('#'))
+            .filter_map(|line| {
+                let (_, after) = line.split_once(key)?;
+                Some(after.split_once('"')?.0.to_string())
+            })
+            .flat_map(|patterns| {
+                patterns
+                    .split('|')
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// The rule must never hide a node the service's sweep can't show
+    /// again, nor the service ask to hide what the rule won't: for every
+    /// bitmap the kernel writes, in words of either size, they agree.
+    #[test]
+    fn the_rule_takes_a_pad_s_keys_as_the_service_does() {
+        let patterns = rule_s_patterns();
+        assert_eq!(patterns.len(), 2, "{patterns:?}");
+        let rule = |written: &str| {
+            patterns
+                .iter()
+                .any(|pattern| glob(pattern.as_bytes(), written.as_bytes()))
+        };
+        let mut cases: Vec<Vec<usize>> = pads_keys().into_iter().map(|(_, keys, _)| keys).collect();
+        // Each key alone and beside the buttons, and beside BTN_TRIGGER_HAPPY.
+        for key in (0..0x300).step_by(7).chain([127, 128, 255, 256]) {
+            cases.push(vec![key]);
+            cases.push(BUTTONS.iter().copied().chain([key]).collect());
+            cases.push(vec![0x2c0, key]);
+        }
+        for keys in cases {
+            for bits in [64, 32] {
+                let written = bitmap(&keys, bits);
+                assert_eq!(rule(&written), keys_all_high(&written), "{written}");
+                // And neither takes a key below 128, whatever the word.
+                if keys.iter().any(|key| *key < 128) {
+                    assert!(!rule(&written), "{written}");
+                }
+            }
         }
     }
 

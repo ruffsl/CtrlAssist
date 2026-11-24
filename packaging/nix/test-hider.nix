@@ -196,14 +196,17 @@ let
   #   hider-probe churn <socket> <count>
   #       <count> times without pause: connects, asks the release and
   #       closes; says how many were answered and how many refused
-  #   hider-probe uhid <name> <phys> [<uniq> combo|merged|record]
+  #   hider-probe uhid <name> <phys> [<uniq> combo|merged|low|many|series|elite]
   #       makes a HID game pad through uhid with that phys and no address;
-  #       holds. With combo, a game pad and a keyboard in one descriptor,
-  #       each its own report, product 0bad, with that address; with
-  #       merged, the keyboard's keys in the game pad's own report, which
-  #       makes one input, product 0bac; with record, a record button in
-  #       the game pad's own report, as an Xbox Series pad's share button
-  #       is, product 0bab
+  #       holds. With a kind, with that address: with combo, a game pad
+  #       and a keyboard in one descriptor, each its own report, product
+  #       0bad; with merged, the keyboard's keys in the game pad's own
+  #       report, which makes one input, product 0bac; with low, Enter and
+  #       an arrow key in the game pad's own report, product 0baa; with
+  #       many, eleven media keys there, all at 128 or above, product
+  #       0bb9; with series, an Xbox Series pad on Bluetooth, 045e:0b13,
+  #       its share button a key; with elite, an Xbox Elite Series 2 pad
+  #       on Bluetooth, 045e:0b05, with a keyboard's collection
   #   hider-probe hang-up <socket> <node> <fifo>
   #       hides <node> and gives the hide up by closing the connection
   #       once something is written to <fifo>
@@ -232,6 +235,86 @@ let
     import struct
     import sys
     import time
+
+    # Real pads' report descriptors, as xpadneo's documents record them,
+    # read from the pads over Bluetooth (docs/descriptors/xbxs.md and
+    # xbe2_linux.md in xpadneo 0.10.5). An Xbox Series pad's carries its
+    # share button in the game pad's own report, as the consumer page's
+    # Record.
+    XBOX_SERIES = bytes.fromhex(
+        "05010905a10185010901a10009300931150027ff"
+        "ff0000950275108102c00901a100093209351500"
+        "27ffff0000950275108102c0050209c5150026ff"
+        "039501750a810215002500750695018103050209"
+        "c4150026ff039501750a81021500250075069501"
+        "810305010939150125083500463b016614007504"
+        "9501814275049501150025003500450065008103"
+        "05091901290f150025017501950f810215002500"
+        "750195018103050c0ab200150025019501750181"
+        "0215002500750795018103050f09218503a10209"
+        "9715002501750495019102150025007504950191"
+        "030970150025647508950491020950660110550e"
+        "150026ff0075089501910209a7150026ff007508"
+        "9501910265005500097c150026ff007508950191"
+        "02c0c0"
+    )
+    # An Xbox Elite Series 2's carries a boot keyboard's collection after
+    # its game pad's, as report 5, and a zero byte at its end, which the
+    # kernel passes over.
+    ELITE_SERIES_2 = bytes.fromhex(
+        "05010905a10185010901a10009300931150027ff"
+        "ff0000950275108102c00901a100093209351500"
+        "27ffff0000950275108102c0050209c5150026ff"
+        "039501750a810215002500750695018103050209"
+        "c4150026ff039501750a81021500250075069501"
+        "810305010939150125083500463b016614007504"
+        "9501814275049501150025003500450065008103"
+        "05091901290f150025017501950f810215002500"
+        "750195018103050c0a2402150025019501750181"
+        "0215002500750795018103050c0901a1010a8100"
+        "150026ff00950175048102150025009501750481"
+        "030a8400150026ff009501750481021500250095"
+        "01750481030a8500150026ff009501750881020a"
+        "9900150026ff0095017504810215002500950175"
+        "0481030a9e00150026ff009501750881020aa100"
+        "150026ff009501750881020aa200150026ff0095"
+        "01750881020aa300150026ff009501750881020a"
+        "a400150026ff009501750881020ab900150026ff"
+        "009501750881020aba00150026ff009501750881"
+        "020abb00150026ff009501750881020abe001500"
+        "26ff009501750881020ac000150026ff00950175"
+        "0881020ac100150026ff009501750881020ac200"
+        "150026ff009501750881020ac300150026ff0095"
+        "01750881020ac400150026ff009501750881020a"
+        "c500150026ff009501750881020ac600150026ff"
+        "009501750881020ac700150026ff009501750881"
+        "020ac800150026ff00950175088102c0050c0901"
+        "8502a101050c0a23021500250195017501810215"
+        "002500750795018103c0050f09218503a1020997"
+        "1500250175049501910215002500750495019103"
+        "0970150025647508950491020950660110550e15"
+        "0026ff0075089501910209a7150026ff00750895"
+        "01910265005500097c150026ff00750895019102"
+        "c0050609208504150026ff007508950181020600"
+        "ff0901a102850609011500256475089501b10209"
+        "021500256475089501b1020903150026ff007508"
+        "9501b102090426ff007508953cb20201c00600ff"
+        "0902a102850709051500256475089501b1020906"
+        "1500256475089501b10209071500256475089501"
+        "b102c00600ff0903a10285080908150025647508"
+        "9501b10209091500256475089501b102090a1500"
+        "26ff0075089501b102c00600ff0904a101850909"
+        "0b1500256475089501b102090c15002564750895"
+        "01b102090d1500256475089501b102090e150026"
+        "ff0075089501b102090f26ff007508953cb20201"
+        "c00600ff0905a101850a0910150027ffffff7f75"
+        "20950181020911150027ffffff7f752095018102"
+        "0912150026ff007508950281020913150026ff00"
+        "750895018102c00600ff0906a102850b09141500"
+        "256475089501b102c0c005010906a10185050507"
+        "19e029e715002501750195088102950175088103"
+        "95067508150025650507190029658100c000"
+    )
 
 
     def connect(path):
@@ -422,38 +505,69 @@ let
                     0x81, 0x01, 0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, last,
                     0x05, 0x07, 0x19, 0x00, 0x29, last, 0x81, 0x00,
                 ])
-            uniq, product = b"", 0x0bae
-            if combo and combo[1] == "combo":
+            # On USB, of the test vendor, unless a real pad's.
+            uniq, bus, vendor, product = b"", 3, 0x1209, 0x0bae
+            kind = combo[1] if combo else None
+            if combo:
+                uniq = combo[0].encode()
+            if kind == "combo":
                 # The same game pad as report 1, then a keyboard as report
                 # 2.
-                uniq, product = combo[0].encode(), 0x0bad
+                product = 0x0bad
                 descriptor = (
                     descriptor[:6] + bytes([0x85, 0x01]) + descriptor[6:]
                     + bytes([0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x02]) + keys(0x65) + bytes([0xC0])
                 )
-            elif combo and combo[1] == "record":
-                # The consumer page's Record, which the kernel gives the
-                # key KEY_RECORD, in one bit and seven of padding: a
-                # joystick with a key, and no keyboard.
-                uniq, product = combo[0].encode(), 0x0bab
-                descriptor = descriptor[:-1] + bytes([
-                    0x05, 0x0C, 0x09, 0xB2, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01,
-                    0x95, 0x01, 0x81, 0x02, 0x75, 0x07, 0x95, 0x01, 0x81, 0x01,
-                ]) + bytes([0xC0])
-            elif combo:
+            elif kind == "merged":
                 # The keys inside the game pad's own collection: one input,
                 # a joystick and a keyboard at once. Only those up to the
                 # slash: udev takes a joystick with several of the keys past
                 # it, Caps Lock among them, for a keyboard alone.
-                uniq, product = combo[0].encode(), 0x0bac
+                product = 0x0bac
                 descriptor = descriptor[:-1] + keys(0x38) + bytes([0xC0])
+            elif kind == "low":
+                # The keyboard page's Enter and up arrow, which the kernel
+                # gives the keys KEY_ENTER (28) and KEY_UP (103), in two
+                # bits and six of padding: a joystick with keys below 128,
+                # and no keyboard.
+                product = 0x0baa
+                descriptor = descriptor[:-1] + bytes([
+                    0x05, 0x07, 0x09, 0x28, 0x09, 0x52, 0x15, 0x00, 0x25, 0x01,
+                    0x75, 0x01, 0x95, 0x02, 0x81, 0x02, 0x75, 0x06, 0x95, 0x01,
+                    0x81, 0x01,
+                ]) + bytes([0xC0])
+            elif kind == "many":
+                # Eleven keys of the consumer page, every one at 128 or
+                # above: Play, Record, Fast Forward, Rewind, the next and
+                # previous tracks, Stop, Eject, Shuffle, AC Home and AC
+                # Back, in eleven bits and five of padding. A joystick with
+                # ten keys or more, which libinput takes for a keyboard.
+                product = 0x0bb9
+                descriptor = descriptor[:-1] + bytes([
+                    0x05, 0x0C, 0x09, 0xB0, 0x09, 0xB2, 0x09, 0xB3, 0x09, 0xB4,
+                    0x09, 0xB5, 0x09, 0xB6, 0x09, 0xB7, 0x09, 0xB8, 0x09, 0xB9,
+                    0x0A, 0x23, 0x02, 0x0A, 0x24, 0x02, 0x15, 0x00, 0x25, 0x01,
+                    0x75, 0x01, 0x95, 0x0B, 0x81, 0x02, 0x75, 0x05, 0x95, 0x01,
+                    0x81, 0x01,
+                ]) + bytes([0xC0])
+            elif kind == "series":
+                # An Xbox Series pad on Bluetooth, for hid-microsoft.
+                bus, vendor, product = 5, 0x045e, 0x0b13
+                descriptor = XBOX_SERIES
+            elif kind == "elite":
+                # An Xbox Elite Series 2 pad on Bluetooth, for
+                # hid-microsoft.
+                bus, vendor, product = 5, 0x045e, 0x0b05
+                descriptor = ELITE_SERIES_2
+            elif combo:
+                sys.exit(f"no such kind of uhid device: {kind}")
             uhid = os.open("/dev/uhid", os.O_RDWR)
             # UHID_CREATE2: name, phys, uniq, the descriptor's size, the
-            # bus (USB), vendor, product, version, country, the descriptor.
+            # bus, vendor, product, version, country, the descriptor.
             os.write(uhid, struct.pack(
                 "<I128s64s64sHHIIII4096s",
                 11, name.encode(), phys.encode(), uniq, len(descriptor),
-                3, 0x1209, product, 1, 0, descriptor,
+                bus, vendor, product, 1, 0, descriptor,
             ))
             print("created", flush=True)
             while True:
@@ -567,6 +681,9 @@ pkgs.testers.runNixOSTest {
       "uinput"
       "uhid"
       "hid-playstation"
+      # Loaded before its pads are made, so that the generic driver
+      # doesn't take them first.
+      "hid-microsoft"
       "joydev"
     ];
     users.users.alice = {
@@ -1795,22 +1912,24 @@ pkgs.testers.runNixOSTest {
         print(f"a joystick that udev also takes for a keyboard, with a hidden pad's address: {merged}")
         assert any(line.startswith("event") for line in merged), merged
         assert all(line.split()[1:] == ["2", "input"] for line in merged), merged
-        # A joystick with a key and no keyboard, as an Xbox Series pad
-        # under xpad is, with the hidden pad's address: the service won't
-        # take it for a pad, so no marker hides it on its own account.
-        machine.succeed(f"systemd-run --unit record hider-probe uhid 'Record Pad' record {uniq} record")
-        machine.wait_until_succeeds("ls /sys/bus/hid/devices/0003:1209:0BAB.*/input/input*/event*")
+        # A joystick with keys below 128, Enter and an arrow, and no
+        # keyboard, with the hidden pad's address: the service won't take
+        # it for a pad, so no marker hides it on its own account.
+        machine.succeed(f"systemd-run --unit low hider-probe uhid 'Low Key Pad' low {uniq} low")
+        machine.wait_until_succeeds("ls /sys/bus/hid/devices/0003:1209:0BAA.*/input/input*/event*")
         machine.succeed("udevadm settle")
-        record = machine.succeed(
-            "for path in $(ls -d /sys/bus/hid/devices/0003:1209:0BAB.*/input/input*/event* /sys/bus/hid/devices/0003:1209:0BAB.*/input/input*/js* 2>/dev/null); do "
+        low = machine.succeed(
+            "for path in $(ls -d /sys/bus/hid/devices/0003:1209:0BAA.*/input/input*/event* /sys/bus/hid/devices/0003:1209:0BAA.*/input/input*/js* 2>/dev/null); do "
             "node=/dev/input/$(basename $path); "
             "echo $(basename $path) $(udevadm info -q property -n $node | grep -E '^ID_INPUT_(JOYSTICK|KEY|KEYBOARD)=1' | sort | tr '\\n' ' ') $(stat -c %G $node); "
             "done"
         ).strip().split("\n")
-        print(f"a joystick with a key, with a hidden pad's address: {record}")
-        assert len(record) == 2 and all(line.split()[1:] == ["ID_INPUT_JOYSTICK=1", "ID_INPUT_KEY=1", "input"] for line in record), record
-        event = "/dev/input/" + next(line.split()[0] for line in record if line.startswith("event"))
-        assert "refused" in machine.succeed(f"ctrlassist-hider check {event}"), "the service takes a joystick with a key for no pad"
+        keys = machine.succeed("cat /sys/bus/hid/devices/0003:1209:0BAA.*/input/input*/capabilities/key").strip()
+        print(f"a joystick with Enter and an arrow key, with a hidden pad's address: {low}, keys {keys}")
+        assert len(low) == 2 and all(line.split()[1:] == ["ID_INPUT_JOYSTICK=1", "ID_INPUT_KEY=1", "input"] for line in low), low
+        assert keys == "ff000000000000 0 0 8000000000 10000000", keys
+        event = "/dev/input/" + next(line.split()[0] for line in low if line.startswith("event"))
+        assert "refused" in machine.succeed(f"ctrlassist-hider check {event}"), "the service takes a joystick with a key below 128 for no pad"
         # The pad shown again: nothing names the device's joystick node any
         # more, and the sweep leaves it hidden rather than re-bind the
         # keyboard away.
@@ -1819,7 +1938,115 @@ pkgs.testers.runNixOSTest {
         machine.succeed("udevadm settle")
         assert combo() == was, combo()
         machine.succeed("journalctl -u ctrlassist-hider.service -o cat | grep -q 'left hidden a pad no marker names'")
-        machine.succeed("systemctl stop shared combo merged record pad-shared")
+        machine.succeed("systemctl stop shared combo merged low pad-shared")
+        wait_restored()
+
+    with subtest("a pad whose keys are all at 128 or above, as an Xbox Series pad's share button is, is hidden and shown again as a pad, and one with a keyboard's collection is never hidden"):
+        uniq = "02:00:00:00:06:01"
+        SERIES, ELITE, MANY = "0005:045E:0B13", "0005:045E:0B05", "0003:1209:0BB9"
+
+        def hid_devices(ids):
+            return set(machine.succeed(f"cd /sys/bus/hid/devices && ls -d {ids}.* 2>/dev/null || true").split())
+
+        def made(unit, name, kind, ids):
+            """Makes a uhid device of a kind with the address, and returns its HID device's name once udev is done with it."""
+            before = hid_devices(ids)
+            machine.succeed(f"systemd-run --unit {unit} hider-probe uhid {shlex.quote(name)} {kind} {uniq} {kind}")
+            machine.wait_until_succeeds(f"[ $(cd /sys/bus/hid/devices && ls -d {ids}.* | wc -l) -gt {len(before)} ]")
+            [hid] = hid_devices(ids) - before
+            machine.wait_until_succeeds(f"ls /sys/bus/hid/devices/{hid}/input/input*/event*")
+            machine.succeed("udevadm settle")
+            return hid
+
+        def nodes_of(hid):
+            """Each event, js and raw node of a HID device: its group, and the classes udev gives it."""
+            found = {}
+            paths = machine.succeed(f"cd /sys/bus/hid/devices/{hid} && ls -d input/input*/event* input/input*/js* hidraw/hidraw* 2>/dev/null || true").split()
+            for path in paths:
+                name = path.split("/")[-1]
+                node = ("/dev/" if name.startswith("hidraw") else "/dev/input/") + name
+                classes = machine.succeed(f"udevadm info -q property -n {node} | grep -E '^ID_INPUT_[A-Z]+=1' | sort || true").split()
+                found[node] = (machine.succeed(f"stat -c %G {node}").strip(), classes)
+            return found
+
+        def event_of(hid):
+            return next(node for node in nodes_of(hid) if "/event" in node)
+
+        def hidden_nodes(hid):
+            return sorted(node for node, (group, _) in nodes_of(hid).items() if group == "ctrlassist-hider")
+
+        # An Xbox Series pad on Bluetooth, made with its own report
+        # descriptor, which hid-microsoft binds: its share button is the
+        # key KEY_RECORD (167) on its joystick node, which udev marks as
+        # having a key, and as no keyboard.
+        series = made("series", "Xbox Wireless Controller", "series", SERIES)
+        driver = machine.succeed(f"basename $(readlink -f /sys/bus/hid/devices/{series}/driver)").strip()
+        nodes = nodes_of(series)
+        keys = machine.succeed(f"cat /sys/bus/hid/devices/{series}/input/input*/capabilities/key").strip()
+        print(f"an Xbox Series pad on Bluetooth, the {driver} driver's: {nodes}, keys {keys}")
+        assert driver == "microsoft", driver
+        event = event_of(series)
+        assert nodes[event] == ("input", ["ID_INPUT_JOYSTICK=1", "ID_INPUT_KEY=1"]), nodes
+        assert keys == "7fff000000000000 0 8000000000 0 0", keys
+        machine.succeed(f"ctrlassist-hider check {event} | grep '^pad '")
+        # Its device is a pad's to the rule, which gives the group its
+        # uevent file.
+        machine.succeed(f"stat -c %G /sys/bus/hid/devices/{series}/uevent | grep -x ctrlassist-hider")
+        # Hidden: every node of it, its raw node too.
+        control, told = hide("hide-series", event)
+        assert told.startswith("ok"), told
+        machine.succeed("udevadm settle")
+        nodes = nodes_of(series)
+        print(f"a hidden Xbox Series pad: {nodes}")
+        assert len(nodes) == 3 and hidden_nodes(series) == sorted(nodes), nodes
+        # Plugged in while it is hidden, with its address: a twin of it,
+        # and a pad of eleven keys all at 128 or above, are hidden as they
+        # come, as pads, and libinput leaves the second alone, though with
+        # ten keys or more it would take it for a keyboard.
+        mark = reader_mark()
+        twin = made("series-twin", "Xbox Wireless Controller", "series", SERIES)
+        many = made("many", "Many Keys Pad", "many", MANY)
+        print(f"a twin of it: {nodes_of(twin)}; a pad of eleven keys: {nodes_of(many)}")
+        assert hidden_nodes(twin) == sorted(nodes_of(twin)), nodes_of(twin)
+        node = event_of(many)
+        assert nodes_of(many)[node][1] == ["ID_INPUT_JOYSTICK=1", "ID_INPUT_KEY=1"], nodes_of(many)
+        assert [path.split("/")[-1][:2] for path in hidden_nodes(many)] == ["ev", "js"], nodes_of(many)
+        view = libinput_view(node, mark, taken=False)
+        print(f"a pad of eleven keys, hidden as it came: {node} {view}")
+        assert view == dict(ignored=True, listed=False, took=False, held=False), view
+        # An Elite Series 2 on Bluetooth, with its address too: the boot
+        # keyboard's collection it carries is on its pad's node, which udev
+        # takes for a keyboard alone. No marker hides it, and the service
+        # takes it for no pad.
+        elite = made("elite", "Xbox Wireless Controller", "elite", ELITE)
+        driver = machine.succeed(f"basename $(readlink -f /sys/bus/hid/devices/{elite}/driver)").strip()
+        nodes = nodes_of(elite)
+        print(f"an Elite Series 2 on Bluetooth, the {driver} driver's, with a hidden pad's address: {nodes}")
+        assert driver == "microsoft", driver
+        event = event_of(elite)
+        assert "ID_INPUT_KEYBOARD=1" in nodes[event][1] and "ID_INPUT_JOYSTICK=1" not in nodes[event][1], nodes
+        assert hidden_nodes(elite) == [], nodes
+        machine.succeed(f"ctrlassist-hider check {event} | grep refused")
+        # The pad shown again: the sweep shows its twin and the pad of
+        # eleven keys again, every node of each, as it does any pad no
+        # marker names any more, and libinput takes the second for a
+        # keyboard, as it would have from the start.
+        mark = reader_mark()
+        assert order(control, "restore").startswith("ok")
+        for hid in (series, twin, many):
+            machine.wait_until_succeeds(f"! ( cd /sys/bus/hid/devices/{hid} && stat -c %G input/input*/event* input/input*/js* hidraw/hidraw* 2>/dev/null | grep -qx ctrlassist-hider )")
+        machine.succeed("udevadm settle")
+        for hid in (series, twin, many):
+            assert hidden_nodes(hid) == [] and alice_opens(event_of(hid)), nodes_of(hid)
+        assert hidden_nodes(elite) == [], nodes_of(elite)
+        node = event_of(many)
+        view = libinput_view(node, mark, taken=True)
+        print(f"a pad of eleven keys, shown again: {node} {view}")
+        # Whether the compositor still holds it as it is looked at isn't
+        # asked: seen held, then not, a moment apart, in one run, as the
+        # sweep re-bound the twin and the pad together.
+        assert {key: view[key] for key in ("ignored", "listed", "took")} == dict(ignored=False, listed=True, took=True), view
+        machine.succeed("systemctl stop hide-series series series-twin many elite")
         wait_restored()
 
     with subtest("a start that keeps failing as a client waits is given up at systemd's limit, and the client let go"):
