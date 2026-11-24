@@ -13,8 +13,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::JoinHandle;
 
 use ctrlassist_hider::{
-    Client, Error, Refusal, Reply, Request, Token, pack_release, receive, send,
+    Client, Error, Refusal, Reply, Request, Token, is_unknown_to_the_kernel, pack_release, receive,
+    send, take_descriptors,
 };
+use rustix::event::{PollFd, PollFlags, poll};
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, accept, bind, listen, socket};
 
 /// A socket path no other test uses.
@@ -54,6 +56,15 @@ fn ok(token: u32, dislodged: bool) -> Reply {
         token: Token(token),
         dislodged,
     }
+}
+
+/// Answers the release the client asks first on a connection, before it
+/// sends a descriptor.
+fn admit(connection: &OwnedFd) {
+    let (request, fds) = next(connection);
+    assert_eq!((request, fds.len()), (Request::Version, 0));
+    let release = ok(pack_release("1.2.3"), false);
+    send(connection.as_fd(), &release.encode(), &[]).unwrap();
 }
 
 /// A descriptor that reads back `text`, standing in for an event node.
@@ -169,6 +180,7 @@ fn the_service_s_release_travels_where_a_token_goes() {
 #[test]
 fn hide_passes_the_pad_s_descriptor_and_gets_one_back() {
     let (path, service) = stand_in(|connection| {
+        admit(&connection);
         let (request, fds) = next(&connection);
         assert_eq!(request, Request::Hide);
         let [pad] = <[OwnedFd; 1]>::try_from(fds).expect("exactly the pad's descriptor");
@@ -208,6 +220,7 @@ fn reopen_and_restore_name_the_pad_by_its_token() {
 #[test]
 fn a_refusal_reaches_the_caller_as_the_reason_given() {
     let (path, service) = stand_in(|connection| {
+        admit(&connection);
         for refusal in [Refusal::NotPermitted, Refusal::UnknownToken] {
             let _ = next(&connection);
             send(connection.as_fd(), &Reply::refused(refusal).encode(), &[]).unwrap();
@@ -236,6 +249,7 @@ fn a_refusal_reaches_the_caller_as_the_reason_given() {
 #[test]
 fn an_answer_that_makes_no_sense_is_a_protocol_error() {
     let (path, service) = stand_in(|connection| {
+        admit(&connection);
         // Not a reply at all.
         let _ = next(&connection);
         send(connection.as_fd(), b"nonsense", &[]).unwrap();
@@ -277,6 +291,7 @@ fn a_service_that_is_not_there_or_goes_away_is_an_io_error() {
 fn a_hide_sent_is_waited_for_and_read_and_a_reply_given_up_is_read_past() {
     let (woken_up, held) = std::sync::mpsc::channel::<()>();
     let (path, service) = stand_in(move |connection| {
+        admit(&connection);
         // Answered once the client has been woken without it.
         let (request, fds) = next(&connection);
         assert_eq!((request, fds.len()), (Request::Hide, 1));
@@ -312,5 +327,92 @@ fn a_hide_sent_is_waited_for_and_read_and_a_reply_given_up_is_read_past() {
     client.send_reopen(Token(2)).unwrap();
     client.skip().unwrap();
     client.restore(Token(2)).unwrap();
+    service.join().unwrap();
+}
+
+/// A stand-in that, as the service does, takes no descriptor on a
+/// connection until it has admitted it, which it does only once the
+/// client has sent something: a descriptor sent before then fails at the
+/// client. None on a kernel that can't refuse them.
+fn refusing_stand_in(
+    service: impl FnOnce(OwnedFd) + Send + 'static,
+) -> Option<(PathBuf, JoinHandle<()>)> {
+    let path = socket_path();
+    let listener = socket(AddressFamily::UNIX, SocketType::SEQPACKET, None).unwrap();
+    match take_descriptors(listener.as_fd(), false) {
+        Err(error) if is_unknown_to_the_kernel(&error) => return None,
+        taken => taken.unwrap(),
+    }
+    bind(&listener, &SocketAddrUnix::new(&path).unwrap()).unwrap();
+    listen(&listener, 1).unwrap();
+    let thread = std::thread::spawn(move || {
+        let connection = accept(&listener).unwrap();
+        // Admitted only once something has come, so the client can't
+        // have been answered yet.
+        let mut fds = [PollFd::new(&connection, PollFlags::IN)];
+        poll(&mut fds, None).unwrap();
+        take_descriptors(connection.as_fd(), true).unwrap();
+        service(connection);
+    });
+    Some((path, thread))
+}
+
+/// A hide on a connection the service hasn't answered asks the release
+/// first, and passes the pad's descriptor only once the reply has come.
+#[test]
+fn a_hide_on_a_new_connection_waits_for_a_first_reply() {
+    let Some((path, service)) = refusing_stand_in(|connection| {
+        admit(&connection);
+        let (request, fds) = next(&connection);
+        assert_eq!(request, Request::Hide);
+        let [pad] = <[OwnedFd; 1]>::try_from(fds).expect("exactly the pad's descriptor");
+        send(connection.as_fd(), &ok(7, true).encode(), &[pad.as_fd()]).unwrap();
+        let (request, fds) = next(&connection);
+        assert_eq!((request, fds.len()), (Request::Raw, 1));
+        send(
+            connection.as_fd(),
+            &ok(0, false).encode(),
+            &[fds[0].as_fd()],
+        )
+        .unwrap();
+    }) else {
+        return;
+    };
+    let client = Client::connect(&path).unwrap();
+    let hidden = client.hide(readable("the pad").as_fd()).unwrap();
+    assert_eq!(read_all(hidden.event), "the pad");
+    // Answered already: nothing more is asked first.
+    let raw = client.raw(readable("its raw node").as_fd()).unwrap();
+    assert_eq!(read_all(raw), "its raw node");
+    service.join().unwrap();
+}
+
+/// With a request sent and its reply not yet read, a descriptor waits for
+/// that reply to come, and leaves it to be read: nothing more is asked.
+#[test]
+fn a_descriptor_sent_behind_a_request_waits_for_that_request_s_reply() {
+    let Some((path, service)) = refusing_stand_in(|connection| {
+        let (request, _) = next(&connection);
+        assert_eq!(request, Request::Reopen(Token(4)));
+        send(
+            connection.as_fd(),
+            &Reply::refused(Refusal::UnknownToken).encode(),
+            &[],
+        )
+        .unwrap();
+        let (request, fds) = next(&connection);
+        assert_eq!((request, fds.len()), (Request::Hide, 1));
+        send(connection.as_fd(), &ok(5, true).encode(), &[fds[0].as_fd()]).unwrap();
+    }) else {
+        return;
+    };
+    let client = Client::connect(&path).unwrap();
+    client.send_reopen(Token(4)).unwrap();
+    client.send_hide(readable("the pad").as_fd()).unwrap();
+    assert!(matches!(
+        client.reopened(),
+        Err(Error::Refused(Refusal::UnknownToken))
+    ));
+    assert_eq!(client.hid().unwrap().token, Token(5));
     service.join().unwrap();
 }
