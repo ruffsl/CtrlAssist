@@ -12,8 +12,10 @@
 //! one copied from a connected pad can be used in its place. The
 //! firmware report says only what the kernel's driver and SDL go by, the
 //! pairing report carries the virtual pad's own address, and the
-//! calibration is synthesized as neutral: the pads behind it are
-//! calibrated by their own drivers.
+//! calibration is synthesized as neutral: the motion it is written has
+//! the source pad's own calibration applied already, and is turned into
+//! the counts the neutral calibration reads back as the same. Its
+//! sensor time is a clock of its own.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -22,7 +24,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use ctrlassist_core::{FeedbackError, Level, PadState, gamepad};
+use ctrlassist_core::{Contact, FeedbackError, Level, PadState, Touchpad, gamepad};
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::fs::OFlags;
 
@@ -172,15 +174,26 @@ fn pairing(address: [u8; 6]) -> [u8; PAIRING_SIZE] {
     report
 }
 
+/// The neutral calibration's gyroscope: each axis's plus and minus
+/// point, and the speed either way they stand for, in degrees a second.
+/// The kernel's driver and SDL both read a count as the speed twice over
+/// the range from minus to plus: 1080 °/s over 17678 counts.
+const GYRO_POINT: i16 = 8839;
+const GYRO_SPEED: i16 = 540;
+/// The neutral calibration's accelerometer, at the kernel driver's own
+/// resolution: a g either way.
+const ACCEL_POINT: i16 = 8192;
+
 /// A calibration report that changes nothing: no bias, and ranges that
 /// are whole and symmetric, so the driver has nothing to warn of.
 fn calibration() -> [u8; CALIBRATION_SIZE] {
+    const G: i16 = GYRO_POINT;
+    const A: i16 = ACCEL_POINT;
     // Gyro: three biases, then plus and minus for pitch, yaw and roll,
     // then the speed either way. Accelerometer: plus and minus for x, y
-    // and z, at the driver's own resolution of 8192 to the g.
+    // and z.
     const VALUES: [i16; 17] = [
-        0, 0, 0, 8839, -8839, 8839, -8839, 8839, -8839, 540, 540, 8192, -8192, 8192, -8192, 8192,
-        -8192,
+        0, 0, 0, G, -G, G, -G, G, -G, GYRO_SPEED, GYRO_SPEED, A, -A, A, -A, A, -A,
     ];
     let mut report = [0u8; CALIBRATION_SIZE];
     report[0] = CALIBRATION;
@@ -201,9 +214,73 @@ fn trigger(value: f32) -> u8 {
     (value * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-/// The input report a DualSense sends over USB for `state`, with its
-/// touchpad untouched, its sensors at rest and its battery full.
-fn input_report(state: &PadState, sequence: u8) -> [u8; INPUT_SIZE] {
+// Places in the input report over USB, its number at 0, as the kernel's
+// `struct dualsense_input_report` (drivers/hid/hid-playstation.c) lays
+// them out one byte in, and SDL's `PS5StatePacket_t`
+// (src/joystick/hidapi/SDL_hidapi_ps5.c) reads them.
+
+const SEQUENCE: usize = 7;
+/// The third button byte.
+const BUTTONS2: usize = 10;
+/// The gyroscope's pitch, yaw and roll, then the accelerometer's x, y
+/// and z, each a little-endian `i16`.
+const GYRO: usize = 16;
+const ACCEL: usize = 22;
+/// When the sensors were read: a little-endian `u32` of thirds of a
+/// microsecond.
+const SENSOR_TIME: usize = 28;
+/// The touchpad's two contacts, four bytes each.
+const CONTACTS: usize = 33;
+/// The touchpad's click, in the third button byte: the kernel's
+/// `DS_BUTTONS2_TOUCHPAD`, which it reports as `BTN_LEFT` on the
+/// touchpad's own node and not on the pad's.
+const TOUCHPAD_CLICK: u8 = 0x02;
+/// A contact's first byte has this set while no finger is on it; the
+/// rest of the byte numbers the touch.
+const NO_CONTACT: u8 = 0x80;
+/// The touchpad's last place across and down, as the kernel's driver
+/// gives its node's range: 1920 by 1080.
+const TOUCHPAD_X: f32 = 1919.0;
+const TOUCHPAD_Y: f32 = 1079.0;
+
+/// A physical value as the report's count for it, at `per_unit` counts
+/// to the unit, held to what an `i16` carries: past it, the count is
+/// the end it went past, never one wrapped round. One that isn't a
+/// number is 0, though the pad state lets none through.
+fn count(value: f32, per_unit: f32) -> i16 {
+    (value * per_unit)
+        .round()
+        .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
+}
+
+/// Gyroscope counts to the degree a second under the neutral
+/// calibration, as both its readers read it: 17678 over 1080.
+fn gyro_counts() -> f32 {
+    f32::from(2 * GYRO_POINT) / f32::from(2 * GYRO_SPEED)
+}
+
+/// One contact as the pad packs it: whether a finger is on it and the
+/// touch's number, then its place across and down in twelve bits each.
+/// A lifted contact keeps its place, as the pad's does.
+fn contact(contact: Contact, number: u8) -> [u8; 4] {
+    let place = |value: f32, last: f32| (value * last).round().clamp(0.0, last) as u16;
+    let (x, y) = (
+        place(contact.x(), TOUCHPAD_X),
+        place(contact.y(), TOUCHPAD_Y),
+    );
+    let lifted = if contact.down() { 0 } else { NO_CONTACT };
+    [
+        lifted | (number & !NO_CONTACT),
+        (x & 0xff) as u8,
+        ((x >> 8) & 0x0f) as u8 | ((y & 0x0f) << 4) as u8,
+        (y >> 4) as u8,
+    ]
+}
+
+/// The input report a DualSense sends over USB for `state`, its touches
+/// numbered `touches`, with its battery full and its sensor time left
+/// at 0 for the clock to set.
+fn input_report(state: &PadState, sequence: u8, touches: Touches) -> [u8; INPUT_SIZE] {
     let pressed = |control| state.get(control) > 0.0;
     let bit = |control, bit: u8| if pressed(control) { bit } else { 0 };
     let mut report = [0u8; INPUT_SIZE];
@@ -214,7 +291,7 @@ fn input_report(state: &PadState, sequence: u8) -> [u8; INPUT_SIZE] {
     report[4] = stick(state.get(gamepad::RIGHT_Y));
     report[5] = trigger(state.get(gamepad::LEFT_TRIGGER));
     report[6] = trigger(state.get(gamepad::RIGHT_TRIGGER));
-    report[7] = sequence;
+    report[SEQUENCE] = sequence;
     // The directional pad as one of eight directions, clockwise from up,
     // or eight for none.
     let direction = match (
@@ -245,18 +322,220 @@ fn input_report(state: &PadState, sequence: u8) -> [u8; INPUT_SIZE] {
         | bit(gamepad::START, 0x20)
         | bit(gamepad::LEFT_THUMB, 0x40)
         | bit(gamepad::RIGHT_THUMB, 0x80);
-    report[10] = bit(gamepad::MODE, 0x01);
-    // Lying flat and still: no turning, and gravity on the one axis, at
-    // the 8192 to the g the calibration says.
-    report[24..26].copy_from_slice(&8192u16.to_le_bytes());
-    // Neither touch point is in contact.
-    report[33] = 0x80;
-    report[37] = 0x80;
+    report[BUTTONS2] = bit(gamepad::MODE, 0x01) | bit(gamepad::TOUCHPAD, TOUCHPAD_CLICK);
+    // The sensors, as counts under the neutral calibration the pad gives:
+    // what reaches the pad state has its own pad's calibration applied
+    // already. At rest, a pad lying flat and still.
+    let motion = state.motion();
+    let rates = motion.gyro().map(|rate| count(rate, gyro_counts()));
+    let gravity = motion.accel().map(|g| count(g, f32::from(ACCEL_POINT)));
+    for (start, values) in [(GYRO, rates), (ACCEL, gravity)] {
+        for (axis, value) in values.iter().enumerate() {
+            report[start + 2 * axis..start + 2 * axis + 2].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    let contacts = state.touchpad().contacts();
+    for (slot, (place, number)) in contacts.iter().zip(touches.numbers).enumerate() {
+        report[CONTACTS + 4 * slot..CONTACTS + 4 * slot + 4]
+            .copy_from_slice(&contact(*place, number));
+    }
     // Charged and full, on a USB cable: a real pad on one says so, and a
     // program may go by it for what the pad can be sent.
     report[53] = 0x2a;
     report[54] = 0x08;
     report
+}
+
+/// How the pad numbers the touches on its touchpad: each finger put down
+/// on a contact is given the next number, wrapping in seven bits, and
+/// keeps it until it is lifted and after. The pad state carries no
+/// number of its own, so the virtual pad makes them as the pad does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Touches {
+    /// The number each contact last had.
+    numbers: [u8; Touchpad::CONTACTS],
+    /// The number the next finger put down takes.
+    next: u8,
+}
+
+impl Touches {
+    /// Before any finger: every contact 0, and the first finger 1, so
+    /// that it isn't numbered as the contact was at rest.
+    const FIRST: Self = Self {
+        numbers: [0; Touchpad::CONTACTS],
+        next: 1,
+    };
+
+    /// The numbers once the touchpad goes from `was` to `now`: a contact
+    /// that a finger has come down on takes the next.
+    #[must_use]
+    fn after(self, was: Touchpad, now: Touchpad) -> Self {
+        let mut touches = self;
+        for ((number, was), now) in touches
+            .numbers
+            .iter_mut()
+            .zip(was.contacts())
+            .zip(now.contacts())
+        {
+            if now.down() && !was.down() {
+                *number = touches.next;
+                touches.next = touches.next.wrapping_add(1) & !NO_CONTACT;
+            }
+        }
+        touches
+    }
+}
+
+/// The virtual pad's sensor clock, in thirds of a microsecond as the
+/// report carries it, wrapping in 32 bits as a real pad's does.
+///
+/// It is the virtual pad's own, never a source pad's passed on: a game
+/// integrates the rate over the steps between reports, and a pad's time
+/// passed on would jump at each change of the pad the motion comes
+/// from. Each report moves it on:
+///
+/// - one with a fresh reading, by what is left of the source pad's own
+///   interval since the last fresh reading, so that over its readings it
+///   keeps the pad's own time;
+/// - one without (a change of a button, or a beat), and the first
+///   reading of a pad, which has no interval, by the time since the last
+///   report;
+/// - always by at least a microsecond, and less than the clock's wrap.
+///
+/// So it never stands still, never goes back, and steps a whole number
+/// of microseconds. That is what its readers need. Each takes every
+/// report for a reading, and the step from the last time it saw to this
+/// one in 32 bits: a time that went back is a step of nearly 2³²
+/// thirds, about 24 minutes, which a game integrates, and the same time
+/// again a step of nothing, a reading with no time since the last. The
+/// kernel's driver (`dualsense_parse_report`) takes the first time as it
+/// is and rounds each step to the microsecond, for its motion node's
+/// `MSC_TIMESTAMP`; SDL 3 (`HIDAPI_DriverPS5_HandleStatePacketCommon`)
+/// steps to the first from 0; SDL 2 (2.32) takes the first as it is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Clock {
+    /// Where it is.
+    ticks: u32,
+    /// When the last report was sent, in microseconds on the monotonic
+    /// clock; none before the first.
+    sent_us: Option<u64>,
+    /// How far it has moved since the last fresh reading.
+    since_fresh: u64,
+}
+
+/// Thirds of a microsecond.
+const TICKS_PER_US: u64 = 3;
+/// The least a report moves the clock: a microsecond, which the kernel's
+/// driver doesn't round away.
+const LEAST_STEP: u64 = TICKS_PER_US;
+/// The most: one short of the wrap, which a reader would take for no
+/// step at all, and a whole number of microseconds, 2³² − 1 being a
+/// multiple of 3.
+const MOST_STEP: u64 = (1 << 32) - 1;
+
+impl Clock {
+    /// Never read: the first report moves it on.
+    const START: Self = Self {
+        ticks: 0,
+        sent_us: None,
+        since_fresh: 0,
+    };
+
+    /// The clock for a report sent at `now_us`, on the monotonic clock,
+    /// carrying a fresh reading made `interval_us` after the source pad's
+    /// one before, by the pad's clock, or carrying none.
+    #[must_use]
+    fn next(self, now_us: u64, fresh: Option<u32>) -> Self {
+        let elapsed = self
+            .sent_us
+            .map_or(0, |sent| now_us.saturating_sub(sent))
+            .saturating_mul(TICKS_PER_US);
+        let step = match fresh {
+            Some(interval) if interval > 0 => {
+                (u64::from(interval) * TICKS_PER_US).saturating_sub(self.since_fresh)
+            }
+            _ => elapsed,
+        }
+        .clamp(LEAST_STEP, MOST_STEP);
+        Self {
+            // The step is under the wrap, so it is whole in 32 bits.
+            ticks: self.ticks.wrapping_add(step as u32),
+            sent_us: Some(now_us),
+            since_fresh: if fresh.is_some() {
+                0
+            } else {
+                self.since_fresh.saturating_add(step)
+            },
+        }
+    }
+}
+
+/// What a virtual DualSense has reported, from which its next report is
+/// made. Nothing here touches the kernel, so a report can be made and
+/// then kept only if it is sent.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Reports {
+    /// The state the last report carried, or that the pad was last made
+    /// to hold.
+    held: PadState,
+    sequence: u8,
+    touches: Touches,
+    clock: Clock,
+}
+
+impl Reports {
+    const START: Self = Self {
+        held: PadState::NEUTRAL,
+        sequence: 0,
+        touches: Touches::FIRST,
+        clock: Clock::START,
+    };
+
+    /// The report that makes the pad hold `state`, sent at `now_us`,
+    /// and what has been reported once it is sent; or no report, if
+    /// nothing a report says differs and the motion is no fresh reading.
+    /// A fresh reading is reported though nothing else changed, as a
+    /// real pad reports each one: a new count of the source pad's
+    /// readings, whatever its values.
+    #[must_use]
+    fn write(&self, state: &PadState, now_us: u64) -> (Option<[u8; INPUT_SIZE]>, Self) {
+        let touches = self.touches.after(self.held.touchpad(), state.touchpad());
+        let motion = state.motion();
+        let fresh =
+            (motion.readings() != self.held.motion().readings()).then_some(motion.interval_us());
+        let changed = input_report(state, 0, touches) != input_report(&self.held, 0, self.touches);
+        let held = Self {
+            held: *state,
+            touches,
+            ..*self
+        };
+        if changed || fresh.is_some() {
+            let (report, sent) = held.send(now_us, fresh);
+            (Some(report), sent)
+        } else {
+            (None, held)
+        }
+    }
+
+    /// The report that says again what the pad holds, sent at `now_us`,
+    /// and what has been reported once it is sent.
+    #[must_use]
+    fn again(&self, now_us: u64) -> ([u8; INPUT_SIZE], Self) {
+        self.send(now_us, None)
+    }
+
+    fn send(&self, now_us: u64, fresh: Option<u32>) -> ([u8; INPUT_SIZE], Self) {
+        let sequence = self.sequence.wrapping_add(1);
+        let clock = self.clock.next(now_us, fresh);
+        let mut report = input_report(&self.held, sequence, self.touches);
+        report[SENSOR_TIME..SENSOR_TIME + 4].copy_from_slice(&clock.ticks.to_le_bytes());
+        let sent = Self {
+            sequence,
+            clock,
+            ..*self
+        };
+        (report, sent)
+    }
 }
 
 /// The longest a virtual DualSense goes without a report. A real one
@@ -266,23 +545,12 @@ fn input_report(state: &PadState, sequence: u8) -> [u8; INPUT_SIZE] {
 /// of 12 at 20 and 33. Ten leaves room, and is what inputtino sends.
 const BEAT_MS: u64 = 10;
 
-/// Now, on the clock the input thread tells time by.
-fn monotonic_ms() -> u64 {
+/// Now, in microseconds on the clock the input thread tells time by.
+fn monotonic_us() -> u64 {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
     (now.tv_sec as u64)
-        .saturating_mul(1000)
-        .saturating_add(now.tv_nsec as u64 / 1_000_000)
-}
-
-/// The time the pad's sensors were read, as the report carries it: a
-/// count of thirds of a microsecond that wraps. A real pad's never
-/// stands still.
-fn sensor_time() -> [u8; 4] {
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
-    let micros = (now.tv_sec as u64)
-        .wrapping_mul(1_000_000)
-        .wrapping_add(now.tv_nsec as u64 / 1000);
-    (micros.wrapping_mul(3) as u32).to_le_bytes()
+        .saturating_mul(1_000_000)
+        .saturating_add(now.tv_nsec as u64 / 1000)
 }
 
 /// The rumble the pad is left at by an output report. Rumble is marked
@@ -938,8 +1206,8 @@ fn asked(event: &[u8]) -> Asked {
 pub(crate) struct Emulator {
     uhid: File,
     event_node: PathBuf,
-    held: PadState,
-    sequence: u8,
+    /// What it has reported.
+    reports: Reports,
     /// When it last sent an input report, on the monotonic clock.
     reported_ms: u64,
     pairing: [u8; PAIRING_SIZE],
@@ -1008,8 +1276,7 @@ impl Emulator {
         let mut pad = Self {
             uhid,
             event_node: PathBuf::new(),
-            held: PadState::NEUTRAL,
-            sequence: 0,
+            reports: Reports::START,
             reported_ms: 0,
             pairing: pairing(address),
             firmware,
@@ -1081,22 +1348,28 @@ impl Emulator {
     }
 
     /// Makes the pad hold `state`: one input report, or none if nothing
-    /// a report says differs.
+    /// a report says differs and its motion is no fresh reading.
     pub(crate) fn write(&mut self, state: &PadState) -> io::Result<()> {
-        if input_report(state, 0) != input_report(&self.held, 0) {
-            self.sequence = self.sequence.wrapping_add(1);
-            let mut report = input_report(state, self.sequence);
-            report[28..32].copy_from_slice(&sensor_time());
-            // UHID_INPUT2: type u32, size u16, then the report.
-            let mut event = [0u8; 6 + INPUT_SIZE];
-            event[..4].copy_from_slice(&UHID_INPUT2.to_ne_bytes());
-            event[4..6].copy_from_slice(&(INPUT_SIZE as u16).to_ne_bytes());
-            event[6..].copy_from_slice(&report);
-            self.uhid.write_all(&event)?;
-            self.reported_ms = monotonic_ms();
+        let now_us = monotonic_us();
+        match self.reports.write(state, now_us) {
+            (Some(report), sent) => {
+                self.send(&report)?;
+                self.reports = sent;
+                self.reported_ms = now_us / 1000;
+            }
+            (None, held) => self.reports = held,
         }
-        self.held = *state;
         Ok(())
+    }
+
+    /// Sends one input report.
+    fn send(&mut self, report: &[u8; INPUT_SIZE]) -> io::Result<()> {
+        // UHID_INPUT2: type u32, size u16, then the report.
+        let mut event = [0u8; 6 + INPUT_SIZE];
+        event[..4].copy_from_slice(&UHID_INPUT2.to_ne_bytes());
+        event[4..6].copy_from_slice(&(INPUT_SIZE as u16).to_ne_bytes());
+        event[6..].copy_from_slice(report);
+        self.uhid.write_all(&event)
     }
 
     /// Keeps the event just read if it is an output report, and takes in
@@ -1150,15 +1423,10 @@ impl Emulator {
         if now_ms < due {
             return Ok(due);
         }
+        let (report, sent) = self.reports.again(monotonic_us());
+        self.send(&report)?;
+        self.reports = sent;
         self.reported_ms = now_ms;
-        self.sequence = self.sequence.wrapping_add(1);
-        let mut report = input_report(&self.held, self.sequence);
-        report[28..32].copy_from_slice(&sensor_time());
-        let mut event = [0u8; 6 + INPUT_SIZE];
-        event[..4].copy_from_slice(&UHID_INPUT2.to_ne_bytes());
-        event[4..6].copy_from_slice(&(INPUT_SIZE as u16).to_ne_bytes());
-        event[6..].copy_from_slice(&report);
-        self.uhid.write_all(&event)?;
         Ok(now_ms.saturating_add(BEAT_MS))
     }
 
@@ -1247,6 +1515,7 @@ impl AsFd for Emulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ctrlassist_core::Motion;
 
     /// The shipped data is whole, and declares the reports the emulator
     /// and the kernel's driver exchange.
@@ -1275,7 +1544,7 @@ mod tests {
 
     #[test]
     fn a_pad_at_rest_is_the_report_a_dualsense_sends_untouched() {
-        let report = input_report(&PadState::NEUTRAL, 7);
+        let report = input_report(&PadState::NEUTRAL, 7, Touches::FIRST);
         assert_eq!(report[..11], [1, 128, 128, 128, 128, 0, 0, 7, 8, 0, 0]);
         // Neither touch point in contact, a full battery, a USB cable,
         // and gravity on the one axis: a real pad lying on a desk.
@@ -1285,12 +1554,11 @@ mod tests {
             .filter(|index| report[*index] != 0)
             .collect();
         assert_eq!(rest, [25, 33, 37, 53, 54], "nothing else is set");
-        assert_ne!(sensor_time(), [0; 4]);
     }
 
     #[test]
     fn every_gamepad_control_has_its_place_in_the_report() {
-        let held = |control| input_report(&PadState::NEUTRAL.with(control, 1.0), 0);
+        let held = |control| input_report(&PadState::NEUTRAL.with(control, 1.0), 0, Touches::FIRST);
         let face = [
             (gamepad::WEST, 0x18),
             (gamepad::SOUTH, 0x28),
@@ -1312,6 +1580,7 @@ mod tests {
             assert_eq!(held(control)[9], byte, "{control:?}");
         }
         assert_eq!(held(gamepad::MODE)[10], 0x01);
+        assert_eq!(held(gamepad::TOUCHPAD)[10], 0x02, "the touchpad's click");
         // A trigger is its axis and its button at once.
         let left = held(gamepad::LEFT_TRIGGER);
         assert_eq!((left[5], left[9]), (255, 0x04));
@@ -1323,7 +1592,10 @@ mod tests {
             .with(gamepad::LEFT_Y, 1.0)
             .with(gamepad::RIGHT_X, 0.5)
             .with(gamepad::RIGHT_Y, -0.5);
-        assert_eq!(input_report(&ends, 0)[1..5], [0, 255, 192, 64]);
+        assert_eq!(
+            input_report(&ends, 0, Touches::FIRST)[1..5],
+            [0, 255, 192, 64]
+        );
         assert_eq!(
             stick(f32::NAN),
             0,
@@ -1337,7 +1609,7 @@ mod tests {
             let state = held.iter().fold(PadState::NEUTRAL, |state, control| {
                 state.with(*control, 1.0)
             });
-            input_report(&state, 0)[8]
+            input_report(&state, 0, Touches::FIRST)[8]
         };
         let (up, right, down, left) = (
             gamepad::DPAD_UP,
@@ -1355,6 +1627,316 @@ mod tests {
         assert_eq!(hat(&[left, up]), 7);
         assert_eq!(hat(&[]), 8);
         assert_eq!(hat(&[left, right]), 8, "opposed directions cancel");
+    }
+
+    /// What a report says of the sensors, in counts: pitch, yaw and roll,
+    /// then x, y and z.
+    fn sensors(report: &[u8; INPUT_SIZE]) -> [i16; 6] {
+        std::array::from_fn(|axis| {
+            i16::from_le_bytes([report[GYRO + 2 * axis], report[GYRO + 2 * axis + 1]])
+        })
+    }
+
+    /// What a report says of each contact, as the kernel's driver reads it
+    /// (`DS_TOUCH_POINT_X` and `_Y`): whether a finger is on it, the
+    /// touch's number, and its place across and down.
+    fn contacts(report: &[u8; INPUT_SIZE]) -> [(bool, u8, u16, u16); 2] {
+        [0, 1].map(|slot| {
+            let point = &report[CONTACTS + 4 * slot..CONTACTS + 4 * slot + 4];
+            let x = u16::from(point[1]) | (u16::from(point[2] & 0x0f) << 8);
+            let y = u16::from(point[2] >> 4) | (u16::from(point[3]) << 4);
+            (point[0] & 0x80 == 0, point[0] & 0x7f, x, y)
+        })
+    }
+
+    #[test]
+    fn motion_contacts_and_the_click_go_where_the_pad_puts_them() {
+        let state = PadState::NEUTRAL
+            .with(gamepad::TOUCHPAD, 1.0)
+            .with(gamepad::MODE, 1.0)
+            .with_motion(Motion::new(
+                [1.0, -250.0, 1000.0],
+                [0.25, -1.0, 2.5],
+                9,
+                4000,
+            ))
+            .with_touchpad(Touchpad::new([
+                Contact::new(true, 1.0, 1.0),
+                Contact::new(false, 0.25, 0.5),
+            ]));
+        let touches = Touches {
+            numbers: [5, 0x7f],
+            next: 6,
+        };
+        let report = input_report(&state, 3, touches);
+        // 16.37 counts to the degree a second, and 8192 to the g.
+        assert_eq!(sensors(&report), [16, -4092, 16369, 2048, -8192, 20480]);
+        // A lifted contact keeps its place and its number.
+        assert_eq!(
+            contacts(&report),
+            [(true, 5, 1919, 1079), (false, 0x7f, 480, 540)]
+        );
+        assert_eq!(
+            report[33..41],
+            [0x05, 0x7f, 0x77, 0x43, 0xff, 0xe0, 0xc1, 0x21]
+        );
+        // The click beside the PS button, in the third button byte.
+        assert_eq!(report[BUTTONS2], 0x03);
+        let unclicked = state.with(gamepad::TOUCHPAD, 0.0);
+        assert_eq!(input_report(&unclicked, 3, touches)[BUTTONS2], 0x01);
+        // The sensor time is the clock's to set, and past the contacts
+        // there is only the battery.
+        assert_eq!(report[SENSOR_TIME..SENSOR_TIME + 4], [0; 4]);
+        let rest: Vec<usize> = (41..INPUT_SIZE)
+            .filter(|index| report[*index] != 0)
+            .collect();
+        assert_eq!(rest, [53, 54]);
+    }
+
+    /// A gyroscope count as the kernel's driver reads it, by the pad's
+    /// calibration report, for its motion node, at 1024 to the degree a
+    /// second: `mult_frac(speed_2x * 1024, count, |plus - bias| + |minus -
+    /// bias|)`, which takes the quotient and remainder apart, truncating
+    /// as C does.
+    fn kernel_gyro(calibration: &[u8], axis: usize, count: i16) -> i64 {
+        let at = |n: usize| i64::from(i16::from_le_bytes([calibration[n], calibration[n + 1]]));
+        let bias = at(1 + 2 * axis);
+        let (plus, minus) = (at(7 + 4 * axis), at(9 + 4 * axis));
+        let numerator = (at(19) + at(21)) * 1024;
+        let denominator = (plus - bias).abs() + (minus - bias).abs();
+        let count = i64::from(count);
+        (numerator / denominator) * count + (numerator % denominator) * count / denominator
+    }
+
+    /// A gyroscope count as SDL reads it, by the pad's calibration report,
+    /// in degrees a second: `(count - bias) * speed_2x / (plus - minus)`.
+    fn sdl_gyro(calibration: &[u8], axis: usize, count: i16) -> f64 {
+        let at = |n: usize| f64::from(i16::from_le_bytes([calibration[n], calibration[n + 1]]));
+        let bias = at(1 + 2 * axis);
+        let (plus, minus) = (at(7 + 4 * axis), at(9 + 4 * axis));
+        (f64::from(count) - bias) * (at(19) + at(21)) / (plus - minus)
+    }
+
+    /// An accelerometer count as both read it, at 8192 to the g: by the
+    /// kernel's `mult_frac(2 * 8192, count - bias, plus - minus)`.
+    fn kernel_accel(calibration: &[u8], axis: usize, count: i16) -> i64 {
+        let at = |n: usize| i64::from(i16::from_le_bytes([calibration[n], calibration[n + 1]]));
+        let (plus, minus) = (at(23 + 4 * axis), at(25 + 4 * axis));
+        let range = plus - minus;
+        let (numerator, value) = (2 * 8192, i64::from(count) - (plus - range / 2));
+        (numerator / range) * value + (numerator % range) * value / range
+    }
+
+    #[test]
+    fn a_rate_and_gravity_written_are_what_both_readers_read_back() {
+        let neutral = calibration();
+        // A count is 1080/17678 of a degree a second.
+        let one_count = 1080.0 / 17678.0;
+        let rates = [
+            -2000.0, -250.5, -1.0, -0.03, 0.0, 0.03, 1.0, 12.5, 999.9, 2000.0,
+        ];
+        for rate in rates {
+            let written = count(rate, gyro_counts());
+            for axis in 0..3 {
+                let kernel = kernel_gyro(&neutral, axis, written) as f64 / 1024.0;
+                assert!(
+                    (kernel - f64::from(rate)).abs() <= one_count,
+                    "{rate} read as {kernel}"
+                );
+                let sdl = sdl_gyro(&neutral, axis, written);
+                assert!(
+                    (sdl - f64::from(rate)).abs() <= one_count / 2.0 + 1e-6,
+                    "{rate} read as {sdl}"
+                );
+            }
+        }
+        for g in [-4.0, -1.0, -0.5, 0.0, 1.0 / 8192.0, 1.0, 3.5] {
+            let written = count(g, f32::from(ACCEL_POINT));
+            for axis in 0..3 {
+                assert_eq!(
+                    kernel_accel(&neutral, axis, written),
+                    (f64::from(g) * 8192.0) as i64
+                );
+            }
+        }
+        // Past what a count carries, the end, never one wrapped round.
+        assert_eq!(count(2500.0, gyro_counts()), i16::MAX);
+        assert_eq!(count(-1e30, gyro_counts()), i16::MIN);
+        assert_eq!(count(4.0, f32::from(ACCEL_POINT)), i16::MAX);
+        assert_eq!(count(-4.0, f32::from(ACCEL_POINT)), i16::MIN);
+        assert_eq!(count(f32::INFINITY, gyro_counts()), i16::MAX);
+        assert_eq!(count(f32::NAN, gyro_counts()), 0);
+        // Which the kernel reads as about 2002 °/s, inside its node's range.
+        assert_eq!(kernel_gyro(&neutral, 0, i16::MAX) / 1024, 2001);
+    }
+
+    #[test]
+    fn each_finger_put_down_is_numbered_anew_and_keeps_its_number() {
+        let pad = |first: bool, second: bool| {
+            Touchpad::new([
+                Contact::new(first, 0.5, 0.5),
+                Contact::new(second, 0.5, 0.5),
+            ])
+        };
+        let one = Touches::FIRST.after(pad(false, false), pad(true, false));
+        assert_eq!(one.numbers, [1, 0]);
+        assert_eq!(one.after(pad(true, false), pad(true, false)), one, "held");
+        assert_eq!(
+            one.after(pad(true, false), pad(false, false)),
+            one,
+            "lifted"
+        );
+        let both = one.after(pad(false, false), pad(true, true));
+        assert_eq!((both.numbers, both.next), ([2, 3], 4));
+        // Seven bits, round.
+        let late = Touches {
+            numbers: [0; 2],
+            next: 127,
+        };
+        let late = late.after(pad(false, false), pad(true, true));
+        assert_eq!((late.numbers, late.next), ([127, 0], 1));
+    }
+
+    /// A state whose motion is reading `count`, made `interval_us` after
+    /// the one before.
+    fn reading(count: u32, interval_us: u32) -> PadState {
+        PadState::NEUTRAL.with_motion(Motion::new([0.0; 3], [0.0, 1.0, 0.0], count, interval_us))
+    }
+
+    /// The sensor time a report carries.
+    fn time_of(report: Option<[u8; INPUT_SIZE]>) -> u32 {
+        let report = report.expect("a report was sent");
+        u32::from_le_bytes(report[SENSOR_TIME..SENSOR_TIME + 4].try_into().unwrap())
+    }
+
+    /// Each report's sensor time as the step from the one before, as the
+    /// kernel's driver and both SDLs take it: in 32 bits, round the wrap.
+    fn steps(times: &[u32]) -> Vec<u32> {
+        times
+            .windows(2)
+            .map(|pair| pair[1].wrapping_sub(pair[0]))
+            .collect()
+    }
+
+    /// Writes each state at its time in microseconds, or beats for none,
+    /// and gives each report's sensor time.
+    fn clock_of(writes: &[(u64, Option<PadState>)]) -> Vec<u32> {
+        let mut reports = Reports::START;
+        let mut times = Vec::new();
+        for (at, state) in writes {
+            let (report, sent) = match state {
+                Some(state) => reports.write(state, *at),
+                None => {
+                    let (report, sent) = reports.again(*at);
+                    (Some(report), sent)
+                }
+            };
+            times.push(time_of(report));
+            reports = sent;
+        }
+        times
+    }
+
+    #[test]
+    fn the_clock_keeps_the_source_pad_s_time_over_its_readings() {
+        // Read every 4 ms by the pad's own clock, and arriving 3 and 6 ms
+        // apart: each moves the clock 4 ms.
+        let times = clock_of(&[
+            (1_000, Some(reading(1, 4000))),
+            (4_000, Some(reading(2, 4000))),
+            (10_000, Some(reading(3, 4000))),
+            (13_000, Some(reading(4, 4000))),
+        ]);
+        assert_eq!(steps(&times), [12_000; 3]);
+        assert_eq!(times[0], 12_000, "the first report is no time at 0");
+    }
+
+    #[test]
+    fn a_report_between_readings_is_counted_in_the_next() {
+        let pressed = |state: PadState| state.with(gamepad::SOUTH, 1.0);
+        let times = clock_of(&[
+            (0, Some(reading(1, 4000))),
+            // A button, a millisecond on: the time since.
+            (1_000, Some(pressed(reading(1, 4000)))),
+            // The next reading, 4 ms after the last by the pad's clock:
+            // what is left of it.
+            (4_000, Some(pressed(reading(2, 4000)))),
+            // A beat, 10 ms on, and a reading it has overtaken: the least
+            // step, then the pad's time again.
+            (14_000, None),
+            (14_500, Some(pressed(reading(3, 4000)))),
+            (18_500, Some(pressed(reading(4, 4000)))),
+        ]);
+        assert_eq!(steps(&times), [3_000, 9_000, 30_000, 3, 12_000]);
+    }
+
+    #[test]
+    fn the_clock_does_not_jump_when_the_motion_comes_from_another_pad() {
+        let turning = |count, interval| {
+            let motion = Motion::new([5.0, 0.0, 0.0], [0.0, 1.0, 0.0], count, interval);
+            PadState::NEUTRAL.with_motion(motion)
+        };
+        let times = clock_of(&[
+            (0, Some(reading(1000, 4000))),
+            (4_000, Some(reading(1001, 4000))),
+            // Another pad's reading, its count and interval its own.
+            (6_000, Some(reading(7, 4000))),
+            // Another's first reading, with no interval: the time since.
+            (9_000, Some(reading(1, 0))),
+            // Another's whose count is the last one seen: no fresh
+            // reading, but its values differ, so it is reported, by the
+            // time since; and its next, by what is left.
+            (10_000, Some(turning(1, 4000))),
+            (13_000, Some(turning(2, 4000))),
+        ]);
+        assert_eq!(
+            steps(&times),
+            [12_000, 12_000, 9_000, 3_000, 12_000 - 3_000]
+        );
+    }
+
+    #[test]
+    fn the_clock_never_stands_still_nor_goes_back() {
+        let times = clock_of(&[
+            (5_000, Some(reading(1, 4000))),
+            // Beats at the same instant, and one the monotonic clock puts
+            // before it: a microsecond each.
+            (5_000, None),
+            (5_000, None),
+            (4_000, None),
+            // A reading whose interval the beats used up.
+            (5_000, Some(reading(2, 1))),
+            // An interval longer than the clock's wrap: one short of it,
+            // which every reader takes as the step it is.
+            (6_000, Some(reading(3, u32::MAX))),
+            (7_000, Some(reading(4, 4000))),
+        ]);
+        let moved = steps(&times);
+        assert_eq!(moved, [3, 3, 3, 3, u32::MAX, 12_000]);
+        // Each a whole microsecond, which the kernel's driver rounds to
+        // nothing else.
+        assert!(moved.iter().all(|step| *step > 0 && step % 3 == 0));
+        // A first report, and a beat with no time before it, still move.
+        let mut times = clock_of(&[(0, None), (0, None)]);
+        assert_eq!(times, [3, 6]);
+        times = clock_of(&[(u64::MAX, Some(reading(1, 0))), (0, None)]);
+        assert_eq!(steps(&times), [3]);
+    }
+
+    #[test]
+    fn a_fresh_reading_is_reported_though_nothing_else_changed() {
+        let (report, reports) = Reports::START.write(&PadState::NEUTRAL, 0);
+        assert_eq!(report, None, "nothing to say");
+        let (report, reports) = reports.write(&reading(1, 4000), 1_000);
+        assert!(report.is_some());
+        // The same values, a new count: a reading the pad made.
+        let (report, reports) = reports.write(&reading(2, 4000), 5_000);
+        assert_eq!(report.map(|report| report[SEQUENCE]), Some(2));
+        // The same count again, as another pad's report steps the graph.
+        let (report, reports) = reports.write(&reading(2, 4000), 6_000);
+        assert_eq!(report, None);
+        let (report, _) = reports.write(&reading(2, 4000).with(gamepad::SOUTH, 1.0), 7_000);
+        assert_eq!(report.map(|report| report[SEQUENCE]), Some(3));
     }
 
     #[test]

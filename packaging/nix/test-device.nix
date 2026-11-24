@@ -70,6 +70,90 @@ pkgs.testers.runNixOSTest {
             machine.succeed(f"udevadm info {virtual} | grep ID_INPUT_JOYSTICK=1")
             machine.succeed(f"systemctl stop {unit}")
 
+    with subtest("a virtual DualSense's sensors and touchpad carry what it is written"):
+        import re
+        # It reports a reading at each pulse, the two of `fake-dualsense
+        # --motion` by turns, each 4 ms after the last by its own clock.
+        machine.succeed("systemd-run --unit ds ctrlassist-fixture fake-dualsense --pulse 50 --motion")
+        def node_named(name):
+            return machine.succeed(
+                "for d in /sys/class/input/event*; do "
+                f"if grep -qx 'Sony Interactive Entertainment DualSense Wireless Controller {name}' $d/device/name; "
+                "then echo /dev/input/$(basename $d); fi; done"
+            ).strip()
+        machine.wait_until_succeeds("ls /sys/class/input/event*/device/name | xargs grep -l 'Motion Sensors'")
+        machine.wait_until_succeeds("ls /sys/class/input/event*/device/name | xargs grep -l 'Touchpad'")
+        motion, touchpad = node_named("Motion Sensors"), node_named("Touchpad")
+        assert motion and touchpad, (motion, touchpad)
+        # evtest reads what the kernel's PlayStation driver makes of each
+        # report, line by line, as the reports come.
+        for unit, read in [("motion-events", motion), ("touch-events", touchpad)]:
+            machine.succeed(f"systemd-run --unit {unit} stdbuf -oL ${pkgs.evtest}/bin/evtest {read}")
+            machine.wait_until_succeeds(f"test $(journalctl -u {unit} -o cat | grep -c SYN_REPORT) -ge 12")
+
+        def frames(unit):
+            """What evtest read, frame by frame: each a list of (type, code, value), by number."""
+            found, frame = [], []
+            for line in machine.succeed(f"journalctl -u {unit} -o cat").splitlines():
+                event = re.match(r"Event: time [\d.]+, type (\d+) \([^)]*\), code (\d+) \([^)]*\), value (-?\d+)", line)
+                if event:
+                    frame.append(tuple(int(part) for part in event.groups()))
+                elif line.startswith("Event: ") and "SYN_REPORT" in line:
+                    found.append(frame)
+                    frame = []
+            return found
+
+        # The driver's motion node: gravity at 8192 to the g, exactly, and
+        # the rate at 1024 to the °/s, from counts at 17678 to 1080 °/s,
+        # each to within a count or two. MSC_TIMESTAMP is the virtual
+        # pad's clock in µs: the k-th reading at 4000k, whatever the pulse.
+        EV_ABS, EV_MSC, EV_KEY = 3, 4, 1
+        gravity = {True: [2048, -8192, 20480], False: [-4096, 6144, -31949]}
+        rate = {True: [12.5, -250.0, 1000.0], False: [-0.5, 90.0, -1999.0]}
+        count = 1080 / 17678 * 1024
+        stamps = []
+        for frame in frames("motion-events"):
+            [stamp] = [value for kind, code, value in frame if (kind, code) == (EV_MSC, 5)]
+            stamps.append(stamp)
+            pressed = (stamp // 4000) % 2 == 1
+            axes = {code: value for kind, code, value in frame if kind == EV_ABS}
+            assert sorted(axes) == [0, 1, 2, 3, 4, 5], frame
+            for axis in range(3):
+                assert abs(axes[axis] - gravity[pressed][axis]) <= 2, (axis, frame)
+                assert abs(axes[3 + axis] - rate[pressed][axis] * 1024) <= 2 * count, (3 + axis, frame)
+        assert len(stamps) >= 12 and all(stamp % 4000 == 0 for stamp in stamps), stamps
+        assert all(b - a == 4000 for a, b in zip(stamps, stamps[1:])), stamps
+
+        # The touchpad's node: the click as BTN_LEFT, and each contact at
+        # its place across 0 to 1919 and down 0 to 1079. A finger put down
+        # is given a tracking id of its own, and lifted ends it.
+        slot, first_ids, second_ids, places = None, set(), [], []
+        clicks = []
+        for frame in frames("touch-events"):
+            seen = {}
+            for kind, code, value in frame:
+                if (kind, code) == (EV_ABS, 47):
+                    slot = value
+                elif kind == EV_ABS and code in (53, 54, 57):
+                    seen[(slot, code)] = value
+                elif (kind, code) == (EV_KEY, 272):
+                    clicks.append(value)
+            if clicks and clicks[-1] == 1:
+                assert (seen[(0, 53)], seen[(0, 54)]) == (480, 540), frame
+                assert seen[(1, 57)] >= 0 and seen[(1, 57)] not in second_ids, frame
+                second_ids.append(seen[(1, 57)])
+                places.append((seen[(1, 53)], seen[(1, 54)]))
+            else:
+                assert (seen[(0, 53)], seen[(0, 54)]) == (960, 0), frame
+                assert seen[(1, 57)] == -1, frame
+            if (0, 57) in seen:
+                first_ids.add(seen[(0, 57)])
+        assert len(clicks) >= 12 and all(a != b for a, b in zip(clicks, clicks[1:])), clicks
+        assert len(first_ids) <= 1 and -1 not in first_ids, first_ids
+        assert set(places) == {(1439, 1079), (1919, 809)}, places
+        assert all(a != b for a, b in zip(places, places[1:])), places
+        machine.succeed("systemctl stop motion-events touch-events ds")
+
     with subtest("a seat user's input thread merges two pads and sleeps when they do"):
         # Two pads that send nothing unless told to.
         machine.succeed("systemd-run --unit quiet-a ctrlassist-fixture fake-pad --name 'Quiet A'")

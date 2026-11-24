@@ -261,6 +261,15 @@ impl FakeDualSense {
             let _ = states.send(state);
         }
     }
+
+    /// Reports `state`, its motion and touchpad with it, as the virtual
+    /// DualSense it is made from writes them: a new count of readings is
+    /// a reading, reported though nothing else changed.
+    pub fn hold(&self, state: ctrlassist_core::PadState) {
+        if let Some(states) = &self.states {
+            let _ = states.send(state);
+        }
+    }
 }
 
 impl Drop for FakeDualSense {
