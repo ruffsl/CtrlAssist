@@ -163,7 +163,9 @@ enum Progress {
 #[derive(Debug)]
 pub(crate) struct Rebound {
     pub(crate) outcome: Result<(), Refusal>,
-    /// Whether udev was asked for it.
+    /// Whether udev was asked for it. A wait given up before udev's
+    /// answer leaves the request in udev's queue, and the device's next
+    /// re-bind, such as the one that shows the pad again, is run after it.
     pub(crate) asked: bool,
 }
 
@@ -172,6 +174,13 @@ impl Rebound {
         Self {
             outcome: Err(refusal),
             asked: false,
+        }
+    }
+
+    fn asked(outcome: Result<(), Refusal>) -> Self {
+        Self {
+            outcome,
+            asked: true,
         }
     }
 }
@@ -344,17 +353,6 @@ impl Watch {
             self.overran,
         )
     }
-
-    /// Ends the wait with `outcome`, the request asked: a wait given up
-    /// before udev's answer leaves the request in udev's queue, and the
-    /// device's next re-bind, such as the one that shows the pad again, is
-    /// run after it.
-    fn end(self, outcome: Result<(), Refusal>) -> Rebound {
-        Rebound {
-            outcome,
-            asked: true,
-        }
-    }
 }
 
 /// What a wait polls a client's socket for: its hanging up alone, so that
@@ -425,7 +423,7 @@ pub(crate) fn rebind(device: &Device, leave: Leave, client: Option<BorrowedFd<'_
             Err(error) => {
                 drop(fds);
                 warn!(device = %shown, %error, "couldn't wait on udev for the pad's driver to be re-bound");
-                return watch.end(Err(Refusal::Failed));
+                return Rebound::asked(Err(Refusal::Failed));
             }
         }
         let gone = fds.get(1).is_some_and(|fd| hung_up(fd.revents()));
@@ -435,12 +433,12 @@ pub(crate) fn rebind(device: &Device, leave: Leave, client: Option<BorrowedFd<'_
         watch.drain();
         match watch.progress(leave) {
             Progress::Waiting => {}
-            Progress::Done => return watch.end(Ok(())),
-            Progress::Failed(refusal) => return watch.end(Err(refusal)),
+            Progress::Done => return Rebound::asked(Ok(())),
+            Progress::Failed(refusal) => return Rebound::asked(Err(refusal)),
         }
         if gone {
             debug!(device = %shown, "the client hung up as the pad's driver was re-bound");
-            return watch.end(Err(Refusal::Failed));
+            return Rebound::asked(Err(Refusal::Failed));
         }
     }
 }

@@ -50,24 +50,18 @@ use crate::connections::{CLOSING, Closer, Connections};
 use crate::hide::Leave;
 use crate::pad::{Device, Pad};
 
-/// Where a hidden pad is in its life.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Phase {
-    /// Its markers are made and its driver is being re-bound.
-    Hiding,
-    Hidden,
-    /// Its markers are gone and its driver is being re-bound to show it.
-    Showing,
-}
-
-/// A pad a connection has hidden.
+/// A pad a connection has hidden, from when its markers are made. Until
+/// the re-bind that hides it is done, nobody can name it: only its
+/// connection is told its token, whose thread is in the hide meanwhile.
 #[derive(Debug)]
 struct Entry {
     token: u32,
     /// The connection that hid it.
     owner: u64,
     pad: Pad,
-    phase: Phase,
+    /// Whether its markers are gone and its driver is being re-bound to
+    /// show it.
+    showing: bool,
 }
 
 /// What every connection shares.
@@ -95,12 +89,12 @@ impl State {
     fn markers(&self) -> BTreeSet<String> {
         self.entries
             .iter()
-            .filter(|entry| entry.phase != Phase::Showing)
+            .filter(|entry| !entry.showing)
             .flat_map(|entry| entry.pad.markers.iter().cloned())
             .collect()
     }
 
-    /// The device of every pad the service has, in whatever phase.
+    /// The device of every pad the service has, being shown or not.
     fn held(&self) -> Vec<PathBuf> {
         self.entries
             .iter()
@@ -173,7 +167,7 @@ fn show(shared: &Arc<Shared>, token: u32, client: Option<BorrowedFd<'_>>, rebind
         let Some(entry) = state.entries.iter_mut().find(|entry| entry.token == token) else {
             return;
         };
-        entry.phase = Phase::Showing;
+        entry.showing = true;
         let markers = entry.pad.markers.clone();
         let parent = (rebind && entry.pad.parent.is_there()).then(|| entry.pad.parent.clone());
         let remaining = state.markers();
@@ -238,13 +232,7 @@ fn hide_pad(
     let (token, pad) = marked(shared, owner, user, fd)?;
     let (opened, rebound) = hide::cut_off(&pad, group(), socket);
     match opened {
-        Ok(event) => {
-            let mut state = shared.state();
-            if let Some(entry) = state.entries.iter_mut().find(|entry| entry.token == token) {
-                entry.phase = Phase::Hidden;
-            }
-            Ok((token, event))
-        }
+        Ok(event) => Ok((token, event)),
         Err(refusal) => {
             // Shown again with a re-bind only if hiding it asked for one,
             // so the pad is left as it was.
@@ -292,7 +280,7 @@ fn marked(
             token,
             owner,
             pad: pad.clone(),
-            phase: Phase::Hiding,
+            showing: false,
         });
         token
     };
@@ -323,9 +311,7 @@ fn reopen(shared: &Shared, owner: u64, user: Option<u32>, token: u32) -> Result<
         let entry = state
             .entries
             .iter_mut()
-            .find(|entry| {
-                entry.token == token && entry.owner == owner && entry.phase == Phase::Hidden
-            })
+            .find(|entry| entry.token == token && entry.owner == owner && !entry.showing)
             .ok_or(Refusal::UnknownToken)?;
         if !entry.pad.parent.is_there() {
             if !seats.contains(&entry.pad.identity.seat) {
@@ -359,7 +345,7 @@ fn hidden_parent(shared: &Shared, owner: u64, token: u32) -> Result<Device, Refu
         .state()
         .entries
         .iter()
-        .find(|entry| entry.token == token && entry.owner == owner && entry.phase == Phase::Hidden)
+        .find(|entry| entry.token == token && entry.owner == owner && !entry.showing)
         .map(|entry| entry.pad.parent.clone())
         .ok_or(Refusal::UnknownToken)
 }
@@ -456,7 +442,7 @@ fn serve(shared: &Arc<Shared>, socket: &OwnedFd, owner: u64, user: Option<u32>) 
         .state()
         .entries
         .iter()
-        .filter(|entry| entry.owner == owner && entry.phase != Phase::Showing)
+        .filter(|entry| entry.owner == owner && !entry.showing)
         .map(|entry| entry.token)
         .collect();
     // Each on a thread of its own, so that one whose re-bind never ends
