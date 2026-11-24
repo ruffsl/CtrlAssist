@@ -131,7 +131,11 @@ in
     # hidden again by the service started afresh, or grabbed if the
     # socket isn't listening again yet, and hidden once it is, as after
     # any switch that changes the package while the service runs, which
-    # restarts both itself.
+    # restarts both itself. The switch that first adds this unit only
+    # starts it, and a start isn't passed on (`PartOf=` passes on stops
+    # and restarts): a socket already listening from a configuration
+    # without this unit keeps its settings until the next boot. No
+    # release had the socket without it.
     systemd.services.ctrlassist-hider-socket-unit = lib.mkIf cfg.hiding {
       description = "Restart CtrlAssist's hiding service socket when its unit changes";
       wantedBy = [ "multi-user.target" ];
