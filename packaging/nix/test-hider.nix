@@ -196,12 +196,14 @@ let
   #   hider-probe churn <socket> <count>
   #       <count> times without pause: connects, asks the release and
   #       closes; says how many were answered and how many refused
-  #   hider-probe uhid <name> <phys> [<uniq> combo|merged]
+  #   hider-probe uhid <name> <phys> [<uniq> combo|merged|record]
   #       makes a HID game pad through uhid with that phys and no address;
   #       holds. With combo, a game pad and a keyboard in one descriptor,
   #       each its own report, product 0bad, with that address; with
   #       merged, the keyboard's keys in the game pad's own report, which
-  #       makes one input, product 0bac
+  #       makes one input, product 0bac; with record, a record button in
+  #       the game pad's own report, as an Xbox Series pad's share button
+  #       is, product 0bab
   #   hider-probe hang-up <socket> <node> <fifo>
   #       hides <node> and gives the hide up by closing the connection
   #       once something is written to <fifo>
@@ -429,6 +431,15 @@ let
                     descriptor[:6] + bytes([0x85, 0x01]) + descriptor[6:]
                     + bytes([0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x02]) + keys(0x65) + bytes([0xC0])
                 )
+            elif combo and combo[1] == "record":
+                # The consumer page's Record, which the kernel gives the
+                # key KEY_RECORD, in one bit and seven of padding: a
+                # joystick with a key, and no keyboard.
+                uniq, product = combo[0].encode(), 0x0bab
+                descriptor = descriptor[:-1] + bytes([
+                    0x05, 0x0C, 0x09, 0xB2, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01,
+                    0x95, 0x01, 0x81, 0x02, 0x75, 0x07, 0x95, 0x01, 0x81, 0x01,
+                ]) + bytes([0xC0])
             elif combo:
                 # The keys inside the game pad's own collection: one input,
                 # a joystick and a keyboard at once. Only those up to the
@@ -643,10 +654,13 @@ pkgs.testers.runNixOSTest {
       hider
       probe
       pkgs.acl
+      # libinput's own tools, to see what a compositor would take.
+      pkgs.libinput
     ];
   };
 
   testScript = ''
+    import json
     import re
     import shlex
 
@@ -727,6 +741,52 @@ pkgs.testers.runNixOSTest {
         found = machine.succeed(f"cd {device}/input && ls -d */event* */js* */mouse* 2>/dev/null || true").split()
         return sorted("/dev/input/" + path.split("/")[1] for path in found if path.split("/")[0] != own)
 
+    def touchpad(event):
+        """The touchpad's event node under the device a pad's event node hangs from."""
+        found = [
+            node for node in other_nodes(event)
+            if node.split("/")[-1].startswith("event")
+            and "ID_INPUT_TOUCHPAD=1" in machine.succeed(f"udevadm info -q property -n {node}").split()
+        ]
+        assert len(found) == 1, f"one touchpad under {event}: {found}"
+        return found[0]
+
+    def ignored(node):
+        """Whether udev's record of a node tells libinput to leave it alone."""
+        return "LIBINPUT_IGNORE_DEVICE=1" in machine.succeed(f"udevadm info -q property -n {node}").split()
+
+    def libinput_lists(node):
+        """Whether libinput, starting now, takes a node."""
+        return re.search(rf"^Kernel:\s+{re.escape(node)}$", machine.succeed("libinput list-devices"), re.MULTILINE) is not None
+
+    def compositor_holds(node):
+        """A command that succeeds while the seat's compositor, which has logind open nodes for it, holds a descriptor on a node."""
+        return f"ls -l /proc/$(systemctl show -p MainPID --value cage-tty1)/fd | grep -q ' {node}$'"
+
+    def reader_mark():
+        """Where libinput's reader, running since the machine started, has got to in its log."""
+        return json.loads(machine.succeed("journalctl -u libinput-reader -n 1 -o json"))["__CURSOR"]
+
+    def libinput_view(node, mark, taken):
+        """What libinput makes of a node made since `mark`: whether udev's record of it says to leave it alone; whether libinput lists it, starting now; whether the reader, running all along, has it, by what it last did with the node, added it or let it go or left it alone; and whether the compositor holds it. Waits a minute at most for the last two to come to what `taken` says they should."""
+        name = node.split("/")[-1]
+        told = rf"\b{name}\b.*DEVICE_(ADDED|REMOVED)|\b{name}: device is ignored"
+        log = f"journalctl -u libinput-reader -o cat --after-cursor={shlex.quote(mark)} | grep -E {shlex.quote(told)}"
+        last = "DEVICE_ADDED" if taken else "device is ignored"
+        holds = compositor_holds(node)
+        try:
+            machine.wait_until_succeeds(f"{log} | tail -1 | grep -qE {shlex.quote(last)} && " + (holds if taken else f"! ( {holds} )"), timeout=60)
+        except Exception:
+            pass
+        lines = machine.succeed(f"{log} || true").splitlines()
+        print(f"libinput's reader on {name} since the mark: {lines}")
+        return dict(
+            ignored=ignored(node),
+            listed=libinput_lists(node),
+            took=bool(lines) and "DEVICE_ADDED" in lines[-1],
+            held=machine.execute(holds)[0] == 0,
+        )
+
     def sysfs(node, path):
         """A path under the sysfs directory of a node's input device, resolved."""
         name = node.split("/")[-1]
@@ -744,6 +804,10 @@ pkgs.testers.runNixOSTest {
 
     machine.wait_for_file("/run/user/1000/wayland-0.lock")
     machine.wait_for_unit("sockets.target")
+    # libinput, as a compositor runs it, from the start: told of each node
+    # as it is added, which it takes or leaves alone then.
+    machine.succeed("systemd-run --unit libinput-reader ${pkgs.coreutils}/bin/stdbuf -oL ${pkgs.libinput}/bin/libinput debug-events --verbose")
+    machine.wait_until_succeeds("journalctl -u libinput-reader -o cat | grep -q DEVICE_ADDED")
     print("versions: kernel " + machine.succeed("uname -r").strip() + ", udev " + machine.succeed("udevadm --version").strip())
     # Two pads of the same model, told apart only by their addresses.
     fake("pad-a", "fake-hid", "--uniq", A, "--pulse", "20")
@@ -796,6 +860,7 @@ pkgs.testers.runNixOSTest {
         assert "isn't the user in front" in machine.succeed(raw)
         # A pad of the PlayStation driver: a virtual DualSense with an
         # address a real one could have.
+        mark = reader_mark()
         fake("pad-ds", "fake-dualsense", "--real")
         machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 02:ca:7e:00:00:01")
         machine.succeed("udevadm settle")
@@ -810,9 +875,16 @@ pkgs.testers.runNixOSTest {
         others = other_nodes(dualsense["event"][0])
         assert len(others) >= 2, f"a DualSense has a touchpad and motion sensors: {others}"
         assert all(alice_opens(node) for node in others), others
+        # Its touchpad is a pointer to libinput, and so to the compositor,
+        # which holds it.
+        node = touchpad(dualsense["event"][0])
+        view = libinput_view(node, mark, taken=True)
+        print(f"a DualSense's touchpad, shown: {node} {view}")
+        assert view == dict(ignored=False, listed=True, took=True, held=True), view
         # Hidden, its raw node is closed to the seat user, though another
         # rule opens it, and still to be had by whoever hid it; a hidden
         # pad of another driver's isn't.
+        mark = reader_mark()
         control, told = hide("hide-ds", dualsense["event"][0])
         assert told.startswith("ok"), told
         machine.succeed("udevadm settle")
@@ -824,10 +896,19 @@ pkgs.testers.runNixOSTest {
         for node in others:
             print("hidden DualSense's other node: " + machine.succeed(f"stat -c '%n %a %U:%G' {node}").strip() + " " + machine.succeed(f"udevadm info -q property -n {node} | grep -E '^ID_INPUT_[A-Z]+=1' | tr -s '\\n' ' '"))
         assert len(others) >= 2 and not any(alice_opens(node) for node in others), f"a hidden DualSense's touchpad and motion sensors: {others}"
+        # Its touchpad, made anew by the re-bind, is left alone by libinput,
+        # though logind would open it for the compositor, the node's group
+        # notwithstanding.
+        node = touchpad(pads()[DS]["event"][0])
+        view = libinput_view(node, mark, taken=False)
+        print(f"a DualSense's touchpad, hidden: {node} {view}")
+        assert view == dict(ignored=True, listed=False, took=False, held=False), view
         assert order(control, "raw") == "ok", "the raw node of a hidden pad of the PlayStation driver"
         # Unplugged and plugged back in while hidden, its HID device made
-        # anew: every node of it is hidden as it is made, its touchpad's
-        # and motion sensors' as well as its joystick's.
+        # anew: every node of it is hidden, its touchpad's and motion
+        # sensors' as well as its joystick's, the first two by the change
+        # event the joystick's event has udev send them.
+        mark = reader_mark()
         machine.succeed("systemctl restart pad-ds")
         machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep -F {DS} | grep -q hidraw=")
         machine.succeed("udevadm settle")
@@ -836,12 +917,26 @@ pkgs.testers.runNixOSTest {
         for node in others:
             print("reconnected DualSense's other node: " + machine.succeed(f"stat -c '%n %a %U:%G' {node}").strip())
         assert len(others) >= 2 and not any(alice_opens(node) for node in others), f"a reconnected DualSense's touchpad and motion sensors: {others}"
+        # Its touchpad, which libinput and the compositor took as it was
+        # added, before the change event hid it, is let go, udev telling
+        # them it went and came back.
+        node = touchpad(pads()[DS]["event"][0])
+        view = libinput_view(node, mark, taken=False)
+        print(f"a DualSense's touchpad, reconnected while hidden: {node} {view}")
+        assert view == dict(ignored=True, listed=False, took=False, held=False), view
         assert order(control, "reopen").startswith("ok")
+        mark = reader_mark()
         assert order(control, "restore") == "ok"
         machine.succeed("udevadm settle")
         assert alice_can_open(DS, "event") and alice_can_open(DS, "hidraw"), "a restored DualSense"
         others = other_nodes(pads()[DS]["event"][0])
         assert len(others) >= 2 and all(alice_opens(node) for node in others), f"a restored DualSense's touchpad and motion sensors: {others}"
+        # Shown again, its touchpad is made anew with nothing that says to
+        # leave it alone, and the compositor takes it up.
+        node = touchpad(pads()[DS]["event"][0])
+        view = libinput_view(node, mark, taken=True)
+        print(f"a DualSense's touchpad, shown again: {node} {view}")
+        assert view == dict(ignored=False, listed=True, took=True, held=True), view
         machine.succeed("systemctl stop hide-ds")
         control, told = hide("hide-plain", pads()[A]["event"][0])
         assert told.startswith("ok"), told
@@ -1700,6 +1795,22 @@ pkgs.testers.runNixOSTest {
         print(f"a joystick that udev also takes for a keyboard, with a hidden pad's address: {merged}")
         assert any(line.startswith("event") for line in merged), merged
         assert all(line.split()[1:] == ["2", "input"] for line in merged), merged
+        # A joystick with a key and no keyboard, as an Xbox Series pad
+        # under xpad is, with the hidden pad's address: the service won't
+        # take it for a pad, so no marker hides it on its own account.
+        machine.succeed(f"systemd-run --unit record hider-probe uhid 'Record Pad' record {uniq} record")
+        machine.wait_until_succeeds("ls /sys/bus/hid/devices/0003:1209:0BAB.*/input/input*/event*")
+        machine.succeed("udevadm settle")
+        record = machine.succeed(
+            "for path in $(ls -d /sys/bus/hid/devices/0003:1209:0BAB.*/input/input*/event* /sys/bus/hid/devices/0003:1209:0BAB.*/input/input*/js* 2>/dev/null); do "
+            "node=/dev/input/$(basename $path); "
+            "echo $(basename $path) $(udevadm info -q property -n $node | grep -E '^ID_INPUT_(JOYSTICK|KEY|KEYBOARD)=1' | sort | tr '\\n' ' ') $(stat -c %G $node); "
+            "done"
+        ).strip().split("\n")
+        print(f"a joystick with a key, with a hidden pad's address: {record}")
+        assert len(record) == 2 and all(line.split()[1:] == ["ID_INPUT_JOYSTICK=1", "ID_INPUT_KEY=1", "input"] for line in record), record
+        event = "/dev/input/" + next(line.split()[0] for line in record if line.startswith("event"))
+        assert "refused" in machine.succeed(f"ctrlassist-hider check {event}"), "the service takes a joystick with a key for no pad"
         # The pad shown again: nothing names the device's joystick node any
         # more, and the sweep leaves it hidden rather than re-bind the
         # keyboard away.
@@ -1708,7 +1819,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("udevadm settle")
         assert combo() == was, combo()
         machine.succeed("journalctl -u ctrlassist-hider.service -o cat | grep -q 'left hidden a pad no marker names'")
-        machine.succeed("systemctl stop shared combo merged pad-shared")
+        machine.succeed("systemctl stop shared combo merged record pad-shared")
         wait_restored()
 
     with subtest("a start that keeps failing as a client waits is given up at systemd's limit, and the client let go"):

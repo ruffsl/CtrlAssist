@@ -10,7 +10,10 @@ The goal is for a virtual DualSense to carry them, by rules that keep what each 
 
 ## State
 
-The research is in, the spike has been run, and the build steps are written (2026-11-23). None is begun. The build comes after 0.5.0; what is under Still to find out comes first, each item before the step it gates, and what is under Open questions before the step it bears on.
+The research is in, the spike has been run, and the build steps are written (2026-11-23).
+
+- **The hidden pad's touchpad kept from the compositor: done,** before 0.5.0 by the maintainer's decision, for every hidden pad. The rule sets `LIBINPUT_IGNORE_DEVICE=1` on every event node it hides, and has udev tell its listeners that a touchpad hidden late, by a change event, went and came back, since libinput reads the property only as it adds a node and ignores change events (read in libinput 1.31's `src/udev-seat.c`). The hider check, with cage as the seat's compositor and libinput's reader running throughout: a fake DualSense's touchpad is listed by libinput and held by cage while shown; hidden, it carries the property, libinput's tools don't list it, the reader leaves it alone (`event10: device is ignored`) and cage holds none of it; plugged in while hidden, the reader and cage took it as it was added, all seven times it was tried before the rule sent the remove and the add, and with them they let it go and leave it alone; shown again, the property is gone, it is listed, and cage holds it. On hardware, still to be seen: KWin's list of input devices with no touchpad for a hidden DualSense.
+- **The rest: not begun.** The build comes after 0.5.0; what is under Still to find out comes first, each item before the step it gates, and what is under Open questions before the step it bears on.
 
 ## What the modes promise
 
@@ -226,4 +229,7 @@ Each is one reviewed change on a branch of its own, and leaves the tree working:
 
 ## Deviations
 
-None yet.
+- **The hidden pad's touchpad landed before 0.5.0,** where the plan put the whole build after it: it stops a fault seen today, and depends on nothing else here.
+- **The property is set on every event node the rule hides,** not on the touchpad's alone: a hidden pad is absent, and libinput, which passes over a joystick and motion sensors by itself, then doesn't even open them. The mouse node is left without it, libinput reading event nodes alone; nothing current reads a touchpad's mouse node, and `/dev/input/mice`, which merges them all, is no desktop's.
+- **A touchpad hidden late is let go by libinput,** where the step said to write that gap down as a concern: libinput lets go of a node at its remove event and reads the property at its add, so the rule, hiding a touchpad's event node on a change event, has udev send it a remove and an add, the node itself staying as it is. No wait is involved. Hiding such a node at its own add instead, by its markers, was looked at and set aside: without the group-write bit, which only the joystick's event sets, nothing at that add says the device is a pad's, and a port's marker names whatever is plugged there, a touchpad of its own among them, and a serial number names every interface of its device, where a pad shown again is re-bound at its own alone.
+- **Verified in the hiding service's check, not the daemon's:** the step is the rule's alone, and the hider check has a compositor at the seat to hold the node.
