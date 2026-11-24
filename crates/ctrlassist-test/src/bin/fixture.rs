@@ -1,13 +1,9 @@
 //! The fixture the virtual machine checks drive: fake pads that hold until
 //! killed, and one-line observations a test script can read.
 
-#![expect(
-    clippy::print_stdout,
-    reason = "this binary's output is what the test scripts read"
-)]
-
+use std::fmt::Display;
 use std::fs::File;
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::thread::sleep;
@@ -25,6 +21,21 @@ use ctrlassist_device::{
 use ctrlassist_hider::{Client, Hidden};
 use ctrlassist_test::{FakeHidPad, FakePad, NodeKind, can_open, count_reads, pads};
 use rustix::event::{PollFd, PollFlags, poll};
+
+/// Writes `line` to stdout, which the test scripts read. A write that
+/// fails ends the fixture with the error, which [`main`] takes for the
+/// reader having all it wanted if the pipe was closed.
+fn say(line: impl Display) -> io::Result<()> {
+    writeln!(io::stdout(), "{line}")
+}
+
+/// [`say`] from a callback that can't fail: the first failure is kept in
+/// `said`, and nothing more is written after it.
+fn say_into(said: &mut io::Result<()>, line: impl Display) {
+    if said.is_ok() {
+        *said = say(line);
+    }
+}
 
 fn parse_hex(text: &str) -> Result<u16, std::num::ParseIntError> {
     u16::from_str_radix(text.trim_start_matches("0x"), 16)
@@ -181,7 +192,7 @@ fn said(change: Change) -> String {
 }
 
 /// Holds forever, calling `edge` on each pulse if there is one.
-fn hold(pulse: u64, mut edge: impl FnMut(bool) -> std::io::Result<()>) -> Result<()> {
+fn hold(pulse: u64, mut edge: impl FnMut(bool) -> io::Result<()>) -> Result<()> {
     let mut pressed = false;
     loop {
         if pulse == 0 {
@@ -214,7 +225,7 @@ fn hide(node: &Path, socket: &Path, control: &Path) -> Result<()> {
     std::fs::create_dir_all(control)?;
     let done = |order: &str, outcome: String| -> Result<()> {
         // Written whole, then renamed, so a reader never sees half of it.
-        println!("{order}: {outcome}");
+        say(format_args!("{order}: {outcome}"))?;
         let partial = control.join(format!("{order}.partial"));
         std::fs::write(&partial, outcome)?;
         std::fs::rename(partial, control.join(format!("{order}.done")))?;
@@ -264,7 +275,22 @@ fn hide(node: &Path, socket: &Path, control: &Path) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    match Cli::parse().command {
+    match run(Cli::parse().command) {
+        // The reader has gone, as `pads | grep -q` does once it has found
+        // what it looked for: it had all it wanted.
+        Err(error)
+            if error
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::BrokenPipe) =>
+        {
+            Ok(())
+        }
+        ran => ran,
+    }
+}
+
+fn run(command: Command) -> Result<()> {
+    match command {
         Command::FakePad {
             name,
             vendor,
@@ -273,7 +299,7 @@ fn main() -> Result<()> {
         } => {
             let mut pad =
                 FakePad::new(&name, vendor, product).context("creating the uinput pad")?;
-            println!("node {}", pad.event_node().display());
+            say(format_args!("node {}", pad.event_node().display()))?;
             hold(pulse, |pressed| pad.south(pressed))
         }
         Command::FakeHid {
@@ -285,7 +311,7 @@ fn main() -> Result<()> {
         } => {
             let mut pad =
                 FakeHidPad::new(&name, &uniq, vendor, product).context("creating the uhid pad")?;
-            println!("created");
+            say("created")?;
             hold(pulse, |pressed| pad.report(u8::from(pressed), 0, 0))
         }
         Command::FakeDualsense {
@@ -301,7 +327,7 @@ fn main() -> Result<()> {
             let data = ctrlassist_test::synthetic_dualsense(false);
             let mut pad =
                 VirtualPad::dualsense(&data, address).context("creating the virtual DualSense")?;
-            println!("node {}", pad.event_node().display());
+            say(format_args!("node {}", pad.event_node().display()))?;
             let mut pressed = false;
             loop {
                 // Whatever reads the pad's raw node is answered at once;
@@ -340,7 +366,7 @@ fn main() -> Result<()> {
                         format!("{kind}={}:{access}", node.display())
                     })
                     .collect();
-                println!(
+                say(format_args!(
                     "pad name={:?} uniq={:?} id={}:{} hid={} {}",
                     pad.name,
                     pad.uniq,
@@ -348,7 +374,7 @@ fn main() -> Result<()> {
                     pad.product,
                     pad.hid.as_deref().unwrap_or("-"),
                     nodes.join(" "),
-                );
+                ))?;
             }
             Ok(())
         }
@@ -360,8 +386,8 @@ fn main() -> Result<()> {
         Command::Version { socket } => {
             let client = Client::connect(&socket).context("connecting to the hiding service")?;
             match client.version() {
-                Ok(release) => println!("version: {release}"),
-                Err(error) => println!("version: refused: {error}"),
+                Ok(release) => say(format_args!("version: {release}"))?,
+                Err(error) => say(format_args!("version: refused: {error}"))?,
             }
             Ok(())
         }
@@ -369,8 +395,8 @@ fn main() -> Result<()> {
             let client = Client::connect(&socket).context("connecting to the hiding service")?;
             let pad = File::open(&node).with_context(|| format!("opening {}", node.display()))?;
             match client.raw(pad.as_fd()) {
-                Ok(_) => println!("raw: ok"),
-                Err(error) => println!("raw: refused: {error}"),
+                Ok(_) => say("raw: ok")?,
+                Err(error) => say(format_args!("raw: refused: {error}"))?,
             }
             Ok(())
         }
@@ -378,22 +404,27 @@ fn main() -> Result<()> {
             let file = File::open(&node).with_context(|| format!("opening {}", node.display()))?;
             let mut pad = Pad::from_fd(file.into()).context("reading the pad")?;
             let identity = pad.identifiers();
-            println!(
+            say(format_args!(
                 "pad name={:?} id={:04x}:{:04x} address={:?} serial={:?}",
                 identity.name, identity.vendor, identity.product, identity.address, identity.serial
-            );
+            ))?;
             let mut seen = 0;
             while seen < frames {
                 poll(&mut [PollFd::new(&pad, PollFlags::IN)], None)?;
+                let mut said = Ok(());
                 pad.read(|state| {
                     seen += 1;
-                    println!(
-                        "frame south={} left_x={:.2}",
-                        state.get(gamepad::SOUTH),
-                        state.get(gamepad::LEFT_X)
+                    say_into(
+                        &mut said,
+                        format_args!(
+                            "frame south={} left_x={:.2}",
+                            state.get(gamepad::SOUTH),
+                            state.get(gamepad::LEFT_X)
+                        ),
                     );
                 })
                 .context("reading the pad")?;
+                said?;
             }
             Ok(())
         }
@@ -406,7 +437,7 @@ fn main() -> Result<()> {
                 Identity::Generic
             };
             let mut sink = VirtualPad::create(identity).context("creating the virtual pad")?;
-            println!("virtual node={}", sink.event_node().display());
+            say(format_args!("virtual node={}", sink.event_node().display()))?;
             sink.write(pad.state())?;
             loop {
                 let (from_pad, from_game) = {
@@ -449,7 +480,7 @@ fn main() -> Result<()> {
             })
             .context("building the graph")?;
             let sink = VirtualPad::create(Identity::Generic).context("creating the virtual pad")?;
-            println!("virtual node={}", sink.event_node().display());
+            say(format_args!("virtual node={}", sink.event_node().display()))?;
             // Watching from before the pads are opened, so that one
             // leaving and returning can't fall between the two.
             let mut monitor = Monitor::new()?;
@@ -457,7 +488,7 @@ fn main() -> Result<()> {
             let ids = pads.each_ref().map(|pad| pad.identifiers().id());
             let setup = Setup::new(graph, pads.map(Some).into(), vec![sink]);
             let (input, reports) = InputThread::spawn()?;
-            println!("realtime={}", input.is_realtime());
+            say(format_args!("realtime={}", input.is_realtime()))?;
             input.send(ctrlassist_device::Command::Start(
                 SetupId(0),
                 Box::new(setup),
@@ -465,7 +496,7 @@ fn main() -> Result<()> {
             // Holds until killed, saying what the input thread reports,
             // and giving a pad that went its place back when it returns.
             for report in reports {
-                println!("report {report:?}");
+                say(format_args!("report {report:?}"))?;
                 let Report::PadGone { source, .. } = report else {
                     continue;
                 };
@@ -490,20 +521,25 @@ fn main() -> Result<()> {
                     source,
                     pad: Box::new(pad),
                 })?;
-                println!("pad back source={}", source.0);
+                say(format_args!("pad back source={}", source.0))?;
             }
             Ok(())
         }
         Command::Listen { node, millis } => {
+            let mut said = Ok(());
             let reads = count_reads(
                 &node,
                 Duration::from_millis(millis),
                 &mut |seconds, count| {
-                    println!("t={seconds}s reads={count}");
+                    say_into(&mut said, format_args!("t={seconds}s reads={count}"));
                 },
             )
             .with_context(|| format!("listening on {}", node.display()))?;
-            println!("reads={} cut_off={}", reads.count, reads.cut_off);
+            said?;
+            say(format_args!(
+                "reads={} cut_off={}",
+                reads.count, reads.cut_off
+            ))?;
             Ok(())
         }
         Command::Watch { receive_buffer } => {
@@ -512,10 +548,12 @@ fn main() -> Result<()> {
                 rustix::net::sockopt::set_socket_recv_buffer_size(&monitor, bytes)
                     .context("setting the monitor's receive buffer")?;
             }
-            println!("watching");
+            say("watching")?;
             loop {
                 poll(&mut [PollFd::new(&monitor, PollFlags::IN)], None)?;
-                monitor.read(|change| println!("{}", said(change)));
+                let mut written = Ok(());
+                monitor.read(|change| say_into(&mut written, said(change)));
+                written?;
             }
         }
     }
