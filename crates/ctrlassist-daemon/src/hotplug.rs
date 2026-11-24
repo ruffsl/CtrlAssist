@@ -63,7 +63,8 @@ pub(crate) enum Seen {
 /// Whether the pad on `node`, at `syspath`, can rumble; `None` when it
 /// can't be opened to ask, or `node` is another pad's by now.
 fn can_rumble(node: &Path, syspath: &Path) -> Option<bool> {
-    let file = ctrlassist_device::open_node(node, syspath).ok()?;
+    let reading = std::fs::OpenOptions::new().read(true).clone();
+    let file = ctrlassist_device::open_node(node, syspath, &reading).ok()?;
     Some(Pad::from_fd(OwnedFd::from(file)).ok()?.can_rumble())
 }
 

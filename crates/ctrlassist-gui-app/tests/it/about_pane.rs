@@ -65,13 +65,13 @@ fn a_running_daemon_says_its_release_its_files_and_how_pads_are_hidden() {
     assert_eq!(row(&all, "hider").chip.as_str(), format!("v{VERSION}"));
     assert_eq!(row(&all, "hider").friendly_name, "Hiding");
     assert_eq!(row(&all, "gui").friendly_name, "GUI");
-    // A hiding service from before it could be asked its release.
-    let old = rows(&Parts {
+    // Hiding through the service, its release not passed on.
+    let unsaid = rows(&Parts {
         hider_version: String::new(),
         ..parts.clone()
     });
-    assert_eq!(row(&old, "hider").chip, "—");
-    assert!(row(&old, "hider").tip.contains("too old to say"));
+    assert_eq!(row(&unsaid, "hider").chip, "—");
+    assert_eq!(row(&unsaid, "hider").tip, "Release not read yet");
     assert_eq!(row(&all, "tray").chip.as_str(), format!("v{VERSION}"));
     assert_eq!(row(&all, "cli").health, ServiceHealth::Ok);
 

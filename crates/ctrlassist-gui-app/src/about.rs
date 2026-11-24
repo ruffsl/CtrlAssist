@@ -89,8 +89,8 @@ pub struct Parts {
     pub daemon_realtime: bool,
     /// The hiding service's health, as the daemon finds it.
     pub hider: ServiceHealth,
-    /// Its release, as the daemon passes it on; empty from a service
-    /// too old to say.
+    /// Its release, as the daemon passes it on; empty with no service,
+    /// or none read yet.
     pub hider_version: String,
     /// The tray's health, as the daemon reports it.
     pub tray: ServiceHealth,
@@ -183,11 +183,12 @@ pub fn rows(parts: &Parts) -> Vec<AboutComponentRow> {
             "looking…".to_string(),
             "The daemon has just started and is still looking for the hiding service".to_string(),
         ),
-        (true, ServiceHealth::Ok | ServiceHealth::Skew | ServiceHealth::Incompatible, "") => (
-            "—".to_string(),
-            "Hiding pads, but from a release too old to say which: restart it after an upgrade"
-                .to_string(),
-        ),
+        // A daemon finds the service there only once it has said its
+        // release, so none is from a daemon that doesn't pass it on:
+        // not read, as for the daemon itself.
+        (true, ServiceHealth::Ok | ServiceHealth::Skew | ServiceHealth::Incompatible, "") => {
+            ("—".to_string(), release_tip(parts.hider, ""))
+        }
         (true, ServiceHealth::Ok | ServiceHealth::Skew | ServiceHealth::Incompatible, version) => {
             (format!("v{version}"), release_tip(parts.hider, version))
         }

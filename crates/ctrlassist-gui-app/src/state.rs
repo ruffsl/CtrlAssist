@@ -32,7 +32,7 @@ pub struct Snapshot {
     /// unknown until the daemon's own state has arrived.
     pub hiding: Option<Hiding>,
     /// The hiding service's release, as the daemon passes it on; none
-    /// with no service, or from one too old to say.
+    /// with no service.
     pub hider: Option<String>,
     /// Where it keeps the user's files, when it says.
     pub config: String,
