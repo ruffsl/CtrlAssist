@@ -160,7 +160,9 @@ fn ok(token: u32) -> Reply {
 /// the wait for it ends when udev is done, the pad is unplugged, or
 /// `client`, the one that asked, hangs up. A hide of the pad once the
 /// entry has gone asks its re-bind after this one's, which udev runs
-/// first.
+/// first. A re-bind asked is run whether or not it was waited for to its
+/// end, and shows the pad, its markers gone: the sweep after leaves that
+/// device to it, rather than ask another.
 fn show(shared: &Arc<Shared>, token: u32, client: Option<BorrowedFd<'_>>, rebind: bool) {
     let parent = {
         let mut state = shared.state();
@@ -176,28 +178,33 @@ fn show(shared: &Arc<Shared>, token: u32, client: Option<BorrowedFd<'_>>, rebind
         }
         parent
     };
-    if let Some(parent) = parent {
+    let asked = parent.and_then(|parent| {
         let rebound = hide::rebind(&parent, Leave::AsTheRuleSays, client);
         if let Err(refusal) = rebound.outcome {
             warn!(
                 token,
                 device = %parent.path.display(),
                 %refusal,
-                "the pad's driver wasn't re-bound to show it again; it is shown at its next event"
+                asked = rebound.asked,
+                "the pad's driver wasn't seen re-bound to show it again; it is shown by the re-bind if one was asked, else at its next event"
             );
         }
-    }
+        rebound.asked.then_some(parent.path)
+    });
     shared.state().entries.retain(|entry| entry.token != token);
-    sweep(shared);
+    sweep(shared, asked.as_deref());
 }
 
 /// Shows again what the rule hides that nothing should, waiting for none
 /// of it. Holds the state as it asks, so that a hide of one of those
 /// devices is either in the state, and the device left alone, or asks
-/// its own re-bind after this one, which udev runs after it.
-fn sweep(shared: &Shared) {
+/// its own re-bind after this one, which udev runs after it. The device
+/// at `asked` has a re-bind asked already that shows it, and is left to
+/// that.
+fn sweep(shared: &Shared, asked: Option<&Path>) {
     let state = shared.state();
-    let held = state.held();
+    let mut held = state.held();
+    held.extend(asked.map(Path::to_path_buf));
     let held: Vec<&Path> = held.iter().map(PathBuf::as_path).collect();
     hide::sweep(group(), &held, &state.markers());
 }
@@ -582,7 +589,7 @@ fn run(listener: &OwnedFd) -> io::Result<()> {
     // Nothing is connected yet, so anything still hidden was left by a
     // service that died.
     hide::clear();
-    sweep(&shared);
+    sweep(&shared, None);
     // Out of descriptors or memory, accepting is left until a connection
     // closes, which frees both.
     let mut exhausted = false;

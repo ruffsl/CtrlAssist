@@ -144,7 +144,9 @@ impl Connection {
 
     /// Hangs up sending alone: what the service says until it closes
     /// its end can still be read, and its closing is that it has shown
-    /// again what was hidden through the connection.
+    /// again what was hidden through the connection, or for a pad whose
+    /// showing it gave up waiting for, asked udev for the re-bind that
+    /// does, which udev runs before any a later hide asks.
     fn stop_sending(&self) {
         self.hung_up.store(true, Ordering::Relaxed);
         self.client.stop_sending();

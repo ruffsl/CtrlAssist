@@ -188,8 +188,11 @@ impl Client {
 
     /// Hangs up sending alone, from any thread: the service takes it as
     /// a hang-up, and closes its end once it has answered what it was
-    /// asked and shown again every pad hidden through the connection.
-    /// Until then replies are read as before; after it, reading fails.
+    /// asked and shown again every pad hidden through the connection. A
+    /// pad whose showing again was under way as it hung up may then have
+    /// its re-bind still in udev's queue, which udev runs before any a
+    /// later hide of the pad asks. Until then replies are read as before;
+    /// after it, reading fails.
     pub fn stop_sending(&self) {
         // As for `hang_up`.
         let _ = shutdown(&self.socket, Shutdown::Write);

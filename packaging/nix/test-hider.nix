@@ -211,6 +211,10 @@ let
   #       until the service closes its end; then hides the pad again on
   #       a new connection; says each status, and whether the descriptor
   #       the second hide passed back still reads
+  #   hider-probe restore-then-stop <socket> <node> <fifo>
+  #       hides <node>, says the status, and once something is written to
+  #       <fifo> asks for it to be shown again and at once stops sending;
+  #       reads until the service closes its end, and says each status
   #   hider-probe uevent <text>
   #       ends once the kernel sends an event with <text> in it
   #   hider-probe rebinds <count>
@@ -487,6 +491,25 @@ let
             except OSError:
                 live = False
             print(f"hide={','.join(told)} again={data[0]} live={live}", flush=True)
+        case ["restore-then-stop", path, node, go]:
+            peer = admitted(path)
+            fd = os.open(node, os.O_RDONLY)
+            status, token, fds = ask(peer, 1, fd)
+            os.close(fd)
+            for fd in fds:
+                os.close(fd)
+            print(f"hidden={status}", flush=True)
+            with open(go) as waited:
+                waited.read()
+            peer.send(struct.pack("<BI", 3, token))
+            peer.shutdown(socket.SHUT_WR)
+            told = []
+            while True:
+                data, fds, _, _ = socket.recv_fds(peer, 6, 2)
+                if not data:
+                    break
+                told.append(str(data[0]))
+            print(f"restore={','.join(told)}", flush=True)
         case ["uevent", match]:
             # Says "seen" and ends once the kernel sends an event with
             # <match> in it, before udev has taken it.
@@ -522,7 +545,7 @@ let
                 elif action in ("unbind", "bind"):
                     print(f"{source} {action}", flush=True)
         case _:
-            sys.exit("usage: hider-probe eager|opath|hide|long|silent|idle|uids|lingering|churn|uhid|hang-up|stop-then-hide|uevent|rebinds ...")
+            sys.exit("usage: hider-probe eager|opath|hide|long|silent|idle|uids|lingering|churn|uhid|hang-up|stop-then-hide|restore-then-stop|uevent|rebinds ...")
   '';
 in
 pkgs.testers.runNixOSTest {
@@ -1518,6 +1541,42 @@ pkgs.testers.runNixOSTest {
         assert input_number() - before == 4
         assert alice_can_open(uniq)
         machine.succeed("systemctl stop pad-held")
+
+    with subtest("a showing again given up by hanging up asks one re-bind, which shows the pad, and the sweep asks none of its own"):
+        uniq = "02:00:00:00:03:02"
+        fake("pad-restored", "fake-hid", "--name", "Restored Pad", "--uniq", uniq, "--pulse", "20")
+        machine.wait_until_succeeds("ctrlassist-fixture pads | grep -c 'Restored Pad'")
+        machine.succeed("udevadm settle")
+        sysname = pads()[uniq]["event"][0].split("/")[-1]
+        hid = machine.succeed(f"basename $(readlink -f /sys/class/input/{sysname}/device/device)").strip()
+        inputs = f"ls /sys/bus/hid/devices/{hid}/input | tr -dc 0-9"
+        machine.succeed("mkfifo -m 0666 /run/go")
+        machine.succeed(f"systemd-run --unit restore-given-up --uid alice hider-probe restore-then-stop {SOCKET} {pads()[uniq]['event'][0]} /run/go")
+        machine.wait_until_succeeds("journalctl -u restore-given-up -o cat | grep -qx hidden=0")
+        machine.succeed("udevadm settle")
+        before = int(machine.succeed(inputs))
+        # udev held on an earlier event of the pad's HID device, so the
+        # showing's re-bind waits in its queue; then the restore, and the
+        # hang-up behind it.
+        machine.succeed("mkfifo -m 0600 /run/hold-early")
+        machine.succeed(f"echo \"change $(cat /proc/sys/kernel/random/uuid) TESTHOLD=1\" > /sys/bus/hid/devices/{hid}/uevent")
+        machine.wait_until_succeeds("pgrep -f '/bin/cat /run/hold-early$'")
+        machine.succeed("echo > /run/go")
+        # The service stops waiting, answers and closes its end with its
+        # re-bind still queued, its markers gone.
+        machine.wait_until_succeeds("journalctl -u restore-given-up -o cat | grep -q restore=")
+        told = machine.succeed("journalctl -u restore-given-up -o cat | grep restore=").strip()
+        assert told == "restore=0", told
+        assert int(machine.succeed(inputs)) == before, "udev is still held"
+        assert markers() == [], markers()
+        machine.succeed("echo > /run/hold-early && rm /run/hold-early /run/go")
+        wait_restored()
+        after = int(machine.succeed(inputs))
+        print(f"a showing again given up by hanging up: the pad's input went from input{before} to input{after}")
+        # The one re-bind asked showed it; the sweep after asked no other.
+        assert after - before == 1, (before, after)
+        assert alice_can_open(uniq) and alice_can_open(uniq, "js")
+        machine.succeed("systemctl stop pad-restored")
 
     with subtest("two re-binds of a pad asked back to back are run one after the other, and a hide asked behind another is done on its own"):
         uniq = "02:00:00:00:04:01"
