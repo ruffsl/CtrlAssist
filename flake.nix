@@ -114,6 +114,9 @@
         checks.hider = pkgs.callPackage ./packaging/nix/test-hider.nix {
           inherit (self.packages.${system}) fixture hider;
         };
+        checks.hider-old-kernel = pkgs.callPackage ./packaging/nix/test-hider-old-kernel.nix {
+          inherit (self.packages.${system}) fixture hider;
+        };
         checks.daemon = pkgs.callPackage ./packaging/nix/test-daemon.nix {
           inherit (self.packages.${system}) fixture;
           package = self.packages.${system}.default;

@@ -10,11 +10,13 @@
 //!
 //! Each connection has a thread of its own, so a client that stops
 //! reading its replies, or passes a descriptor whose closing blocks,
-//! holds up nobody but itself; a connection that isn't served is closed
-//! by a thread kept for that, never by the one that accepts. What is
-//! hidden is shared, behind one lock that no thread holds while it waits
-//! on a client or on udev. A connection owns the pads it has hidden;
-//! when it closes, for any reason, they are shown again.
+//! holds up nobody but itself. Where the kernel can, a connection passes
+//! no descriptor until the service has admitted it; a connection that
+//! isn't served is closed by a thread kept for that, never by the one
+//! that accepts. What is hidden is shared, behind one lock that no thread
+//! holds while it waits on a client or on udev. A connection owns the
+//! pads it has hidden; when it closes, for any reason, they are shown
+//! again.
 
 mod activation;
 mod connections;
@@ -32,7 +34,10 @@ use std::process::ExitCode;
 use std::sync::mpsc::{self, SendError};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use ctrlassist_hider::{Refusal, Reply, Request, Token, pack_release, receive, send};
+use ctrlassist_hider::{
+    Refusal, Reply, Request, Token, is_unknown_to_the_kernel, pack_release, receive, send,
+    take_descriptors, takes_descriptors,
+};
 use rustix::event::{EventfdFlags, PollFd, PollFlags, eventfd, poll};
 use rustix::io::Errno;
 use rustix::net::sockopt::socket_peercred;
@@ -516,6 +521,49 @@ fn wait(shared: &Shared, listener: &OwnedFd, exhausted: bool) -> Woken {
     }
 }
 
+/// Whether a connection is refused descriptors until the service admits
+/// it, as the socket unit has the listener refuse them and `--listen`
+/// makes it: then each connection admitted is let pass them, and one the
+/// service won't serve never could, so its close releases nothing that
+/// could block the closer. Asked of the listener once, and said: a kernel
+/// from before Linux 6.16 has no such setting, and every connection may
+/// pass descriptors as soon as it has connected, leaving the closer the
+/// only defense against a close that blocks. A listener that takes them,
+/// as one from systemd before 258 does, the unit's setting unknown to it,
+/// is made to refuse them here, for the connections queued from now on.
+fn refusing(listener: BorrowedFd<'_>) -> bool {
+    match takes_descriptors(listener) {
+        Ok(false) => {
+            info!("connections pass no descriptor until they are admitted");
+            true
+        }
+        Ok(true) => match take_descriptors(listener, false) {
+            Ok(()) => {
+                warn!(
+                    "the listener took descriptors, as systemd before 258 leaves it; it refuses them from now on, but a connection queued before now may still carry them, for the closer to close"
+                );
+                true
+            }
+            Err(error) => {
+                warn!(%error, "the listener takes descriptors and couldn't be made to refuse them; a connection the service won't serve may carry a socket whose close blocks the closer");
+                false
+            }
+        },
+        Err(error) if is_unknown_to_the_kernel(&error) => {
+            warn!(
+                "this kernel can't refuse descriptors to a connection not yet admitted (Linux 6.16 can): a connection the service won't serve may carry a socket whose close blocks the closer, and with the closer's queue full, accepting"
+            );
+            false
+        }
+        // Each connection admitted is let pass them all the same, in case
+        // the listener refuses them.
+        Err(error) => {
+            warn!(%error, "couldn't tell whether the listener refuses descriptors");
+            true
+        }
+    }
+}
+
 /// Serves clients until stopped, or until accepting fails with nothing
 /// connected.
 ///
@@ -538,6 +586,7 @@ fn wait(shared: &Shared, listener: &OwnedFd, exhausted: bool) -> Woken {
 /// connections still queued on it, with what their clients sent, on the
 /// thread that closes it, which a lingering socket would hold there.
 fn run(listener: &OwnedFd) -> io::Result<()> {
+    let refusing = refusing(listener.as_fd());
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
         // Blocking: it is read only once a connection has closed, or when
@@ -618,6 +667,11 @@ fn run(listener: &OwnedFd) -> io::Result<()> {
             state.next_connection += 1;
             (state.next_connection, holder)
         };
+        // Admitted: its requests may carry descriptors from here on. The
+        // client sends one only once it has had a reply, which comes after.
+        if refusing && let Err(error) = take_descriptors(socket.as_fd(), true) {
+            warn!(%error, "couldn't let an admitted connection pass descriptors; it can have nothing hidden");
+        }
         // The connection is handed over once the thread runs, so that one
         // whose thread couldn't be started is still here, for the closer.
         let (hand, handed) = mpsc::channel::<OwnedFd>();
@@ -657,6 +711,10 @@ fn listen_at(path: &Path) -> io::Result<OwnedFd> {
         }
     }
     let socket = socket(AddressFamily::UNIX, SocketType::SEQPACKET, None)?;
+    // Descriptors refused until a connection is admitted, as the socket
+    // unit has it, from before anyone can connect. Where that fails, the
+    // service says what it makes of the listener as it starts.
+    let _ = take_descriptors(socket.as_fd(), false);
     // Anyone may connect, as with the installed socket; who is served is
     // decided per connection. The mode is given as the socket is made,
     // under a umask, so nothing is changed by a path that could have been

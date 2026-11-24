@@ -163,8 +163,14 @@ let
 
   # A client of the service that does what the fixture's well-behaved one
   # doesn't, speaking the wire format directly: a request and a token,
-  # five bytes; a status, a token and a flag, six.
+  # five bytes; a status, a token and a flag, six. Like the client library,
+  # it asks the release on a connection before it passes a descriptor
+  # there, the service taking none until it has admitted the connection,
+  # except where it says it doesn't.
   #
+  #   hider-probe eager <socket> <node>
+  #       passes a descriptor on <node>, beside a version request, as soon
+  #       as it has connected; says whether it was sent
   #   hider-probe opath <socket> <opcode> <node>
   #       passes a descriptor on <node> opened O_PATH, says the status
   #   hider-probe hide <socket> <node>
@@ -183,9 +189,10 @@ let
   #       once; with hold, holds them
   #   hider-probe lingering <socket> <count> [<more>]
   #       opens <count> connections and sends nothing, then one more that
-  #       passes a TCP socket whose close lingers, its data never read;
-  #       says how many it holds and whether the last was closed; then
-  #       opens <more> connections, sending nothing; holds
+  #       tries to pass a TCP socket whose close lingers, its data never
+  #       read, before it is accepted; says whether it could, how many it
+  #       holds and whether the last was closed; then opens <more>
+  #       connections, sending nothing; holds
   #   hider-probe churn <socket> <count>
   #       <count> times without pause: connects, asks the release and
   #       closes; says how many were answered and how many refused
@@ -239,6 +246,19 @@ let
         return status, token, fds
 
 
+    def admitted(path):
+        """A connection the service has answered, so may pass descriptors."""
+        peer = connect(path)
+        ask(peer, 6)
+        return peer
+
+
+    def pass_hide(peer, fd):
+        """Sends a hide carrying fd, and reads no reply."""
+        rights = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [fd]))]
+        peer.sendmsg([struct.pack("<BI", 1, 0)], rights)
+
+
     def name_of(fd):
         node = os.readlink(f"/proc/self/fd/{fd}")
         base = os.path.basename(node)
@@ -247,13 +267,23 @@ let
 
 
     match sys.argv[1:]:
+        case ["eager", path, node]:
+            fd = os.open(node, os.O_RDONLY)
+            peer = connect(path)
+            try:
+                # Beside a version request, which hides nothing.
+                rights = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [fd]))]
+                peer.sendmsg([struct.pack("<BI", 6, 0)], rights)
+                print("sent=yes")
+            except OSError as error:
+                print(f"sent={error.strerror}")
         case ["opath", path, opcode, node]:
             fd = os.open(node, os.O_PATH)
-            status, _, fds = ask(connect(path), int(opcode), fd)
+            status, _, fds = ask(admitted(path), int(opcode), fd)
             print(f"status={status} fds={len(fds)}")
         case ["hide", path, node]:
             fd = os.open(node, os.O_RDONLY)
-            status, token, fds = ask(connect(path), 1, fd)
+            status, token, fds = ask(admitted(path), 1, fd)
             if fds:
                 node, name = name_of(fds[0])
                 print(f"status={status} node={node} name={name}")
@@ -337,9 +367,16 @@ let
             except BlockingIOError:
                 pass
             # Sent before the service accepts, so the service's end is the
-            # last to hold it.
+            # last to hold it, where the kernel lets it be sent.
             last = connect(path)
-            socket.send_fds(last, [struct.pack("<BI", 6, 0)], [stuck.fileno()])
+            try:
+                socket.send_fds(last, [struct.pack("<BI", 6, 0)], [stuck.fileno()])
+                passed = "yes"
+            except OSError as error:
+                passed = error.strerror
+                # The last to hold it here: closed with no linger.
+                stuck.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            print(f"passed={passed}", flush=True)
             stuck.close()
             try:
                 closed = last.recv(6) == b""
@@ -407,18 +444,18 @@ let
             while True:
                 os.read(uhid, 4380)
         case ["hang-up", path, node, go]:
-            peer = connect(path)
+            peer = admitted(path)
             fd = os.open(node, os.O_RDONLY)
-            peer.sendmsg([struct.pack("<BI", 1, 0)], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [fd]))])
+            pass_hide(peer, fd)
             os.close(fd)
             with open(go) as waited:
                 waited.read()
             peer.close()
             print("hung up", flush=True)
         case ["stop-then-hide", path, node, hid, go]:
-            peer = connect(path)
+            peer = admitted(path)
             fd = os.open(node, os.O_RDONLY)
-            peer.sendmsg([struct.pack("<BI", 1, 0)], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [fd]))])
+            pass_hide(peer, fd)
             os.close(fd)
             with open(go) as waited:
                 waited.read()
@@ -436,8 +473,8 @@ let
             # Hidden again, on its node as it is now.
             [event] = glob.glob(f"/sys/bus/hid/devices/{hid}/input/input*/event*")
             fd = os.open("/dev/input/" + os.path.basename(event), os.O_RDONLY)
-            peer = connect(path)
-            peer.sendmsg([struct.pack("<BI", 1, 0)], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [fd]))])
+            peer = admitted(path)
+            pass_hide(peer, fd)
             os.close(fd)
             data, fds, _, _ = socket.recv_fds(peer, 6, 2)
             # The pad reports every 20 ms: a live descriptor has something
@@ -485,7 +522,7 @@ let
                 elif action in ("unbind", "bind"):
                     print(f"{source} {action}", flush=True)
         case _:
-            sys.exit("usage: hider-probe opath|hide|long|silent|idle|uids|lingering|churn|uhid|hang-up|stop-then-hide|uevent|rebinds ...")
+            sys.exit("usage: hider-probe eager|opath|hide|long|silent|idle|uids|lingering|churn|uhid|hang-up|stop-then-hide|uevent|rebinds ...")
   '';
 in
 pkgs.testers.runNixOSTest {
@@ -975,6 +1012,8 @@ pkgs.testers.runNixOSTest {
         assert machine.succeed("stat -c '%A %U' /run/ctrlassist-dev/hider.sock").strip() == "srw-rw-rw- ctrlassist-hider"
         told = machine.succeed("su -l alice -c 'ctrlassist-fixture version --socket /run/ctrlassist-dev/hider.sock'").strip()
         assert told == "version: ${hider.version}", told
+        # Its own listener refuses descriptors, as the socket unit's does.
+        machine.succeed("journalctl -u hider-by-hand -o cat | grep -q 'connections pass no descriptor until they are admitted'")
         # Without the unit's sandbox, its user's permissions alone hide a pad.
         machine.succeed(
             f"systemd-run --unit by-hand --uid alice ctrlassist-fixture hide {pads()[A]['event'][0]} "
@@ -1264,66 +1303,74 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl stop keeper-again")
         wait_restored()
 
-    with subtest("a connection over the cap that carries a socket whose close lingers is closed off the main thread, and the user at the seat is served at once"):
-        # A user with no seat holds the eight connections they may, then
-        # sends a ninth a TCP socket before it is accepted: closing the
-        # ninth, the service is left holding the socket's last reference.
-        # Sent as the service starts, as before anyone has used it since
-        # boot: a running service may accept the ninth before it is sent.
+    with subtest("a connection takes no descriptor until the service has answered on it, and a client that asks first hides a pad as the service starts"):
+        # The service says what it made of its listener as it started.
+        machine.succeed("journalctl -u ctrlassist-hider.service -o cat | grep -q 'connections pass no descriptor until they are admitted'")
+        # Queued as the service starts, a connection has the listener's
+        # setting: a descriptor passed at once, as by a client that asks
+        # nothing first, is refused by the kernel before it is sent.
         machine.succeed("systemctl stop ctrlassist-hider.service")
-        machine.succeed(f"systemd-run --unit lingering --uid bob hider-probe lingering {SOCKET} 8")
-        machine.wait_until_succeeds("journalctl -u lingering -o cat | grep -q held=")
-        told = machine.succeed("journalctl -u lingering -o cat | grep held=").strip()
-        assert told == "held=8 closed=True", told
-        pid = machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip()
-        # The close lingers, on the service's closer.
-        closer = f"for task in /proc/{pid}/task/*; do if grep -qx closer $task/comm; then cat $task/stack; fi; done"
-        machine.wait_until_succeeds(f"{closer} | grep -q tcp_close")
-        print("the closer, closing the ninth: " + " < ".join(line.split()[-1] for line in machine.succeed(closer).splitlines()[:8]))
-        # Served all the same: her release told, a pad hidden and shown
-        # again.
-        told = machine.succeed(f"su -l alice -c 'ctrlassist-fixture version --socket {SOCKET}'").strip()
-        assert told == "version: ${hider.version}", told
-        control, told = hide("past-lingering", pads()[A]["event"][0])
+        told = machine.succeed(f"su -l alice -c 'hider-probe eager {SOCKET} {pads()[A]['event'][0]}'").strip()
+        assert told == "sent=Operation not permitted", told
+        # The client library asks the release first, and passes the pad
+        # once it is answered: the first client the service ever has
+        # hides a pad.
+        machine.succeed("systemctl stop ctrlassist-hider.service")
+        control, told = hide("cold", pads()[A]["event"][0])
         assert told.startswith("ok"), told
         assert order(control, "restore").startswith("ok")
-        assert machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip() == pid, "the service didn't restart"
-        # The probe gone, its unread data is reset and the close ends.
-        machine.succeed("systemctl stop past-lingering lingering")
-        machine.wait_until_fails(f"{closer} | grep -q tcp_close")
+        machine.succeed("systemctl stop cold")
         wait_restored()
 
-    with subtest("a user with no seat who holds the closer in a lingering close and fills its queue stops the service accepting, for as long as the close lingers"):
-        # What the service does today, not what it should. Eight held, a
-        # ninth passing a lingering socket before it is accepted, then 64
-        # that fill the closer's queue behind it and one more, which the
-        # main thread keeps for want of room. Sent as the service starts,
-        # as before anyone has used it since boot.
+    with subtest("a user with no seat can pass no descriptor before being admitted, so nothing they send holds the closer, and the user at the seat is served at once"):
+        # What the closer alone stood against before: eight connections
+        # held, a ninth that passes a TCP socket whose close lingers before
+        # it is accepted, then 65 more, which would fill the closer's queue
+        # behind that close and have the main thread keep the last and
+        # accept nothing more. Sent as the service starts, as before anyone
+        # has used it since boot: the kernel refuses the socket at the send.
         machine.succeed("systemctl stop ctrlassist-hider.service")
         machine.succeed(f"systemd-run --unit flood --uid bob hider-probe lingering {SOCKET} 8 65")
         machine.wait_until_succeeds("journalctl -u flood -o cat | grep -q more=")
-        told = " ".join(machine.succeed("journalctl -u flood -o cat | grep -E 'held=|more='").split())
-        assert told == "held=8 closed=True more=65", told
+        told = " ".join(machine.succeed("journalctl -u flood -o cat | grep -E 'passed=|held=|more='").split())
+        assert told == "passed=Operation not permitted held=8 closed=True more=65", told
         pid = machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip()
-        closer = f"for task in /proc/{pid}/task/*; do if grep -qx closer $task/comm; then cat $task/stack; fi; done"
-        machine.wait_until_succeeds(f"{closer} | grep -q tcp_close")
-        # The main thread then waits on the closings alone: a ppoll of one
-        # descriptor, the listener left out.
-        machine.wait_until_succeeds(f"test \"$(cut -d' ' -f1,3 /proc/{pid}/syscall)\" = '271 0x1'")
-        # So the user at the seat waits in the backlog, unanswered.
-        machine.succeed(f"systemd-run --unit waiting --uid alice ctrlassist-fixture version --socket {SOCKET}")
-        machine.wait_until_succeeds(f"ss -xlH | grep -F {SOCKET} | awk '{{print $3}}' | grep -x 1")
-        assert machine.succeed(f"cut -d' ' -f1,3 /proc/{pid}/syscall").strip() == "271 0x1"
-        machine.succeed(f"{closer} | grep -q tcp_close")
-        machine.succeed("systemctl is-active waiting")
-        assert "version:" not in machine.succeed("journalctl -u waiting -o cat")
-        print("held in a lingering close, its queue full: the main thread " + machine.succeed(f"cut -d' ' -f1-3 /proc/{pid}/syscall").strip() + "; the listener's backlog " + machine.succeed(f"ss -xlH | grep -F {SOCKET}").strip())
-        # Until the close ends: the probe gone, the queue is closed and the
-        # user at the seat answered.
-        machine.succeed("systemctl stop flood")
-        machine.wait_until_fails("systemctl is-active waiting")
-        told = machine.succeed("journalctl -u waiting -o cat | grep version:").strip()
+        # The user at the seat is answered at once, and hides a pad.
+        told = machine.succeed(f"su -l alice -c 'ctrlassist-fixture version --socket {SOCKET}'").strip()
         assert told == "version: ${hider.version}", told
+        control, told = hide("past-flood", pads()[A]["event"][0])
+        assert told.startswith("ok"), told
+        assert order(control, "restore").startswith("ok")
+        # The closer never lingered in a close, and the main thread waits
+        # on the listener as well as the closings: a ppoll of two.
+        closer = f"for task in /proc/{pid}/task/*; do if grep -qx closer $task/comm; then cat $task/stack; fi; done"
+        assert machine.execute(f"{closer} | grep -q tcp_close")[0] != 0, machine.succeed(closer)
+        machine.wait_until_succeeds(f"test \"$(cut -d' ' -f1,3 /proc/{pid}/syscall)\" = '271 0x2'")
+        assert machine.succeed("systemctl show -p MainPID --value ctrlassist-hider.service").strip() == pid, "the service didn't restart"
+        machine.succeed("systemctl stop past-flood flood")
+        wait_restored()
+
+    with subtest("a listener that takes descriptors, as systemd before 258 leaves it, is made to refuse them as the service starts"):
+        # As where systemd doesn't know the socket unit's setting.
+        machine.succeed("systemctl stop ctrlassist-hider.service ctrlassist-hider.socket")
+        machine.succeed("mkdir -p /run/systemd/system/ctrlassist-hider.socket.d")
+        machine.succeed("printf '[Socket]\\nAcceptFileDescriptors=yes\\n' > /run/systemd/system/ctrlassist-hider.socket.d/takes.conf")
+        machine.succeed("systemctl daemon-reload")
+        machine.succeed("systemctl start ctrlassist-hider.socket")
+        # Queued before the service has started, a connection still has
+        # the listener's setting from then: its descriptor is sent.
+        told = machine.succeed(f"su -l alice -c 'hider-probe eager {SOCKET} {pads()[A]['event'][0]}'").strip()
+        assert told == "sent=yes", told
+        machine.wait_until_succeeds("journalctl -u ctrlassist-hider.service -o cat | grep -q 'the listener took descriptors'")
+        control, told = hide("taking", pads()[A]["event"][0])
+        assert told.startswith("ok"), told
+        assert order(control, "restore").startswith("ok")
+        machine.succeed("systemctl stop taking")
+        wait_restored()
+        machine.succeed("systemctl stop ctrlassist-hider.service ctrlassist-hider.socket")
+        machine.succeed("rm /run/systemd/system/ctrlassist-hider.socket.d/takes.conf")
+        machine.succeed("systemctl daemon-reload")
+        machine.succeed("systemctl start ctrlassist-hider.socket")
 
     with subtest("connecting and closing without pause while nothing is hidden neither starts the service again nor puts the socket out of service"):
         # Started once, the service stays, so the starts systemd limits
