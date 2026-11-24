@@ -67,6 +67,11 @@ pub enum MuxFeedback {
 }
 
 /// A mux node's settings.
+///
+/// Motion and the touchpad's contacts are no group's, and no rule covers
+/// them: a mux takes both whole from one input, the one selected if it
+/// [`selects`](Self::selects), as a toggle does, and otherwise its first,
+/// a preset's primary.
 #[derive(Clone, PartialEq, Debug)]
 pub struct MuxConfig {
     /// The rule for each group.
@@ -235,6 +240,13 @@ impl Mux {
         self.selects.then_some(self.selected)
     }
 
+    /// The input motion and the touchpad's contacts come from: the one
+    /// selected if anything here follows the selection, otherwise the
+    /// first.
+    fn carrier(&self) -> usize {
+        self.selected().unwrap_or(0)
+    }
+
     /// The inputs feedback goes to, as a mask.
     pub(crate) fn feedback_inputs(&self) -> u32 {
         let all = (1 << self.inputs) - 1;
@@ -283,6 +295,12 @@ impl Mux {
             inputs.iter().fold(0, |held, state| held | state.buttons())
         };
         *out.buttons_mut() = loose & self.loose_buttons;
+
+        // Motion and the touchpad, whole from one input and never
+        // blended: a game sees one pad's two sensors, which agree.
+        let carrier = &inputs[self.carrier()];
+        out.set_motion(carrier.motion());
+        out.set_touchpad(carrier.touchpad());
 
         for (index, (group, rule)) in self.rules.iter().enumerate() {
             let active = &mut self.active[index];

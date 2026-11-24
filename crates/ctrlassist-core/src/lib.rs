@@ -9,6 +9,9 @@
 //! input states and a little state of its own, and the graph emits the
 //! difference from what the virtual pad last held. That makes resyncs,
 //! dropouts and switches the same computation as an ordinary event.
+//! A pad's motion sensors and touchpad are carried beside its controls,
+//! each taken whole from one input and never diffed: a virtual pad that
+//! carries them is written its whole state.
 
 mod control;
 mod demux;
@@ -17,7 +20,9 @@ mod graph;
 mod ids;
 mod mux;
 
-pub use control::{AXES, BUTTONS, Control, Group, Kind, Layout, PadState, gamepad};
+pub use control::{
+    AXES, BUTTONS, Contact, Control, Group, Kind, Layout, Motion, PadState, Touchpad, gamepad,
+};
 pub use demux::{DemuxConfig, DemuxFeedback, DemuxMode, MAX_OUTPUTS};
 pub use feedback::{EFFECTS, Effect, EffectKey, FeedbackError, Level, Router};
 pub use graph::{

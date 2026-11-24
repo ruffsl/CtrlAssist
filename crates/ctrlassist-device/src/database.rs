@@ -128,7 +128,7 @@ fn target(name: &str) -> Option<Out> {
         "paddle2" => spare(17),
         "paddle3" => spare(18),
         "paddle4" => spare(19),
-        "touchpad" => spare(20),
+        "touchpad" => button(gamepad::TOUCHPAD),
         "misc2" => spare(21),
         "misc3" => spare(22),
         "misc4" => spare(23),

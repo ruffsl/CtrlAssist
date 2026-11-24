@@ -27,7 +27,7 @@ Working space for in-progress plan docs. Which changes need one, and the steps f
 - [`bluetooth-output.md`](bluetooth-output.md) — whole output reports for a DualSense on Bluetooth: lights and trigger effects, not rumble alone.
 - [`hider-rootless.md`](hider-rootless.md) — the hiding service as a user with no capabilities: a static rule keyed on marker files, re-binds asked of udev a pad at a time, and the security findings closed in that shape.
 - [`review.md`](review.md) — a workspace review before 0.5.0: every finding triaged by area, the hiding service without root, and the fix batches.
-- [`motion-and-touch.md`](motion-and-touch.md) — a PlayStation pad's touchpad, gyroscope and accelerometer carried to a virtual DualSense: the primary's pad's, unless an assist engages theirs by a button; decided, the hidden touchpad's step landed, the rest begun before 0.5.0 by the maintainer's decision.
+- [`motion-and-touch.md`](motion-and-touch.md) — a PlayStation pad's touchpad, gyroscope and accelerometer carried to a virtual DualSense: the primary's pad's, unless an assist engages theirs by a button; decided, the hidden touchpad's and the pad state's steps landed, before 0.5.0 by the maintainer's decision.
 - [`rebind-by-identity.md`](rebind-by-identity.md) — a re-bind known by the device it leaves in place: the daemon's count and the hiding service's turns taken out, on the fourth review's word.
 
 Remove the entry when the plan retires and its file deletes (per Convention above). Git history is the archive, so there is no retired-plans list here.
