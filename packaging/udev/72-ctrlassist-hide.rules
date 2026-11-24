@@ -119,6 +119,22 @@ GOTO="ctrlassist_hide_end"
 # hidden or not.
 LABEL="ctrlassist_hide"
 OWNER:="root", GROUP:="ctrlassist-hider", MODE:="0660", TAG-="uaccess", ENV{CTRLASSIST_HIDDEN}="1"
+# And left alone by libinput, the compositor's reader of input, which
+# has logind open a node for it whatever the node's group, and would take
+# a pad's touchpad for a pointer. libinput reads this only as it adds a
+# node, and reads event nodes alone; a hide's re-bind makes every node
+# anew, and so does the showing again, which leaves it off.
+KERNEL=="event*", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+# A touchpad hidden by a change event, as one of a pad plugged in while
+# hidden can be, below, was added unhidden, and libinput keeps a node it
+# has taken whatever a change event says: udev is told it went and came
+# back, its node left as it is, so that libinput lets it go and leaves it
+# alone as it comes back. Only a touchpad that isn't a joystick: libinput
+# passes over a pad's joystick and motion sensors by itself, and a
+# joystick's node going would be taken for its pad going.
+ACTION=="change", KERNEL=="event*", ENV{ID_INPUT_TOUCHPAD}=="1", ENV{ID_INPUT_JOYSTICK}!="1", \
+  RUN+="/usr/bin/udevadm trigger --action=remove /sys%p", \
+  RUN+="/usr/bin/udevadm trigger --action=add /sys%p"
 # A hidden pad's joystick node, its device enumerated for the first time:
 # once its file has the bit, after the lines above, a change event for
 # every node under the device. udev runs each after any event of that
