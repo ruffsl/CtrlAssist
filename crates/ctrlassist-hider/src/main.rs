@@ -241,22 +241,35 @@ fn contained<T>(what: &str, work: impl FnOnce() -> T) -> Option<T> {
 }
 
 /// Shows a pad again as [`show`] does, a panic in that ending it for this
-/// pad alone: the pad is then forgotten, with the markers no other pad
-/// has, so that nothing holds it hidden or busy, and the rule shows it at
-/// its next event, or the next sweep has it re-bound.
+/// pad alone: the pad is then [forgotten](forget). A panic in that is
+/// contained too, so that whoever shows the pad goes on: a connection's
+/// thread still gives back its place and says it closed.
 fn show_contained(shared: &Arc<Shared>, token: u32) {
     if contained("showing a pad again", || show(shared, token, None, true)).is_some() {
         return;
     }
-    let mut state = shared.state();
-    let Some(index) = state.entries.iter().position(|entry| entry.token == token) else {
-        return;
-    };
-    let entry = state.entries.remove(index);
-    let remaining = state.markers();
-    for marker in entry.pad.markers.difference(&remaining) {
-        hide::delete(marker);
+    contained("forgetting a pad whose showing panicked", || {
+        forget(shared, token);
+    });
+}
+
+/// Forgets a pad whose showing panicked, with the markers no other pad
+/// has, so that nothing holds it hidden or busy; then sweeps, which has
+/// its driver re-bound, its nodes being the group's and named by no
+/// marker now, so that it is shown at once rather than at its next event.
+fn forget(shared: &Shared, token: u32) {
+    {
+        let mut state = shared.state();
+        let Some(index) = state.entries.iter().position(|entry| entry.token == token) else {
+            return;
+        };
+        let entry = state.entries.remove(index);
+        let remaining = state.markers();
+        for marker in entry.pad.markers.difference(&remaining) {
+            hide::delete(marker);
+        }
     }
+    sweep(shared, None);
 }
 
 /// Shows again every pad connection `owner` hid, each on a thread of its
