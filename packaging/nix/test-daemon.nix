@@ -381,6 +381,9 @@ pkgs.testers.runNixOSTest {
         print("\n".join(heard))
         assert heard[0].startswith(f"arrived {first} "), heard
         assert heard[-1] == "overran" and heard.count("overran") == 1, heard
+        # And nothing of the rest was kept: the buffer had room for the
+        # pad's change, and none for any pad's after it.
+        assert heard == [heard[0], "overran"], heard
 
     with subtest("a connected DualSense is copied through the service, and virtual ones are made from it"):
         # A stand-in for a real one: a pad of the kernel's PlayStation
@@ -482,7 +485,7 @@ pkgs.testers.runNixOSTest {
     TAKES = "the listener took descriptors although the socket unit refuses them"
     REFUSES = "connections pass no descriptor until they are admitted"
 
-    with subtest("a switch that changes the socket's unit restarts the socket, and the service with it, while the daemon keeps its setup's pads from games"):
+    with subtest("a switch that changes the socket's unit restarts the socket, and the service with it, and the daemon hides its setup's pads again"):
         # A switch leaves a changed socket unit alone by itself; the
         # module's own unit has it restarted.
         assert service_said(REFUSES)
