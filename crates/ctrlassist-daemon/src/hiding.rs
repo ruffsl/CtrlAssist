@@ -547,11 +547,18 @@ impl Hiding {
         let own = Arc::clone(&self.own);
         // What was found is noted as it is found.
         drop(self.connect(&own));
+        self.looked();
+    }
+
+    /// Ends a look, whatever it found or however it ended, a panic among
+    /// them: a service still being looked for wasn't found, and a start
+    /// waiting for the look goes on with the pads grabbed.
+    pub(crate) fn looked(&self) {
         let mut state = self.state();
         if state.found == Found::Looking {
-            // The daemon stopped first, or the service wouldn't say, as
-            // to a user not in front of a seat: pads are grabbed until a
-            // later connection finds it.
+            // The daemon stopped first, the service wouldn't say, as to
+            // a user not in front of a seat, or the look panicked: pads
+            // are grabbed until a later connection finds it.
             state.found = Found::Absent;
         }
         drop(state);

@@ -456,7 +456,7 @@ impl Setups {
 /// Runs `work`, or if it panics, logs that and runs `instead`: work done
 /// off the reactor comes back to it whatever happens, or what waits on
 /// it waits for good.
-fn caught<T>(what: &str, work: impl FnOnce() -> T, instead: impl FnOnce() -> T) -> T {
+pub(crate) fn caught<T>(what: &str, work: impl FnOnce() -> T, instead: impl FnOnce() -> T) -> T {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|_| {
         error!(work = what, "work done off the reactor panicked");
         instead()
@@ -4455,6 +4455,22 @@ mod tests {
         finish(&mut rig.reactor).await;
         let slot = primary(&rig);
         assert!(!slot.returning && slot.present && slot.token.is_none());
+    }
+
+    /// A look for the hiding service that panics ends as one that found
+    /// nothing: it comes back, the pads are grabbed, and the next socket
+    /// made is looked at.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_look_that_panics_has_found_nothing() {
+        let mut rig = rig().await;
+        let path = rig._dir.path().join("hider.sock");
+        rig.reactor.hiding = Arc::new(Hiding::new(&path));
+        rig.reactor.look_with(|_| panic!("as a test"));
+        finish(&mut rig.reactor).await;
+        assert_eq!(rig.reactor.hiding.mechanism(), payload::Hiding::Grab);
+        rig.reactor.saw(Seen::HiderSocket).await;
+        assert!(!rig.reactor.work.is_empty(), "looked for again");
+        finish(&mut rig.reactor).await;
     }
 
     /// A pad grabbed for want of the hiding service and hidden since is

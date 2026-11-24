@@ -36,7 +36,7 @@ use crate::device_identity;
 use crate::hiding::Hiding;
 use crate::hotplug::Seen;
 use crate::profiles::Profiles;
-use crate::setups::{Done, Owed, Owing, Setups};
+use crate::setups::{Done, Owed, Owing, Setups, caught};
 use crate::store::Store;
 
 /// Heartbeat period for sample-miss recovery on cached publishers: a
@@ -244,6 +244,13 @@ impl Reactor {
     /// it is there. One look at a time: a socket made during one has
     /// another once it is back.
     pub(crate) fn look_for_the_hiding_service(&mut self) {
+        self.look_with(Hiding::look);
+    }
+
+    /// Looks for the hiding service by `look`. A look that panics ends as
+    /// one that found nothing, and comes back all the same, so that the
+    /// next socket made is looked at, and a start waiting for it goes on.
+    pub(crate) fn look_with(&mut self, look: fn(&Hiding)) {
         if self.looking {
             self.look_again = true;
             return;
@@ -251,7 +258,11 @@ impl Reactor {
         self.looking = true;
         let hiding = Arc::clone(&self.hiding);
         self.work.spawn_blocking(move || {
-            hiding.look();
+            caught(
+                "looking for the hiding service",
+                || look(&hiding),
+                || hiding.looked(),
+            );
             Done::Looked
         });
     }
