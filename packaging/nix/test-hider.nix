@@ -196,12 +196,14 @@ let
   #   hider-probe churn <socket> <count>
   #       <count> times without pause: connects, asks the release and
   #       closes; says how many were answered and how many refused
-  #   hider-probe uhid <name> <phys> [<uniq> combo|merged]
+  #   hider-probe uhid <name> <phys> [<uniq> combo|merged|record]
   #       makes a HID game pad through uhid with that phys and no address;
   #       holds. With combo, a game pad and a keyboard in one descriptor,
   #       each its own report, product 0bad, with that address; with
   #       merged, the keyboard's keys in the game pad's own report, which
-  #       makes one input, product 0bac
+  #       makes one input, product 0bac; with record, a record button in
+  #       the game pad's own report, as an Xbox Series pad's share button
+  #       is, product 0bab
   #   hider-probe hang-up <socket> <node> <fifo>
   #       hides <node> and gives the hide up by closing the connection
   #       once something is written to <fifo>
@@ -429,6 +431,15 @@ let
                     descriptor[:6] + bytes([0x85, 0x01]) + descriptor[6:]
                     + bytes([0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x02]) + keys(0x65) + bytes([0xC0])
                 )
+            elif combo and combo[1] == "record":
+                # The consumer page's Record, which the kernel gives the
+                # key KEY_RECORD, in one bit and seven of padding: a
+                # joystick with a key, and no keyboard.
+                uniq, product = combo[0].encode(), 0x0bab
+                descriptor = descriptor[:-1] + bytes([
+                    0x05, 0x0C, 0x09, 0xB2, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01,
+                    0x95, 0x01, 0x81, 0x02, 0x75, 0x07, 0x95, 0x01, 0x81, 0x01,
+                ]) + bytes([0xC0])
             elif combo:
                 # The keys inside the game pad's own collection: one input,
                 # a joystick and a keyboard at once. Only those up to the
@@ -1784,6 +1795,22 @@ pkgs.testers.runNixOSTest {
         print(f"a joystick that udev also takes for a keyboard, with a hidden pad's address: {merged}")
         assert any(line.startswith("event") for line in merged), merged
         assert all(line.split()[1:] == ["2", "input"] for line in merged), merged
+        # A joystick with a key and no keyboard, as an Xbox Series pad
+        # under xpad is, with the hidden pad's address: the service won't
+        # take it for a pad, so no marker hides it on its own account.
+        machine.succeed(f"systemd-run --unit record hider-probe uhid 'Record Pad' record {uniq} record")
+        machine.wait_until_succeeds("ls /sys/bus/hid/devices/0003:1209:0BAB.*/input/input*/event*")
+        machine.succeed("udevadm settle")
+        record = machine.succeed(
+            "for path in $(ls -d /sys/bus/hid/devices/0003:1209:0BAB.*/input/input*/event* /sys/bus/hid/devices/0003:1209:0BAB.*/input/input*/js* 2>/dev/null); do "
+            "node=/dev/input/$(basename $path); "
+            "echo $(basename $path) $(udevadm info -q property -n $node | grep -E '^ID_INPUT_(JOYSTICK|KEY|KEYBOARD)=1' | sort | tr '\\n' ' ') $(stat -c %G $node); "
+            "done"
+        ).strip().split("\n")
+        print(f"a joystick with a key, with a hidden pad's address: {record}")
+        assert len(record) == 2 and all(line.split()[1:] == ["ID_INPUT_JOYSTICK=1", "ID_INPUT_KEY=1", "input"] for line in record), record
+        event = "/dev/input/" + next(line.split()[0] for line in record if line.startswith("event"))
+        assert "refused" in machine.succeed(f"ctrlassist-hider check {event}"), "the service takes a joystick with a key for no pad"
         # The pad shown again: nothing names the device's joystick node any
         # more, and the sweep leaves it hidden rather than re-bind the
         # keyboard away.
@@ -1792,7 +1819,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("udevadm settle")
         assert combo() == was, combo()
         machine.succeed("journalctl -u ctrlassist-hider.service -o cat | grep -q 'left hidden a pad no marker names'")
-        machine.succeed("systemctl stop shared combo merged pad-shared")
+        machine.succeed("systemctl stop shared combo merged record pad-shared")
         wait_restored()
 
     with subtest("a start that keeps failing as a client waits is given up at systemd's limit, and the client let go"):

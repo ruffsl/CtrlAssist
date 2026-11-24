@@ -30,41 +30,26 @@ SUBSYSTEM=="hid|usb", ACTION=="change", ENV{SYNTH_ARG_CTRLASSIST}=="rebind", \
 SUBSYSTEM=="hidraw", GOTO="ctrlassist_hide_hidraw"
 SUBSYSTEM!="input", GOTO="ctrlassist_hide_end"
 KERNEL!="event*|js*|mouse*", GOTO="ctrlassist_hide_end"
-ENV{ID_INPUT_JOYSTICK}=="1", GOTO="ctrlassist_hide_pad"
-
-# A pad's other nodes: its touchpad, its motion sensors, the mouse node a
-# touchpad has. Never a keyboard's or a pointer's; and only under a
-# device known for a pad's, whose uevent file the lines below have given
-# the group, which shows as the file's group-write bit. At a device's
-# first enumeration, a pad plugged in, udev runs these nodes' events
-# beside the joystick's, which sets the bit, and not after it: those
-# that came too early are taken again by the change event the joystick's
-# own event has udev send them once the bit is set.
+# Never a keyboard's or a pointer's node, a joystick's that udev classes
+# as one as well among them: the service would refuse to hide it, and
+# nothing would show it again.
 ENV{ID_INPUT_KEYBOARD}=="1", GOTO="ctrlassist_hide_end"
 ENV{ID_INPUT_MOUSE}=="1", GOTO="ctrlassist_hide_end"
 ENV{ID_INPUT_TABLET}=="1", GOTO="ctrlassist_hide_end"
 ENV{ID_INPUT_POINTINGSTICK}=="1", GOTO="ctrlassist_hide_end"
-SUBSYSTEMS=="hid", TEST{0020}=="/sys/bus/hid/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
-SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST{0020}=="/sys/bus/usb/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
-GOTO="ctrlassist_hide_end"
+# A pad: a joystick that is nothing a keystroke or a pointer could come
+# from, as the service itself checks. Any other node is one of a pad's
+# other nodes, if it is a pad's at all.
+ENV{ID_INPUT_JOYSTICK}=="1", ENV{ID_INPUT_KEY}!="1", ENV{ID_INPUT_TOUCHPAD}!="1", GOTO="ctrlassist_hide_pad"
+GOTO="ctrlassist_hide_other"
 
 # Which devices the service may ask to re-bind: the HID device, or with
-# none the USB interface, of a joystick that is nothing a keystroke or a
-# pointer could come from, as the service itself checks. sysfs keeps the
-# file's group and mode for as long as the device exists, which a
-# re-bind of its driver doesn't end. Whether another of the device's
-# inputs is a keyboard can't be seen from here: the service refuses such
-# a device itself. A joystick that is also a keyboard or a pointer is
-# never hidden at all, as the service would refuse to hide it, and
-# nothing would show it again.
+# none the USB interface, of a pad. sysfs keeps the file's group and mode
+# for as long as the device exists, which a re-bind of its driver
+# doesn't end. Whether another of the device's inputs is a keyboard
+# can't be seen from here: the service refuses such a device itself.
 LABEL="ctrlassist_hide_pad"
-ENV{ID_INPUT_KEYBOARD}=="1", GOTO="ctrlassist_hide_end"
-ENV{ID_INPUT_MOUSE}=="1", GOTO="ctrlassist_hide_end"
-ENV{ID_INPUT_TABLET}=="1", GOTO="ctrlassist_hide_end"
-ENV{ID_INPUT_POINTINGSTICK}=="1", GOTO="ctrlassist_hide_end"
 KERNEL!="event*", GOTO="ctrlassist_hide_markers"
-ENV{ID_INPUT_KEY}=="1", GOTO="ctrlassist_hide_markers"
-ENV{ID_INPUT_TOUCHPAD}=="1", GOTO="ctrlassist_hide_markers"
 # A device whose file hasn't the bit yet is enumerated for the first
 # time; if the pad is hidden, its other nodes may have been passed over.
 SUBSYSTEMS=="hid", DRIVERS=="?*", TEST{0020}!="/sys/bus/hid/devices/%b/uevent", \
@@ -76,7 +61,23 @@ SUBSYSTEMS=="usb", DRIVERS=="?*", TEST{0020}!="/sys/bus/usb/devices/%b/uevent", 
   ENV{.CTRLASSIST_PAD_DEVICE}="/sys/bus/usb/devices/%b"
 SUBSYSTEMS=="usb", DRIVERS=="?*", \
   RUN+="/usr/bin/chgrp ctrlassist-hider /sys/bus/usb/devices/%b/uevent", \
-  RUN+="/usr/bin/chmod g+w /sys/bus/usb/devices/%b/uevent"
+  RUN+="/usr/bin/chmod g+w /sys/bus/usb/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
+
+# A pad's other nodes: its touchpad, its motion sensors, the mouse node a
+# touchpad has, and a joystick the service wouldn't take for a pad, as
+# one udev marks as having keys is (an Xbox Series pad's share button is
+# a key). Only under a device known for a pad's, whose uevent file the
+# lines above have given the group, which shows as the file's
+# group-write bit: such a joystick hidden by another pad's marker alone
+# would stay hidden, the service finding no pad in it to show again. At
+# a device's first enumeration, a pad plugged in, udev runs these nodes'
+# events beside the joystick's, which sets the bit, and not after it:
+# those that came too early are taken again by the change event the
+# joystick's own event has udev send them once the bit is set.
+LABEL="ctrlassist_hide_other"
+SUBSYSTEMS=="hid", TEST{0020}=="/sys/bus/hid/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
+SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST{0020}=="/sys/bus/usb/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
+GOTO="ctrlassist_hide_end"
 
 # Event, js and mouse nodes: by the pad's address, by its USB serial
 # number, by its HID device, or by its USB port, named by the kernel's
