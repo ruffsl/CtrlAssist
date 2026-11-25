@@ -216,7 +216,7 @@ pub struct Pad {
     /// on it, uploaded as it is opened, or its raw node, for a pad that
     /// is sent whole output reports; or why nothing does.
     output: Result<Output, NoEffect>,
-    /// A DualSense's raw node, read for its motion, touchpad and click.
+    /// The pad's raw node, read for its motion, touchpad and click.
     motion: Option<motion::Reader>,
     /// That node, no longer read: kept to be closed as the pad is
     /// dropped, so that the input thread closes nothing.
@@ -450,7 +450,7 @@ impl Pad {
     /// waits for the pad. Dropping the pad has that thread write what is
     /// left, leave the pad at rest with its driver's lights, and end.
     ///
-    /// A DualSense's raw node is read as well, on a duplicate of the
+    /// The raw node is read as well, on a duplicate of the
     /// descriptor, for its motion sensors, its touchpad and its click,
     /// which its driver reports on nodes of their own: the input thread
     /// listens to it beside the pad's event node. Its calibration is read
@@ -462,10 +462,11 @@ impl Pad {
     /// can't be read or duplicated, or the thread can't be started.
     pub fn set_raw(&mut self, raw: OwnedFd) -> io::Result<()> {
         let kind = Kind::of(raw.as_fd())?;
-        let motion = match kind {
-            Kind::DualSense { .. } => Some(motion::Reader::new(raw.as_fd())?),
-            Kind::DualShock4 { .. } => None,
+        let make = match kind {
+            Kind::DualSense { .. } => motion::Make::DualSense,
+            Kind::DualShock4 { bluetooth } => motion::Make::DualShock4 { bluetooth },
         };
+        let motion = Some(motion::Reader::new(raw.as_fd(), make)?);
         // The kernel's own effect, if one runs, ends here, stopped and
         // erased by the thread that wrote it.
         self.output = Ok(Output::raw(raw, kind)?);

@@ -768,9 +768,9 @@ const STOPPED: &str = "it was stopped as it started";
 /// Gives a hidden DualSense on USB, or a hidden DualShock 4, its raw
 /// node, which only the hiding service can open: what a game sends a
 /// virtual DualSense beyond rumble is written there, the whole of it to
-/// a DualSense and the lightbar's color to a DualShock 4. A DualSense's
-/// is read as well, on a duplicate of the same descriptor, for its
-/// motion sensors, touchpad and click. Any other pad, and one whose raw
+/// a DualSense and the lightbar's color to a DualShock 4. Either's is
+/// read as well, on a duplicate of the same descriptor, for its motion
+/// sensors, touchpad and click. Any other pad, and one whose raw
 /// node isn't to be had, is left to rumble through the kernel and is
 /// sent nothing else, its motion and touchpad at rest.
 fn give_raw(pad: &mut Pad, token: Token, (hiding, errand): Asking<'_>) {

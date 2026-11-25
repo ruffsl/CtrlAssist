@@ -1,5 +1,5 @@
-//! A DualSense's motion sensors, touchpad and click, read from its raw
-//! HID node.
+//! A DualSense's or a DualShock 4's motion sensors, touchpad and click,
+//! read from its raw HID node.
 //!
 //! The kernel's PlayStation driver puts these on input devices of their
 //! own beside the pad's, a motion node and a touchpad node, which the
@@ -16,6 +16,12 @@
 //! stores is the bias taken off, which is what a game reading the pad
 //! through SDL is handed. The report's layout is the kernel's `struct
 //! dualsense_input_report` (`drivers/hid/hid-playstation.c`).
+//!
+//! A DualShock 4 is read the same way by its own layout (the kernel's
+//! `struct dualshock4_input_report_common` and the touch reports after
+//! it) and its own calibration, as SDL reads that one
+//! (`HIDAPI_DriverPS4_LoadOfficialCalibrationData` in
+//! `SDL_hidapi_ps4.c`).
 
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -37,6 +43,106 @@ use crate::hidraw;
 /// before the raw node is given it.
 const BLUETOOTH_REPORT: u8 = 0x31;
 const BLUETOOTH_SIZE: usize = 78;
+
+/// A DualShock 4's input report: 0x01 over USB, 64 bytes as a
+/// DualSense's is, and over Bluetooth, once its driver has put it in its
+/// full mode, 0x11, two bytes more before the same body and a checksum
+/// after it.
+const DS4_BLUETOOTH_REPORT: u8 = 0x11;
+/// Where things are in a DualShock 4's report over USB: the third byte
+/// of buttons, the sensor time (16 bits, in units of 16/3 of a
+/// microsecond), the gyroscope's and the accelerometer's three counts,
+/// how many touch reports follow, and the first of them. A touch report
+/// is a time and two contacts, packed as a DualSense's are; the pad
+/// sends as many as it read since its last report, the newest last,
+/// room for three over USB and four over Bluetooth.
+const DS4_BUTTONS2: usize = 7;
+const DS4_SENSOR_TIME: usize = 10;
+const DS4_GYRO: usize = 13;
+const DS4_ACCEL: usize = 19;
+const DS4_TOUCHES: usize = 33;
+const DS4_TOUCH: usize = 34;
+const DS4_TOUCH_SIZE: usize = 9;
+/// The last place across and down a DualShock 4's touchpad, as the
+/// kernel's driver has it.
+const DS4_TOUCHPAD_X: f32 = 1919.0;
+const DS4_TOUCHPAD_Y: f32 = 941.0;
+/// A DualShock 4's calibration report: 0x02 over USB, and 0x05 over
+/// Bluetooth, with a checksum after it.
+const DS4_CALIBRATION: u8 = 0x02;
+const DS4_CALIBRATION_SIZE: usize = 37;
+const DS4_BLUETOOTH_CALIBRATION: u8 = 0x05;
+const DS4_BLUETOOTH_CALIBRATION_SIZE: usize = 41;
+/// No finger on either contact.
+const LIFTED: [[u8; 4]; Touchpad::CONTACTS] = [[NO_CONTACT, 0, 0, 0]; Touchpad::CONTACTS];
+
+/// Which pad's raw node is read, each with a layout of its own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Make {
+    DualSense,
+    /// A DualShock 4, and whether it is on Bluetooth, where its
+    /// calibration report is another, in another order.
+    DualShock4 {
+        bluetooth: bool,
+    },
+}
+
+impl Make {
+    /// What an input report says, if it is one: `contacts` are the pad's
+    /// last, which a DualShock 4's report with no touch report in it
+    /// leaves as they were.
+    fn parse(self, report: &[u8], contacts: [[u8; 4]; Touchpad::CONTACTS]) -> Option<Sample> {
+        match self {
+            Self::DualSense => Sample::parse(report),
+            Self::DualShock4 { .. } => Sample::parse_dualshock4(report, contacts),
+        }
+    }
+
+    /// The pad's calibration report's number and size.
+    fn calibration(self) -> (u8, usize) {
+        match self {
+            Self::DualSense => (CALIBRATION, CALIBRATION_SIZE),
+            Self::DualShock4 { bluetooth: false } => (DS4_CALIBRATION, DS4_CALIBRATION_SIZE),
+            Self::DualShock4 { bluetooth: true } => {
+                (DS4_BLUETOOTH_CALIBRATION, DS4_BLUETOOTH_CALIBRATION_SIZE)
+            }
+        }
+    }
+
+    /// What a calibration report of the pad's says.
+    fn calibrated(self, report: &[u8]) -> Calibration {
+        match self {
+            Self::DualSense => Calibration::of(report),
+            Self::DualShock4 { bluetooth } => Calibration::of_dualshock4(report, bluetooth),
+        }
+    }
+
+    /// What is used for a pad whose calibration couldn't be read.
+    fn nominal(self) -> Calibration {
+        match self {
+            Self::DualSense => Calibration::NOMINAL,
+            Self::DualShock4 { .. } => Calibration::DS4_NOMINAL,
+        }
+    }
+
+    /// The last place across and down the pad's touchpad.
+    fn touchpad(self) -> [f32; 2] {
+        match self {
+            Self::DualSense => [TOUCHPAD_X, TOUCHPAD_Y],
+            Self::DualShock4 { .. } => [DS4_TOUCHPAD_X, DS4_TOUCHPAD_Y],
+        }
+    }
+
+    /// The time from one sensor time of the pad's to the next, in thirds
+    /// of a microsecond: a DualSense counts those in 32 bits, and a
+    /// DualShock 4 sixteen of them at a time in 16.
+    fn elapsed(self, last: u32, time: u32) -> u64 {
+        match self {
+            Self::DualSense => u64::from(time.wrapping_sub(last)),
+            Self::DualShock4 { .. } => u64::from(time.wrapping_sub(last) & 0xffff) * 16,
+        }
+    }
+}
 /// The least of a calibration report SDL reads: shorter, it leaves the
 /// pad uncalibrated.
 const CALIBRATION_LEAST: usize = 35;
@@ -51,8 +157,8 @@ const _: () = assert!(BUFFER > BLUETOOTH_SIZE && BUFFER > INPUT_SIZE);
 const KEPT: usize = 64;
 
 /// What one input report says: the gyroscope's pitch, yaw and roll and
-/// the accelerometer's x, y and z in counts, when the pad read them, in
-/// thirds of a microsecond, wrapping, both contacts as the pad packs
+/// the accelerometer's x, y and z in counts, when the pad read them, by
+/// its own clock ([`Make::elapsed`]), both contacts as the pad packs
 /// them, and whether the touchpad is clicked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Sample {
@@ -95,16 +201,56 @@ impl Sample {
         })
     }
 
-    /// Both contacts: whether a finger is on each, and its place across
-    /// 0 to 1919 and down 0 to 1079, from 0 to 1.
-    fn touchpad(&self) -> Touchpad {
+    /// Reads a DualShock 4's input report over USB (0x01, 64 bytes) or
+    /// Bluetooth (0x11, 78 bytes), its number at 0. Any other report, the
+    /// short one a pad on Bluetooth sends before its driver switches it
+    /// to the full one among them, is none. The contacts are those of
+    /// the newest touch report in it, and `kept` when it has none.
+    fn parse_dualshock4(report: &[u8], kept: [[u8; 4]; Touchpad::CONTACTS]) -> Option<Self> {
+        // The body, with each place where it is in the USB report, and
+        // how many touch reports it has room for.
+        let (body, room) = match (report.first(), report.len()) {
+            (Some(&INPUT_REPORT), INPUT_SIZE) => (report, 3),
+            (Some(&DS4_BLUETOOTH_REPORT), BLUETOOTH_SIZE) => (report.get(2..)?, 4),
+            _ => return None,
+        };
+        let byte = |at: usize| body.get(at).copied();
+        let word = |at: usize| Some(i16::from_le_bytes([byte(at)?, byte(at + 1)?]));
+        let touches = usize::from(byte(DS4_TOUCHES)?).min(room);
+        let contacts = match touches.checked_sub(1) {
+            None => kept,
+            Some(newest) => {
+                // Past the touch report's own time.
+                let at = DS4_TOUCH + DS4_TOUCH_SIZE * newest + 1;
+                let contact = |slot: usize| {
+                    let at = at + 4 * slot;
+                    Some([byte(at)?, byte(at + 1)?, byte(at + 2)?, byte(at + 3)?])
+                };
+                [contact(0)?, contact(1)?]
+            }
+        };
+        Some(Self {
+            gyro: [word(DS4_GYRO)?, word(DS4_GYRO + 2)?, word(DS4_GYRO + 4)?],
+            accel: [word(DS4_ACCEL)?, word(DS4_ACCEL + 2)?, word(DS4_ACCEL + 4)?],
+            time: u32::from(u16::from_le_bytes([
+                byte(DS4_SENSOR_TIME)?,
+                byte(DS4_SENSOR_TIME + 1)?,
+            ])),
+            contacts,
+            click: byte(DS4_BUTTONS2)? & TOUCHPAD_CLICK != 0,
+        })
+    }
+
+    /// Both contacts: whether a finger is on each, and its place, from 0
+    /// to 1 across and down a touchpad whose last places are `size`.
+    fn touchpad(&self, [across, down]: [f32; 2]) -> Touchpad {
         Touchpad::new(self.contacts.map(|[first, low, middle, high]| {
             let x = u16::from(low) | (u16::from(middle & 0x0f) << 8);
             let y = u16::from(middle >> 4) | (u16::from(high) << 4);
             Contact::new(
                 first & NO_CONTACT == 0,
-                f32::from(x) / TOUCHPAD_X,
-                f32::from(y) / TOUCHPAD_Y,
+                f32::from(x) / across,
+                f32::from(y) / down,
             )
         }))
     }
@@ -134,6 +280,9 @@ const ACCEL_RESOLUTION: f32 = 8192.0;
 /// degree a second to the count, and 1/8192 of a g.
 const GYRO_USUAL: f32 = 64.0;
 const ACCEL_USUAL: f32 = 1.0;
+/// SDL's unit for a DualShock 4's gyroscope: 16 to the degree a second,
+/// a count being usually one.
+const DS4_GYRO_RESOLUTION: f32 = 16.0;
 
 /// What a pad's calibration report says each sensor count is worth, as
 /// SDL reads it.
@@ -158,6 +307,80 @@ impl Calibration {
             scale: ACCEL_USUAL / ACCEL_RESOLUTION,
         }; 3],
     };
+
+    /// What SDL uses for a DualShock 4 whose report it doubts or couldn't
+    /// read: no bias, a sixteenth of a degree a second to the count, and
+    /// 1/8192 of a g.
+    const DS4_NOMINAL: Self = Self {
+        gyro: [Axis {
+            bias: 0.0,
+            scale: 1.0 / DS4_GYRO_RESOLUTION,
+        }; 3],
+        accel: [Axis {
+            bias: 0.0,
+            scale: 1.0 / ACCEL_RESOLUTION,
+        }; 3],
+    };
+
+    /// Reads a DualShock 4's calibration report, its number at 0, as SDL
+    /// does: 0x02 over USB, and 0x05 over Bluetooth, where the
+    /// gyroscope's three plus points come before its three minus points.
+    ///
+    /// Each gyroscope axis takes its stored bias off, and its scale is
+    /// twice the speed it was calibrated at over the counts from its
+    /// bias to each of its two points; the accelerometer is as a
+    /// DualSense's. A report shorter than SDL reads is nominal; so is one
+    /// SDL doubts, with a bias past 1024 counts or a scale more than half
+    /// off nominal, which takes in an axis whose two points are its bias,
+    /// which SDL leaves with a scale of nothing, and a zero range, whose
+    /// scale is infinite.
+    fn of_dualshock4(report: &[u8], bluetooth: bool) -> Self {
+        if report.len() < CALIBRATION_LEAST {
+            return Self::DS4_NOMINAL;
+        }
+        let at = |place: usize| {
+            let byte = |at: usize| report.get(at).copied().unwrap_or(0);
+            i32::from(i16::from_le_bytes([byte(place), byte(place + 1)]))
+        };
+        let biases = [at(1), at(3), at(5)];
+        // Each axis's plus and minus points.
+        let points = if bluetooth {
+            [(at(7), at(13)), (at(9), at(15)), (at(11), at(17))]
+        } else {
+            [(at(7), at(9)), (at(11), at(13)), (at(15), at(17))]
+        };
+        // In i32, as SDL's arithmetic is in int: nothing here overflows.
+        let speed = (at(19) + at(21)) as f32 * DS4_GYRO_RESOLUTION;
+        let gyro = std::array::from_fn(|axis| {
+            let (bias, (plus, minus)) = (biases[axis], points[axis]);
+            let range = (plus - bias).abs() + (minus - bias).abs();
+            Axis {
+                bias: bias as f32,
+                // SDL leaves an axis with no range a scale of nothing,
+                // which it then doubts.
+                scale: if range == 0 {
+                    0.0
+                } else {
+                    speed / range as f32 / DS4_GYRO_RESOLUTION
+                },
+            }
+        });
+        let accel = [(23, 25), (27, 29), (31, 33)].map(|(plus, minus)| {
+            let (plus, minus) = (at(plus), at(minus));
+            let range = plus - minus;
+            Axis {
+                // Truncated toward zero, as in C.
+                bias: (plus - range / 2) as f32,
+                scale: 2.0 * ACCEL_RESOLUTION / range as f32 / ACCEL_RESOLUTION,
+            }
+        });
+        let read = Self { gyro, accel };
+        if read.is_believed(1.0, DS4_GYRO_RESOLUTION) {
+            read
+        } else {
+            Self::DS4_NOMINAL
+        }
+    }
 
     /// Reads a calibration report (0x05), its number at 0, as SDL does.
     ///
@@ -201,7 +424,7 @@ impl Calibration {
             }
         });
         let read = Self { gyro, accel };
-        if read.is_believed() {
+        if read.is_believed(GYRO_USUAL, GYRO_RESOLUTION) {
             read
         } else {
             Self::NOMINAL
@@ -210,12 +433,10 @@ impl Calibration {
 
     /// SDL's check, every bias within 1024 counts and every sensitivity
     /// within half of the usual one, made so that a sensitivity that is
-    /// no number fails it.
-    fn is_believed(&self) -> bool {
-        let gyro = self
-            .gyro
-            .iter()
-            .map(|axis| (axis, GYRO_USUAL, GYRO_RESOLUTION));
+    /// no number fails it. A gyroscope's usual sensitivity and its units
+    /// are the pad's.
+    fn is_believed(&self, usual: f32, resolution: f32) -> bool {
+        let gyro = self.gyro.iter().map(|axis| (axis, usual, resolution));
         let accel = self
             .accel
             .iter()
@@ -243,7 +464,8 @@ impl Calibration {
 /// whether it is clicked.
 pub(crate) type Reading = (Motion, Touchpad, bool);
 
-/// A DualSense's raw node, read for its motion, touchpad and click.
+/// A DualSense's or a DualShock 4's raw node, read for its motion,
+/// touchpad and click.
 ///
 /// It is a duplicate of the descriptor the pad's raw node is written on,
 /// made non-blocking: the two share what the kernel keeps of the open
@@ -252,7 +474,10 @@ pub(crate) type Reading = (Motion, Touchpad, bool);
 /// `drivers/hid/hidraw.c`); only its reads do.
 pub(crate) struct Reader {
     raw: OwnedFd,
+    make: Make,
     calibration: Calibration,
+    /// The contacts the pad last reported.
+    contacts: [[u8; 4]; Touchpad::CONTACTS],
     /// Where each report is read to: the pad's own, so reading allocates
     /// nothing.
     buffer: [u8; BUFFER],
@@ -276,7 +501,7 @@ impl std::fmt::Debug for Reader {
 }
 
 impl Reader {
-    /// Reads a DualSense's raw node as well as writing it: a duplicate of
+    /// Reads a pad's raw node as well as writing it: a duplicate of
     /// `raw`, made non-blocking, and the pad's calibration read from it.
     /// The request for the calibration waits on the pad, so this is for
     /// the control side. A calibration that can't be read is nominal, as
@@ -285,20 +510,23 @@ impl Reader {
     /// # Errors
     ///
     /// Fails if the descriptor can't be duplicated or made non-blocking.
-    pub(crate) fn new(raw: BorrowedFd<'_>) -> io::Result<Self> {
+    pub(crate) fn new(raw: BorrowedFd<'_>, make: Make) -> io::Result<Self> {
         let raw = raw.try_clone_to_owned()?;
         let flags = rustix::fs::fcntl_getfl(&raw)?;
         rustix::fs::fcntl_setfl(&raw, flags | OFlags::NONBLOCK)?;
-        let calibration = hidraw::feature(raw.as_fd(), CALIBRATION, CALIBRATION_SIZE)
-            .map_or(Calibration::NOMINAL, |report| Calibration::of(&report));
+        let (report, size) = make.calibration();
+        let calibration = hidraw::feature(raw.as_fd(), report, size)
+            .map_or(make.nominal(), |report| make.calibrated(&report));
         forget(raw.as_fd());
-        Ok(Self::with(raw, calibration))
+        Ok(Self::with(raw, make, calibration))
     }
 
-    fn with(raw: OwnedFd, calibration: Calibration) -> Self {
+    fn with(raw: OwnedFd, make: Make, calibration: Calibration) -> Self {
         Self {
             raw,
+            make,
             calibration,
+            contacts: LIFTED,
             buffer: [0; BUFFER],
             last: None,
             carry: 0,
@@ -321,7 +549,10 @@ impl Reader {
         loop {
             match rustix::io::read(&self.raw, &mut self.buffer) {
                 Ok(length) => {
-                    if let Some(sample) = self.buffer.get(..length).and_then(Sample::parse) {
+                    let report = self.buffer.get(..length);
+                    if let Some(sample) =
+                        report.and_then(|report| self.make.parse(report, self.contacts))
+                    {
                         reading(self.take(&sample));
                     }
                 }
@@ -339,18 +570,19 @@ impl Reader {
         let interval_us = match self.last {
             None => 0,
             Some(last) => {
-                let ticks = u64::from(sample.time.wrapping_sub(last)) + self.carry;
+                let ticks = self.make.elapsed(last, sample.time) + self.carry;
                 self.carry = ticks % 3;
-                // Under 2³² ticks and a carry, so under 2³² thirds.
+                // Under 2³² ticks and a carry, so under 2³² microseconds.
                 u32::try_from(ticks / 3).unwrap_or(u32::MAX)
             }
         };
         self.last = Some(sample.time);
+        self.contacts = sample.contacts;
         self.readings = self.readings.wrapping_add(1);
         let (gyro, accel) = self.calibration.apply(sample);
         (
             Motion::new(gyro, accel, self.readings, interval_us),
-            sample.touchpad(),
+            sample.touchpad(self.make.touchpad()),
             sample.click,
         )
     }
@@ -426,7 +658,8 @@ mod tests {
         report
     }
 
-    const LIFTED: [u8; 4] = [NO_CONTACT, 0, 0, 0];
+    const LIFTED: [u8; 4] = super::LIFTED[0];
+    const SIZE: [f32; 2] = [TOUCHPAD_X, TOUCHPAD_Y];
 
     #[test]
     fn a_usb_and_a_bluetooth_report_say_the_same() {
@@ -456,7 +689,7 @@ mod tests {
             }
         );
         assert_eq!(Sample::parse(&bluetooth(&report)), Some(sample));
-        let [first, second] = sample.touchpad().contacts();
+        let [first, second] = sample.touchpad(SIZE).contacts();
         assert!(first.down() && !second.down());
         assert!((first.x() * TOUCHPAD_X - 717.0).abs() < 1e-3);
         assert!((first.y() * TOUCHPAD_Y - 45.0).abs() < 1e-3);
@@ -514,7 +747,7 @@ mod tests {
         }
         assert_eq!(accel, state.motion().accel());
         assert!(sample.click);
-        let read = sample.touchpad().contacts();
+        let read = sample.touchpad(SIZE).contacts();
         for (read, written) in read.iter().zip(state.touchpad().contacts()) {
             assert_eq!(read.down(), written.down());
             assert!((read.x() - written.x()).abs() < 1e-3 && (read.y() - written.y()).abs() < 1e-3);
@@ -618,7 +851,7 @@ mod tests {
     #[test]
     fn readings_are_counted_and_spaced_by_the_pad_s_clock() {
         let file = std::fs::File::open("/dev/null").unwrap();
-        let mut reader = Reader::with(file.into(), Calibration::NOMINAL);
+        let mut reader = Reader::with(file.into(), Make::DualSense, Calibration::NOMINAL);
         let mut at = |time| {
             reader.take(
                 &Sample::parse(&usb([16, 0, 0], [0, 8192, 0], time, [LIFTED; 2], false)).unwrap(),
@@ -641,5 +874,250 @@ mod tests {
         // 11281 thirds is 3760 and one over, which the next 11282 makes
         // 3761; 12000 is 4000; two are none yet, and one more a whole one.
         assert_eq!(intervals, [(2, 3760), (3, 3761), (4, 4000), (5, 0), (6, 1)]);
+    }
+
+    /// A DualShock 4's USB input report with these counts, sensor time
+    /// and click, and these touch reports, each two contacts.
+    fn ds4_usb(
+        gyro: [i16; 3],
+        accel: [i16; 3],
+        time: u16,
+        touches: &[[[u8; 4]; 2]],
+        click: bool,
+    ) -> Vec<u8> {
+        let mut report = vec![0u8; INPUT_SIZE];
+        report[0] = INPUT_REPORT;
+        report[DS4_SENSOR_TIME..DS4_SENSOR_TIME + 2].copy_from_slice(&time.to_le_bytes());
+        for (axis, value) in gyro.iter().enumerate() {
+            let at = DS4_GYRO + 2 * axis;
+            report[at..at + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        for (axis, value) in accel.iter().enumerate() {
+            let at = DS4_ACCEL + 2 * axis;
+            report[at..at + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        if click {
+            report[DS4_BUTTONS2] |= TOUCHPAD_CLICK;
+        }
+        report[DS4_TOUCHES] = touches.len() as u8;
+        for (index, [first, second]) in touches.iter().enumerate() {
+            // Each after its own time.
+            let at = DS4_TOUCH + DS4_TOUCH_SIZE * index + 1;
+            report[at..at + 4].copy_from_slice(first);
+            report[at + 4..at + 8].copy_from_slice(second);
+        }
+        report
+    }
+
+    /// The same report as a DualShock 4 sends it over Bluetooth: its
+    /// number, two bytes, the body, and a checksum's room.
+    fn ds4_bluetooth(usb: &[u8]) -> Vec<u8> {
+        let mut report = vec![DS4_BLUETOOTH_REPORT, 0xc0, 0x00];
+        report.extend_from_slice(&usb[1..]);
+        report.resize(BLUETOOTH_SIZE, 0xcc);
+        report
+    }
+
+    /// A contact as either pad packs one: its number, and a finger down
+    /// at a place.
+    fn touch(x: u16, y: u16) -> [u8; 4] {
+        [
+            0x05,
+            x as u8,
+            ((x >> 8) as u8) | (((y & 0x0f) as u8) << 4),
+            (y >> 4) as u8,
+        ]
+    }
+
+    const DS4: Make = Make::DualShock4 { bluetooth: false };
+
+    #[test]
+    fn a_dualshock_4_s_usb_and_bluetooth_reports_say_the_same() {
+        let report = ds4_usb(
+            [3, -7, 1],
+            [390, 7760, -1347],
+            0xfff0,
+            &[[touch(1919, 941), LIFTED]],
+            true,
+        );
+        let sample = DS4.parse(&report, super::LIFTED).unwrap();
+        assert_eq!(
+            sample,
+            Sample {
+                gyro: [3, -7, 1],
+                accel: [390, 7760, -1347],
+                time: 0xfff0,
+                contacts: [touch(1919, 941), LIFTED],
+                click: true,
+            }
+        );
+        assert_eq!(
+            DS4.parse(&ds4_bluetooth(&report), super::LIFTED),
+            Some(sample)
+        );
+        // Its touchpad is its own size: the far corner is the far corner.
+        let [first, second] = sample.touchpad(DS4.touchpad()).contacts();
+        assert!(first.down() && !second.down());
+        assert_eq!((first.x(), first.y()), (1.0, 1.0));
+
+        // The short report of a pad on Bluetooth not yet switched, a
+        // DualSense's Bluetooth report and a cut one are none.
+        assert!(DS4.parse(&report[..10], super::LIFTED).is_none());
+        assert!(DS4.parse(&bluetooth(&report), super::LIFTED).is_none());
+        assert!(
+            DS4.parse(&ds4_bluetooth(&report)[..77], super::LIFTED)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_dualshock_4_s_contacts_are_its_newest_touch_report_s() {
+        let (old, new) = ([touch(10, 20), LIFTED], [touch(30, 40), touch(50, 60)]);
+        let parse = |report: &[u8]| DS4.parse(report, old).unwrap().contacts;
+        let report = |touches: &[[[u8; 4]; 2]]| ds4_usb([0; 3], [0; 3], 0, touches, false);
+        assert_eq!(parse(&report(&[])), old, "none: as they were");
+        assert_eq!(parse(&report(&[new])), new);
+        assert_eq!(parse(&report(&[old, old, new])), new, "the last is newest");
+        // Bluetooth has room for a fourth.
+        let mut four = ds4_bluetooth(&report(&[old, old, old]));
+        four[2 + DS4_TOUCHES] = 4;
+        let at = 2 + DS4_TOUCH + DS4_TOUCH_SIZE * 3 + 1;
+        four[at..at + 4].copy_from_slice(&new[0]);
+        four[at + 4..at + 8].copy_from_slice(&new[1]);
+        assert_eq!(parse(&four), new);
+        // A count past the room there is reads the last there is room
+        // for, and nothing past the report.
+        let mut many = report(&[old, old, new]);
+        many[DS4_TOUCHES] = 0xff;
+        assert_eq!(parse(&many), new);
+        four[2 + DS4_TOUCHES] = 0xff;
+        assert_eq!(parse(&four), new);
+    }
+
+    /// A DualShock 4's calibration report as it is over USB or Bluetooth:
+    /// biases, each axis's plus and minus points, the speed twice, and
+    /// the accelerometer's.
+    fn ds4_calibration(bluetooth: bool, biases: [i16; 3], points: [(i16, i16); 3]) -> Vec<u8> {
+        let (number, size) = Make::DualShock4 { bluetooth }.calibration();
+        let mut report = vec![0u8; size];
+        report[0] = number;
+        let mut put = |at: usize, value: i16| {
+            report[at..at + 2].copy_from_slice(&value.to_le_bytes());
+        };
+        for (axis, bias) in biases.iter().enumerate() {
+            put(1 + 2 * axis, *bias);
+        }
+        for (axis, (plus, minus)) in points.iter().enumerate() {
+            if bluetooth {
+                put(7 + 2 * axis, *plus);
+                put(13 + 2 * axis, *minus);
+            } else {
+                put(7 + 4 * axis, *plus);
+                put(9 + 4 * axis, *minus);
+            }
+        }
+        put(19, 540);
+        put(21, 540);
+        for axis in 0..3 {
+            put(23 + 4 * axis, 8192);
+            put(25 + 4 * axis, -8192);
+        }
+        report
+    }
+
+    #[test]
+    fn a_dualshock_4_s_calibration_is_read_in_its_transport_s_order() {
+        let biases = [4, 15, -5];
+        let points = [(8843, -8835), (8854, -8824), (8834, -8844)];
+        let usb = Calibration::of_dualshock4(&ds4_calibration(false, biases, points), false);
+        let bluetooth = Calibration::of_dualshock4(&ds4_calibration(true, biases, points), true);
+        assert_eq!(usb, bluetooth);
+        assert_ne!(usb, Calibration::DS4_NOMINAL, "SDL believes it");
+        // 1080 degrees a second over the 17678 counts between an axis's
+        // points, with its bias off; a g to 8192 counts.
+        let sample = DS4
+            .parse(
+                &ds4_usb([8843, 15, -8844], [8192, 0, -4096], 0, &[], false),
+                super::LIFTED,
+            )
+            .unwrap();
+        let (gyro, accel) = usb.apply(&sample);
+        for (read, wanted) in gyro.iter().zip([540.0, 0.0, -540.0]) {
+            assert!((read - wanted).abs() < 0.01, "{gyro:?}");
+        }
+        assert_eq!(accel, [1.0, 0.0, -0.5]);
+        // Read in the other transport's order, the points are others.
+        assert_ne!(
+            Calibration::of_dualshock4(&ds4_calibration(false, biases, points), true),
+            usb
+        );
+    }
+
+    #[test]
+    fn a_dualshock_4_s_report_sdl_doubts_is_nominal() {
+        let points = [(8839, -8839); 3];
+        let read = |biases, points| {
+            Calibration::of_dualshock4(&ds4_calibration(false, biases, points), false)
+        };
+        assert_ne!(read([0, 1024, 0], points), Calibration::DS4_NOMINAL);
+        assert_eq!(read([0, 1025, 0], points), Calibration::DS4_NOMINAL);
+        // An axis whose points are its bias, and one of half the range.
+        let flat = [(8839, -8839), (7, 7), (8839, -8839)];
+        assert_eq!(read([0, 7, 0], flat), Calibration::DS4_NOMINAL);
+        let narrow = [(8839, -8839), (2000, -2000), (8839, -8839)];
+        assert_eq!(read([0; 3], narrow), Calibration::DS4_NOMINAL);
+        // All zeros, as a pad just connected through its dongle answers,
+        // and a short one.
+        assert_eq!(
+            Calibration::of_dualshock4(&[0; DS4_CALIBRATION_SIZE], false),
+            Calibration::DS4_NOMINAL
+        );
+        let good = ds4_calibration(false, [0; 3], points);
+        assert_eq!(
+            Calibration::of_dualshock4(&good[..34], false),
+            Calibration::DS4_NOMINAL
+        );
+        // Nominal is a sixteenth of a degree a second to the count.
+        let sample = DS4
+            .parse(
+                &ds4_usb([160, 0, 0], [0, 8192, 0], 0, &[], false),
+                super::LIFTED,
+            )
+            .unwrap();
+        assert_eq!(
+            Calibration::DS4_NOMINAL.apply(&sample),
+            ([10.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+        );
+    }
+
+    #[test]
+    fn a_dualshock_4_s_readings_are_spaced_by_its_narrower_clock() {
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let mut reader = Reader::with(file.into(), DS4, Calibration::DS4_NOMINAL);
+        // 750 of its ticks, 16/3 of a microsecond each, are 4 ms; the
+        // clock wraps in 16 bits on the way.
+        let mut take = |time: u16, touches: &[[[u8; 4]; 2]]| {
+            let report = ds4_usb([0; 3], [0, 8192, 0], time, touches, false);
+            let sample = reader.make.parse(&report, reader.contacts).unwrap();
+            reader.take(&sample)
+        };
+        let finger = [touch(960, 471), LIFTED];
+        let (first, touchpad, _) = take(65_000, &[finger]);
+        assert_eq!((first.readings(), first.interval_us()), (1, 0));
+        assert!(touchpad.contacts()[0].down());
+        let (second, touchpad, _) = take(65_000u16.wrapping_add(750), &[]);
+        assert_eq!((second.readings(), second.interval_us()), (2, 4000));
+        assert!(
+            touchpad.contacts()[0].down(),
+            "a report with no touch report leaves the finger where it was"
+        );
+        // One tick is 5 and a third microseconds: three add up to 16.
+        let mut time = 65_000u16.wrapping_add(750);
+        let mut sum = 0;
+        for _ in 0..3 {
+            time = time.wrapping_add(1);
+            sum += take(time, &[]).0.interval_us();
+        }
+        assert_eq!(sum, 16);
     }
 }
