@@ -98,6 +98,27 @@ impl Make {
         }
     }
 
+    /// The contacts of the touch reports before the newest in a
+    /// DualShock 4's input report, oldest first, and how many: what its
+    /// touchpad read since its last report and before what the report
+    /// leaves it at, a finger put down and lifted between two reports
+    /// among it. A DualSense's report has one reading of its touchpad.
+    fn earlier(self, report: &[u8]) -> ([[[u8; 4]; Touchpad::CONTACTS]; 3], usize) {
+        let mut earlier = [LIFTED; 3];
+        let mut count = 0;
+        if let Self::DualShock4 { .. } = self
+            && let Some((body, touches)) = dualshock4_body(report)
+        {
+            for (place, index) in earlier.iter_mut().zip(0..touches.saturating_sub(1)) {
+                if let Some(contacts) = dualshock4_touch(body, index) {
+                    *place = contacts;
+                    count += 1;
+                }
+            }
+        }
+        (earlier, count)
+    }
+
     /// The pad's calibration report's number and size.
     fn calibration(self) -> (u8, usize) {
         match self {
@@ -207,27 +228,12 @@ impl Sample {
     /// to the full one among them, is none. The contacts are those of
     /// the newest touch report in it, and `kept` when it has none.
     fn parse_dualshock4(report: &[u8], kept: [[u8; 4]; Touchpad::CONTACTS]) -> Option<Self> {
-        // The body, with each place where it is in the USB report, and
-        // how many touch reports it has room for.
-        let (body, room) = match (report.first(), report.len()) {
-            (Some(&INPUT_REPORT), INPUT_SIZE) => (report, 3),
-            (Some(&DS4_BLUETOOTH_REPORT), BLUETOOTH_SIZE) => (report.get(2..)?, 4),
-            _ => return None,
-        };
+        let (body, touches) = dualshock4_body(report)?;
         let byte = |at: usize| body.get(at).copied();
         let word = |at: usize| Some(i16::from_le_bytes([byte(at)?, byte(at + 1)?]));
-        let touches = usize::from(byte(DS4_TOUCHES)?).min(room);
         let contacts = match touches.checked_sub(1) {
             None => kept,
-            Some(newest) => {
-                // Past the touch report's own time.
-                let at = DS4_TOUCH + DS4_TOUCH_SIZE * newest + 1;
-                let contact = |slot: usize| {
-                    let at = at + 4 * slot;
-                    Some([byte(at)?, byte(at + 1)?, byte(at + 2)?, byte(at + 3)?])
-                };
-                [contact(0)?, contact(1)?]
-            }
+            Some(newest) => dualshock4_touch(body, newest)?,
         };
         Some(Self {
             gyro: [word(DS4_GYRO)?, word(DS4_GYRO + 2)?, word(DS4_GYRO + 4)?],
@@ -243,17 +249,50 @@ impl Sample {
 
     /// Both contacts: whether a finger is on each, and its place, from 0
     /// to 1 across and down a touchpad whose last places are `size`.
-    fn touchpad(&self, [across, down]: [f32; 2]) -> Touchpad {
-        Touchpad::new(self.contacts.map(|[first, low, middle, high]| {
-            let x = u16::from(low) | (u16::from(middle & 0x0f) << 8);
-            let y = u16::from(middle >> 4) | (u16::from(high) << 4);
-            Contact::new(
-                first & NO_CONTACT == 0,
-                f32::from(x) / across,
-                f32::from(y) / down,
-            )
-        }))
+    fn touchpad(&self, size: [f32; 2]) -> Touchpad {
+        touchpad(self.contacts, size)
     }
+}
+
+/// A DualShock 4's input report's body, with each place where it is in
+/// the USB report, and how many touch reports it carries, no more than
+/// it has room for: three over USB, four over Bluetooth.
+fn dualshock4_body(report: &[u8]) -> Option<(&[u8], usize)> {
+    let (body, room) = match (report.first(), report.len()) {
+        (Some(&INPUT_REPORT), INPUT_SIZE) => (report, 3),
+        (Some(&DS4_BLUETOOTH_REPORT), BLUETOOTH_SIZE) => (report.get(2..)?, 4),
+        _ => return None,
+    };
+    Some((body, usize::from(*body.get(DS4_TOUCHES)?).min(room)))
+}
+
+/// The two contacts of one of a DualShock 4's touch reports.
+fn dualshock4_touch(body: &[u8], index: usize) -> Option<[[u8; 4]; Touchpad::CONTACTS]> {
+    // Past the touch report's own time.
+    let at = DS4_TOUCH + DS4_TOUCH_SIZE * index + 1;
+    let contact = |slot: usize| {
+        let at = at + 4 * slot;
+        Some([
+            *body.get(at)?,
+            *body.get(at + 1)?,
+            *body.get(at + 2)?,
+            *body.get(at + 3)?,
+        ])
+    };
+    Some([contact(0)?, contact(1)?])
+}
+
+/// Contacts as a pad packs them, as the pad state has them.
+fn touchpad(contacts: [[u8; 4]; Touchpad::CONTACTS], [across, down]: [f32; 2]) -> Touchpad {
+    Touchpad::new(contacts.map(|[first, low, middle, high]| {
+        let x = u16::from(low) | (u16::from(middle & 0x0f) << 8);
+        let y = u16::from(middle >> 4) | (u16::from(high) << 4);
+        Contact::new(
+            first & NO_CONTACT == 0,
+            f32::from(x) / across,
+            f32::from(y) / down,
+        )
+    }))
 }
 
 /// One sensor axis: a count is worth `(count - bias) * scale`, in
@@ -478,6 +517,8 @@ pub(crate) struct Reader {
     calibration: Calibration,
     /// The contacts the pad last reported.
     contacts: [[u8; 4]; Touchpad::CONTACTS],
+    /// The motion of the pad's last reading.
+    motion: Motion,
     /// Where each report is read to: the pad's own, so reading allocates
     /// nothing.
     buffer: [u8; BUFFER],
@@ -527,6 +568,7 @@ impl Reader {
             make,
             calibration,
             contacts: LIFTED,
+            motion: Motion::STILL,
             buffer: [0; BUFFER],
             last: None,
             carry: 0,
@@ -536,7 +578,9 @@ impl Reader {
 
     /// Reads every report waiting, without waiting for more, and calls
     /// `reading` with what each input report says; any other report is
-    /// passed over. Allocates nothing, and nothing a report says can make
+    /// passed over. A DualShock 4's report that carries several readings
+    /// of its touchpad is as many readings, the earlier with the motion
+    /// of the pad's last, which is no new reading of its sensors. Allocates nothing, and nothing a report says can make
     /// it panic.
     ///
     /// # Errors
@@ -549,10 +593,13 @@ impl Reader {
         loop {
             match rustix::io::read(&self.raw, &mut self.buffer) {
                 Ok(length) => {
-                    let report = self.buffer.get(..length);
-                    if let Some(sample) =
-                        report.and_then(|report| self.make.parse(report, self.contacts))
-                    {
+                    let report = self.buffer.get(..length).unwrap_or_default();
+                    let (earlier, count) = self.make.earlier(report);
+                    if let Some(sample) = self.make.parse(report, self.contacts) {
+                        for contacts in earlier.iter().take(count) {
+                            let touchpad = touchpad(*contacts, self.make.touchpad());
+                            reading((self.motion, touchpad, sample.click));
+                        }
                         reading(self.take(&sample));
                     }
                 }
@@ -580,8 +627,9 @@ impl Reader {
         self.contacts = sample.contacts;
         self.readings = self.readings.wrapping_add(1);
         let (gyro, accel) = self.calibration.apply(sample);
+        self.motion = Motion::new(gyro, accel, self.readings, interval_us);
         (
-            Motion::new(gyro, accel, self.readings, interval_us),
+            self.motion,
             sample.touchpad(self.make.touchpad()),
             sample.click,
         )
@@ -1087,6 +1135,46 @@ mod tests {
         assert_eq!(
             Calibration::DS4_NOMINAL.apply(&sample),
             ([10.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+        );
+    }
+
+    #[test]
+    fn a_finger_down_and_up_between_two_of_a_dualshock_4_s_reports_is_read() {
+        use std::os::unix::net::UnixDatagram;
+        // A raw node's stand-in: each datagram is a report.
+        let (pad, node) = UnixDatagram::pair().unwrap();
+        node.set_nonblocking(true).unwrap();
+        let mut reader = Reader::with(node.into(), DS4, Calibration::DS4_NOMINAL);
+        let tap = [touch(500, 300), LIFTED];
+        pad.send(&ds4_usb([0; 3], [0, 8192, 0], 100, &[], false))
+            .unwrap();
+        pad.send(&ds4_usb(
+            [16, 0, 0],
+            [0, 8192, 0],
+            850,
+            &[tap, [LIFTED; 2]],
+            false,
+        ))
+        .unwrap();
+        let mut read = Vec::new();
+        reader
+            .read(|(motion, touchpad, _)| {
+                read.push((
+                    motion.readings(),
+                    motion.gyro()[0],
+                    touchpad.contacts()[0].down(),
+                ));
+            })
+            .unwrap();
+        assert_eq!(
+            read,
+            [
+                (1, 0.0, false),
+                // The tap, with the motion of the reading before: no new
+                // reading of the sensors.
+                (1, 0.0, true),
+                (2, 1.0, false),
+            ]
         );
     }
 
