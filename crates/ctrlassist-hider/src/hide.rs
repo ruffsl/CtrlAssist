@@ -91,6 +91,27 @@ fn naming(markers: &BTreeSet<String>, dir: &Path) -> BTreeSet<String> {
     naming
 }
 
+/// Deletes each file in `dir` that isn't one of `markers`, those of the
+/// pads the service has: a marker a delete failed to remove, which
+/// would otherwise hide its pad until the service next starts. For the
+/// sweep, which holds the service's state as a hide does while it makes
+/// its markers, so no marker here is one being made. One that still
+/// can't be deleted stays, and goes on naming its pad.
+fn delete_stale(markers: &BTreeSet<String>, dir: &Path) {
+    for stale in markers_in(dir).difference(markers) {
+        match fs::remove_file(dir.join(stale)) {
+            Ok(()) => debug!(
+                marker = stale,
+                "deleted a marker no pad the service has carries"
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                warn!(marker = stale, %error, "couldn't delete a marker no pad the service has carries; the pad it names stays hidden");
+            }
+        }
+    }
+}
+
 /// Deletes everything in the marker directory, whatever made it.
 pub(crate) fn clear() {
     let Ok(entries) = fs::read_dir(MARKERS) else {
@@ -579,14 +600,16 @@ fn unnamed_of(
 ///
 /// A device with a keyboard or a pointer among its inputs is left as it
 /// is, until it is plugged in again: a hide refuses one, the re-bind
-/// cutting that off too. So is one a marker the service couldn't delete
-/// still names, beside `markers`: the re-bind would hide it again, and
-/// each sweep would ask another for nothing.
+/// cutting that off too. A marker no pad the service has carries, as a
+/// delete that failed leaves, is deleted first, so that the pad it names
+/// is among those shown; where it still can't be, that pad is left, the
+/// re-bind hiding it again and each sweep asking another for nothing.
 ///
 /// Waits for none of them: udev runs a device's events in order, so a
 /// later re-bind of the device, such as a hide's, runs after this one and
 /// is judged on its own answer.
 pub(crate) fn sweep(group: u32, held: &[&Path], markers: &BTreeSet<String>) {
+    delete_stale(markers, Path::new(MARKERS));
     for device in unnamed(group, held, &naming(markers, Path::new(MARKERS))) {
         if pad::shares_with_keyboard_or_pointer(&device.path) {
             warn!(
@@ -902,6 +925,25 @@ mod tests {
             unnamed_of(hidden(), &[], &naming(&record, &dir)),
             std::slice::from_ref(&device)
         );
+    }
+
+    #[test]
+    fn a_marker_no_pad_carries_is_deleted_and_the_others_kept() {
+        let dir = std::env::temp_dir().join(format!(
+            "ctrlassist-hider-stale-marker-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        for marker in ["addr-0a:1b:2c:3d:4e:14", "port-2-1:1.0"] {
+            fs::write(dir.join(marker), b"").unwrap();
+        }
+        let record = BTreeSet::from(["port-2-1:1.0".to_string()]);
+        delete_stale(&record, &dir);
+        let left = markers_in(&dir);
+        // One that is gone already, and a directory that is, are no failure.
+        delete_stale(&BTreeSet::new(), &dir.join("nowhere"));
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(left, record);
     }
 
     #[test]
