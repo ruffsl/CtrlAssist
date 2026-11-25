@@ -41,6 +41,17 @@ fn motion() -> impl Strategy<Value = Motion> {
         .prop_map(|(gyro, accel, readings, interval)| Motion::new(gyro, accel, readings, interval))
 }
 
+/// Whether a pad has a finger on its touchpad.
+fn touching(pad: &PadState) -> bool {
+    pad.touchpad().contacts().iter().any(Contact::down)
+}
+
+/// Whether a virtual pad's contacts are `owner`'s, or lifted, as they are
+/// for the step in which one pad's fingers give way to another's.
+fn shows(sink: &PadState, owner: &PadState) -> bool {
+    sink.touchpad() == owner.touchpad() || !touching(sink)
+}
+
 /// Fingers on a touchpad, or none.
 fn touchpad() -> impl Strategy<Value = Touchpad> {
     let place = prop::sample::select(vec![0.0f32, 0.25, 0.5, 1.0]);
@@ -101,7 +112,8 @@ fn any_held(state: &PadState, controls: &[Control]) -> bool {
 proptest! {
     /// Priority: the assist owns what it touches and nothing else, the
     /// changes reported always add up to the controls the virtual pad
-    /// holds, and its motion and contacts are the primary's.
+    /// holds, and its motion is the primary's and its contacts the assist's while they
+    /// touch, and the primary's otherwise.
     #[test]
     fn priority_gives_the_assist_exactly_what_it_touches(
         steps in prop::collection::vec((0usize..2, pad_state(true)), 1..60)
@@ -115,7 +127,8 @@ proptest! {
             let [primary, assist] = pads;
             let sink = *graph.sink(SinkId(0));
             prop_assert_eq!(sink.motion(), primary.motion());
-            prop_assert_eq!(sink.touchpad(), primary.touchpad());
+            let owner = if touching(&assist) { assist } else { primary };
+            prop_assert!(shows(&sink, &owner), "the assist's touchpad while they touch it: {:?}", sink.touchpad());
             // No change reports motion or the contacts: they are written
             // whole.
             let rebuilt = shadow.with_motion(sink.motion()).with_touchpad(sink.touchpad());
@@ -143,7 +156,8 @@ proptest! {
 
     /// Average: every output axis lies between the two inputs, a button
     /// is down exactly when someone holds it, and nothing of motion or the
-    /// contacts is blended: they are the primary's.
+    /// contacts is blended: motion is the primary's, and the contacts one
+    /// pad's, whole.
     #[test]
     fn average_stays_between_its_inputs(
         steps in prop::collection::vec((0usize..2, pad_state(true)), 1..60)
@@ -156,7 +170,11 @@ proptest! {
             let [primary, assist] = pads;
             let sink = *graph.sink(SinkId(0));
             prop_assert_eq!(sink.motion(), primary.motion());
-            prop_assert_eq!(sink.touchpad(), primary.touchpad());
+            prop_assert!(
+                shows(&sink, &primary) || shows(&sink, &assist),
+                "one pad's touchpad, whole: {:?}",
+                sink.touchpad()
+            );
             for axis in STICKS.iter().flatten().chain(&TRIGGERS) {
                 let (low, high) = (
                     primary.get(*axis).min(assist.get(*axis)),
@@ -173,7 +191,8 @@ proptest! {
 
     /// Toggle: after any mix of events and switches, the virtual pad holds
     /// exactly what the selected pad holds, motion and contacts with the
-    /// rest.
+    /// rest, the fingers lifted for a step where a switch changes whose
+    /// they are.
     #[test]
     fn toggle_always_equals_the_selected_pad(
         steps in prop::collection::vec(
@@ -198,7 +217,9 @@ proptest! {
                     graph.switch(NodeId(0), &mut |_| {});
                 }
             }
-            prop_assert_eq!(*graph.sink(SinkId(0)), pads[selected]);
+            let sink = *graph.sink(SinkId(0));
+            prop_assert_eq!(sink.with_touchpad(Touchpad::UNTOUCHED), pads[selected].with_touchpad(Touchpad::UNTOUCHED));
+            prop_assert!(shows(&sink, &pads[selected]), "{:?}", sink.touchpad());
             prop_assert_eq!(graph.feedback_targets(SinkId(0)), SourceSet::from(SourceId(selected)));
         }
     }
@@ -439,6 +460,7 @@ fn any_mux() -> impl Strategy<Value = MuxConfig> {
         ),
         any_rule(),
         any_rule(),
+        any_rule(),
         // Mostly within the 0 to 1 a mux takes, so that most build.
         prop_oneof![19 => 0.01f32..=1.0, 1 => any::<f32>()],
         prop_oneof![19 => 0.01f32..=1.0, 1 => any::<f32>()],
@@ -455,6 +477,7 @@ fn any_mux() -> impl Strategy<Value = MuxConfig> {
                 groups,
                 ungrouped_buttons,
                 ungrouped_axes,
+                touchpad,
                 engage,
                 release,
                 switch,
@@ -468,6 +491,7 @@ fn any_mux() -> impl Strategy<Value = MuxConfig> {
                         .collect(),
                     ungrouped_buttons,
                     ungrouped_axes,
+                    touchpad,
                     // Usually in order, as a real profile's would be.
                     engage: if engage.is_finite() && release.is_finite() {
                         engage.max(release)

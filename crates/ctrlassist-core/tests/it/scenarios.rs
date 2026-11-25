@@ -528,7 +528,7 @@ fn a_pad_at_rest_lies_flat_and_still_with_no_finger_down() {
 }
 
 #[test]
-fn priority_and_average_carry_the_primarys_motion_and_contacts_whatever_the_assist_does() {
+fn priority_and_average_carry_the_primarys_motion_whatever_the_assist_does() {
     for mode in [Mode::Priority, Mode::Average] {
         let mut graph = mux(mode);
         let primary = pad()
@@ -547,7 +547,6 @@ fn priority_and_average_carry_the_primarys_motion_and_contacts_whatever_the_assi
         let sink = *graph.sink(SinkId(0));
         assert_eq!(sink.get(LEFT_X), 0.9, "{mode:?}: the stick is the assist's");
         assert_eq!(sink.motion(), primary.motion(), "{mode:?}");
-        assert_eq!(sink.touchpad(), primary.touchpad(), "{mode:?}");
         // The assist's next report is no fresh reading of the primary's.
         step(&mut graph, ASSIST, assist(51));
         assert_eq!(graph.sink(SinkId(0)).motion().readings(), 1, "{mode:?}");
@@ -577,7 +576,72 @@ fn the_assist_does_not_stand_in_for_a_primary_that_goes() {
     graph.set_present(PRIMARY, false, &mut |_| {});
     let sink = *graph.sink(SinkId(0));
     assert_eq!(sink.motion(), Motion::STILL, "the primary's pad is gone");
-    assert_eq!(sink.touchpad(), Touchpad::UNTOUCHED);
+    assert_eq!(
+        sink.touchpad(),
+        finger(0.9, 0.9),
+        "the touchpad is the assist's while they touch it, as a stick is"
+    );
+}
+
+/// The contacts `touchpad` has, lifted where they are.
+fn lifted(touchpad: Touchpad) -> Touchpad {
+    Touchpad::new(
+        touchpad
+            .contacts()
+            .map(|contact| Contact::new(false, contact.x(), contact.y())),
+    )
+}
+
+#[test]
+fn priority_carries_the_assists_contacts_while_they_touch() {
+    let mut graph = mux(Mode::Priority);
+    let touchpad = |graph: &Graph| graph.sink(SinkId(0)).touchpad();
+    step(&mut graph, PRIMARY, pad().with_touchpad(finger(0.2, 0.3)));
+    assert_eq!(touchpad(&graph), finger(0.2, 0.3));
+
+    // The assist touches: the primary's finger is lifted where it was,
+    // and the assist's is put down at the next step, so that nothing
+    // reads the change as one finger's movement.
+    let assist = pad().with_touchpad(finger(0.9, 0.9));
+    step(&mut graph, ASSIST, assist);
+    assert_eq!(touchpad(&graph), lifted(finger(0.2, 0.3)));
+    step(&mut graph, ASSIST, assist);
+    assert_eq!(touchpad(&graph), finger(0.9, 0.9), "whole, the assist's");
+
+    // They lift: the same the other way.
+    step(&mut graph, ASSIST, pad());
+    assert_eq!(touchpad(&graph), lifted(finger(0.9, 0.9)));
+    step(&mut graph, PRIMARY, pad().with_touchpad(finger(0.25, 0.3)));
+    assert_eq!(touchpad(&graph), finger(0.25, 0.3));
+
+    // With no finger of the primary's down there is nothing to lift.
+    step(&mut graph, PRIMARY, pad());
+    step(&mut graph, ASSIST, assist);
+    assert_eq!(touchpad(&graph), finger(0.9, 0.9));
+}
+
+#[test]
+fn average_carries_the_contacts_of_whoever_touched_first_until_they_lift() {
+    let mut graph = mux(Mode::Average);
+    let touchpad = |graph: &Graph| graph.sink(SinkId(0)).touchpad();
+    // The assist first: theirs, though the primary touches after.
+    let assist = pad().with_touchpad(finger(0.9, 0.9));
+    let primary = pad().with_touchpad(finger(0.2, 0.3));
+    step(&mut graph, ASSIST, assist);
+    assert_eq!(touchpad(&graph), finger(0.9, 0.9));
+    step(&mut graph, PRIMARY, primary);
+    assert_eq!(touchpad(&graph), finger(0.9, 0.9), "nothing is blended");
+
+    // The assist lifts: the primary's, whose finger is still down, after
+    // a step with none.
+    step(&mut graph, ASSIST, pad());
+    assert_eq!(touchpad(&graph), lifted(finger(0.9, 0.9)));
+    step(&mut graph, PRIMARY, primary);
+    assert_eq!(touchpad(&graph), finger(0.2, 0.3));
+
+    // And the primary keeps it against the assist the same way.
+    step(&mut graph, ASSIST, assist);
+    assert_eq!(touchpad(&graph), finger(0.2, 0.3));
 }
 
 #[test]
@@ -594,15 +658,19 @@ fn toggle_carries_the_selected_pads_motion_and_contacts_following_a_switch() {
     assert_eq!(graph.sink(SinkId(0)).motion(), primary.motion());
     assert_eq!(graph.sink(SinkId(0)).touchpad(), primary.touchpad());
 
-    // By the switch's button: a finger held down moves to the assist's
-    // place in one report, as a stick steps.
+    // By the switch's button: the motion at once, and the finger held
+    // down lifted where it was, the assist's put down at the next step.
     step(&mut graph, ASSIST, assist.with(MODE, 1.0));
     assert_eq!(graph.sink(SinkId(0)).motion(), assist.motion());
+    assert_eq!(graph.sink(SinkId(0)).touchpad(), lifted(primary.touchpad()));
+    step(&mut graph, ASSIST, assist);
     assert_eq!(graph.sink(SinkId(0)).touchpad(), assist.touchpad());
 
     // By a client.
     graph.select(NodeId(0), 0, &mut |_| {});
     assert_eq!(graph.sink(SinkId(0)).motion(), primary.motion());
+    assert_eq!(graph.sink(SinkId(0)).touchpad(), lifted(assist.touchpad()));
+    step(&mut graph, PRIMARY, primary);
     assert_eq!(graph.sink(SinkId(0)).touchpad(), primary.touchpad());
 }
 

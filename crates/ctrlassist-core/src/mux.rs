@@ -1,6 +1,8 @@
 //! The mux node: several pads in, one out.
 
-use crate::control::{AXES, AxisBits, ButtonBits, Control, Group, Kind, Layout, PadState, gamepad};
+use crate::control::{
+    AXES, AxisBits, ButtonBits, Contact, Control, Group, Kind, Layout, PadState, Touchpad, gamepad,
+};
 use crate::graph::GraphError;
 
 /// How a group's output is chosen from the inputs.
@@ -42,6 +44,19 @@ impl Mode {
             (Self::Average, Kind::Button | Kind::Hat) => Rule::Largest,
         }
     }
+
+    /// The rule this mode applies to the touchpad's contacts, as
+    /// [`MuxConfig::touchpad`] reads one: in priority the assist's
+    /// touchpad while they touch it, in average whoever touched first, in
+    /// toggle the selected pad's.
+    #[must_use]
+    pub fn touchpad(self) -> Rule {
+        match self {
+            Self::Priority => Rule::Owned,
+            Self::Average => Rule::Blended,
+            Self::Toggle => Rule::Switched,
+        }
+    }
 }
 
 /// The button that raises a mux's switch. It is consumed: the game never
@@ -68,10 +83,11 @@ pub enum MuxFeedback {
 
 /// A mux node's settings.
 ///
-/// Motion and the touchpad's contacts are no group's, and no rule covers
-/// them: a mux takes both whole from one input, the one selected if it
-/// [`selects`](Self::selects), as a toggle does, and otherwise its first,
-/// a preset's primary.
+/// Motion is no group's, and no rule covers it: a mux takes it whole from
+/// one input, the one selected if it [`selects`](Self::selects), as a
+/// toggle does, and otherwise its first, a preset's primary. The
+/// touchpad's contacts are taken whole from one input too, never a finger
+/// from each, by a [rule of their own](Self::touchpad).
 #[derive(Clone, PartialEq, Debug)]
 pub struct MuxConfig {
     /// The rule for each group.
@@ -80,6 +96,15 @@ pub struct MuxConfig {
     pub ungrouped_buttons: Rule,
     /// The rule for an axis in no group, as a group of one.
     pub ungrouped_axes: Rule,
+    /// Whose touchpad the contacts are, an input being active on it while
+    /// it has a finger down. `Owned`: the highest input touching, and the
+    /// first with none. `Switched`: the input selected, the first on a mux
+    /// that doesn't [select](Self::selects). `Largest` and
+    /// `Blended`, places having no mean: the input that touched first,
+    /// until it lifts. When the input changes with a finger down on both
+    /// sides of the change, one step shows the fingers lifted, where they
+    /// were, so that nothing reads the change as a finger's movement.
+    pub touchpad: Rule,
     /// An input becomes active on a group at or above this.
     pub engage: f32,
     /// An active input stops being active on a group below this.
@@ -103,6 +128,7 @@ impl MuxConfig {
                 .collect(),
             ungrouped_buttons: mode.rule(Kind::Button),
             ungrouped_axes: mode.rule(Kind::Stick),
+            touchpad: mode.touchpad(),
             engage: 0.1,
             release: 0.05,
             switch: (mode == Mode::Toggle).then_some(Switch {
@@ -148,6 +174,15 @@ pub(crate) struct Mux {
     /// Which inputs were present at the last step, as a mask.
     present: u32,
     switch_down: bool,
+    /// The input the touchpad's contacts were last taken from.
+    touched: usize,
+    /// The contacts last put out.
+    contacts: Touchpad,
+}
+
+/// Whether a pad has a finger on its touchpad.
+fn touching(state: &PadState) -> bool {
+    state.touchpad().contacts().iter().any(Contact::down)
 }
 
 fn copy_group(out: &mut PadState, from: &PadState, group: &Group) {
@@ -212,6 +247,8 @@ impl Mux {
             selected: 0,
             present: u32::MAX,
             switch_down: false,
+            touched: 0,
+            contacts: Touchpad::UNTOUCHED,
         }
     }
 
@@ -240,7 +277,7 @@ impl Mux {
         self.selects.then_some(self.selected)
     }
 
-    /// The input motion and the touchpad's contacts come from: the one
+    /// The input motion comes from: the one
     /// selected if anything here follows the selection, otherwise the
     /// first.
     fn carrier(&self) -> usize {
@@ -296,11 +333,34 @@ impl Mux {
         };
         *out.buttons_mut() = loose & self.loose_buttons;
 
-        // Motion and the touchpad, whole from one input and never
-        // blended: a game sees one pad's two sensors, which agree.
-        let carrier = &inputs[self.carrier()];
-        out.set_motion(carrier.motion());
-        out.set_touchpad(carrier.touchpad());
+        // Motion, whole from one input and never blended: a game sees
+        // one pad's two sensors, which agree.
+        out.set_motion(inputs[self.carrier()].motion());
+
+        // The touchpad, whole from one input too.
+        let from = match self.config.touchpad {
+            Rule::Switched => self.selected,
+            Rule::Owned => inputs.iter().rposition(touching).unwrap_or(0),
+            Rule::Largest | Rule::Blended if touching(&inputs[self.touched]) => self.touched,
+            Rule::Largest | Rule::Blended => {
+                inputs.iter().position(touching).unwrap_or(self.touched)
+            }
+        };
+        let contacts = inputs[from].touchpad();
+        let was_down = self.contacts.contacts().iter().any(Contact::down);
+        self.contacts = if from != self.touched && was_down && touching(&inputs[from]) {
+            // One pad's finger gives way to another's: lifted first, where
+            // it was, and the other's is put down at the next step.
+            Touchpad::new(
+                self.contacts
+                    .contacts()
+                    .map(|contact| Contact::new(false, contact.x(), contact.y())),
+            )
+        } else {
+            contacts
+        };
+        self.touched = from;
+        out.set_touchpad(self.contacts);
 
         for (index, (group, rule)) in self.rules.iter().enumerate() {
             let active = &mut self.active[index];

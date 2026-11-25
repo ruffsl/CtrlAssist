@@ -102,7 +102,7 @@ A graph is sources, nodes and sinks. It is validated once and then stepped.
 
 **No profile can panic a step.** Building a graph rejects anything that could: a control index beyond the capacity, a reference to a source, node or output that doesn't exist, a cycle, more than 8 inputs to a mux, 32 sources, 64 nodes or 32 sinks, thresholds outside 0 < release ≤ engage ≤ 1, a deadzone outside 0 ≤ deadzone < 1 (which would read a stick as at rest short of all the way), a switch on a node that never selects (which would only keep its button from the game), a value that isn't a number. This is a tested invariant, because a panic on the input thread would take every virtual pad with it. As a second line, a setup whose step does panic is torn down alone.
 
-**Scope.** The model is built for controls that rest at zero: buttons, sticks, triggers. A lever with no rest position (a throttle) would count as touched forever, and a relative control (a mouse, a gyro delta) has no level to diff. Both are out of scope until a pad needs them ([ideas](ideas/README.md)). Motion and the touchpad's contacts are carried beside the controls instead, outside the rules: each node takes them whole from one input, and the graph reports no difference for them, a virtual pad that carries them being written its whole state.
+**Scope.** The model is built for controls that rest at zero: buttons, sticks, triggers. A lever with no rest position (a throttle) would count as touched forever, and a relative control (a mouse, a gyro delta) has no level to diff. Both are out of scope until a pad needs them ([ideas](ideas/README.md)). Motion and the touchpad's contacts are carried beside the controls instead, outside the rules: each node takes each whole from one input, and the graph reports no difference for them, a virtual pad that carries them being written its whole state.
 
 ### Mux
 
@@ -125,7 +125,9 @@ A mode is a table from group kind to rule; there is no per-mode code.
 
 A control in no declared group is treated as a group of one, a button as a button and an axis as a stick, so every control obeys the mode. A profile may override the rule for a kind.
 
-**Motion and the touchpad's contacts are one pad's,** never blended: a mux takes both whole from the input selected if any group is switched, as in toggle, and otherwise from its first input, a preset's primary. A game then always sees one pad's two sensors, which agree.
+**Motion is one pad's,** never blended: a mux takes it whole from the input selected if any group is switched, as in toggle, and otherwise from its first input, a preset's primary. A game then always sees one pad's two sensors, which agree.
+
+**The touchpad's contacts are one pad's too, by a rule of their own,** a pad being active on its touchpad while it has a finger down. In priority they are the assist's while the assist touches, and the primary's otherwise, as a stick is; in average, places having no mean, they are whoever's touched first, until that pad lifts; in toggle the selected pad's. They are taken whole, never a finger from each pad, which a game would read as a gesture of two fingers that nobody made. When the pad they are taken from changes with a finger down before and after, one step shows the fingers lifted where they were, and the other pad's are put down at the next: a place that jumped under a finger held down would be read as that finger's movement, a pointer flung or a swipe. The touchpad's click is a button, under the mode's rule for buttons.
 
 **Groups** generalize the stick pair. One rule covers a lone button, a stick's two axes and a larger set alike: whoever is active on the group owns every member, so the output is one person's direction rather than a blend of two. A gamepad's groups are derived from the well-known names; a profile may declare its own.
 
