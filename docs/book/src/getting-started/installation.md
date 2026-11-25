@@ -29,6 +29,8 @@ Rebuild, then log out and back in. The module installs everything below and star
 | `services.ctrlassist.realtime` | Whether users' services may ask for real-time scheduling up to priority 10, which keeps input latency steady on a busy machine. |
 | `services.ctrlassist.tray` | The tray, started with the graphical session. |
 
+Two more are for looking into a problem: `services.ctrlassist.logLevel` (`"debug"`, say) sets how much each user's daemon and tray log, and `services.ctrlassist.extraArgs` adds arguments to the daemon's command.
+
 ## Debian, Ubuntu, Fedora and Arch
 
 Each release carries a `.deb`, an `.rpm` and an Arch package, for x86_64 and arm64. Download the one for your distribution from the [releases page](https://github.com/CtrlAssist/CtrlAssist/releases), then:

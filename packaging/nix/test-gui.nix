@@ -26,6 +26,12 @@ pkgs.testers.runNixOSTest {
     services.ctrlassist = {
       enable = true;
       inherit package;
+      # The module's own knobs for the daemon, seen below to reach it.
+      logLevel = "debug";
+      extraArgs = [
+        "--config-dir"
+        "/home/alice/.config/ctrlassist"
+      ];
     };
 
     users.users.alice = {
@@ -74,6 +80,13 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("multi-user.target")
     machine.wait_for_file("/run/user/1000/wayland-0")
     machine.wait_for_file("/run/user/1000/bus")
+
+    with subtest("the module's log level and extra arguments reach the daemon"):
+        machine.wait_until_succeeds("su -l alice -c '" + ENV + " systemctl --user is-active ctrlassist-daemon'")
+        shown = alice("systemctl --user show ctrlassist-daemon -p ExecStart -p Environment")
+        assert "service daemon --config-dir /home/alice/.config/ctrlassist" in shown, shown
+        assert "RUST_LOG=debug" in shown, shown
+        assert "RUST_LOG=debug" in alice("systemctl --user show ctrlassist-tray -p Environment")
 
     with subtest("the package puts the window where a launcher and the bus find it"):
         machine.succeed("test -x /run/current-system/sw/bin/ctrlassist-gui")

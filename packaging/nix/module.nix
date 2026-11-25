@@ -12,6 +12,8 @@
 
 let
   cfg = config.services.ctrlassist;
+  # What the daemon and the tray are given to log by, where a level is set.
+  logging = lib.optionalAttrs (cfg.logLevel != null) { RUST_LOG = cfg.logLevel; };
 in
 {
   options.services.ctrlassist = {
@@ -59,6 +61,43 @@ in
       description = ''
         Whether to start the system tray with each user's graphical
         session.
+      '';
+    };
+
+    logLevel = lib.mkOption {
+      type = lib.types.nullOr (
+        lib.types.enum [
+          "trace"
+          "debug"
+          "info"
+          "warn"
+          "error"
+        ]
+      );
+      default = null;
+      example = "debug";
+      description = ''
+        Log level for each user's daemon and tray, given to them as the
+        `RUST_LOG` environment variable. Unset, each logs at its own
+        defaults, which say less of the libraries they use than of
+        themselves; a level set here replaces those defaults for
+        everything. For a finer filter (`"debug,zenoh=warn"`), set
+        `RUST_LOG` in a drop-in instead. The hiding service takes no
+        level.
+      '';
+    };
+
+    extraArgs = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [
+        "--config-dir"
+        "/etc/ctrlassist"
+      ];
+      description = ''
+        Extra command-line arguments appended to `ctrlassist service
+        daemon`, as each user's daemon is started. `ctrlassist service
+        daemon --help` lists them.
       '';
     };
   };
@@ -161,9 +200,18 @@ in
       description = "CtrlAssist hiding service";
     };
     users.groups.ctrlassist-hider = { };
-    systemd.user.services.ctrlassist-daemon.wantedBy = [ "default.target" ];
+    systemd.user.services.ctrlassist-daemon = {
+      wantedBy = [ "default.target" ];
+      environment = logging;
+      # The packaged unit's command is cleared first: a unit has one.
+      serviceConfig.ExecStart = lib.mkIf (cfg.extraArgs != [ ]) [
+        ""
+        "${cfg.package}/bin/ctrlassist service daemon ${lib.escapeShellArgs cfg.extraArgs}"
+      ];
+    };
     systemd.user.services.ctrlassist-tray = lib.mkIf cfg.tray {
       wantedBy = [ "graphical-session.target" ];
+      environment = logging;
     };
 
     # A user service has the limits its service manager has and can't
