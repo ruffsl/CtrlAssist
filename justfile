@@ -754,6 +754,18 @@ bench seconds="10":
     target/dist/ctrlassist-bench --seconds {{ seconds }}
     target/dist/ctrlassist-bench --seconds {{ seconds }} --load "$(nproc)"
 
+# The same with two fake DualSenses read for motion as well, each report
+# a new reading, into a virtual DualSense, at the 250 reports a second a
+# DualSense sends over USB. It opens the fake pads' raw nodes, which a
+# seat's user is given where a PlayStation pad's is.
+#
+# Time the input path with motion, idle and with every CPU busy
+[group('hardware')]
+bench-motion seconds="10":
+    cargo build --quiet --profile dist --package ctrlassist-test
+    target/dist/ctrlassist-bench --seconds {{ seconds }} --rate 250 --motion
+    target/dist/ctrlassist-bench --seconds {{ seconds }} --rate 250 --motion --load "$(nproc)"
+
 # The same measurement with the input thread inside a daemon, which the
 # bench runs as a child with a profile over its two fake pads: what the
 # control plane beside the input thread costs it.
