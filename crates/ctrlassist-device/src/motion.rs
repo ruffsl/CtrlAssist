@@ -45,6 +45,10 @@ const CALIBRATION_LEAST: usize = 35;
 /// over and not taken for one.
 const BUFFER: usize = 128;
 const _: () = assert!(BUFFER > BLUETOOTH_SIZE && BUFFER > INPUT_SIZE);
+/// How many reports the kernel keeps for one opening of a raw node that
+/// nobody reads (`HIDRAW_BUFFER_SIZE` in `include/linux/hidraw.h`): once
+/// it holds them it drops each new one, so they are the oldest.
+const KEPT: usize = 64;
 
 /// What one input report says: the gyroscope's pitch, yaw and roll and
 /// the accelerometer's x, y and z in counts, when the pad read them, in
@@ -287,6 +291,7 @@ impl Reader {
         rustix::fs::fcntl_setfl(&raw, flags | OFlags::NONBLOCK)?;
         let calibration = hidraw::feature(raw.as_fd(), CALIBRATION, CALIBRATION_SIZE)
             .map_or(Calibration::NOMINAL, |report| Calibration::of(&report));
+        forget(raw.as_fd());
         Ok(Self::with(raw, calibration))
     }
 
@@ -348,6 +353,19 @@ impl Reader {
             sample.touchpad(),
             sample.click,
         )
+    }
+}
+
+/// Reads away the reports a raw node kept while nobody read it: they are
+/// from when it was opened, not from now, and a game would be handed them
+/// all at once. No more reads than the node keeps reports, so a pad that
+/// reports as fast as it is read can't hold this up.
+fn forget(raw: BorrowedFd<'_>) {
+    let mut report = [0; BUFFER];
+    for _ in 0..KEPT {
+        if rustix::io::read(raw, &mut report).is_err() {
+            break;
+        }
     }
 }
 
@@ -579,6 +597,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn reports_kept_while_nobody_read_are_forgotten() {
+        let (pad, node) = std::os::unix::net::UnixDatagram::pair().unwrap();
+        node.set_nonblocking(true).unwrap();
+        for _ in 0..3 {
+            pad.send(&[INPUT_REPORT; INPUT_SIZE]).unwrap();
+        }
+        forget(node.as_fd());
+        let mut report = [0; BUFFER];
+        assert_eq!(
+            rustix::io::read(&node, &mut report),
+            Err(Errno::AGAIN),
+            "nothing old is left to read"
+        );
     }
 
     #[test]
