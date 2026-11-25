@@ -21,7 +21,7 @@
 
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering, fence};
@@ -420,10 +420,9 @@ pub(crate) struct Output {
 }
 
 impl Output {
-    /// Takes a pad's raw node, if it is one this knows how to write to:
-    /// a DualSense's or a DualShock 4's, over USB or Bluetooth.
-    pub(crate) fn raw(raw: OwnedFd) -> io::Result<Self> {
-        let kind = Kind::of(raw.as_fd())?;
+    /// Takes the raw node of a pad of `kind`, one this knows how to write
+    /// to: a DualSense's or a DualShock 4's, over USB or Bluetooth.
+    pub(crate) fn raw(raw: OwnedFd, kind: Kind) -> io::Result<Self> {
         // The HID device the node is of, whose LED devices say what its
         // driver shows: read as the writer ends, off the input thread.
         let device = rustix::fs::fstat(&raw).ok().map(|stat| {

@@ -5,12 +5,13 @@ use crate::output::{Output, Rested, endless};
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
-use ctrlassist_core::{Level, PadState};
+use ctrlassist_core::{Level, Motion, PadState, Touchpad, gamepad};
 use evdev::{Device, EventType, FFEffectCode};
 use rustix::fs::fstat;
 
 use crate::database::Database;
 use crate::layout::{AxisRange, Mapping};
+use crate::motion;
 
 /// Why a pad couldn't be opened or read.
 #[derive(Debug)]
@@ -215,6 +216,11 @@ pub struct Pad {
     /// on it, uploaded as it is opened, or its raw node, for a pad that
     /// is sent whole output reports; or why nothing does.
     output: Result<Output, NoEffect>,
+    /// A DualSense's raw node, read for its motion, touchpad and click.
+    motion: Option<motion::Reader>,
+    /// That node, no longer read: kept to be closed as the pad is
+    /// dropped, so that the input thread closes nothing.
+    unread: Option<motion::Reader>,
 }
 
 impl std::fmt::Debug for Pad {
@@ -344,6 +350,8 @@ impl Pad {
             pending: state,
             can_rumble,
             output,
+            motion: None,
+            unread: None,
         })
     }
 
@@ -442,15 +450,81 @@ impl Pad {
     /// waits for the pad. Dropping the pad has that thread write what is
     /// left, leave the pad at rest with its driver's lights, and end.
     ///
+    /// A DualSense's raw node is read as well, on a duplicate of the
+    /// descriptor, for its motion sensors, its touchpad and its click,
+    /// which its driver reports on nodes of their own: the input thread
+    /// listens to it beside the pad's event node. Its calibration is read
+    /// here, the request waiting on the pad.
+    ///
     /// # Errors
     ///
     /// Fails, leaving the pad as it was, if the node isn't such a pad's,
-    /// can't be read, or the thread can't be started.
+    /// can't be read or duplicated, or the thread can't be started.
     pub fn set_raw(&mut self, raw: OwnedFd) -> io::Result<()> {
+        let kind = Kind::of(raw.as_fd())?;
+        let motion = match kind {
+            Kind::DualSense { .. } => Some(motion::Reader::new(raw.as_fd())?),
+            Kind::DualShock4 { .. } => None,
+        };
         // The kernel's own effect, if one runs, ends here, stopped and
         // erased by the thread that wrote it.
-        self.output = Ok(Output::raw(raw)?);
+        self.output = Ok(Output::raw(raw, kind)?);
+        self.motion = motion;
         Ok(())
+    }
+
+    /// The raw node read for the pad's motion and touchpad, while it is
+    /// read.
+    pub(crate) fn motion_node(&self) -> Option<BorrowedFd<'_>> {
+        self.motion.as_ref().map(AsFd::as_fd)
+    }
+
+    /// Reads every report waiting on the raw node, and calls `frame` with
+    /// the pad's state after each input report, its motion, touchpad and
+    /// click as the report says, and its other controls as of the event
+    /// node's last frame. Returns when nothing is left to read; a pad
+    /// whose raw node isn't read has nothing to.
+    ///
+    /// # Errors
+    ///
+    /// [`PadError::Gone`] when the node has gone from under the pad;
+    /// [`PadError::Io`] when it can't be read, which
+    /// [`rest_motion`](Self::rest_motion) is for.
+    pub(crate) fn read_motion(&mut self, mut frame: impl FnMut(&PadState)) -> Result<(), PadError> {
+        let Self {
+            motion,
+            state,
+            pending,
+            ..
+        } = self;
+        let Some(reader) = motion else {
+            return Ok(());
+        };
+        reader.read(|(motion, touchpad, click)| {
+            // Into the frame still arriving on the event node too, which
+            // would otherwise put back what it held.
+            for state in [&mut *pending, &mut *state] {
+                state.set_motion(motion);
+                state.set_touchpad(touchpad);
+                state.set(gamepad::TOUCHPAD, f32::from(u8::from(click)));
+            }
+            frame(state);
+        })
+    }
+
+    /// Stops reading the raw node for motion, and leaves the pad's motion,
+    /// touchpad and click at rest for as long as it is held: for a raw
+    /// node that couldn't be read. The node is kept, and closed as the
+    /// pad is dropped, off the input thread.
+    pub(crate) fn rest_motion(&mut self) {
+        if let Some(reader) = self.motion.take() {
+            self.unread = Some(reader);
+        }
+        for state in [&mut self.pending, &mut self.state] {
+            state.set_motion(Motion::STILL);
+            state.set_touchpad(Touchpad::UNTOUCHED);
+            state.set(gamepad::TOUCHPAD, 0.0);
+        }
     }
 
     /// Whether the pad is one whose raw node this knows how to write to:

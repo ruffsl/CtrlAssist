@@ -45,11 +45,11 @@ const BUS_USB: u16 = 3;
 /// Where the kernel's PlayStation driver is, once its module is loaded.
 const DRIVER: &str = "/sys/bus/hid/drivers/playstation";
 
-const INPUT_REPORT: u8 = 0x01;
-const INPUT_SIZE: usize = 64;
+pub(crate) const INPUT_REPORT: u8 = 0x01;
+pub(crate) const INPUT_SIZE: usize = 64;
 const OUTPUT_REPORT: u8 = 0x02;
-const CALIBRATION: u8 = 0x05;
-const CALIBRATION_SIZE: usize = 41;
+pub(crate) const CALIBRATION: u8 = 0x05;
+pub(crate) const CALIBRATION_SIZE: usize = 41;
 const PAIRING: u8 = 0x09;
 const PAIRING_SIZE: usize = 20;
 const FIRMWARE: u8 = 0x20;
@@ -186,7 +186,7 @@ const ACCEL_POINT: i16 = 8192;
 
 /// A calibration report that changes nothing: no bias, and ranges that
 /// are whole and symmetric, so the driver has nothing to warn of.
-fn calibration() -> [u8; CALIBRATION_SIZE] {
+pub(crate) fn calibration() -> [u8; CALIBRATION_SIZE] {
     const G: i16 = GYRO_POINT;
     const A: i16 = ACCEL_POINT;
     // Gyro: three biases, then plus and minus for pitch, yaw and roll,
@@ -221,33 +221,33 @@ fn trigger(value: f32) -> u8 {
 
 const SEQUENCE: usize = 7;
 /// The third button byte.
-const BUTTONS2: usize = 10;
+pub(crate) const BUTTONS2: usize = 10;
 /// The gyroscope's pitch, yaw and roll, then the accelerometer's x, y
 /// and z, each a little-endian `i16`.
-const GYRO: usize = 16;
-const ACCEL: usize = 22;
+pub(crate) const GYRO: usize = 16;
+pub(crate) const ACCEL: usize = 22;
 /// When the sensors were read: a little-endian `u32` of thirds of a
 /// microsecond.
-const SENSOR_TIME: usize = 28;
+pub(crate) const SENSOR_TIME: usize = 28;
 /// The touchpad's two contacts, four bytes each.
-const CONTACTS: usize = 33;
+pub(crate) const CONTACTS: usize = 33;
 /// The touchpad's click, in the third button byte: the kernel's
 /// `DS_BUTTONS2_TOUCHPAD`, which it reports as `BTN_LEFT` on the
 /// touchpad's own node and not on the pad's.
-const TOUCHPAD_CLICK: u8 = 0x02;
+pub(crate) const TOUCHPAD_CLICK: u8 = 0x02;
 /// A contact's first byte has this set while no finger is on it; the
 /// rest of the byte numbers the touch.
-const NO_CONTACT: u8 = 0x80;
+pub(crate) const NO_CONTACT: u8 = 0x80;
 /// The touchpad's last place across and down, as the kernel's driver
 /// gives its node's range: 1920 by 1080.
-const TOUCHPAD_X: f32 = 1919.0;
-const TOUCHPAD_Y: f32 = 1079.0;
+pub(crate) const TOUCHPAD_X: f32 = 1919.0;
+pub(crate) const TOUCHPAD_Y: f32 = 1079.0;
 
 /// A physical value as the report's count for it, at `per_unit` counts
 /// to the unit, held to what an `i16` carries: past it, the count is
 /// the end it went past, never one wrapped round. One that isn't a
 /// number is 0, though the pad state lets none through.
-fn count(value: f32, per_unit: f32) -> i16 {
+pub(crate) fn count(value: f32, per_unit: f32) -> i16 {
     (value * per_unit)
         .round()
         .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
@@ -255,7 +255,7 @@ fn count(value: f32, per_unit: f32) -> i16 {
 
 /// Gyroscope counts to the degree a second under the neutral
 /// calibration, as both its readers read it: 17678 over 1080.
-fn gyro_counts() -> f32 {
+pub(crate) fn gyro_counts() -> f32 {
     f32::from(2 * GYRO_POINT) / f32::from(2 * GYRO_SPEED)
 }
 
@@ -1510,6 +1510,14 @@ impl AsFd for Emulator {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.uhid.as_fd()
     }
+}
+
+/// The input report a virtual DualSense sends first for `state`, for the
+/// reader's tests to read back.
+#[cfg(test)]
+pub(crate) fn first_report(state: &PadState) -> [u8; INPUT_SIZE] {
+    let touches = Touches::FIRST.after(Touchpad::UNTOUCHED, state.touchpad());
+    input_report(state, 1, touches)
 }
 
 #[cfg(test)]
