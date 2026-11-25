@@ -18,3 +18,5 @@ Things the design depends on that have not been observed, or risks accepted for 
 - [`uinput-uhid-grant.md`](uinput-uhid-grant.md) — the seat user is given uinput and uhid to make virtual pads, which reach beyond pads; a risk where several people share a machine.
 - [`hider-closer-on-older-kernels.md`](hider-closer-on-older-kernels.md) — before Linux 6.16, or before the service first starts with systemd before 258, a user with no seat can stop the hiding service accepting with 74 connections, one carrying a socket whose close lingers.
 - [`hotplug-look-after-overrun.md`](hotplug-look-after-overrun.md) — after udev's events overrun the daemon's watch, a look at what is connected that fails is tried again only at udev's next event, the pads perhaps published wrong until then.
+- [`motion-unplayed.md`](motion-unplayed.md) — a virtual DualSense's motion was seen in Steam's controller test and never in a game, through SDL or Proton, the assist's button among it.
+- [`motion-untried-transports.md`](motion-untried-transports.md) — a DualSense's motion over Bluetooth and a DualShock 4's over USB are read from reports laid out by hand, never from the pad.
