@@ -549,6 +549,19 @@ pkgs.testers.runNixOSTest {
         assert all(a != b for a, b in zip(seen, seen[1:])), seen
         primary_touches("touch-a")
 
+        # The assist's engaging button, which the assist presses by turns:
+        # the assist's motion, lying still, while it is held, and the
+        # primary's after. The touchpad stays the primary's.
+        machine.succeed("printf '%s\\n' 'assist-gyro = \"south\"' >> /tmp/motion.toml")
+        cli("profile", "put", "/tmp/motion.toml")
+        assert "applied without" in cli("update", "motion")
+        evtest("motion-g", "touch-g")
+        seen, now = readings("motion-g")
+        assert "still" in seen and {"pressed", "released"} & set(seen), seen
+        assert set(seen) <= {"pressed", "released", "still"}, seen
+        primary_touches("touch-g")
+        machine.succeed("sed -i '/assist-gyro/d' /tmp/motion.toml")
+
         # Toggle: the motion and touchpad of the pad selected, following a
         # switch: the assist's, lying still with no finger down, then the
         # primary's again.
@@ -570,7 +583,7 @@ pkgs.testers.runNixOSTest {
         assert {"pressed", "released"} <= set(seen) and now != "still", (seen, now)
         assert set(seen) <= {"pressed", "released", "still"}, seen
 
-        machine.succeed("systemctl stop motion-a touch-a motion-b touch-b motion-c touch-c")
+        machine.succeed("systemctl stop motion-a touch-a motion-g touch-g motion-b touch-b motion-c touch-c")
         cli("stop", "motion")
         assert setup("motion") is None
         machine.succeed("systemctl stop ds-primary ds-assist")

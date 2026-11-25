@@ -492,6 +492,7 @@ fn any_mux() -> impl Strategy<Value = MuxConfig> {
                     ungrouped_buttons,
                     ungrouped_axes,
                     touchpad,
+                    gyro: None,
                     // Usually in order, as a real profile's would be.
                     engage: if engage.is_finite() && release.is_finite() {
                         engage.max(release)

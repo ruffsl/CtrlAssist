@@ -29,6 +29,7 @@ primary = "0a:1b:2c:3d:4e:14"
 assist = "model:054c:09cc"
 identity = "xbox"       # optional
 rumble = "primary"      # optional
+assist-gyro = "left-bumper"  # optional
 hide = "grab"           # optional
 managed = true       # optional
 ```
@@ -44,6 +45,8 @@ managed = true       # optional
 `outputs` is how many virtual pads to make; 2 if left out.
 
 `rumble` is who feels what a game rumbles, for the three presets of two controllers: `both` (the default), `primary`, `assist` or `none`. A helper who only steps in now and then may not want the rumble; a player who can't feel it may want the helper to.
+
+`assist-gyro` is a button on the assist's controller that gives its motion sensors to the virtual controller while it is held, for the `priority` and `average` presets: a button's name (`south`, `east`, `north`, `west`, `left-bumper`, `right-bumper`, `select`, `start`, `mode`, `left-thumb`, `right-thumb`, `dpad-up`, `dpad-down`, `dpad-left`, `dpad-right` or `touchpad`), or `none`, the default. Without it the motion sensors a game reads are always the primary's, so that it sees one controller's gyroscope and accelerometer, which agree. While the assist holds the button, both sensors are the assist's, at once; let go, they are the primary's again. The game doesn't see that button of the assist's, and the primary's same button is untouched. In `toggle` the sensors follow whoever has control, and there is no such button. Only a virtual DualSense carries motion.
 
 `hide` is how the real controllers are kept from games while the arrangement runs, in any profile, a preset or not:
 
@@ -81,7 +84,7 @@ Once a part has taken a controller, it waits for that same controller if it disc
 
 If you connect a real DualSense by USB cable, with the hiding service installed, CtrlAssist copies what that controller says of itself, keeps the copy in `~/.local/state/ctrlassist/identities/`, and makes its virtual DualSenses from that from then on; until then it uses a description of the controller that ships with it. You don't need to own one.
 
-A virtual DualSense carries the buttons, sticks, triggers and rumble. Its touchpad and motion sensors report those of a hidden DualSense or DualShock 4 behind it, and nothing with any other pad or one that isn't hidden, and the system shows a battery and lights for it, as it does for a real one.
+A virtual DualSense carries the buttons, sticks, triggers and rumble. Its touchpad and motion sensors report those of a hidden DualSense or DualShock 4 behind it, and nothing with any other pad or one that isn't hidden. With two controllers, the touchpad is the assist's while the assist has a finger on it in `priority`, whoever's touched it first in `average`, and the controller's that has control in `toggle`; the motion sensors are the primary's unless `assist-gyro` says otherwise. The touchpad moves the desktop's pointer as a real DualSense's does, and the system shows a battery and lights for it, as it does for a real one.
 
 When the controller behind it is a real DualSense, on a USB cable or over Bluetooth, and the hiding service has hidden it (`hide` left at `full`, with the service installed), the game's lightbar, player lights and adaptive trigger effects reach it too. A DualShock 4 behind it, either way, gets the lightbar's color. A controller that is only grabbed, or not hidden, gets only the rumble. A controller that a game-streaming host presents as a DualSense is treated as one; whether the lights and trigger effects then reach the controller at the far end depends on the host.
 
@@ -142,6 +145,7 @@ identity = "xbox"
 - `engage` and `release` are how far a stick or trigger must move for a mux to count an input as touching it, and how far back before it lets go.
 - `feedback` says who feels rumble: `"active"` (whoever is playing), `"none"`, or a list of a mux's inputs.
 - `switch` is the button that hands over a toggle or a unicast: a button's name, or `false` for none.
+- `gyro` is a mux's button that hands the motion sensors to one of its inputs while that input holds it: `{ button = "left-bumper", input = "assist" }`. A mux that selects an input, as a toggle does, has none.
 
 A preset and the full form don't mix in one file.
 

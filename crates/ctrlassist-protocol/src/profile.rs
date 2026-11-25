@@ -59,6 +59,12 @@ pub struct Profile {
     /// Who feels what a game rumbles, for a mux preset.
     #[serde(default)]
     pub rumble: Option<Rumble>,
+    /// The assist's button that hands their motion sensors to the
+    /// virtual pad while it is held, for the priority and average
+    /// presets: a button's name, or `none`, which leaving it out means
+    /// too.
+    #[serde(default)]
+    pub assist_gyro: Option<String>,
     /// How the setup's pads are kept from games.
     #[serde(default)]
     pub hide: Option<Hide>,
@@ -264,6 +270,20 @@ pub struct Node {
     /// none. A mux may say whose button it is with a table.
     #[serde(default)]
     pub switch: Option<SwitchSpec>,
+    /// A mux's button that hands motion over: while the input named
+    /// holds it, the motion sensors are that input's.
+    #[serde(default)]
+    pub gyro: Option<GyroSpec>,
+}
+
+/// The button that hands a mux's motion to one of its inputs.
+#[derive(Clone, PartialEq, Eq, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct GyroSpec {
+    /// The button.
+    pub button: String,
+    /// The input whose button it is, and whose motion it hands over.
+    pub input: String,
 }
 
 /// A mux's modes.
@@ -509,7 +529,7 @@ pub struct Plan {
 }
 
 /// Button names, as profiles write them.
-const BUTTONS: [(&str, Control); 15] = [
+const BUTTONS: [(&str, Control); 16] = [
     ("south", gamepad::SOUTH),
     ("east", gamepad::EAST),
     ("north", gamepad::NORTH),
@@ -525,7 +545,16 @@ const BUTTONS: [(&str, Control); 15] = [
     ("dpad-down", gamepad::DPAD_DOWN),
     ("dpad-left", gamepad::DPAD_LEFT),
     ("dpad-right", gamepad::DPAD_RIGHT),
+    ("touchpad", gamepad::TOUCHPAD),
 ];
+
+/// What `assist-gyro` says for no button, as leaving it out does.
+pub const NO_BUTTON: &str = "none";
+
+/// The buttons' names, as profiles write them.
+pub fn button_names() -> impl Iterator<Item = &'static str> {
+    BUTTONS.iter().map(|(name, _)| *name)
+}
 
 fn button(at: &str, name: &str) -> Result<Control, ProfileError> {
     match BUTTONS.iter().find(|(known, _)| *known == name) {
@@ -842,6 +871,7 @@ impl Profile {
                 ("outputs", self.outputs.is_some()),
                 ("identity", self.identity.is_some()),
                 ("rumble", self.rumble.is_some()),
+                ("assist-gyro", self.assist_gyro.is_some()),
             ] {
                 if present {
                     return error(
@@ -894,10 +924,29 @@ impl Profile {
                     Rumble::Assist => Some(Feedback::Inputs(vec!["assist".to_string()])),
                     Rumble::None => Some(Feedback::Named(FeedbackName::None)),
                 };
+                let gyro = match self.assist_gyro.take() {
+                    Some(name) if name != NO_BUTTON => {
+                        if mode == MuxMode::Toggle {
+                            return error(
+                                "assist-gyro",
+                                "in toggle the motion sensors follow the pad that has control, so there is nothing for the assist to take: leave `assist-gyro` out",
+                            );
+                        }
+                        // Where the profile wrote it, before the node it
+                        // becomes says where it never was.
+                        button("assist-gyro", &name)?;
+                        Some(GyroSpec {
+                            button: name,
+                            input: "assist".to_string(),
+                        })
+                    }
+                    _ => None,
+                };
                 let node = Node {
                     mux: Some(mode),
                     inputs: vec!["primary".to_string(), "assist".to_string()],
                     feedback,
+                    gyro,
                     ..Node::default()
                 };
                 self.node.insert("mux".to_string(), node);
@@ -916,6 +965,12 @@ impl Profile {
                             "this key belongs to the priority, average and toggle presets",
                         );
                     }
+                }
+                if self.assist_gyro.is_some() {
+                    return error(
+                        "assist-gyro",
+                        "this key belongs to the priority and average presets",
+                    );
                 }
                 let Some(pad) = self.pad.take() else {
                     return error("mode", "this preset needs `pad`");
@@ -1071,6 +1126,19 @@ fn mux(
             "this mux never selects an input, since none of its rules is `switched`, so a switch would only keep its button from the game: leave `switch` out, or make a rule `switched`",
         );
     }
+    if let Some(gyro) = &node.gyro {
+        if selects {
+            return error(
+                format!("{at}.gyro"),
+                "this mux selects an input, and the motion sensors follow the input selected, so there is nothing for a button to hand over: leave `gyro` out",
+            );
+        }
+        let handed = Switch {
+            input: Some(position("gyro.input", &gyro.input)?),
+            button: button(&format!("{at}.gyro.button"), &gyro.button)?,
+        };
+        config.gyro = Some(handed);
+    }
     Ok(NodeSpec::Mux { inputs, config })
 }
 
@@ -1120,6 +1188,7 @@ fn demux(
         ("engage", node.engage.is_some()),
         ("release", node.release.is_some()),
         ("rules", !node.rules.is_empty()),
+        ("gyro", node.gyro.is_some()),
     ] {
         if present {
             return error(format!("{at}.{key}"), "this key belongs to a mux");

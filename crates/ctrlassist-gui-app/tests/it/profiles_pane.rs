@@ -162,7 +162,15 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     assert!(couch.kept && !couch.unfinished && couch.setup_index < 0 && !couch.is_default);
     assert_eq!(
         keys(couch),
-        ["assist", "hide", "identity", "mode", "primary", "rumble"],
+        [
+            "assist",
+            "assist-gyro",
+            "hide",
+            "identity",
+            "mode",
+            "primary",
+            "rumble"
+        ],
         "a preset of two pads has no pad count"
     );
     let preset = field(couch, "mode");

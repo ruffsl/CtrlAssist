@@ -618,6 +618,120 @@ fn a_profile_has_at_most_32_pads_64_nodes_and_32_virtual_pads() {
     }
 }
 
+/// The one mux of a profile's plan, as configured.
+fn mux_of(text: &str) -> MuxConfig {
+    let nodes = plan(text).unwrap().graph.nodes;
+    let mut muxes = nodes.into_iter().filter_map(|node| match node {
+        NodeSpec::Mux { config, .. } => Some(config),
+        NodeSpec::Demux { .. } => None,
+    });
+    muxes.next().unwrap()
+}
+
+#[test]
+fn a_preset_names_the_assists_button_that_takes_the_motion() {
+    let preset = |mode: &str, key: &str| {
+        format!(
+            "mode = \"{mode}\"\nprimary = \"model:0001:0001\"\nassist = \"model:0001:0002\"\n{key}"
+        )
+    };
+    // The assist is the mux's second input.
+    for mode in ["priority", "average"] {
+        assert_eq!(
+            mux_of(&preset(mode, "assist-gyro = \"left-bumper\"\n")).gyro,
+            Some(Switch {
+                input: Some(1),
+                button: gamepad::LEFT_BUMPER,
+            }),
+            "{mode}"
+        );
+        assert_eq!(mux_of(&preset(mode, "")).gyro, None);
+        assert_eq!(mux_of(&preset(mode, "assist-gyro = \"none\"\n")).gyro, None);
+    }
+    // The touchpad's click is a button with a name.
+    assert_eq!(
+        mux_of(&preset("priority", "assist-gyro = \"touchpad\"\n"))
+            .gyro
+            .map(|gyro| gyro.button),
+        Some(gamepad::TOUCHPAD)
+    );
+
+    let said = |text: &str, want_at: &str, want: &str| {
+        let (at, problem) = refusal(text);
+        assert_eq!(at, want_at, "{problem}");
+        assert!(problem.contains(want), "{at}: {problem}");
+    };
+    said(
+        &preset("priority", "assist-gyro = \"left-x\"\n"),
+        "assist-gyro",
+        "no button named `left-x`",
+    );
+    said(
+        &preset("toggle", "assist-gyro = \"south\"\n"),
+        "assist-gyro",
+        "follow the pad that has control",
+    );
+    assert_eq!(
+        mux_of(&preset("toggle", "assist-gyro = \"none\"\n")).gyro,
+        None
+    );
+    said(
+        "mode = \"unicast\"\npad = \"model:0001:0001\"\nassist-gyro = \"south\"\n",
+        "assist-gyro",
+        "priority and average",
+    );
+    said(
+        "assist-gyro = \"south\"\n",
+        "assist-gyro",
+        "belongs to a preset",
+    );
+}
+
+#[test]
+fn the_full_form_names_a_muxs_button_that_hands_motion_over() {
+    let full = |mode: &str, gyro: &str| {
+        format!(
+            "[source.a]\npad = \"model:0001:0001\"\n[source.b]\npad = \"model:0001:0002\"\n[node.m]\nmux = \"{mode}\"\ninputs = [\"a\", \"b\"]\n{gyro}[sink.o]\ninput = \"m\"\nidentity = \"dualsense\"\n"
+        )
+    };
+    assert_eq!(
+        mux_of(&full(
+            "average",
+            "gyro = { button = \"south\", input = \"a\" }\n"
+        ))
+        .gyro,
+        Some(Switch {
+            input: Some(0),
+            button: gamepad::SOUTH,
+        })
+    );
+    let said = |text: &str, want_at: &str, want: &str| {
+        let (at, problem) = refusal(text);
+        assert_eq!(at, want_at, "{problem}");
+        assert!(problem.contains(want), "{at}: {problem}");
+    };
+    said(
+        &full("priority", "gyro = { button = \"south\", input = \"c\" }\n"),
+        "node.m.gyro.input",
+        "isn't one of this mux's inputs",
+    );
+    said(
+        &full("priority", "gyro = { button = \"souht\", input = \"b\" }\n"),
+        "node.m.gyro.button",
+        "no button named",
+    );
+    said(
+        &full("toggle", "gyro = { button = \"south\", input = \"b\" }\n"),
+        "node.m.gyro",
+        "follow the input selected",
+    );
+    said(
+        "[source.a]\npad = \"model:0001:0001\"\n[node.d]\ndemux = \"unicast\"\ninput = \"a\"\noutputs = 2\ngyro = { button = \"south\", input = \"a\" }\n[sink.o]\ninput = \"d.0\"\nidentity = \"generic\"\n",
+        "node.d.gyro",
+        "belongs to a mux",
+    );
+}
+
 #[test]
 fn the_two_forms_do_not_mix_and_each_preset_has_its_own_keys() {
     let said = |text: &str, want_at: &str, want: &str| {

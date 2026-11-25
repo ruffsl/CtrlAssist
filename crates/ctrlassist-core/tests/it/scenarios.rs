@@ -557,6 +557,88 @@ fn priority_and_average_carry_the_primarys_motion_whatever_the_assist_does() {
 }
 
 #[test]
+fn an_assist_holding_the_engaging_button_has_the_motion_while_it_is_held() {
+    for mode in [Mode::Priority, Mode::Average] {
+        let mut config = MuxConfig::new(mode, &Layout::gamepad());
+        config.gyro = Some(Switch {
+            input: Some(1),
+            button: LEFT_BUMPER,
+        });
+        let mut graph = mux_graph(config);
+        let primary = pad()
+            .with(LEFT_BUMPER, 1.0)
+            .with_motion(turning(30.0, 1))
+            .with_touchpad(finger(0.2, 0.3));
+        let assist = pad().with_motion(turning(-200.0, 9));
+        step(&mut graph, PRIMARY, primary);
+        step(&mut graph, ASSIST, assist);
+        let sink = *graph.sink(SinkId(0));
+        assert_eq!(sink.motion(), primary.motion(), "{mode:?}: not held");
+        assert_eq!(
+            sink.get(LEFT_BUMPER),
+            1.0,
+            "{mode:?}: the primary's same button is its own"
+        );
+
+        // Held: the assist's motion at once, both sensors, and the game
+        // never sees the button.
+        step(&mut graph, PRIMARY, pad().with_motion(turning(30.0, 2)));
+        step(&mut graph, ASSIST, assist.with(LEFT_BUMPER, 1.0));
+        let sink = *graph.sink(SinkId(0));
+        assert_eq!(sink.motion(), assist.motion(), "{mode:?}: held");
+        assert_eq!(sink.get(LEFT_BUMPER), 0.0, "{mode:?}: taken out");
+        // The touchpad stays where the mode has it.
+        step(&mut graph, PRIMARY, primary.with_motion(turning(31.0, 3)));
+        assert_eq!(graph.sink(SinkId(0)).touchpad(), finger(0.2, 0.3));
+        assert_eq!(graph.sink(SinkId(0)).motion(), assist.motion());
+
+        // Let go: the primary's again.
+        step(&mut graph, ASSIST, assist);
+        assert_eq!(graph.sink(SinkId(0)).motion(), turning(31.0, 3), "{mode:?}");
+    }
+}
+
+#[test]
+fn an_engaging_button_is_a_button_of_one_input_and_not_the_switch() {
+    let layout = Layout::gamepad();
+    let build = |config: MuxConfig| {
+        Graph::build(GraphSpec {
+            sources: vec![source(), source()],
+            nodes: vec![NodeSpec::Mux {
+                inputs: vec![Input::Source(PRIMARY), Input::Source(ASSIST)],
+                config,
+            }],
+            sinks: vec![Input::Node(NodeId(0), 0)],
+        })
+        .map(|_| ())
+    };
+    let gyro = |input, button| {
+        let mut config = MuxConfig::new(Mode::Priority, &layout);
+        config.gyro = Some(Switch { input, button });
+        config
+    };
+    assert_eq!(build(gyro(Some(1), LEFT_BUMPER)), Ok(()));
+    assert_eq!(build(gyro(None, LEFT_BUMPER)), Err(GraphError::BadControl));
+    assert_eq!(
+        build(gyro(Some(2), LEFT_BUMPER)),
+        Err(GraphError::BadControl)
+    );
+    assert_eq!(build(gyro(Some(1), LEFT_X)), Err(GraphError::BadControl));
+    // A toggle's switch is the second input's Mode button.
+    let mut toggle = MuxConfig::new(Mode::Toggle, &layout);
+    toggle.gyro = Some(Switch {
+        input: Some(1),
+        button: MODE,
+    });
+    assert_eq!(build(toggle.clone()), Err(GraphError::BadControl));
+    toggle.gyro = Some(Switch {
+        input: Some(0),
+        button: MODE,
+    });
+    assert_eq!(build(toggle), Ok(()), "another input's is another button");
+}
+
+#[test]
 fn the_assist_does_not_stand_in_for_a_primary_that_goes() {
     let mut graph = mux(Mode::Priority);
     step(

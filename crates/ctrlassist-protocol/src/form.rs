@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::profile::{Hide, Identity, Preset, Rumble, SCHEMA};
+use crate::profile::{Hide, Identity, NO_BUTTON, Preset, Rumble, SCHEMA, button_names};
 
 /// One choice of a field that offers some.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -114,10 +114,22 @@ fn choice(value: &str, label: &str, description: &str) -> Choice {
 
 /// The presets of two pads, and of one, as a profile writes them.
 const TWO_PADS: [&str; 3] = ["priority", "average", "toggle"];
+/// Those of two pads where the motion sensors are the primary's unless
+/// the assist takes them.
+const MOTION_TAKEN: [&str; 2] = ["priority", "average"];
 const ONE_PAD: [&str; 2] = ["unicast", "multicast"];
 
 fn names(presets: &[&str]) -> Vec<String> {
     presets.iter().map(|name| (*name).to_string()).collect()
+}
+
+/// A button's name as a person reads it: `left-bumper` as `Left bumper`.
+fn button_label(name: &str) -> String {
+    let mut label = name.replace('-', " ");
+    if let Some(first) = label.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    label
 }
 
 /// A preset's fields, in the order a form shows them.
@@ -237,6 +249,20 @@ fn described() -> Vec<Field> {
             },
             presets: names(&TWO_PADS),
             default: Rumble::default().as_str().to_string(),
+            group: String::new(),
+        },
+        Field {
+            key: "assist-gyro".to_string(),
+            label: "Assist aims with".to_string(),
+            help: "A button on the assist's pad that gives their motion sensors to the virtual pad while it is held, in place of the primary's. The game doesn't see that button of the assist's. Only a DualSense identity carries motion."
+                .to_string(),
+            kind: Kind::Choice {
+                choices: std::iter::once(choice(NO_BUTTON, "No button", ""))
+                    .chain(button_names().map(|name| choice(name, &button_label(name), "")))
+                    .collect(),
+            },
+            presets: names(&MOTION_TAKEN),
+            default: NO_BUTTON.to_string(),
             group: String::new(),
         },
         Field {

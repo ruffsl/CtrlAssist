@@ -111,6 +111,13 @@ pub struct MuxConfig {
     pub release: f32,
     /// What raises the switch, besides a client asking.
     pub switch: Option<Switch>,
+    /// The button that hands motion over while it is held: while its
+    /// input holds it, the motion is that input's, both sensors, in
+    /// place of the input's it would be; let go, it is that one's again
+    /// at the next step. It is one input's, never any's, and like the
+    /// switch's it is consumed: the game never sees it, and the same
+    /// button of another input is left alone.
+    pub gyro: Option<Switch>,
     /// Where feedback goes.
     pub feedback: MuxFeedback,
 }
@@ -135,6 +142,7 @@ impl MuxConfig {
                 input: Some(1),
                 button: gamepad::MODE,
             }),
+            gyro: None,
             feedback: MuxFeedback::Active,
         }
     }
@@ -214,6 +222,19 @@ impl Mux {
             // the game.
             let selects = config.selects();
             if !is_button || switch.input.is_some_and(|input| input >= inputs) || !selects {
+                return Err(GraphError::BadControl);
+            }
+        }
+        if let Some(gyro) = config.gyro {
+            let is_button = matches!(gyro.button, Control::Button(_)) && gyro.button.is_valid();
+            // Whose motion it hands over has to be said, and a button
+            // that also raised the switch would do both at each press.
+            let on_an_input = gyro.input.is_some_and(|input| input < inputs);
+            let is_the_switch = config.switch.is_some_and(|switch| {
+                switch.button == gyro.button
+                    && (switch.input.is_none() || switch.input == gyro.input)
+            });
+            if !is_button || !on_an_input || is_the_switch {
                 return Err(GraphError::BadControl);
             }
         }
@@ -334,8 +355,23 @@ impl Mux {
         *out.buttons_mut() = loose & self.loose_buttons;
 
         // Motion, whole from one input and never blended: a game sees
-        // one pad's two sensors, which agree.
-        out.set_motion(inputs[self.carrier()].motion());
+        // one pad's two sensors, which agree. The input that holds the
+        // button that hands it over has it while it does, and the button
+        // is removed.
+        let mut carrier = self.carrier();
+        if let Some(Switch {
+            input: Some(input),
+            button: Control::Button(button),
+        }) = self.config.gyro
+            && let Some(state) = inputs.get_mut(input)
+        {
+            let bit = (1 as ButtonBits) << button;
+            if state.buttons() & bit != 0 {
+                carrier = input;
+            }
+            *state.buttons_mut() &= !bit;
+        }
+        out.set_motion(inputs[carrier].motion());
 
         // The touchpad, whole from one input too.
         let from = match self.config.touchpad {

@@ -1011,6 +1011,24 @@ default ✓ (Not set up) >
     ( ) Primary only
     ( ) Assist only
     ( ) Neither
+  Assist aims with: No button >
+    (o) No button
+    ( ) South
+    ( ) East
+    ( ) North
+    ( ) West
+    ( ) Left bumper
+    ( ) Right bumper
+    ( ) Select
+    ( ) Start
+    ( ) Mode
+    ( ) Left thumb
+    ( ) Right thumb
+    ( ) Dpad up
+    ( ) Dpad down
+    ( ) Dpad left
+    ( ) Dpad right
+    ( ) Touchpad
   Real pads: Hidden >
     (o) Hidden
     ( ) Grabbed
