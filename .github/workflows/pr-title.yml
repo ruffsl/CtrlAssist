@@ -42,7 +42,9 @@ jobs:
             echo "No commit touches docs/plans/, so only the PR title lands."
             exit 0
           fi
-          types='build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test'
+          # A commit on a plan's branch may also be a spike's, which a
+          # pull request's own title may not.
+          types='build|chore|ci|docs|feat|fix|perf|refactor|revert|spike|style|test'
           bad=$(git log --no-merges --format='%h %s' "$range" \
             | grep -vE "^[0-9a-f]+ ($types)(\([^)]+\))?!?: ." || true)
           if [ -n "$bad" ]; then
