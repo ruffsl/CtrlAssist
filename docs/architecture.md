@@ -314,6 +314,35 @@ What this defends: another user's session, and the rest of the system, against a
 
 **The unit's sandbox is defense in depth,** the user's permissions being the boundary: no capabilities and no new privileges, the file system read-only but for the marker directory and `/sys/devices`, the device cgroup closed but for input and hidraw nodes, netlink the only socket it may make, and the rest of the usual set. The network namespace is shared, since udev's events arrive over netlink in the host's.
 
+### A pad's anchor, by kind of pad
+
+A pad's anchor is what its driver is re-bound at, and what tells a re-bind from an unplugging ([above](#the-hiding-services-protocol)). The device crate reads a node's anchor as the hiding service finds the device it records and re-binds: the nearest HID device above the node, or with none the nearest USB interface, with the `USEC_INITIALIZED` of the nearest USB device at or above it, where there is one. The two must agree: an anchor below the device the service re-binds would go with each re-bind.
+
+- **A HID pad on USB** (a DualSense, a DualShock 4): its HID device, under its USB interface, stamped by its USB device. The HID device's name carries an instance number the kernel never hands out twice, so the stamp only repeats what the place says.
+- **A HID pad over Bluetooth through uhid** (BlueZ): its HID device, under `/sys/devices/virtual/misc/uhid`, with no stamp. BlueZ destroys the uhid device as the pad disconnects, which removes the HID device.
+- **A HID pad over Bluetooth through the kernel's HIDP:** its HID device, under the adapter's connection, stamped by the adapter's USB device where the adapter is on USB; the connection and the HID device go as the pad disconnects.
+- **A USB pad with no HID device** (xpad): its USB interface, whose place is its port's, stamped by its USB device: another pad plugged into that port is another enumeration.
+- **A pad on xpad's wireless receiver** (the Xbox 360 one): the receiver's USB interface, one for each of its four places, stamped by the receiver's USB device. The driver makes the pad's input device when the pad reports in and removes it when the pad is switched off or out of range, and the interface stays: the pad's node goes with no request, and has left. After a re-bind the pad's node comes once the pad answers the driver's question whether it is there, after the driver is bound.
+- **A pad on hid-steam's wireless dongle** (the Steam Controller's): the dongle's HID device, stamped by the dongle's USB device. The driver makes the pad's input device when the pad connects and removes it when it disconnects, the HID device staying, so as with xpad's receiver.
+- **A uinput pad another program made:** no anchor. Nothing re-binds it (the service refuses it, and the daemon grabs it), and its event node is what goes when it does, so its node going is its unplugging, as before.
+- **A pad with several input nodes** (a DualSense's touchpad and motion sensors): the daemon takes in only a pad's joystick nodes, and those of one HID device share its anchor, each node away and back on its own.
+- **A node whose anchor can't be read** (it went as it was read, or its USB device has no stamp yet): its own anchor, as a uinput pad's.
+
+The hotplug watch hears, beside input nodes, the removal of HID devices and USB interfaces, filtered by udev, and their change events that the service marks as its request for a re-bind; a removal unplugs every pad anchored at or under the device removed, once. A pad present as the daemon starts has its anchor read with it; one away then has none known, and its return is a pad plugged in, as it would be had it been there a moment earlier.
+
+What that leaves:
+
+- **A re-bind no driver comes back from** leaves the pad away, and so published as connected, until its anchor goes.
+- **Bluetooth.** A pad BlueZ presents through uhid, or through the kernel's HIDP, keeps its HID device through a re-bind as far as the driver model says: unbinding a driver doesn't remove the device. The hiding service leans on the same, and its VM check runs it for USB and uhid. Seen on a DualShock 4 over Bluetooth through uhid; not through the kernel's HIDP.
+- **A re-bind by anyone but the service** is published as the pad leaving and one connecting, and its return is a pad plugged in, which may start a profile that starts by itself: that is what it is, as far as anything can tell. So with a re-bind asked by a hiding service from a build before the mark, which writes none.
+- **A pad on a wireless receiver switched off in the moment of a re-bind,** between the request being written and udev running it, has its node's going taken for the re-bind's: it is away, and published as connected, until it is switched on again, which is then its return and starts nothing, or until the receiver goes. So with one switched off once its node was back, the re-bind's request read only after the hotplug watch lost events and its node's coming and going lost: what is connected, looked at again, can't tell it from a pad whose node is still to come, as a receiver's pad's comes only once it answers the driver.
+
+### Minimum versions
+
+What the hiding service and its rule use: `TEST` with substitution, `IMPORT{parent}`, `TAG-=`, final `:=` assignments, `%b` in `RUN` formatted when its line is applied (udev since its rules engine was rewritten in 243); `CURRENT_TAGS` (247), which the behavior at a switch of seat relies on; synthetic uevent arguments (Linux 4.13); `ProtectProc=` and `ProcSubset=` (systemd 247), `PrivateIPC=` (248), `RuntimeDirectoryPreserve=` (235), `sysusers.d` (215). So **systemd 248 and Linux 4.13**: Debian 12 (252), Ubuntu 22.04 (249), Fedora and Arch are all above it. Only 262 is run in the VM; the rest is from the versions each feature arrived in, not tried.
+
+A user with no seat is kept from stopping the service only from Linux 6.16 and systemd 258 ([a concern](concerns/hider-closer-on-older-kernels.md)).
+
 ### Without the hiding service
 
 In a Flatpak, or where the service isn't installed, the daemon uses what an unprivileged process can:
