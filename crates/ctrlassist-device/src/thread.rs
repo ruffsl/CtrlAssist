@@ -61,20 +61,40 @@ const PRIORITY: i32 = 10;
 
 const WAKE: u64 = u64::MAX;
 const TIMER: u64 = u64::MAX - 1;
-const PAD: u64 = 0;
-const SINK: u64 = 1;
-/// A pad's raw node, read for its motion and touchpad.
-const RAW: u64 = 2;
+/// What a setup's descriptor is, as its token says.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+enum Kind {
+    /// A pad's event node.
+    Pad = 0,
+    /// A virtual pad.
+    Sink = 1,
+    /// A pad's raw node, read for its motion and touchpad.
+    Raw = 2,
+}
+
+impl Kind {
+    /// The kind a token says, if it says one: the wake descriptor's and
+    /// the timer's say none.
+    fn of(token: u64) -> Option<Self> {
+        match (token >> 24) & 0xff {
+            0 => Some(Self::Pad),
+            1 => Some(Self::Sink),
+            2 => Some(Self::Raw),
+            _ => None,
+        }
+    }
+}
 
 /// A descriptor's place: which setup, a pad, its raw node or a virtual
 /// pad, and which.
-fn token(slot: usize, kind: u64, index: usize) -> u64 {
-    ((slot as u64) << 32) | (kind << 24) | (index as u64 & 0xff_ffff)
+fn token(slot: usize, kind: Kind, index: usize) -> u64 {
+    ((slot as u64) << 32) | (u64::from(kind as u8) << 24) | (index as u64 & 0xff_ffff)
 }
 
 /// Whether a token is a pad's raw node's.
 fn is_raw(token: u64) -> bool {
-    token != WAKE && token != TIMER && (token >> 24) & 0xff == RAW
+    token != WAKE && token != TIMER && Kind::of(token) == Some(Kind::Raw)
 }
 
 /// Listens to a pad's event node, and its raw node where it is read,
@@ -83,11 +103,11 @@ fn listen(epoll: &OwnedFd, pad: &Pad, slot: usize, index: usize) -> io::Result<(
     epoll::add(
         epoll,
         pad,
-        EventData::new_u64(token(slot, PAD, index)),
+        EventData::new_u64(token(slot, Kind::Pad, index)),
         EventFlags::IN,
     )?;
     if let Some(raw) = pad.motion_node() {
-        let data = EventData::new_u64(token(slot, RAW, index));
+        let data = EventData::new_u64(token(slot, Kind::Raw, index));
         if let Err(error) = epoll::add(epoll, raw, data, EventFlags::IN) {
             let _ = epoll::delete(epoll, pad);
             return Err(error.into());
@@ -378,7 +398,7 @@ impl Setup {
             epoll::add(
                 epoll,
                 sink,
-                EventData::new_u64(token(slot, SINK, index)),
+                EventData::new_u64(token(slot, Kind::Sink, index)),
                 EventFlags::IN,
             )?;
         }
@@ -1632,13 +1652,17 @@ impl State {
 
     fn descriptor_ready(&mut self, token: u64, now: u64) {
         let slot = (token >> 32) as usize;
-        let kind = (token >> 24) & 0xff;
+        // Every token a setup's descriptor is listened to under has a
+        // kind; one that doesn't is nobody's.
+        let Some(kind) = Kind::of(token) else {
+            return;
+        };
         let index = (token & 0xff_ffff) as usize;
         self.guarded(slot, now, |setup, epoll| {
             let gone = match kind {
-                PAD => setup.pad_ready(index, epoll),
-                RAW => setup.raw_ready(index, epoll),
-                _ => {
+                Kind::Pad => setup.pad_ready(index, epoll),
+                Kind::Raw => setup.raw_ready(index, epoll),
+                Kind::Sink => {
                     setup.sink_ready(index, now);
                     None
                 }
@@ -1694,6 +1718,19 @@ mod tests {
 
     const FIRST: SetupId = SetupId(1);
     const SECOND: SetupId = SetupId(2);
+
+    #[test]
+    fn a_token_says_its_kind_and_the_thread_s_own_say_none() {
+        for kind in [Kind::Pad, Kind::Sink, Kind::Raw] {
+            let made = token(SETUPS - 1, kind, 0xff_ffff);
+            assert_eq!(Kind::of(made), Some(kind));
+            assert_eq!(is_raw(made), kind == Kind::Raw);
+        }
+        for own in [WAKE, TIMER] {
+            assert_eq!(Kind::of(own), None);
+            assert!(!is_raw(own));
+        }
+    }
 
     /// Two pads into a toggle and no virtual pad: a setup that needs no
     /// device to run.
