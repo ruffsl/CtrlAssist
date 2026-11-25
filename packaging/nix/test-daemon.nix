@@ -416,6 +416,162 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds("test $(ls /sys/bus/hid/drivers/playstation | grep -c 054C:0CE6) = 0")
         cli("profile", "delete", "twin")
 
+    with subtest("a hidden DualSense's sensors, contacts and click reach the virtual DualSense, from the pad that has the motion"):
+        # Two stand-ins for real pads. The primary reports the readings of
+        # `fake-dualsense --motion`, a press and a release by turns; the
+        # assist lies flat and still with no finger down, pressing a button.
+        machine.succeed("systemd-run --unit ds-primary ctrlassist-fixture fake-dualsense --real --number 1 --pulse 20 --motion")
+        machine.succeed("systemd-run --unit ds-assist ctrlassist-fixture fake-dualsense --real --number 2 --pulse 20")
+        machine.wait_until_succeeds("test $(ls /sys/bus/hid/drivers/playstation | grep -c 054C:0CE6) = 2")
+        retry(lambda _last: sum(pad["connected"] for pad in json.loads(cli("pads", "--json")) if pad["id"].startswith("address:02:ca:7e:")) == 2)
+        machine.succeed(
+            "printf '%s\\n' 'mode = \"priority\"' 'primary = \"02:ca:7e:00:00:01\"' "
+            "'assist = \"02:ca:7e:00:00:02\"' 'identity = \"dualsense\"' > /tmp/motion.toml"
+        )
+        cli("profile", "put", "/tmp/motion.toml")
+        cli("start", "motion")
+        phase_is("running", name="motion")
+        machine.succeed("udevadm settle")
+        assert all(source["present"] for source in setup("motion")["sources"]), setup("motion")
+
+        # The virtual DualSense's motion and touchpad nodes, beside its own.
+        hid = machine.succeed(f"readlink -f /sys/class/input/{setup('motion')['sinks'][0]['node'].split('/')[-1]}/device/device").strip()
+
+        def node_of(kind):
+            return "/dev/input/" + machine.succeed(
+                f"for d in {hid}/input/input*; do if grep -q '{kind}$' $d/name; then ls $d | grep '^event'; fi; done"
+            ).strip()
+
+        motion_node, touch_node = node_of("Motion Sensors"), node_of("Touchpad")
+        EV_ABS, EV_MSC, EV_KEY = 3, 4, 1
+
+        def evtest(*units):
+            """Reads the virtual pad's motion and touchpad nodes afresh, as the kernel's driver makes them of its reports, until enough has come."""
+            for unit, node in zip(units, (motion_node, touch_node)):
+                machine.succeed(f"systemctl stop {unit} || true; systemctl reset-failed {unit} || true")
+                machine.succeed(f"systemd-run --unit {unit} stdbuf -oL ${pkgs.evtest}/bin/evtest {node}")
+            machine.wait_until_succeeds(f"test $(journalctl -u {units[0]} -o cat | grep -c SYN_REPORT) -ge 24")
+
+        def journal(unit):
+            # Only this run of the unit.
+            invocation = machine.succeed(f"systemctl show -p InvocationID --value {unit}").strip()
+            return machine.succeed(f"journalctl -o cat _SYSTEMD_INVOCATION_ID={invocation}").splitlines()
+
+        def read_frames(unit):
+            """What evtest read, frame by frame: each a list of (type, code, value), by number."""
+            found, frame = [], []
+            for line in journal(unit):
+                event = re.match(r"Event: time [\d.]+, type (\d+) \([^)]*\), code (\d+) \([^)]*\), value (-?\d+)", line)
+                if event:
+                    frame.append(tuple(int(part) for part in event.groups()))
+                elif line.startswith("Event: ") and "SYN_REPORT" in line:
+                    found.append(frame)
+                    frame = []
+            return found
+
+        def held(unit):
+            """The node's axes as evtest found them as it opened it."""
+            axes, code = {}, None
+            for line in journal(unit):
+                if line.startswith("Testing"):
+                    break
+                described = re.match(r"\s+Event code (\d+) \(ABS_", line)
+                if described:
+                    code = int(described.group(1))
+                value = re.match(r"\s+Value\s+(-?\d+)", line)
+                if value and code is not None:
+                    axes[code] = int(value.group(1))
+                    code = None
+            return axes
+
+        # The readings: the primary's two, by the rate in °/s and gravity
+        # in counts, and the assist's, lying still. Gravity is exact; the
+        # rate is within a count or two of the neutral calibration's.
+        READINGS = {
+            "pressed": ([12.5, -250.0, 1000.0], [2048, -8192, 20480]),
+            "released": ([-0.5, 90.0, -1999.0], [-4096, 6144, -31949]),
+            "still": ([0.0, 0.0, 0.0], [0, 8192, 0]),
+        }
+        count = 1080 / 17678 * 1024
+
+        def reading_of(axes):
+            for name, (rate, gravity) in READINGS.items():
+                if all(abs(axes[a] - gravity[a]) <= 2 and abs(axes[3 + a] - rate[a] * 1024) <= 2 * count for a in range(3)):
+                    return name
+            return axes
+
+        def readings(unit):
+            """Which reading the motion node holds after each frame that changes it."""
+            axes, seen = held(unit), []
+            for frame in read_frames(unit):
+                assert [code for kind, code, _ in frame if kind == EV_MSC] == [5], frame
+                changed = [(code, value) for kind, code, value in frame if kind == EV_ABS]
+                axes.update(changed)
+                if changed:
+                    seen.append(reading_of(axes))
+            return seen, reading_of(axes)
+
+        def primary_touches(unit):
+            """The touchpad as the primary has it: the click as BTN_LEFT, a finger down throughout, and another put down at each press."""
+            slot, first_ids, second_ids, places, clicks = None, set(), [], [], []
+            for frame in read_frames(unit):
+                seen = {}
+                for kind, code, value in frame:
+                    if (kind, code) == (EV_ABS, 47):
+                        slot = value
+                    elif kind == EV_ABS and code in (53, 54, 57):
+                        seen[(slot, code)] = value
+                    elif (kind, code) == (EV_KEY, 272):
+                        clicks.append(value)
+                if clicks and clicks[-1] == 1:
+                    assert (seen[(0, 53)], seen[(0, 54)]) == (480, 540), frame
+                    assert seen[(1, 57)] >= 0 and seen[(1, 57)] not in second_ids, frame
+                    second_ids.append(seen[(1, 57)])
+                    places.append((seen[(1, 53)], seen[(1, 54)]))
+                elif clicks:
+                    assert (seen[(0, 53)], seen[(0, 54)]) == (960, 0), frame
+                    assert seen[(1, 57)] == -1, frame
+                if (0, 57) in seen:
+                    first_ids.add(seen[(0, 57)])
+            assert len(clicks) >= 6 and all(a != b for a, b in zip(clicks, clicks[1:])), clicks
+            assert len(first_ids) <= 1 and -1 not in first_ids, first_ids
+            assert set(places) == {(1439, 1079), (1919, 809)}, places
+
+        # Priority: the primary's motion and touchpad, never the assist's.
+        evtest("motion-a", "touch-a")
+        seen, now = readings("motion-a")
+        assert len(seen) >= 12 and set(seen) == {"pressed", "released"}, seen
+        assert all(a != b for a, b in zip(seen, seen[1:])), seen
+        primary_touches("touch-a")
+
+        # Toggle: the motion and touchpad of the pad selected, following a
+        # switch: the assist's, lying still with no finger down, then the
+        # primary's again.
+        machine.succeed("sed -i 's/priority/toggle/' /tmp/motion.toml")
+        cli("profile", "put", "/tmp/motion.toml")
+        assert "applied without" in cli("update", "motion")
+        command = as_alice("ctrlassist setups --json")
+        machine.wait_until_succeeds(f"{command} | grep -q '\"choices\":\\[\"primary\",\"assist\"\\]'")
+        cli("select", "motion", "mux", "assist")
+        evtest("motion-b", "touch-b")
+        seen, now = readings("motion-b")
+        assert set(seen) <= {"still"} and now == "still", (seen, now)
+        for frame in read_frames("touch-b"):
+            assert all(value < 0 for kind, code, value in frame if (kind, code) == (EV_ABS, 57)), frame
+            assert all(value == 0 for kind, code, value in frame if (kind, code) == (EV_KEY, 272)), frame
+        cli("select", "motion", "mux", "primary")
+        evtest("motion-c", "touch-c")
+        seen, now = readings("motion-c")
+        assert {"pressed", "released"} <= set(seen) and now != "still", (seen, now)
+        assert set(seen) <= {"pressed", "released", "still"}, seen
+
+        machine.succeed("systemctl stop motion-a touch-a motion-b touch-b motion-c touch-c")
+        cli("stop", "motion")
+        assert setup("motion") is None
+        machine.succeed("systemctl stop ds-primary ds-assist")
+        machine.wait_until_succeeds("test $(ls /sys/bus/hid/drivers/playstation | grep -c 054C:0CE6) = 0")
+        cli("profile", "delete", "motion")
+
     with subtest("a daemon that is killed gets its pads restored and its virtual pad removed"):
         # Kept with the asking to start by itself, for the daemon after it.
         machine.succeed("printf '%s\\n' 'managed = true' >> /tmp/couch.toml")

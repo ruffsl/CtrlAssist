@@ -63,10 +63,47 @@ const WAKE: u64 = u64::MAX;
 const TIMER: u64 = u64::MAX - 1;
 const PAD: u64 = 0;
 const SINK: u64 = 1;
+/// A pad's raw node, read for its motion and touchpad.
+const RAW: u64 = 2;
 
-/// A descriptor's place: which setup, a pad or a virtual pad, and which.
+/// A descriptor's place: which setup, a pad, its raw node or a virtual
+/// pad, and which.
 fn token(slot: usize, kind: u64, index: usize) -> u64 {
     ((slot as u64) << 32) | (kind << 24) | (index as u64 & 0xff_ffff)
+}
+
+/// Whether a token is a pad's raw node's.
+fn is_raw(token: u64) -> bool {
+    token != WAKE && token != TIMER && (token >> 24) & 0xff == RAW
+}
+
+/// Listens to a pad's event node, and its raw node where it is read,
+/// under the pad's source number; or to neither.
+fn listen(epoll: &OwnedFd, pad: &Pad, slot: usize, index: usize) -> io::Result<()> {
+    epoll::add(
+        epoll,
+        pad,
+        EventData::new_u64(token(slot, PAD, index)),
+        EventFlags::IN,
+    )?;
+    if let Some(raw) = pad.motion_node() {
+        let data = EventData::new_u64(token(slot, RAW, index));
+        if let Err(error) = epoll::add(epoll, raw, data, EventFlags::IN) {
+            let _ = epoll::delete(epoll, pad);
+            return Err(error.into());
+        }
+    }
+    Ok(())
+}
+
+/// Stops listening to a pad's nodes. A raw node is taken out by name: it
+/// is a duplicate of the one the pad's writer holds, so closing it
+/// wouldn't.
+fn unlisten(epoll: &OwnedFd, pad: &Pad) {
+    let _ = epoll::delete(epoll, pad);
+    if let Some(raw) = pad.motion_node() {
+        let _ = epoll::delete(epoll, raw);
+    }
 }
 
 /// Where a source of a new graph gets its pad.
@@ -334,12 +371,7 @@ impl Setup {
     fn register(&self, epoll: &OwnedFd, slot: usize) -> io::Result<()> {
         for (index, pad) in self.pads.iter().enumerate() {
             if let Some(pad) = pad {
-                epoll::add(
-                    epoll,
-                    pad,
-                    EventData::new_u64(token(slot, PAD, index)),
-                    EventFlags::IN,
-                )?;
+                listen(epoll, pad, slot, index)?;
             }
         }
         for (index, sink) in self.sinks.iter().enumerate() {
@@ -355,7 +387,7 @@ impl Setup {
 
     fn unregister(&self, epoll: &OwnedFd) {
         for pad in self.pads.iter().flatten() {
-            let _ = epoll::delete(epoll, pad);
+            unlisten(epoll, pad);
         }
         for sink in &self.sinks {
             let _ = epoll::delete(epoll, sink);
@@ -394,8 +426,7 @@ impl Setup {
             failed,
             ..
         } = self;
-        let slot = pads.get_mut(index)?;
-        let pad = slot.as_mut()?;
+        let pad = pads.get_mut(index)?.as_mut()?;
         let read = pad.read(|state| {
             // One report frame is one step, written at once, so a press
             // and a release in separate frames both reach the game.
@@ -408,18 +439,57 @@ impl Setup {
         });
         match read {
             Ok(()) => None,
-            Err(PadError::Gone | PadError::Io(_)) => {
-                let _ = epoll::delete(epoll, &**pad);
-                let gone = slot.take();
-                // A buzz goes with the pad it was on.
-                if let Some(buzz) = self.buzz.get_mut(index) {
-                    *buzz = None;
+            Err(PadError::Gone | PadError::Io(_)) => self.pad_gone(index, epoll),
+        }
+    }
+
+    /// A pad's raw node has something to read: each input report is one
+    /// step, with the motion, touchpad and click it says. Returns the pad
+    /// if it has gone. A raw node that can't be read is no longer read,
+    /// and the pad's motion, touchpad and click rest from then on.
+    fn raw_ready(&mut self, index: usize, epoll: &OwnedFd) -> Option<Box<Pad>> {
+        let Self {
+            graph,
+            pads,
+            sinks,
+            failed,
+            ..
+        } = self;
+        let pad = pads.get_mut(index)?.as_mut()?;
+        let read = pad.read_motion(|state| {
+            graph.update(SourceId(index), *state, &mut |_| {});
+            for (index, sink) in sinks.iter_mut().enumerate() {
+                if sink.write(graph.sink(SinkId(index))).is_err() {
+                    *failed = true;
                 }
-                graph.set_present(SourceId(index), false, &mut |_| {});
+            }
+        });
+        match read {
+            Ok(()) => None,
+            Err(PadError::Gone) => self.pad_gone(index, epoll),
+            Err(PadError::Io(_)) => {
+                if let Some(raw) = pad.motion_node() {
+                    let _ = epoll::delete(epoll, raw);
+                }
+                pad.rest_motion();
+                graph.update(SourceId(index), *pad.state(), &mut |_| {});
                 self.write();
-                gone
+                None
             }
         }
+    }
+
+    /// A pad has gone: it is let go of, and returned.
+    fn pad_gone(&mut self, index: usize, epoll: &OwnedFd) -> Option<Box<Pad>> {
+        let gone = self.pads.get_mut(index)?.take()?;
+        unlisten(epoll, &gone);
+        // A buzz goes with the pad it was on.
+        if let Some(buzz) = self.buzz.get_mut(index) {
+            *buzz = None;
+        }
+        self.graph.set_present(SourceId(index), false, &mut |_| {});
+        self.write();
+        Some(gone)
     }
 
     /// A missing pad has returned. It takes its place again holding
@@ -433,15 +503,7 @@ impl Setup {
         slot: usize,
     ) -> Option<Box<Pad>> {
         let free = self.pads.get(index).is_some_and(Option::is_none);
-        if !free
-            || epoll::add(
-                epoll,
-                &*pad,
-                EventData::new_u64(token(slot, PAD, index)),
-                EventFlags::IN,
-            )
-            .is_err()
-        {
+        if !free || listen(epoll, &pad, slot, index).is_err() {
             return Some(pad);
         }
         self.graph.set_present(SourceId(index), true, &mut |_| {});
@@ -498,7 +560,7 @@ impl Setup {
         // The pads: each is listened to under its source number, so all
         // are let go of and then taken up again where they now are.
         for pad in self.pads.iter().flatten() {
-            let _ = epoll::delete(epoll, &**pad);
+            unlisten(epoll, pad);
         }
         let places = new.pads.iter_mut().zip(&mut new.wanted).zip(&mut new.buzz);
         for (((place, wanted), buzz), old) in places.zip(&new.keep) {
@@ -522,8 +584,7 @@ impl Setup {
         self.passed.fill(SourceSet::EMPTY);
         for (index, pad) in self.pads.iter().enumerate() {
             let Some(pad) = pad else { continue };
-            let data = EventData::new_u64(token(slot, PAD, index));
-            if epoll::add(epoll, &**pad, data, EventFlags::IN).is_err() {
+            if listen(epoll, pad, slot, index).is_err() {
                 self.failed = true;
             }
         }
@@ -1236,7 +1297,17 @@ impl State {
                 match event.data.u64() {
                     WAKE => self.commands(now),
                     TIMER => self.timer_fired(now),
+                    token if is_raw(token) => {}
                     token => self.descriptor_ready(token, now),
+                }
+            }
+            // A pad's raw nodes after its event node: its driver puts a
+            // report's frame on the event node before the raw node is
+            // given the report.
+            for event in events.iter() {
+                let token = event.data.u64();
+                if is_raw(token) {
+                    self.descriptor_ready(token, now);
                 }
             }
             self.arm_timer();
@@ -1564,14 +1635,15 @@ impl State {
         let kind = (token >> 24) & 0xff;
         let index = (token & 0xff_ffff) as usize;
         self.guarded(slot, now, |setup, epoll| {
-            if kind == PAD {
-                setup
-                    .pad_ready(index, epoll)
-                    .map(|pad| (SourceId(index), pad))
-            } else {
-                setup.sink_ready(index, now);
-                None
-            }
+            let gone = match kind {
+                PAD => setup.pad_ready(index, epoll),
+                RAW => setup.raw_ready(index, epoll),
+                _ => {
+                    setup.sink_ready(index, now);
+                    None
+                }
+            };
+            gone.map(|pad| (SourceId(index), pad))
         });
     }
 

@@ -23,6 +23,7 @@ mod dualsense;
 mod hidraw;
 mod hotplug;
 mod layout;
+mod motion;
 mod output;
 mod pad;
 mod queue;
