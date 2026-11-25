@@ -68,6 +68,29 @@ pub(crate) fn delete(marker: &str) {
     }
 }
 
+/// The name of each file directly in `dir`, as the rule tests a marker;
+/// none where it can't be read.
+fn markers_in(dir: &Path) -> BTreeSet<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return BTreeSet::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect()
+}
+
+/// What names a pad to the rule now: `markers`, those of the pads the
+/// service has, and any file in `dir` beside them, as a delete that
+/// failed leaves one. The rule tests the files, not the service's record,
+/// so a pad named by such a file is hidden again by the re-bind that
+/// would show it.
+fn naming(markers: &BTreeSet<String>, dir: &Path) -> BTreeSet<String> {
+    let mut naming = markers_in(dir);
+    naming.extend(markers.iter().cloned());
+    naming
+}
+
 /// Deletes everything in the marker directory, whatever made it.
 pub(crate) fn clear() {
     let Ok(entries) = fs::read_dir(MARKERS) else {
@@ -556,13 +579,15 @@ fn unnamed_of(
 ///
 /// A device with a keyboard or a pointer among its inputs is left as it
 /// is, until it is plugged in again: a hide refuses one, the re-bind
-/// cutting that off too.
+/// cutting that off too. So is one a marker the service couldn't delete
+/// still names, beside `markers`: the re-bind would hide it again, and
+/// each sweep would ask another for nothing.
 ///
 /// Waits for none of them: udev runs a device's events in order, so a
 /// later re-bind of the device, such as a hide's, runs after this one and
 /// is judged on its own answer.
 pub(crate) fn sweep(group: u32, held: &[&Path], markers: &BTreeSet<String>) {
-    for device in unnamed(group, held, markers) {
+    for device in unnamed(group, held, &naming(markers, Path::new(MARKERS))) {
         if pad::shares_with_keyboard_or_pointer(&device.path) {
             warn!(
                 device = %device.path.display(),
@@ -838,6 +863,43 @@ mod tests {
         // Named by nothing at all: asked once.
         assert_eq!(
             unnamed_of(hidden(), &[], &BTreeSet::new()),
+            std::slice::from_ref(&device)
+        );
+    }
+
+    /// A marker no pad the service has is named by, as a delete that
+    /// failed leaves, still hides the pad it names at the re-bind that
+    /// would show it: the sweep counts it, and leaves that pad alone
+    /// rather than ask a re-bind for nothing at every sweep.
+    #[test]
+    fn a_marker_left_in_the_directory_still_names_its_pad() {
+        let dir = std::env::temp_dir().join(format!(
+            "ctrlassist-hider-left-marker-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("addr-0a:1b:2c:3d:4e:14"), b"").unwrap();
+        let record = BTreeSet::from(["port-2-1:1.0".to_string()]);
+        let named = naming(&record, &dir);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            named,
+            BTreeSet::from(["addr-0a:1b:2c:3d:4e:14".into(), "port-2-1:1.0".into()])
+        );
+        let device = Device {
+            path: PathBuf::from("/sys/devices/pci0000:00/usb2/2-2/2-2:1.3/0003:054C:0CE6.0009"),
+            enumeration: Some(1),
+        };
+        let hidden = || {
+            [(
+                device.clone(),
+                BTreeSet::from(["addr-0a:1b:2c:3d:4e:14".to_string()]),
+            )]
+        };
+        assert_eq!(unnamed_of(hidden(), &[], &named), []);
+        // Gone from the directory too: shown again.
+        assert_eq!(
+            unnamed_of(hidden(), &[], &naming(&record, &dir)),
             std::slice::from_ref(&device)
         );
     }
