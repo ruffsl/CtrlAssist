@@ -443,6 +443,11 @@ pkgs.testers.runNixOSTest {
             ).strip()
 
         motion_node, touch_node = node_of("Motion Sensors"), node_of("Touchpad")
+        # Its touchpad is told to be external, as a real pad's is by its bus:
+        # libinput takes any other for a laptop's, and a touch that begins at
+        # its edge for a palm.
+        touch_properties = machine.succeed(f"udevadm info -q property {touch_node}")
+        assert "ID_INPUT_TOUCHPAD_INTEGRATION=external" in touch_properties, touch_properties
         EV_ABS, EV_MSC, EV_KEY = 3, 4, 1
 
         def evtest(*units):
