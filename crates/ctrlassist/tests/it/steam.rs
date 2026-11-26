@@ -18,7 +18,7 @@ use ctrlassist_daemon::Daemon;
 use ctrlassist_device::Pad;
 use ctrlassist_protocol::{bootstrap, keys};
 use ctrlassist_test::{
-    FakeSteamController, StateReport, SteamButton, SteamControllerBuilder, SteamState,
+    FakeSteamController, Received, StateReport, SteamButton, SteamControllerBuilder, SteamState,
     SteamTransport, can_make_pads, can_make_steam_pads, may_open_once_udev_is_done,
 };
 use zenoh::Session;
@@ -588,6 +588,67 @@ async fn a_steam_controller_can_t_be_left_to_games() {
     })
     .await;
     assert!(on_a_node(&client, &id).await);
+    daemon.stop().await;
+}
+
+/// A Steam Controller a setup uses can always be identified, buzzed
+/// through its raw node, and is published as able to rumble; free, it
+/// can be only where its kernel driver has force feedback, which a
+/// kernel built without `CONFIG_STEAM_FF` doesn't give it, and the
+/// refusal then says when it can.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_steam_controller_is_identified_through_its_raw_node_while_a_setup_uses_it() {
+    const TEST: &str =
+        "a_steam_controller_is_identified_through_its_raw_node_while_a_setup_uses_it";
+    let Some(fake) = fake(TEST) else {
+        return;
+    };
+    let id = id_of(&fake);
+    let gamepad = fake.gamepad().expect("the driver makes the gamepad");
+    let driver_rumbles = Pad::from_fd(std::fs::File::open(&gamepad.event).unwrap().into())
+        .unwrap()
+        .can_rumble();
+    let (_dir, daemon, client) = with_couch(&fake, &unicast(&id)).await;
+    eventually("the daemon never learned whether it rumbles", async || {
+        listed(&client, &id).rumble == Some(driver_rumbles)
+    })
+    .await;
+    let free = client.identify_pad(&id, Duration::from_millis(1)).await;
+    if driver_rumbles {
+        free.unwrap();
+    } else {
+        let refused = free.unwrap_err();
+        assert_eq!(refused.rpc_code(), Some(ErrorCode::PadWithoutRumble));
+        assert!(
+            refused.to_string().contains("while a profile uses it"),
+            "{refused}"
+        );
+    }
+
+    client.start_setup("couch").await.unwrap();
+    in_phase(&client, "couch", Phase::Running).await;
+    eventually(
+        "the pad in a setup wasn't published as able to rumble",
+        async || listed(&client, &id).rumble == Some(true),
+    )
+    .await;
+    client
+        .identify_pad(&id, Duration::from_millis(300))
+        .await
+        .unwrap();
+    let buzzed = |received: &[Received]| {
+        received.iter().any(|received| {
+            matches!(received, Received::Output(report)
+                if report.first() == Some(&0x80) && report.get(4..6) != Some(&[0, 0]))
+        })
+    };
+    assert!(fake.wait_for(buzzed), "{:?}", fake.received());
+
+    client.stop_setup("couch").await.unwrap();
+    eventually("the pad let go wasn't published as it was", async || {
+        listed(&client, &id).rumble == Some(driver_rumbles)
+    })
+    .await;
     daemon.stop().await;
 }
 

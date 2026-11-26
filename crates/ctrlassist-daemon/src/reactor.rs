@@ -714,11 +714,20 @@ impl Reactor {
                 WireError::refusal(ErrorCode::PadDisconnected, format!("{id} isn't connected"))
             })?),
         };
+        // A Steam Controller a setup uses is rumbled through its raw node,
+        // and can always be. One that is free could be only by holding
+        // its raw node for the buzz, which would take its joystick from
+        // games and give it back as a pad plugged in: it is buzzed
+        // through its kernel driver, or not at all.
         if self.book.rumble(id) == Some(false) {
-            return Err(WireError::refusal(
-                ErrorCode::PadWithoutRumble,
-                format!("{id} has no rumble to buzz with"),
-            ));
+            let why = if self.book.is_steam_controller(id) {
+                format!(
+                    "{id} is a Steam Controller whose kernel driver has no rumble here (a kernel built without CONFIG_STEAM_FF): it can be buzzed while a profile uses it, through its raw interface"
+                )
+            } else {
+                format!("{id} has no rumble to buzz with")
+            };
+            return Err(WireError::refusal(ErrorCode::PadWithoutRumble, why));
         }
         let Some((node, syspath)) = node else {
             let setup = self.book.user(id).unwrap_or_default();
