@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** drafted with the maintainer on 2026-11-25, who then stepped away for the night with the coordinator left to build through the stops. The research is in, and the design it left to decide is under For review. Building.
-- **Next action:** steps 2 and 3. Step 1's spike is done: its finding is under "Spike: the kernel's driver and a uhid stand-in" and For review 8, and the steps from 4 on rest on it.
+- **Next action:** steps 2 and 3. Step 1's spike is done: its finding is under "Spike: the kernel's driver and a uhid stand-in" and For review 8, and the steps from 4 on rest on it. Step 4 is done: `FakeSteamController` in the test crate, its tests in the device crate's, and the `device` check on Linux 7.3 (For review 9).
 - **Branch:** `feat/steam-controller`, from `docs/user-guide` at `383c798`, so the new user guide is there for the agents to read. Nothing is pushed until the maintainer has looked. When the guide's pull request (#63) has merged, this branch's own goes to `main`.
 
 ## Goal
@@ -160,6 +160,8 @@ Decisions made and findings written while the maintainer was away, each for them
 **7. The identity's spike is half answered already,** by others: a uhid stand-in is bound by the driver, read by SDL and listed by Steam. What is left for it is whether CtrlAssist wants what follows: Steam takes such a controller into Steam Input and shows games a pad of its own, and may offer it a firmware update.
 
 **8. The kernel's driver, seen** (2026-11-26, a spike in a virtual machine; [the finding](#spike-the-kernels-driver-and-a-uhid-stand-in)). It does what the research read, with corrections: holding the menu button toggles lizard mode, not only leaves it; the raw node is a sibling HID device's, root's alone on a stock machine and named by no marker the hiding service makes; a report the descriptor doesn't declare, `0x47` under the retail descriptor among them, or one shorter than declared, reaches neither the driver nor the raw node; the motion device has a `js` node; the battery brings a thermal zone; and an event node may come back under its old name.
+
+**9. The fake, as built** (2026-11-26, the agent building it). Three choices the plan didn't make. The fake with lizard mode's mouse and keyboard, wanted for a test of what the hiding service makes of the real shape, is in the test crate but can be built only with a proof that the process runs in a virtual machine check (a hypervisor, and a file the checks' configuration puts in `/etc`); the `device` check makes one, and the hiding service's test of it is left for that step. A test that makes the fake skips while Steam is running, which would take it for a controller of its own, as it skips on a kernel older than 7.3 even where fake pads are required. And the whole `device` check now runs on `linuxPackages_7_3`, its other subtests with it, rather than a second machine on the newer kernel.
 
 ## Deviations
 
