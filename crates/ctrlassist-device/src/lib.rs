@@ -29,6 +29,7 @@ mod pad;
 mod queue;
 mod realtime;
 mod sink;
+mod steam;
 mod thread;
 
 pub use anchor::Anchor;
