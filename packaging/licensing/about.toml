@@ -99,6 +99,19 @@ license = "LicenseRef-Slint-Royalty-free-2.0"
 path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
 checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
 
+# Not shipped: the screenshot tool's renderer, which the window's crate
+# has behind a feature. It is here because the bundle is made with every
+# feature on, so the bundle names one crate more than the packages hold.
+[i-slint-renderer-software]
+accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
+
+[i-slint-renderer-software.clarify]
+license = "LicenseRef-Slint-Royalty-free-2.0"
+
+[[i-slint-renderer-software.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
 [i-slint-common]
 accepted = ["LicenseRef-Slint-Royalty-free-2.0"]
 

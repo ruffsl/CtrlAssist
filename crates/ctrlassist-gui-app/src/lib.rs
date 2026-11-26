@@ -50,6 +50,13 @@ where
     .ok();
 }
 
+/// Loads the window's icons from the desktop's theme, for the screenshot
+/// tool, which fills a window of its own.
+#[cfg(feature = "screenshots")]
+pub fn load_icons(app: &AppWindow) {
+    icons::load(app);
+}
+
 /// The application id: the Wayland app id, and the name of the desktop
 /// entry that launches the window.
 pub const APP_ID: &str = "io.github.ctrlassist.Gui";

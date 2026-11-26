@@ -1204,6 +1204,8 @@ dependencies = [
  "fontique",
  "futures-util",
  "i-slint-backend-testing",
+ "i-slint-core",
+ "png",
  "serde",
  "serde_json",
  "slint",
@@ -2313,6 +2315,7 @@ version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c37b8172486f2c8afc5c98305b66a8b4ac3612bcec2343db556497ae3652727"
 dependencies = [
+ "bytemuck",
  "calloop 0.14.5",
  "cfg_aliases",
  "drm",
@@ -2322,9 +2325,11 @@ dependencies = [
  "i-slint-common",
  "i-slint-core",
  "i-slint-renderer-femtovg",
+ "i-slint-renderer-software",
  "input",
  "libseat",
  "libudev-sys",
+ "memmap2",
  "nix 0.31.4",
  "pkg-config",
  "raw-window-handle",
@@ -2339,6 +2344,7 @@ checksum = "b824c2cce2e9f766eb42138a0ac1ec93d095dd9cd45a2dfa650dd3e6558cdfd9"
 dependencies = [
  "cfg_aliases",
  "i-slint-backend-linuxkms",
+ "i-slint-backend-testing",
  "i-slint-backend-winit",
  "i-slint-common",
  "i-slint-core",
@@ -2355,6 +2361,7 @@ dependencies = [
  "cfg_aliases",
  "i-slint-common",
  "i-slint-core",
+ "i-slint-renderer-software",
  "vtable",
 ]
 
@@ -2366,6 +2373,7 @@ checksum = "ecb1104c0220c068772ff60912a3dac80b95e1d491d801836256c870245a2162"
 dependencies = [
  "arboard",
  "block2 0.6.2",
+ "bytemuck",
  "cfg_aliases",
  "futures",
  "glutin",
@@ -2375,6 +2383,8 @@ dependencies = [
  "i-slint-core-macros",
  "i-slint-renderer-femtovg",
  "i-slint-renderer-skia",
+ "i-slint-renderer-software",
+ "imgref",
  "itertools 0.15.0",
  "lyon_path",
  "muda",
@@ -2385,6 +2395,7 @@ dependencies = [
  "objc2-ui-kit 0.3.2",
  "pin-weak",
  "raw-window-handle",
+ "rgb",
  "scoped-tls-hkt",
  "scopeguard",
  "smithay-clipboard",

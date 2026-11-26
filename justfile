@@ -114,8 +114,9 @@ cov_baseline_lines := "91"
 # service's own files, which need its user, its udev rule and real device
 # nodes, and are exercised by the virtual machine checks, its client and
 # wire format being counted; and the two files of the tray that need a desktop's
-# session bus, which hold only what puts the rest on a desktop.
-cov_exclude := "--ignore-filename-regex 'ctrlassist-test/|ctrlassist-hider/src/(main|activation|seat|pad|hide)\\.rs|ctrlassist-tray/src/(desktop|service)\\.rs'"
+# session bus, which hold only what puts the rest on a desktop; and the
+# screenshot tool, which is run and looked at, not tested.
+cov_exclude := "--ignore-filename-regex 'ctrlassist-test/|ctrlassist-hider/src/(main|activation|seat|pad|hide)\\.rs|ctrlassist-tray/src/(desktop|service)\\.rs|ctrlassist-gui-app/src/bin/screenshots\\.rs'"
 
 # Advisories and yanked crates, which change without the lockfile changing.
 #
@@ -340,6 +341,16 @@ docs-build:
 docs-links: docs-build
     lychee --offline --include-fragments=anchor-only \
         --root-dir "$PWD/docs/book/book" docs/book/book/
+
+# The real window, filled from made-up state and drawn off screen, so no
+# display or daemon is needed. The fonts and icons are this machine's, so
+# the pictures aren't the same bytes everywhere and nothing compares them:
+# run it when the window changes, look at them, and commit them.
+#
+# Make the user guide's screenshots of the settings window
+[group('docs')]
+docs-screenshots:
+    cargo run --package ctrlassist-gui-app --features screenshots --bin ctrlassist-screenshots -- docs/screenshots
 
 # Serve the user guide with live reload at http://localhost:3000
 [group('docs')]

@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** approved by the maintainer on 2026-11-25, after the capture was spiked (see Spike: drawing the window off screen). Building.
-- **Next action:** step 1, then step 2 and its stop.
+- **Status:** approved by the maintainer on 2026-11-25, after the capture was spiked (see Spike: drawing the window off screen). Steps 1 and 2 are done.
+- **Next action:** step 2's stop: the maintainer looks at `docs/screenshots/pads_pane.png` beside the real window. Then step 3.
 - **Branch:** `docs/user-guide`, from `main` at `39c1b4c`.
 
 ## Goal
@@ -157,7 +157,7 @@ Everything from the banner to the end of Architecture is inside `<!-- ANCHOR: ov
 
 **Question.** Can the settings window be drawn with no display, from made-up state, closely enough to stand as a screenshot?
 
-**Method.** `spikes/screenshots`, a throwaway workspace: a platform of its own around Slint's `MinimalSoftwareWindow`, the real `AppWindow` from the window's library, filled by `Snapshot::show` as the window's tests fill theirs, the Pads page chosen, and `Window::take_snapshot` written out as a PNG. Run in the dev shell on the maintainer's machine, 2026-11-25, Slint 1.19.0.
+**Method.** `spikes/screenshots`, a throwaway workspace, deleted once the tool was built on its answer (it is in git history, at `147f375`): a platform of its own around Slint's `MinimalSoftwareWindow`, the real `AppWindow` from the window's library, filled by `Snapshot::show` as the window's tests fill theirs, the Pads page chosen, and `Window::take_snapshot` written out as a PNG. Run in the dev shell on the maintainer's machine, 2026-11-25, Slint 1.19.0.
 
 **Finding: it can.** Three captures of the Pads page, dark, light, and dark at twice the density, each drawn in well under a second:
 
@@ -198,4 +198,6 @@ For the maintainer:
 
 ## Deviations
 
-None yet.
+- **`just docs-screenshots` arrived with the tool,** at step 2 and not step 3: a recipe is added in the commit that first gives it something to do, and the tool is run through it.
+- **The tool is kept out of the coverage figure,** as the tray's desktop files are: it is run and looked at, and its lines would otherwise count as untested against a floor half a point below the figure.
+- **The license bundle names the software renderer,** a crate the packages don't hold: the bundle is made with every feature on, the tool's among them. Its license is Slint's, as the rest of Slint's crates are.
