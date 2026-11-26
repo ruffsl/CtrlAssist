@@ -12,6 +12,6 @@ A Steam Controller (2026) reaches the machine three ways: on a USB cable (`28de:
 
 **Risk.** Medium: the Puck is how the pad ships, so most people will meet it there first. A failure would show as a pad that won't start in a setup, with the reason in the setup's state, rather than as one that misbehaves.
 
-**Mitigation.** The fake covers the slot's events and the Bluetooth product number, and the daemon's tests hold a pad leaving a Puck's slot while held. Every failure to find or open a raw node is said in the setup's reason.
+**Mitigation.** The fake covers the slot's events and the Bluetooth product number, and the daemon's tests cover a pad leaving a Puck's slot while a setup holds it. Every failure to find or open a raw node is said in the setup's reason.
 
 **Closes when** a pad has played through a setup behind a Puck and over Bluetooth, and two over Bluetooth at once. For each: `ctrlassist pads` lists it under the same `address:` as on the cable; a profile naming it starts and its presses reach the virtual pad; switching the pad off while the profile runs holds the setup, and switching it on again resumes it. Behind the Puck, also with two pads in two slots. `sudo hid-recorder` on each slot's raw node, with nothing holding it, records the descriptors, to be kept in the test crate's notes.
