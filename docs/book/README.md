@@ -31,7 +31,7 @@ The rules below were each learned by getting it wrong first. The reasons are her
 | The window's pages, driving it by keys or a gamepad, couch mode | GUI & Tray |
 | The tray's menu, its notifications and their switches | GUI & Tray |
 | What each choice of a profile means: modes, inputs, identities, rumble, gyro, visibility, managed, the default profile, changing a running one | Profiles |
-| The Steam Controller: what carries over and what is dropped, why it is grabbed and not hidden, Steam beside it, lizard mode, identifying and naming it, its back buttons' places, what has been tried with it | Steam Controller |
+| The Steam Controller: what carries over and what is dropped, when it is hidden and when only grabbed, Steam beside it, lizard mode, identifying and naming it, its back buttons' places, what has been tried with it | Steam Controller |
 | A profile file's keys, naming a controller, the full form, the commands that keep and update profiles, hand edits and `reload`, where profiles live | Configuration Files |
 | What each command does from a terminal | Command Line |
 | What the packages and the NixOS module install, and removing them | Installation |

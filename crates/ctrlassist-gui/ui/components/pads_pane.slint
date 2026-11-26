@@ -472,7 +472,7 @@ component PadDetail inherits Rectangle {
                         id-prefix: root.id-prefix;
                         label: @tr("Visibility");
                         key: "visibility";
-                        help: root.pad.steam-controller ? @tr("Whether games can see this pad beside a virtual one. While a running profile uses a Steam Controller, it is grabbed whatever the profile chooses: games that read pads the usual way don't see it, and Steam, and games that read it through SDL, still do.")
+                        help: root.pad.steam-controller ? @tr("Whether games can see this pad beside a virtual one. While a running profile uses a Steam Controller, games that read pads the usual way don't see it, whatever the profile chooses. Hidden, which it can be only on its cable, Steam and games that read it through SDL don't either; grabbed, they still do.")
                             : @tr("Whether games can see this pad beside a virtual one. The profile that is running with it decides, by its Visibility choice.");
                         VerticalLayout {
                             horizontal-stretch: 1;

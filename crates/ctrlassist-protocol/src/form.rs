@@ -307,7 +307,7 @@ fn described() -> Vec<Field> {
                     choice(
                         Hide::Full.as_str(),
                         "Hidden",
-                        "Games don't see them: the hiding service takes them away, or they are grabbed where it isn't there, as a Steam Controller always is.",
+                        "Games don't see them: the hiding service takes them away, or they are grabbed where it isn't there, as a Steam Controller off its cable is.",
                     ),
                     choice(
                         Hide::Grab.as_str(),

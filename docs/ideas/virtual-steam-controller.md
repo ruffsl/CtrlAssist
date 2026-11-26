@@ -8,6 +8,7 @@ An identity that presents the setup's virtual pad as a Steam Controller (2026), 
 
 **What it would take.** An emulator beside the DualSense one, in the device crate: the descriptor, either the real one's bytes, which are MIT-licensed and a fact about the hardware, or one written here from the driver's reading, as the test crate's fake is (a choice to make with the identity), answers to the driver's and Steam's feature requests, a state report written from the pad state with both touchpads, the paddles and the capacitive touches in their places, and its output reports, rumble and the haptic pulses, read back into the router and passed whole to a real Steam Controller behind it, as a virtual DualSense passes its output report to a real DualSense. Lizard mode would be the emulator's to answer and never to do.
 
-**Why deferred.** Whether CtrlAssist wants what follows, Steam Input taking the pad over and a firmware update offered to something that isn't a pad, is the maintainer's to decide, and nobody here has a real pad to hold the stand-in to.
+**Chosen, 2026-11-26.** The maintainer chose to build it, after a spike of the two descriptors ([plan](../plans/steam-controller.md#decided-on-review)). What it leaves as ideas of their own:
 
-**Would bring it in.** The maintainer choosing it, once a real pad is on the desk to compare.
+- **Either player's touch.** The stick and grip touches follow whichever pad gives the motion. A profile's choice to take a touch from either pad instead would let a helper switch on, by resting a thumb, the gyro aiming of a player who can't keep theirs there.
+- **Typing and pointing from the virtual pad.** A real Steam Controller types and points by itself while nothing uses it. The stand-in never does; Steam makes a desktop's keys and pointer from the virtual pad's trackpads itself. A stand-in that did it with no Steam running would be lizard mode for two pads merged.

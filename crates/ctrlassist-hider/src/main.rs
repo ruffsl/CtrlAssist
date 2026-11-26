@@ -477,10 +477,17 @@ fn hidden_parent(shared: &Shared, owner: u64, token: u32) -> Result<Device, Refu
         .ok_or(Refusal::UnknownToken)
 }
 
-/// Opens the raw node of the pad whose device is `parent`.
+/// Opens the raw node of the pad whose device is `parent`: a node of
+/// that device, or of a Steam Controller's client device, the pad's own
+/// still the enumeration that was checked once it is open.
 fn raw_of(parent: &Device) -> Result<OwnedFd, Refusal> {
-    let node = pad::raw_node(&parent.path)?;
-    hide::open_under(&node, parent, None)
+    let (node, under) = pad::raw_node(&parent.path)?;
+    let raw = hide::open_under(&node, &under, None)?;
+    if parent.is_there() {
+        Ok(raw)
+    } else {
+        Err(Refusal::Absent)
+    }
 }
 
 /// Serves one client until it closes. What it hid is shown again by

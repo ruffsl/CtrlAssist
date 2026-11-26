@@ -40,7 +40,7 @@ Look at the tray menu's **Hiding:** line, just above **Settings**, or the daemon
 
 ## The game sees two controllers with a Steam Controller
 
-The hiding service doesn't take a Steam Controller, so Steam, and games that read it through SDL's own driver for it, still see it beside the virtual controller. [Steam Controller](../guide/steam-controller.md#grabbed-not-hidden) says why and what little can be done.
+The hiding service takes a Steam Controller only on its USB cable. Behind its Puck or over Bluetooth, Steam, and games that read it through SDL's own driver for it, still see it beside the virtual controller. [Steam Controller](../guide/steam-controller.md#visibility) says why and what can be done.
 
 ## A Steam Controller's raw interface "isn't yours to open"
 

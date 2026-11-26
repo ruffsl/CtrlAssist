@@ -68,9 +68,9 @@ How the real controllers are kept from games while the profile runs, so that a g
 
 | Visibility | Do games see the real controllers? |
 |---|---|
-| **Hidden**, the default | No. The hiding service takes them away; where it isn't installed they are grabbed, and Steam is told to leave them alone. A [Steam Controller](./steam-controller.md) in a running profile is always grabbed. |
+| **Hidden**, the default | No. The hiding service takes them away; where it isn't installed they are grabbed, and Steam is told to leave them alone. A [Steam Controller](./steam-controller.md#visibility) is hidden only on its USB cable, and grabbed otherwise. |
 | **Grabbed** | Most don't. A program that reads controllers another way, as Steam does, still sees them. |
-| **Visible** | Yes, beside the virtual one. Use it when a game should read a real controller directly, and expect a game that reads both to take a press twice. Not with a [Steam Controller](./steam-controller.md#grabbed-not-hidden). |
+| **Visible** | Yes, beside the virtual one. Use it when a game should read a real controller directly, and expect a game that reads both to take a press twice. Not with a [Steam Controller](./steam-controller.md#visibility). |
 
 The Pads page shows the same three words for each controller a running profile is using: what came of it, which is **Grabbed** where Hidden was asked and the hiding service isn't there. [How It Works](../reference/how-it-works.md#hiding) says what the hiding service does.
 

@@ -5,7 +5,8 @@
 # - ask udev to re-bind a pad's driver, which cuts off whatever had the
 #   pad open, through the uevent file of the pad's HID device or USB
 #   interface, which only pads have given to the group;
-# - open the raw node of a PlayStation pad;
+# - open the raw node of a PlayStation pad, and of a Steam Controller
+#   (2026) on its cable;
 # - have a pad hidden, by creating a marker file named after it in
 #   /run/ctrlassist/hide: its nodes then go to the group alone, and lose
 #   seat access, at the pad's next event.
@@ -32,7 +33,8 @@ SUBSYSTEM!="input", GOTO="ctrlassist_hide_end"
 KERNEL!="event*|js*|mouse*", GOTO="ctrlassist_hide_end"
 # Never a keyboard's or a pointer's node, a joystick's that udev classes
 # as one as well among them: the service would refuse to hide it, and
-# nothing would show it again.
+# nothing would show it again. A Steam Controller's own keyboard and
+# pointer, which the service hides the pad in spite of, are left so too.
 ENV{ID_INPUT_KEYBOARD}=="1", GOTO="ctrlassist_hide_end"
 ENV{ID_INPUT_MOUSE}=="1", GOTO="ctrlassist_hide_end"
 ENV{ID_INPUT_TABLET}=="1", GOTO="ctrlassist_hide_end"
@@ -120,6 +122,12 @@ LABEL="ctrlassist_hide_hidraw"
 # the DualSense identity's copy: the group's, beside whatever seat access
 # it has.
 DRIVERS=="playstation", GROUP="ctrlassist-hider", MODE="0660"
+# And of a Steam Controller (2026) on its cable, which is read through
+# its raw node and nothing else: the node of the second HID device its
+# driver makes for it. Hidden, it is the port-and-model marker below
+# that names it: that device is made anew, under another name and with
+# no unique string, by each re-bind.
+KERNELS=="0003:28DE:1302.*", DRIVERS=="hid-steam", GROUP="ctrlassist-hider", MODE="0660"
 SUBSYSTEMS=="hid", TEST=="/run/ctrlassist/hide/hid-%b", GOTO="ctrlassist_hide"
 IMPORT{parent}="HID_UNIQ"
 IMPORT{parent}="HID_ID"

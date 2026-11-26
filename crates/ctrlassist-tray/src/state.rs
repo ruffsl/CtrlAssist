@@ -271,10 +271,10 @@ impl View {
             })
     }
 
-    /// How many Steam Controllers `setup` reads with the hiding service
-    /// there, which doesn't take them, for a profile that asked for its
-    /// pads hidden: none where nothing else would say they are only
-    /// grabbed. Without the service, the warning for every pad says it;
+    /// How many Steam Controllers `setup` reads that the hiding service,
+    /// there, hasn't hidden, as it hides none behind a Puck or over
+    /// Bluetooth, for a profile that asked for its pads hidden: none
+    /// where nothing else would say they are only grabbed. Without the service, the warning for every pad says it;
     /// while the daemon still looks for it, that warning may yet come;
     /// and a profile that chose Grabbed was told so by its own choice.
     fn steam_grabbed(&self, setup: &Setup) -> usize {
@@ -299,7 +299,7 @@ impl View {
             .iter()
             .filter(|source| source.present)
             .filter_map(|source| self.pad(source.pad.as_deref()?))
-            .filter(|pad| pad.is_steam_controller())
+            .filter(|pad| pad.is_steam_controller() && !pad.hidden)
             .count()
     }
 
@@ -399,7 +399,7 @@ fn steam_news(name: &str, count: usize) -> Toast {
         Category::SetupTrouble,
         format!("{name}: {title} grabbed, not hidden"),
         format!(
-            "A Steam Controller can't be hidden: Steam, and games that read it through SDL, still see {them} beside the virtual pad."
+            "A Steam Controller is hidden only on its cable: Steam, and games that read it through SDL, still see {them} beside the virtual pad."
         ),
         WARNING,
     )
@@ -1406,8 +1406,8 @@ pub(crate) mod tests {
         view
     }
 
-    /// A Steam Controller in a setup is said to be grabbed, not hidden,
-    /// once, where the hiding service is there, which doesn't take it:
+    /// A Steam Controller in a setup that isn't hidden is said to be
+    /// grabbed, not hidden, once, where the hiding service is there:
     /// as the setup starts, or as one comes to it later, and two said as
     /// two. Not without the service, whose warning for every pad says it
     /// already, nor while the daemon still looks for it, whose warning
@@ -1425,6 +1425,11 @@ pub(crate) mod tests {
         );
         assert_eq!(news[1].category, Category::SetupTrouble);
         assert!(news[1].body.contains("still see it"), "{news:?}");
+
+        // One the service has hidden is nothing to say.
+        let mut hidden = with_steam(Some(Phase::Running), Hiding::Service, 1);
+        hidden.pads[0].hidden = true;
+        assert_eq!(summaries(&hidden.news(&none)), ["couch started"]);
 
         // Two, said as two.
         let news = with_steam(Some(Phase::Running), Hiding::Service, 2).news(&with_steam(

@@ -387,11 +387,91 @@ fn children(parent: &Path, subsystem: &str) -> Option<Vec<udev::Device>> {
 }
 
 /// Whether a keyboard or a pointer is among the inputs under `parent`:
-/// re-binding the pad's driver would cut it off too, and the rule can't
-/// see one from the pad's own node. When that can't be read, it is taken
-/// that one is.
-pub(crate) fn shares_with_keyboard_or_pointer(parent: &Path) -> bool {
+/// the rule can't see one from the pad's own node. When that can't be
+/// read, it is taken that one is.
+fn shares_with_keyboard_or_pointer(parent: &Path) -> bool {
     children(parent, "input").is_none_or(|inputs| inputs.iter().any(is_keyboard_or_pointer))
+}
+
+/// Whether re-binding the driver of the device at `parent` would cut off
+/// a keyboard or a pointer that isn't the pad's own: one among its
+/// inputs, unless the device is a [Steam Controller on its
+/// cable](is_steam_controller), whose keyboard and pointer are the pad
+/// itself typing and pointing. A device this is true of is never hidden,
+/// nor shown again by a re-bind.
+pub(crate) fn rebind_cuts_off_keyboard_or_pointer(parent: &Path) -> bool {
+    let own = udev::Device::from_syspath(parent).is_ok_and(|device| is_steam_controller(&device));
+    !own && shares_with_keyboard_or_pointer(parent)
+}
+
+/// The kernel's driver for Valve's pads.
+const STEAM_DRIVER: &str = "hid-steam";
+/// A Steam Controller (2026) on its cable, as a HID device says it: the
+/// USB bus, Valve, and the product the pad is by its cable. The pad
+/// behind its Puck or over Bluetooth is another product, and isn't
+/// taken: where its raw node is, and what names it, nobody has seen.
+const STEAM_CABLE: &str = "0003:000028DE:00001302";
+/// The group the driver gives the second HID device it makes for a pad,
+/// which carries the pad's raw node, in that device's `MODALIAS`
+/// (`HID_GROUP_STEAM`).
+const STEAM_CLIENT_GROUP: &str = "g0103";
+
+/// Whether a HID device is a Steam Controller (2026) on its cable, bound
+/// by the kernel's driver for it: the one pad taken though its device
+/// has a keyboard and a pointer among its inputs. They are the pad's
+/// own, what it types and points with while nothing has turned that off
+/// (its lizard mode), not a keyboard someone types on: a re-bind cuts
+/// them off for a moment with the pad, and the rule still hides neither.
+fn is_steam_controller(hid: &udev::Device) -> bool {
+    subsystem(hid) == Some("hid")
+        && hid.driver().and_then(|driver| driver.to_str()) == Some(STEAM_DRIVER)
+        && property(hid, "HID_ID") == Some(STEAM_CABLE)
+        && !is_steam_client(hid)
+}
+
+/// Whether a HID device is the second one the driver makes for a pad.
+fn is_steam_client(hid: &udev::Device) -> bool {
+    property(hid, "MODALIAS").is_some_and(|alias| alias.contains(STEAM_CLIENT_GROUP))
+}
+
+/// The other HID device of a Steam Controller's two: its sibling under
+/// the same parent that says the same `HID_PHYS` and is the client where
+/// `hid` isn't, or isn't where it is. The driver makes the client as it
+/// binds the pad and removes it as it lets go, so a re-bind makes it
+/// anew under another name; it alone has a raw node.
+fn steam_sibling(hid: &udev::Device) -> Option<udev::Device> {
+    let phys = property(hid, "HID_PHYS").filter(|phys| !phys.is_empty())?;
+    let parent = hid.parent()?;
+    let mut found = udev::Enumerator::new().ok()?;
+    found.match_parent(&parent).ok()?;
+    found.match_subsystem("hid").ok()?;
+    let mut siblings = found.scan_devices().ok()?.filter(|other| {
+        other.syspath() != hid.syspath()
+            && other
+                .parent()
+                .is_some_and(|above| above.syspath() == parent.syspath())
+            && property(other, "HID_PHYS") == Some(phys)
+            && property(other, "HID_ID") == property(hid, "HID_ID")
+            && is_steam_client(other) != is_steam_client(hid)
+    });
+    let sibling = siblings.next()?;
+    // Two that fit can't be told apart, and neither is taken.
+    siblings.next().is_none().then_some(sibling)
+}
+
+/// Whether the rule leaves `node` unhidden under a pad it hides: a
+/// keyboard's or a pointer's node, which it never hides, as a Steam
+/// Controller's own are; and the raw node of a Steam Controller with no
+/// USB interface above it, as one made through uhid, which no marker can
+/// name. A real pad's raw node is named by its port and model.
+pub(crate) fn left_unhidden(node: &udev::Device) -> bool {
+    match subsystem(node) {
+        Some("input") => is_keyboard_or_pointer(node),
+        Some("hidraw") => {
+            node.parent().is_some_and(|hid| is_steam_client(&hid)) && interface_of(node).is_none()
+        }
+        _ => false,
+    }
 }
 
 /// The device whose driver is re-bound to cut off an input device's
@@ -534,7 +614,7 @@ pub(crate) fn identify(fd: BorrowedFd<'_>) -> Result<Pad, Refusal> {
     let event = udev::Device::from_devnum(udev::DeviceType::Character, devnum)
         .map_err(|_| Refusal::NotAPad)?;
     let pad = classify(&event, true)?;
-    if shares_with_keyboard_or_pointer(&pad.parent.path) {
+    if rebind_cuts_off_keyboard_or_pointer(&pad.parent.path) {
         tracing::info!(
             device = %pad.parent.path.display(),
             "refused a pad whose device has a keyboard or a pointer among its inputs: re-binding its driver would cut that off too"
@@ -627,6 +707,17 @@ pub(crate) fn hidden_raw() -> Vec<(Device, BTreeSet<String>)> {
             interface: interface_of(&node),
             ..Names::default()
         };
+        // A Steam Controller's raw node is its client device's, which is
+        // nothing to re-bind: the pad's own HID device is, and makes the
+        // client anew.
+        let hid = if is_steam_client(&hid) {
+            match steam_sibling(&hid) {
+                Some(pad) => pad,
+                None => continue,
+            }
+        } else {
+            hid
+        };
         let Some(enumeration) = enumeration(&hid) else {
             continue;
         };
@@ -674,33 +765,50 @@ fn best(was: &Pad, candidates: Vec<Pad>, taken: &[&Path]) -> Option<Pad> {
 pub(crate) fn returned(was: &Pad, group: u32, taken: &[&Path]) -> Option<Pad> {
     let candidates = hidden(group)
         .into_iter()
-        .filter(|pad| !shares_with_keyboard_or_pointer(&pad.parent.path))
+        .filter(|pad| !rebind_cuts_off_keyboard_or_pointer(&pad.parent.path))
         .collect();
     best(was, candidates, taken)
 }
 
 /// The HID drivers whose pads' raw nodes the service opens for a caller.
 /// A raw node takes whatever the pad's firmware does, so this names the
-/// pads a virtual pad is made to pass as, and nothing else.
+/// pads a virtual pad is made to pass as, and nothing else. A [Steam
+/// Controller on its cable](is_steam_controller) is the other pad whose
+/// raw node is opened: it is read through nothing else.
 const RAW_DRIVERS: [&str; 1] = ["playstation"];
 
-/// The raw HID node of the HID device at `parent`, if its driver is one
-/// whose raw nodes the service opens.
-pub(crate) fn raw_node(parent: &Path) -> Result<PathBuf, Refusal> {
+/// The HID device that carries the raw node of the pad whose device is
+/// `parent`: the device itself for a driver whose raw nodes the service
+/// opens, and a Steam Controller's client device. Refused for any other.
+fn raw_device(parent: &Path) -> Result<udev::Device, Refusal> {
     let device = udev::Device::from_syspath(parent).map_err(|_| Refusal::Absent)?;
+    if is_steam_controller(&device) {
+        return steam_sibling(&device).ok_or(Refusal::Absent);
+    }
     let offered = subsystem(&device) == Some("hid")
         && device
             .driver()
             .and_then(|driver| driver.to_str())
             .is_some_and(|driver| RAW_DRIVERS.contains(&driver));
-    if !offered {
-        return Err(Refusal::Unsupported);
+    if offered {
+        Ok(device)
+    } else {
+        Err(Refusal::Unsupported)
     }
-    children(parent, "hidraw")
+}
+
+/// The raw HID node of the pad whose HID device is at `parent`, if it is
+/// one whose raw nodes the service opens, with the device the node is
+/// under as it is now: `parent` itself, or a Steam Controller's client.
+pub(crate) fn raw_node(parent: &Path) -> Result<(PathBuf, Device), Refusal> {
+    let device = raw_device(parent)?;
+    let under = Device::at(device.syspath()).ok_or(Refusal::Absent)?;
+    let node = children(device.syspath(), "hidraw")
         .ok_or(Refusal::Failed)?
         .into_iter()
         .find_map(|child| Some(child.devnode()?.to_path_buf()))
-        .ok_or(Refusal::Absent)
+        .ok_or(Refusal::Absent)?;
+    Ok((node, under))
 }
 
 /// Each input device under `parent` the kernel has now, by its place in
@@ -722,11 +830,20 @@ pub(crate) fn inputs_under(parent: &Path) -> Vec<PathBuf> {
 
 /// Every node under `parent` the kernel has made, whether or not udev has
 /// finished with it: each input's event, js and mouse nodes, and the raw
-/// HID node.
+/// HID node, a Steam Controller's client device's among them.
 pub(crate) fn nodes_under(parent: &Path) -> Vec<udev::Device> {
+    // A Steam Controller's raw node is under its client device, beside
+    // the pad's own.
+    let client = udev::Device::from_syspath(parent)
+        .ok()
+        .filter(is_steam_controller)
+        .and_then(|pad| steam_sibling(&pad))
+        .and_then(|client| children(client.syspath(), "hidraw"))
+        .unwrap_or_default();
     ["input", "hidraw"]
         .iter()
         .flat_map(|subsystem| children(parent, subsystem).unwrap_or_default())
+        .chain(client)
         .filter(|device| device.devnode().is_some())
         .collect()
 }

@@ -854,16 +854,57 @@ impl Untaken {
     }
 }
 
+/// Who opens a Steam Controller's raw node for a setup.
+#[derive(Clone, Copy)]
+enum RawFrom<'a> {
+    /// The daemon, by the node's path: the pad isn't hidden, and the
+    /// packaged rule gives the seat its raw node.
+    Path,
+    /// The hiding service, which has hidden the pad under this name: the
+    /// node is the service's group's alone.
+    Service(Asking<'a>, Token),
+}
+
+/// Why a Steam Controller's raw node wasn't opened.
+enum Unopened {
+    /// By the system's own error.
+    Io(std::io::Error),
+    /// The hiding service, asked for it, gave none.
+    Service,
+}
+
+impl RawFrom<'_> {
+    fn open(self, node: &Path) -> Result<OwnedFd, Unopened> {
+        match self {
+            Self::Path => OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(node)
+                .map(OwnedFd::from)
+                .map_err(Unopened::Io),
+            Self::Service((hiding, errand), token) => {
+                hiding.raw_of(errand, token).ok_or(Unopened::Service)
+            }
+        }
+    }
+}
+
 /// Takes a Steam Controller opened on its event node for a setup: gives
 /// it its raw node, which it is read through. Its driver takes its event
 /// node away while that is open, which is told to the book first, through
-/// `holds`. That is as games see it grabbed: those that read event nodes
-/// see nothing of it, and a program that reads its raw node, as Steam and
-/// SDL's own driver do, still does. The hiding service is never asked: it
-/// refuses a pad that could type or point, which this one's HID device
-/// can. Nothing else keeps the pad from games either, and nothing can
-/// leave it to them, so a profile that asks for that is refused.
-fn hold_raw(mut pad: Pad, id: &str, hide: Hide, holds: &Holds) -> Result<Pad, Untaken> {
+/// `holds`. Opened by the daemon itself, that is as games see it grabbed:
+/// those that read event nodes see nothing of it, and a program that
+/// reads its raw node, as Steam and SDL's own driver do, still does.
+/// Opened by the hiding service for a pad it has hidden, nothing else
+/// reads the pad at all. Either way nothing can leave the pad to games,
+/// so a profile that asks for that is refused.
+fn hold_raw(
+    mut pad: Pad,
+    id: &str,
+    hide: Hide,
+    holds: &Holds,
+    from: RawFrom<'_>,
+) -> Result<Pad, Untaken> {
     if hide == Hide::None {
         return Err(Untaken::Refused(cant_be_left(id)));
     }
@@ -897,10 +938,20 @@ fn hold_raw(mut pad: Pad, id: &str, hide: Hide, holds: &Holds) -> Result<Pad, Un
         .try_clone_to_owned()
         .map_err(|error| Untaken::Missing(format!("{id}'s event node: {error}")))?;
     holds.holding(&raw.syspath);
-    let opened = OpenOptions::new().read(true).write(true).open(&raw.node);
-    let file = match opened {
+    let file = match from.open(&raw.node) {
         Ok(file) => file,
-        Err(error) => {
+        Err(Unopened::Service) => {
+            // Never opened, so its driver leaves its event node be.
+            holds.not_holding(&raw.syspath);
+            warn!(
+                pad = id,
+                "the hiding service gave no raw node for a Steam Controller it has hidden"
+            );
+            return Err(Untaken::Refused(format!(
+                "{id} is a Steam Controller the hiding service hid and then couldn't open the raw interface of. Unplug it and plug it in again to have it tried once more"
+            )));
+        }
+        Err(Unopened::Io(error)) => {
             // Never opened, so its driver leaves its event node be.
             holds.not_holding(&raw.syspath);
             let gone = error.kind() == std::io::ErrorKind::NotFound
@@ -923,7 +974,7 @@ fn hold_raw(mut pad: Pad, id: &str, hide: Hide, holds: &Holds) -> Result<Pad, Un
             return Err(Untaken::Refused(why));
         }
     };
-    if let Err(error) = pad.set_raw(OwnedFd::from(file)) {
+    if let Err(error) = pad.set_raw(file) {
         // A node that isn't the pad's own took nothing away. Any other
         // was opened, and the driver may be taking the event node away:
         // the pad holds a descriptor on a node that is going, and is let
@@ -990,8 +1041,10 @@ fn watch_the_hold(pad: &Pad, event: OwnedFd, syspath: PathBuf, holds: Holds) {
 /// profile asks: hidden by the hiding service, which hands back the
 /// only descriptor left open on it, or else grabbed; grabbed only; or
 /// left as it is. A Steam Controller is [read through its raw
-/// node](hold_raw) instead. Returns the daemon's name for the pad if the
-/// service hid it. A setup stopped meanwhile takes nothing more.
+/// node](hold_raw) besides, which the service opens for one it has
+/// hidden; one it hasn't is as good as grabbed by that alone. Returns the
+/// daemon's name for the pad if the service hid it. A setup stopped
+/// meanwhile takes nothing more.
 fn take(
     wanted: &Wanted,
     database: &Database,
@@ -1001,10 +1054,7 @@ fn take(
     let (hiding, errand) = asking;
     let node = wanted.node.as_path();
     let (fd, opened) = opened(wanted, database).map_err(Untaken::Missing)?;
-    if opened.identifiers().is_steam_controller() {
-        drop(fd);
-        return hold_raw(opened, &wanted.id, hide, holds).map(|pad| (pad, None));
-    }
+    let steam = opened.identifiers().is_steam_controller();
     // Holding the pad open is what shows the service it is ours to hide.
     if hide == Hide::Full {
         match hiding.hide(errand, &wanted.id, fd.as_fd()) {
@@ -1014,7 +1064,12 @@ fn take(
                 // Shown again, the hold dropped, should this fail or
                 // panic before it is kept.
                 let mut pad = read(event, node, database).map_err(Untaken::Missing)?;
-                give_raw(&mut pad, hold.token(), asking);
+                if steam {
+                    let from = RawFrom::Service(asking, hold.token());
+                    pad = hold_raw(pad, &wanted.id, hide, holds, from)?;
+                } else {
+                    give_raw(&mut pad, hold.token(), asking);
+                }
                 return Ok((pad, Some(hold.keep())));
             }
             Err(Unhidden::Ended) => return Err(Untaken::Missing(STOPPED.to_string())),
@@ -1023,6 +1078,9 @@ fn take(
         }
     }
     drop(fd);
+    if steam {
+        return hold_raw(opened, &wanted.id, hide, holds, RawFrom::Path).map(|pad| (pad, None));
+    }
     let mut pad = opened;
     if hide != Hide::None
         && let Err(error) = pad.grab()
@@ -1049,12 +1107,14 @@ fn retake(
         && let Some(event) = hiding.reopen(errand, token)
     {
         // The service knows the pad by what it is, not by its node.
-        return read(event, &wanted.node, database)
-            .map(|mut pad| {
-                give_raw(&mut pad, token, asking);
-                (pad, Some(token))
-            })
-            .map_err(Untaken::Missing);
+        let mut pad = read(event, &wanted.node, database).map_err(Untaken::Missing)?;
+        if pad.identifiers().is_steam_controller() {
+            let from = RawFrom::Service(asking, token);
+            pad = hold_raw(pad, &wanted.id, hide, holds, from)?;
+        } else {
+            give_raw(&mut pad, token, asking);
+        }
+        return Ok((pad, Some(token)));
     }
     let taken = take(wanted, database, (asking, holds), hide);
     // Taken, and not under the old name: hidden afresh, or grabbed. The

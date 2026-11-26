@@ -25,28 +25,28 @@ No identity a virtual controller can take has a place for these, so a game never
 
 The lights and trigger effects a game sends a virtual DualSense don't reach it, as they don't reach any controller that is only grabbed ([Identity](./profiles.md#identity)).
 
-## Grabbed, not hidden
+## Visibility
 
-The hiding service doesn't take a Steam Controller: it never hides a controller that can also type and move the pointer, as this one can, since hiding would cut those off too. So while a profile uses it, CtrlAssist reads it through its own raw interface, the way Steam does, which takes it from some programs and not others:
+CtrlAssist reads a Steam Controller through its own raw interface, the way Steam does. While a profile uses it, games that read controllers the usual way see only the virtual controller, whatever the profile's **Visibility**. What Steam sees, and games that read the controller through SDL's own driver for it, depends on how it is connected:
 
-- **Games that read controllers the usual way** see only the virtual controller. The real one is gone from them while the profile runs, as a grabbed controller is.
-- **Steam, and games that read the controller through SDL's own driver for it,** read the real controller too, beside the virtual one, and get each press twice. A game built on a recent SDL may read it that way without saying so.
+- **On its USB cable, at Hidden, with the hiding service installed,** it is hidden from them too, as any controller is. Its keyboard and pointer ([below](#typing-and-pointing)) stay listed by the system, and say nothing while the profile runs.
+- **Behind its Puck or over Bluetooth, at Grabbed, or without the hiding service,** they read the real controller too, beside the virtual one, and get each press twice. A game built on a recent SDL may read it that way without saying so. At **Hidden**, CtrlAssist also asks Steam to leave the controller's model alone, as for any controller that is only grabbed; whether Steam honors that for its own controller isn't known, and Steam takes it up only when it next starts.
 
-**Visibility** keeps it from games the same way at **Hidden** and **Grabbed**, but that **Hidden** also asks Steam to leave the controller's model alone, as for any controller that is only grabbed; whether Steam honors that for its own controller isn't known, and Steam takes it up only when it next starts. The Pads page shows it as **Grabbed** while a profile uses it. **Visible** can't be chosen with it: the way CtrlAssist reads it takes it from games, so it can't be left to them, and a profile that asks for that is refused and says so.
+The Pads page shows which came of it, **Hidden** or **Grabbed**. **Visible** can't be chosen with it: the way CtrlAssist reads it takes it from games, so it can't be left to them, and a profile that asks for that is refused and says so.
 
 ## Steam
 
-While Steam runs, it holds the controller's raw interface too, and that has three consequences:
+While Steam runs, it holds the raw interface of every Steam Controller it can open, and that has three consequences:
 
-- **Steam sees the real controller** beside the virtual one, as above, and a game played through Steam may take each press twice.
-- **CtrlAssist can't take the controller again** while Steam holds it: a controller plugged in while Steam runs isn't listed at all, and one a profile let go of, as the profile stopped or a managed one restarted, can't be taken again until Steam is closed.
-- **Steam writes its own settings to the controller** while both hold it. It turns the motion sensors off when it has no use for them, and CtrlAssist asks for them only as a profile starts, so the motion behind a virtual DualSense may stop until the profile is started again.
+- **CtrlAssist can't take a controller Steam holds:** one plugged in while Steam runs isn't listed at all, and one a profile let go of, as the profile stopped or a managed one restarted, can't be taken again until Steam is closed. A controller a profile has hidden is out of Steam's reach for as long as the profile runs.
+- **Steam sees a real controller that isn't hidden** beside the virtual one, as above, and a game played through Steam may take each press twice.
+- **Steam writes its own settings to a controller that isn't hidden** while both hold it. It turns the motion sensors off when it has no use for them, and CtrlAssist asks for them only as a profile starts, so the motion behind a virtual DualSense may stop until the profile is started again.
 
-What you can do today is little: start the profile before Steam, or close Steam while you play a game started some other way. Whether CtrlAssist should hide this controller properly is an open question.
+What you can do: connect the controller by its cable, with the hiding service installed, and start the profile before Steam, so that the controller is hidden by the time Steam looks for it. Otherwise, close Steam while you play a game started some other way.
 
 ## Typing and pointing
 
-A Steam Controller types and moves the pointer, which Valve calls lizard mode, whenever no program is using its raw interface: neither Steam, nor a game through SDL's own driver, nor CtrlAssist. A game that reads controllers the usual way doesn't turn it off. While a profile uses the controller, CtrlAssist keeps lizard mode off, and it comes back as soon as the profile stops. If CtrlAssist hangs while using it, the controller turns lizard mode back on by itself.
+A Steam Controller types and moves the pointer, which Valve calls lizard mode, whenever no program is using its raw interface: neither Steam, nor a game through SDL's own driver, nor CtrlAssist. A game that reads controllers the usual way doesn't turn it off. CtrlAssist turns lizard mode off as a profile takes the controller, and the system turns it back on as soon as the profile stops, or CtrlAssist ends for any reason.
 
 ## Identify
 

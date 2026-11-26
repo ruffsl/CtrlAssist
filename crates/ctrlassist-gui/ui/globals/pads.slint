@@ -37,8 +37,8 @@ export struct PadRow {
     rumble: string,
     // The daemon found it has no rumble now, so Identify can't buzz it.
     without-rumble: bool,
-    // A Steam Controller: grabbed by a setup that reads it, never
-    // hidden, and buzzed through its raw node while a setup reads it,
+    // A Steam Controller: taken from games by any setup that reads it,
+    // and buzzed through its raw node while a setup reads it,
     // which its kernel driver may give no other way to.
     steam-controller: bool,
     // Its maker, for its tile: "sony", "microsoft", "nintendo",

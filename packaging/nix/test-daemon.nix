@@ -39,6 +39,9 @@ pkgs.testers.runNixOSTest {
       uid = 1000;
       password = "alice";
     };
+    # What lets the fixture make a fake Steam Controller with its own
+    # keyboard and pointer, which can type and point: only in a check.
+    environment.etc."ctrlassist-vm-check".text = "";
 
     # A graphical session for alice on the seat, as in the hider check.
     services.cage = {
@@ -764,9 +767,10 @@ pkgs.testers.runNixOSTest {
         machine.succeed(as_alice("ctrlassist-fixture version --socket /run/ctrlassist/hider.sock"))
         assert service_said(REFUSES) and not service_said(TAKES)
 
-    with subtest("a Steam Controller is read through the raw node the packaged rule gives the seat, and never said to have left"):
+    with subtest("a Steam Controller is read through its raw node, the seat's by the packaged rule where it is grabbed and the hiding service's where it is hidden, and never said to have left"):
         STEAM, HELD_BACK = "Steam Controller", "a pad is back from its raw node being held"
-        machine.succeed("systemd-run --unit steam ctrlassist-fixture fake-steam --pulse 20")
+        # As a real one is: its own keyboard and pointer in its HID device.
+        machine.succeed("systemd-run --unit steam ctrlassist-fixture fake-steam --lizard-mouse-and-keyboard --pulse 20")
         machine.wait_until_succeeds("journalctl -u steam -o cat | grep '^raw '")
         steam_log = machine.succeed("journalctl -u steam -o cat")
         serial, raw = field(r"(?m)^serial (\S+)$", steam_log), field(r"(?m)^raw (\S+)$", steam_log)
@@ -786,7 +790,8 @@ pkgs.testers.runNixOSTest {
         tagged = [line for line in tested.splitlines() if 'TAG+="uaccess"' in line and ".rules:" in line]
         assert tagged and all("70-ctrlassist.rules" in line for line in tagged), tested
 
-        machine.succeed(f"printf '%s\\n' 'mode = \"unicast\"' 'pad = \"{steam_id}\"' > /tmp/steam.toml")
+        # Grabbed first: the daemon opens the raw node itself.
+        machine.succeed(f"printf '%s\\n' 'mode = \"unicast\"' 'pad = \"{steam_id}\"' 'hide = \"grab\"' > /tmp/steam.toml")
         cli("profile", "put", "/tmp/steam.toml")
 
         # Without the grant the start is refused with what to do, and the
@@ -835,10 +840,40 @@ pkgs.testers.runNixOSTest {
         pad = known()[STEAM]
         assert pad["connected"] and pad.get("setup") is None, pad
 
-        # Held again as the daemon stops, for the subtest below.
+        # Hidden, the profile's default: the hiding service takes the pad
+        # though its device has a keyboard and a pointer, its own, and
+        # opens its raw node for the daemon. Held so as the daemon stops,
+        # for the subtest below.
+        phys = field(r"(?m)^phys (\S+)$", steam_log)
+        def steam_events():
+            """The pad's event nodes by whether udev takes each for a keyboard."""
+            found = {}
+            for input in machine.succeed(f"grep -lx '{phys}' /sys/class/input/input*/phys | xargs -n1 dirname").split():
+                event = machine.succeed(f"ls -d {input}/event* | xargs -n1 basename").strip()
+                keyboard = "ID_INPUT_KEYBOARD=1" in machine.succeed(f"udevadm info /dev/input/{event}")
+                found[f"/dev/input/{event}"] = keyboard
+            return found
+        machine.succeed(f"printf '%s\\n' 'mode = \"unicast\"' 'pad = \"{steam_id}\"' > /tmp/steam.toml")
+        cli("profile", "put", "/tmp/steam.toml")
         cli("start", "steam")
         phase_is("running", name="steam")
         machine.wait_until_fails(f"ctrlassist-fixture pads | grep 'uniq=\"{serial}\"'")
+        pad = known()[STEAM]
+        assert pad["connected"] and pad["hidden"] and pad["setup"] == "steam", pad
+        assert any(marker.startswith("./hid-0003:28DE:1302.") for marker in markers()), markers()
+        machine.succeed("udevadm settle")
+        # Its keyboard and pointer are left as the stock rules make them,
+        # the rule hiding neither; the gamepad's node went as the raw
+        # node was opened.
+        events = steam_events()
+        assert list(events.values()) == [True], events
+        for event in events:
+            assert machine.succeed(f"stat -c %G {event}").strip() == "input", event
+            assert "CTRLASSIST_HIDDEN" not in machine.succeed(f"udevadm info {event}"), event
+        node = setup("steam")["sinks"][0]["node"]
+        out = machine.succeed(f"su -l alice -c 'ctrlassist-fixture read {node} --frames 4'")
+        presses = [line.split()[1] for line in out.splitlines() if line.startswith("frame ")]
+        assert len(presses) == 4 and all(a != b for a, b in zip(presses, presses[1:])), out
 
     with subtest("stopping the service restores the pads"):
         machine.succeed(as_alice("systemctl --user stop ctrlassist-daemon.service"))
