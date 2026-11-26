@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Found a security problem? Please don't report it here: see the [security policy](https://github.com/CtrlAssist/CtrlAssist/security/policy).
+        Found a security problem? Please don't report it here: see the [security policy](https://github.com/CtrlAssist/CtrlAssist/security/policy). For a controller that isn't listed, a game that sees the real controllers too, or a missing tray icon, [Troubleshooting](https://ctrlassist.readthedocs.io/en/latest/operations/troubleshooting.html) has what to check first.
   - type: textarea
     id: what-happened
     attributes:
