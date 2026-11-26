@@ -33,3 +33,4 @@ Things the design depends on that have not been observed, or risks accepted for 
 - [`joystick-node-hidden-late.md`](joystick-node-hidden-late.md) — a joystick node with many keys or a touchpad's mark, hidden after libinput took it up, would still be read by the compositor; no such pad is known.
 - [`cli-closed-pipe-untested.md`](cli-closed-pipe-untested.md) — the CLI's quiet end on a closed pipe was copied from TisVlay without the test that holds it.
 - [`hide-refused-not-asked-again.md`](hide-refused-not-asked-again.md) — a hide the service refuses for a moment, as for a session not in front, is not asked again until the pad returns or its setup restarts, the pad staying grabbed.
+- [`virtual-dualsense-refused-under-load.md`](virtual-dualsense-refused-under-load.md) — the kernel's driver refused a virtual DualSense once, with every core busy; the cause is a guess.
