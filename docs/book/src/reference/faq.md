@@ -44,7 +44,7 @@ It sees a real controller beside the virtual one. A running profile keeps its re
 
 ### Which controllers work?
 
-Anything Linux presents as a gamepad. Xbox and PlayStation controllers are read through their own drivers, and others through the community controller database that SDL also uses; a [Steam Controller](../guide/steam-controller.md) is read too, on Linux 7.3 or newer, though not yet tried on a real one. [Requirements](./requirements.md) has what has been tried, and [How It Works](./how-it-works.md#controller-layouts) how to add a layout. Keyboards, mice, wheels and flight sticks aren't combined.
+Anything Linux presents as a gamepad. Xbox and PlayStation controllers are read through their own drivers, and others through the community controller database that SDL also uses; a [Steam Controller](../guide/steam-controller.md) is read too, though not yet tried on a real one. [Requirements](./requirements.md) has what has been tried, and [How It Works](./how-it-works.md#controller-layouts) how to add a layout. Keyboards, mice, wheels and flight sticks aren't combined.
 
 ### Does it add latency?
 

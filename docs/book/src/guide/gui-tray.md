@@ -18,7 +18,7 @@ Every controller CtrlAssist knows is listed, the connected ones and those it rem
 
 - The chips at the top say how it is: **Connected** or **Disconnected**; **In couch**, with the name of the running profile that is using it; **Free**; **Remembered**; or **Virtual**.
 - **Identify** buzzes the controller for a moment, so you can tell two apart. On a virtual controller it rumbles it as a game would, so the controllers behind it buzz the way its profile passes rumble on.
-- **Visibility** says whether games can see this controller beside a virtual one: **Hidden**, **Grabbed** or **Visible**. The profile that is running with it decides, but for a [Steam Controller](./steam-controller.md#grabbed-not-hidden), which is always **Grabbed**; see [Profiles](./profiles.md#visibility).
+- **Visibility** says whether games can see this controller beside a virtual one: **Hidden**, **Grabbed** or **Visible**. The profile that is running with it decides, but for a [Steam Controller](./steam-controller.md#grabbed-not-hidden), which is **Grabbed** whenever a profile uses it; see [Profiles](./profiles.md#visibility).
 - **PROFILES** lists every profile that names this controller, the part it plays there, and whether that profile is running. The pencil opens the profile.
 - **INFO** has what tells this controller from others, with a button to copy each. A profile names a controller by its **Pad ID**, for this one and no other, or by its **Model**, for any of that kind.
 - **Forget pad** drops a controller that isn't connected from the list.

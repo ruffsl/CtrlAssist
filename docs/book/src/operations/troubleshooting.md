@@ -28,7 +28,7 @@ Right after installing, log out and back in once.
 
 ## A controller isn't listed
 
-`ctrlassist pads` lists what the system reports as a gamepad. If yours is missing, check that the system sees it at all (`ls /dev/input/js*`). A controller hidden by another running arrangement is still listed, with that arrangement's name. A Steam Controller isn't listed while Steam has it, and needs Linux 7.3 or newer ([Steam Controller](../guide/steam-controller.md#grabbed-not-hidden)).
+`ctrlassist pads` lists what the system reports as a gamepad. If yours is missing, check that the system sees it at all (`ls /dev/input/js*`). A controller hidden by another running arrangement is still listed, with that arrangement's name. A Steam Controller isn't listed while Steam has it ([Steam Controller](../guide/steam-controller.md#steam)), nor on a kernel too old to know it ([Requirements](../reference/requirements.md)).
 
 ## The game sees the real controllers as well as the virtual one
 
@@ -42,20 +42,23 @@ Look at the tray menu's **Hiding:** line, just above **Settings**, or the daemon
 
 The hiding service doesn't take a Steam Controller, so Steam, and games that read it through SDL's own driver for it, still see it beside the virtual controller. [Steam Controller](../guide/steam-controller.md#grabbed-not-hidden) says why and what little can be done.
 
-## A Steam Controller's raw interface "can't be opened"
+## A Steam Controller's raw interface "isn't yours to open"
 
-A profile with a Steam Controller fails to start, or is held, saying the controller's raw interface can't be opened. A Steam Controller is read through its raw interface, which CtrlAssist's udev rule gives to the person at the machine; the packages and the NixOS module install it. Right after installing, udev hasn't applied the rule to a controller that was already plugged in: unplug it and plug it in again, or have udev apply its rules now. A running profile takes the controller as soon as they are applied.
+A profile with a Steam Controller fails to start, or is held, saying so. CtrlAssist reads the controller through its raw interface, which CtrlAssist's udev rule gives to the person at the machine. The packages and the NixOS module install the rule and apply it to controllers already connected, so after installing either, this means one of these:
+
+- **You aren't the person at the machine:** logged in over SSH, or another user's session is the one in front. The rule serves only the session in front of the seat.
+- **CtrlAssist was installed some other way,** without its udev rule. Install the rule, then unplug the controller and plug it in again.
 
 <details><summary id="raw-interface-from-a-terminal">From a terminal</summary>
 
 ```sh
-sudo udevadm trigger
-ls -l /dev/hidraw*     # the controller's has a + at the end: an ACL for you
+ls -l /dev/hidraw*     # the controller's raw interface has a + after its mode: yours to open
+loginctl               # is your session the one in front of seat0?
 ```
 
 </details>
 
-If it still can't be opened, check you are at the machine, not logged in over SSH, which the rule doesn't serve.
+If it says the raw interface "can't be opened" or "can't be read" instead, unplug the controller and plug it in again; the daemon's log has the details.
 
 ## "no virtual pad can be made"
 

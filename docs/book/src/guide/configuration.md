@@ -46,7 +46,7 @@ managed = true       # optional
 
 `rumble` is who feels what a game rumbles, for the three presets of two controllers: `both` (the default), `primary`, `assist` or `none`. See [Rumble](./profiles.md#rumble).
 
-`assist-gyro` is the assist's button that gives a game the assist's motion sensors while it is held, for the `priority` and `average` presets: a button's name (`south`, `east`, `north`, `west`, `left-bumper`, `right-bumper`, `select`, `start`, `mode`, `left-thumb`, `right-thumb`, `dpad-up`, `dpad-down`, `dpad-left`, `dpad-right`, `touchpad`, or on a controller with back buttons `paddle-1` (upper right), `paddle-2` (upper left), `paddle-3` (lower right) or `paddle-4` (lower left)), or `none`, the default. See [Gyro](./profiles.md#gyro).
+`assist-gyro` is the assist's button that gives a game the assist's motion sensors while it is held, for the `priority` and `average` presets: a button's name (`south`, `east`, `north`, `west`, `left-bumper`, `right-bumper`, `select`, `start`, `mode`, `left-thumb`, `right-thumb`, `dpad-up`, `dpad-down`, `dpad-left`, `dpad-right`, `touchpad`, or on a [Steam Controller](./steam-controller.md#what-carries-over) its back buttons `paddle-1` to `paddle-4`), or `none`, the default. See [Gyro](./profiles.md#gyro).
 
 `hide` is how the real controllers are kept from games while the arrangement runs, in any profile, a preset or not: `full` (the default), `grab` or `none`, which the window calls Hidden, Grabbed and Visible. See [Visibility](./profiles.md#visibility).
 
