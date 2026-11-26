@@ -2,6 +2,11 @@
 
 **CtrlAssist** brings "controller assist" to Linux gaming: several physical controllers act as one virtual controller, so a second person can help someone play, or one controller acts as several. It works below the game, so the game sees one ordinary controller and needs no support for any of this. It makes games easier to share for players of all ages and abilities: a parent taking the hard jumps for a child, a friend steering while you handle the buttons, or a player with limited mobility sharing a game's controls with a helper.
 
+[![CI Pipeline](https://github.com/CtrlAssist/CtrlAssist/actions/workflows/ci.yml/badge.svg)](https://github.com/CtrlAssist/CtrlAssist/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/CtrlAssist/CtrlAssist/branch/main/graph/badge.svg)](https://codecov.io/gh/CtrlAssist/CtrlAssist)
+[![Latest release](https://img.shields.io/github/v/release/CtrlAssist/CtrlAssist)](https://github.com/CtrlAssist/CtrlAssist/releases)
+[![License](https://img.shields.io/github/license/CtrlAssist/CtrlAssist)](https://github.com/CtrlAssist/CtrlAssist/blob/main/LICENSE)
+
 > [!NOTE]
 > This branch is 0.5.0, a clean rewrite that hasn't been released yet. The last release, 0.4.0, is at the [`v0.4.0`](https://github.com/CtrlAssist/CtrlAssist/tree/v0.4.0) tag, with its own README and install instructions. Nothing from 0.4.0's configuration carries over.
 

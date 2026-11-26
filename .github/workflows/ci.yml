@@ -112,6 +112,10 @@ jobs:
     if: needs.changes.outputs.code == 'true' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      # The OIDC token the Codecov upload authenticates with.
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -190,6 +194,22 @@ jobs:
         run: just test-ci
         env:
           CTRLASSIST_REQUIRE_FAKE_PADS: "1"
+
+      # Coverage trends and PR diff annotations on Codecov (free for OSS).
+      # It authenticates with GitHub's OIDC token, so no secret is stored.
+      # A PR from a fork gets no OIDC token; it uploads without one, which
+      # Codecov accepts for forks of public repos.
+      - name: Upload to Codecov
+        if: ${{ !cancelled() && hashFiles('lcov.info') != '' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: lcov.info
+          disable_search: true
+          use_oidc: ${{ !github.event.pull_request.head.repo.fork }}
+          # An upload error warns but never fails CI: `CI result` is a
+          # required check, so a Codecov outage would block every merge.
+          # Coverage is gated by the floor in `just test-ci`.
+          fail_ci_if_error: false
 
       - name: Upload coverage
         if: ${{ !cancelled() }}
