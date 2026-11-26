@@ -867,8 +867,14 @@ fn hold_raw(mut pad: Pad, id: &str, hide: Hide, holds: &Holds) -> Result<Pad, Un
             )));
         }
         Err(error) => {
+            let advice = match error {
+                SteamRawError::Ambiguous { .. } => {
+                    ". Two Steam Controllers over Bluetooth on one adapter can't be told apart: connect one by its cable, or use one at a time"
+                }
+                _ => "",
+            };
             return Err(Untaken::Refused(format!(
-                "{id} is a Steam Controller that can't be read: {error}"
+                "{id} is a Steam Controller that can't be read: {error}{advice}"
             )));
         }
     };
@@ -892,7 +898,7 @@ fn hold_raw(mut pad: Pad, id: &str, hide: Hide, holds: &Holds) -> Result<Pad, Un
                 )));
             }
             let rule = if error.kind() == std::io::ErrorKind::PermissionDenied {
-                ". CtrlAssist's udev rule, 70-ctrlassist.rules, gives it to the person at the machine: install it, and a running setup takes the controller as soon as udev has applied it"
+                ". CtrlAssist's udev rule, 70-ctrlassist.rules, gives it to the person at the machine and comes with CtrlAssist's package: once it is installed, unplug the controller and plug it in again, or run `sudo udevadm trigger`, and a running profile takes it as soon as udev has applied the rule"
             } else {
                 ""
             };
@@ -914,7 +920,7 @@ fn hold_raw(mut pad: Pad, id: &str, hide: Hide, holds: &Holds) -> Result<Pad, Un
             hold_ended(&event, &raw.syspath, holds);
         }
         return Err(Untaken::Refused(format!(
-            "{id} is a Steam Controller, and its raw interface, {}, can't be read: {error}",
+            "{id} is a Steam Controller, and its raw interface, {}, can't be read: {error}. Unplug it and plug it in again to have it tried once more",
             raw.node.display()
         )));
     }
@@ -926,7 +932,7 @@ fn hold_raw(mut pad: Pad, id: &str, hide: Hide, holds: &Holds) -> Result<Pad, Un
 /// a Steam Controller, `what` naming it.
 fn cant_be_left(what: &str) -> String {
     format!(
-        "{what} is a Steam Controller, which CtrlAssist reads through its raw interface, and that takes it away from games: `hide = \"none\"` can't leave it to them; choose \"grab\" or \"full\""
+        "{what} is a Steam Controller, which CtrlAssist reads through its raw interface, and that takes it from games: it can't be left visible to them. Choose Hidden or Grabbed for Visibility (`hide = \"full\"` or `\"grab\"`)"
     )
 }
 

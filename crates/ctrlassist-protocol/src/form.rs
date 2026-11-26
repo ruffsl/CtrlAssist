@@ -143,6 +143,18 @@ fn button_label(name: &str) -> String {
     label
 }
 
+/// Where a back button is, for a paddle's name, as SDL numbers them;
+/// nothing for any other button, whose name says where it is.
+fn paddle_place(name: &str) -> &'static str {
+    match name {
+        "paddle-1" => "The upper right back button, as on a Steam Controller.",
+        "paddle-2" => "The upper left back button, as on a Steam Controller.",
+        "paddle-3" => "The lower right back button, as on a Steam Controller.",
+        "paddle-4" => "The lower left back button, as on a Steam Controller.",
+        _ => "",
+    }
+}
+
 /// A preset's fields, in the order a form shows them.
 #[must_use]
 pub fn fields() -> Vec<Field> {
@@ -276,7 +288,7 @@ fn described() -> Vec<Field> {
                         Choice {
                             caption: "Assist holds".to_string(),
                             brief: button.clone(),
-                            ..choice(name, &format!("Assist · {button}"), "")
+                            ..choice(name, &format!("Assist · {button}"), paddle_place(name))
                         }
                     }))
                     .collect(),
@@ -295,7 +307,7 @@ fn described() -> Vec<Field> {
                     choice(
                         Hide::Full.as_str(),
                         "Hidden",
-                        "Games don't see them: the hiding service takes them away, or they are grabbed where it isn't there.",
+                        "Games don't see them: the hiding service takes them away, or they are grabbed where it isn't there, as a Steam Controller always is.",
                     ),
                     choice(
                         Hide::Grab.as_str(),

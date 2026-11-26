@@ -452,6 +452,7 @@ component PadDetail inherits Rectangle {
                             Text {
                                 text: root.pad.is-virtual ? @tr("Rumbles this pad as a game would, so the pads behind it buzz as {} sends it on.", root.pad.setup)
                                     : !root.pad.connected ? @tr("Remembered from when it was last connected.")
+                                    : root.pad.without-rumble && root.pad.steam-controller ? @tr("Its system gives it no rumble of its own: it can be buzzed while a profile uses it.")
                                     : root.pad.without-rumble ? @tr("This pad has no rumble to buzz with.")
                                     : @tr("Buzzes this pad, so you can tell which it is.");
                                 color: Theme.text-dim;
@@ -471,7 +472,8 @@ component PadDetail inherits Rectangle {
                         id-prefix: root.id-prefix;
                         label: @tr("Visibility");
                         key: "visibility";
-                        help: @tr("Whether games can see this pad beside a virtual one. The profile that is running with it decides, by its Visibility choice.");
+                        help: root.pad.steam-controller ? @tr("Whether games can see this pad beside a virtual one. A Steam Controller is grabbed whatever its profile chooses: games that read pads the usual way don't see it, and Steam, and games that read it through SDL, still do.")
+                            : @tr("Whether games can see this pad beside a virtual one. The profile that is running with it decides, by its Visibility choice.");
                         VerticalLayout {
                             horizontal-stretch: 1;
                             alignment: center;

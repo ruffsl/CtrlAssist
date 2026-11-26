@@ -293,6 +293,25 @@ impl View {
         )];
         if self.grabbed() {
             news.push(grabbed_news(name));
+        } else {
+            // The hiding service doesn't take a Steam Controller, there
+            // or not: said here, where nothing else says it.
+            let held: Vec<&str> = setup
+                .sources
+                .iter()
+                .filter(|source| source.present)
+                .filter_map(|source| self.pad(source.pad.as_deref()?))
+                .filter(|pad| pad.is_steam_controller())
+                .map(|pad| pad.name.as_str())
+                .collect();
+            if !held.is_empty() {
+                news.push(toast(
+                    Category::SetupTrouble,
+                    format!("{name}: {} grabbed, not hidden", held.join(" and ")),
+                    "A Steam Controller can't be hidden: Steam, and games that read it through SDL, still see it beside the virtual pad.",
+                    WARNING,
+                ));
+            }
         }
         let silent: Vec<&str> = setup
             .sources
@@ -351,7 +370,7 @@ fn grabbed_news(name: &str) -> Toast {
     toast(
         Category::SetupTrouble,
         format!("{name}: its pads are grabbed, not hidden"),
-        "The hiding service isn't there. A program that reads a pad some other way, as Steam reads a PlayStation pad, still sees it beside the virtual pad.",
+        "The hiding service isn't there. A program that reads a pad some other way, as Steam reads a PlayStation pad or a Steam Controller, still sees it beside the virtual pad.",
         WARNING,
     )
 }
@@ -1328,6 +1347,33 @@ pub(crate) mod tests {
         assert_eq!(
             summaries(&news),
             ["couch started", "couch: no rumble on 8BitDo Pro 2"]
+        );
+    }
+
+    /// A Steam Controller in a setup is said to be grabbed, not hidden,
+    /// with the hiding service there, which doesn't take it; without the
+    /// service, the warning for every pad says it already.
+    #[test]
+    fn a_steam_controller_starting_in_a_setup_is_said_to_be_only_grabbed() {
+        let steam = |hiding| {
+            let mut view = view(Some(Phase::Running), hiding);
+            view.pads[0].name = "Steam Controller".to_string();
+            (view.pads[0].vendor, view.pads[0].product) = (0x28de, 0x1302);
+            view
+        };
+        let news = steam(Hiding::Service).news(&view(None, Hiding::Service));
+        assert_eq!(
+            summaries(&news),
+            [
+                "couch started",
+                "couch: Steam Controller grabbed, not hidden"
+            ]
+        );
+        assert_eq!(news[1].category, Category::SetupTrouble);
+        assert!(news[1].body.contains("Steam"), "{news:?}");
+        assert_eq!(
+            summaries(&steam(Hiding::Grab).news(&view(None, Hiding::Grab))),
+            ["couch started", "couch: its pads are grabbed, not hidden"]
         );
     }
 

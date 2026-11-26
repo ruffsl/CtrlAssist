@@ -189,7 +189,7 @@ pub fn rows(parts: &Parts) -> Vec<AboutComponentRow> {
         ),
         (true, ServiceHealth::Offline, _) => (
             "offline".to_string(),
-            "A setup's pads are only grabbed: a program that reads a pad some other way, as Steam reads a PlayStation pad, still sees it".to_string(),
+            "A setup's pads are only grabbed: a program that reads a pad some other way, as Steam reads a PlayStation pad or a Steam Controller, still sees it".to_string(),
         ),
         (true, ServiceHealth::Looking, _) => (
             "looking…".to_string(),
