@@ -4,6 +4,7 @@
 
 [![CI Pipeline](https://github.com/CtrlAssist/CtrlAssist/actions/workflows/ci.yml/badge.svg)](https://github.com/CtrlAssist/CtrlAssist/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/CtrlAssist/CtrlAssist/branch/main/graph/badge.svg)](https://codecov.io/gh/CtrlAssist/CtrlAssist)
+[![Documentation](https://readthedocs.org/projects/ctrlassist/badge/?version=latest)](https://ctrlassist.readthedocs.io/)
 [![Latest release](https://img.shields.io/github/v/release/CtrlAssist/CtrlAssist)](https://github.com/CtrlAssist/CtrlAssist/releases)
 [![License](https://img.shields.io/github/license/CtrlAssist/CtrlAssist)](https://github.com/CtrlAssist/CtrlAssist/blob/main/LICENSE)
 
@@ -45,7 +46,7 @@ On NixOS, add the flake and set `services.ctrlassist.enable = true`. For Debian,
 
 ## Documentation
 
-The user guide is an mdBook under [`docs/book`](docs/book/src/SUMMARY.md); `just docs-serve` builds and serves it.
+The rendered user guide is at [ctrlassist.readthedocs.io](https://ctrlassist.readthedocs.io/). It is an mdBook under [`docs/book`](docs/book/src/SUMMARY.md), which `just docs-serve` builds and serves; the links below are to its source:
 
 - New here? Start with [Installation](docs/book/src/getting-started/installation.md), then the [Quick Start](docs/book/src/getting-started/quick-start.md).
 - Everyday use: [The Tray](docs/book/src/guide/tray.md), [Profiles](docs/book/src/guide/profiles.md) and the [Command Line](docs/book/src/guide/cli.md).
