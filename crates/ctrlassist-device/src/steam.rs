@@ -1,5 +1,5 @@
-//! A Steam Controller's reports, read and written, with no device behind
-//! them: bytes in, values out, and values in, bytes out.
+//! A Steam Controller's reports, read and written as plain code that
+//! opens nothing: bytes in, values out, and values in, bytes out.
 //!
 //! The pad is Valve's 2026 Steam Controller, which SDL calls Triton and
 //! the kernel Ibex. It is read from its raw HID node, as SDL reads it,
@@ -69,8 +69,12 @@ pub(crate) const PRODUCT_RECEIVER: u16 = 0x1305;
 /// (`REPORT_ID_INPUT`, `hid-steam.c:323`; `ID_TRITON_CONTROLLER_STATE`;
 /// SDL's `TritonMTUFull_t`).
 pub(crate) const STATE: u8 = 0x42;
-/// Its size, its number included: the kernel takes it at exactly this
-/// (`hid-steam.c:2553`).
+/// Its size, its number included. The kernel takes it at exactly this
+/// (`hid-steam.c:2553`); SDL takes any `0x42` of 46 bytes or more and
+/// reads it as the plain layout, never reading the orientation
+/// (`SDL_hidapi_steam_triton.c:532-544`). This follows the kernel's size
+/// as a least: a `0x42` shorter than 54 bytes is none, and one of 54 or
+/// more is read with its orientation.
 pub(crate) const STATE_SIZE: usize = 54;
 /// The state report without the orientation, otherwise the same
 /// (`REPORT_ID_INPUT2`, `hid-steam.c:325`;
@@ -132,9 +136,19 @@ pub(crate) const RUMBLE_AGAIN: Duration = Duration::from_millis(40);
 /// How often lizard mode is turned off again: the pad turns it back on
 /// by a watchdog of its own (SDL's comment at
 /// `SDL_hidapi_steam_triton.c:704`), and SDL turns it off every 3 s
-/// (`SDL_hidapi_steam_triton.c:502-505`). This is the pad's protocol,
-/// not a choice of CtrlAssist's; how long the watchdog waits is
-/// published nowhere.
+/// (`SDL_hidapi_steam_triton.c:502-505`), sending [`lizard_mode_off`] or
+/// [`lizard_mode_off_motion_on`]. This is the pad's protocol, not a
+/// choice of CtrlAssist's; how long the watchdog waits is published
+/// nowhere.
+///
+/// The kernel does otherwise: it turns the watchdog off as it turns
+/// lizard mode off, once, and sends nothing again
+/// (`steam_set_lizard_mode`, `hid-steam.c:894-900`). That is not done
+/// here, and no frame for it is offered: with the watchdog off, a daemon
+/// that crashed would leave the pad out of lizard mode, neither typing
+/// nor pointing for the player, until it is turned off. With the
+/// watchdog on, the pad falls back to lizard mode by itself once nothing
+/// sends this.
 pub(crate) const LIZARD_MODE_AGAIN: Duration = Duration::from_secs(3);
 
 /// The commands a feature report carries, by their first byte
@@ -146,10 +160,10 @@ const LOAD_DEFAULT_SETTINGS: u8 = 0x8e;
 
 /// The settings this file writes, by number: the kernel's and SDL's
 /// enums agree, each counting from 0 (`hid-steam.c:147-247`, these at
-/// 158, 205 and 234; `controller_constants.h`).
+/// 158 and 205; `controller_constants.h`). The watchdog's, 71, is left
+/// out on purpose: see [`LIZARD_MODE_AGAIN`].
 const SETTING_LIZARD_MODE: u8 = 9;
 const SETTING_IMU_MODE: u8 = 48;
-const SETTING_STEAM_WATCHDOG_ENABLE: u8 = 71;
 /// Lizard mode off (`steam_set_lizard_mode`, `hid-steam.c:897`;
 /// `LIZARD_MODE_OFF`).
 const LIZARD_MODE_OFF: u16 = 0;
@@ -180,7 +194,7 @@ const FULL_PRESSURE: f32 = 32768.0;
 /// at `hid-steam.c:80`, which rounds the resolution to 16).
 const DEGREES_PER_COUNT: f32 = 2000.0 / 32768.0;
 /// The accelerometer's counts to a g: 2 g at full scale of 16 bits
-/// (`STEAM_ACCEL_RES_PER_G`, `hid-steam.c:75`;
+/// (`STEAM_ACCEL_RES_PER_G`, `hid-steam.c:76`;
 /// `SDL_hidapi_steam_triton.c:299-301`).
 const COUNTS_PER_G: f32 = 16384.0;
 /// One tick of the narrow sensor time of [`STATE_TIMESTAMPED`], in
@@ -391,13 +405,28 @@ pub(crate) struct Trackpad {
     /// Whether a finger is on it, by its touch bit in the button word.
     pub(crate) touched: bool,
     /// Its place across, from 0 at the left edge to 1 at the right.
+    ///
+    /// The place, across and down, is whatever the report's fields say,
+    /// touched or not: this module passes them through. What a pad
+    /// reports in them while no finger is on it no source says; the
+    /// kernel reports its axes at 0 then (`hid-steam.c:2466-2468`), and
+    /// SDL keeps the last place touched
+    /// (`SDL_hidapi_steam_triton.c:264-268`). Whoever builds the pad state
+    /// keeps the last touched place itself, as a lifted contact keeps the
+    /// place its finger left (`ctrlassist_core::Contact::new`).
     pub(crate) x: f32,
     /// Its place down, from 0 at the top edge to 1 at the bottom, as a
-    /// DualSense's touchpad is read: the report's larger values are
-    /// higher, as SDL reads them (`-sLeftPadY / 65536 + 0.5`,
-    /// `SDL_hidapi_steam_triton.c:267, 279`). The kernel hands the value
-    /// on unchanged (`ABS_HAT0Y`, `hid-steam.c:2465`), which says
-    /// nothing of which way is up; only a real pad can settle it.
+    /// DualSense's touchpad is read.
+    ///
+    /// The sources conflict on which way the report's value grows. SDL
+    /// reads its larger values as higher (`-sLeftPadY / 65536 + 0.5`,
+    /// `SDL_hidapi_steam_triton.c:267, 279`). The kernel passes the value
+    /// unchanged as `ABS_HAT0Y` and `ABS_HAT1Y` (`hid-steam.c:2465,
+    /// 2473`), where by evdev's convention for a hat axis larger is
+    /// lower; yet it negates the 2015 pad's left trackpad on the same
+    /// axis (`hid-steam.c:2058`), so its 2026 path may simply not have
+    /// been checked. This follows SDL, whose driver was written for this
+    /// pad; only a real pad can settle it.
     pub(crate) y: f32,
     /// How hard it is pressed, 0 to 1, as SDL reads it ([`FULL_PRESSURE`]).
     /// Whether it means anything, and its real range, only a real pad
@@ -418,17 +447,18 @@ pub(crate) enum SensorTime {
 }
 
 impl SensorTime {
-    /// The time in microseconds: a narrow time's ticks times 32.
-    pub(crate) fn micros(self) -> u32 {
-        match self {
-            Self::Wide(us) => us,
-            Self::Narrow(ticks) => u32::from(ticks).saturating_mul(NARROW_TICK_US),
-        }
-    }
-
     /// The microseconds from `earlier` to this time, across the clock's
-    /// wrap at its own width, as SDL takes them. None when the two are
-    /// of different widths: one clock's time says nothing of the other's.
+    /// wrap at its own width; the only way to space two readings, since
+    /// a narrow time in microseconds wraps at 2,097,152, where nothing
+    /// subtracting two of them would know to. None when the two are of
+    /// different widths: one clock's time says nothing of the other's.
+    ///
+    /// The wide clock wraps as SDL takes it, in 32 bits
+    /// (`SDL_hidapi_steam_triton.c:290`). The narrow one is wrapped at 16
+    /// bits here on purpose, where SDL doesn't: SDL subtracts its two
+    /// 16-bit times as `int`, so a reading across the wrap comes out
+    /// negative and is cast to an interval of over an hour
+    /// (`SDL_hidapi_steam_triton.c:348`).
     pub(crate) fn since(self, earlier: Self) -> Option<u32> {
         match (earlier, self) {
             (Self::Wide(earlier), Self::Wide(now)) => Some(now.wrapping_sub(earlier)),
@@ -747,10 +777,10 @@ impl Battery {
 /// `ETritonWirelessState`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Wireless {
-    /// 1: the pad left the slot.
-    Left,
-    /// 2: a pad joined it.
-    Joined,
+    /// 1: the pad left the slot (`WIRELESS_EVENT_DISCONNECT`).
+    Disconnected,
+    /// 2: a pad joined it (`WIRELESS_EVENT_CONNECT`).
+    Connected,
     /// 3: the slot is pairing, which the kernel names and neither source
     /// acts on.
     Pairing,
@@ -764,26 +794,29 @@ impl Wireless {
             return None;
         }
         Some(match *report.get(1)? {
-            1 => Self::Left,
-            2 => Self::Joined,
+            1 => Self::Disconnected,
+            2 => Self::Connected,
             3 => Self::Pairing,
             other => Self::Other(other),
         })
     }
 }
 
-/// The left motor's gain, and the right's, as the kernel sends them
+/// The left motor's gain, and the right's, as SDL sends them: both 0
+/// (`SDL_hidapi_steam_triton.c:616, 618`). SDL's driver was written for
+/// this pad, and its field is a signed gain, by Valve's header in
+/// decibels (`MsgHapticRumble`'s `int8_t gain`, beside the `gain_db` of
+/// the other haptic messages). The kernel sends 2 and 0
 /// (`steam_haptic_rumble(steam, 0, left, right, 2, 0)`,
-/// `hid-steam.c:839-840, 850-851`). SDL sends both as 0
-/// (`SDL_hidapi_steam_triton.c:616, 618`); what the difference does only
-/// a real pad can show.
-const LEFT_GAIN: u8 = 2;
+/// `hid-steam.c:839-840, 850-851`), from callbacks it shares with the
+/// Steam Deck. What the difference does only a real pad can show.
+const LEFT_GAIN: u8 = 0;
 const RIGHT_GAIN: u8 = 0;
 
 /// The rumble output report for `level`: its number, a type and an
 /// intensity of 0, the left motor's speed and gain, and the right's,
 /// little-endian (`struct steam_ibex_haptic_rumble`,
-/// `hid-steam.c:366-375`, filled at 806-813; SDL's `MsgHapticRumble`).
+/// `hid-steam.c:367-375`, filled at 806-813; SDL's `MsgHapticRumble`).
 ///
 /// The strong motor is the left and the weak the right, as the kernel
 /// maps a game's rumble (`steam_play_effect`, `hid-steam.c:860-866`)
@@ -871,20 +904,12 @@ pub(crate) fn motion_sensors(on: bool) -> [u8; FEATURE_SIZE] {
     )])
 }
 
-/// The pad's watchdog off, the one "that tests if Steam is active" (the
-/// kernel's comment, `hid-steam.c:898`) and, by SDL's comment, turns
-/// lizard mode back on when it isn't. The kernel writes it with lizard mode
-/// off, in one write ([`settings`] of both; `steam_set_lizard_mode`,
-/// `hid-steam.c:894-900`); SDL never writes it, and leaves the watchdog
-/// to put the pad back in lizard mode when SDL is gone
-/// (`SDL_hidapi_steam_triton.c:704`).
-pub(crate) fn watchdog_off() -> [u8; FEATURE_SIZE] {
-    settings([(SETTING_STEAM_WATCHDOG_ENABLE, 0)])
-}
-
-/// The pad's own keys and pointer turned off, which the kernel sends
-/// before it writes lizard mode off (`ID_CLEAR_DIGITAL_MAPPINGS`,
-/// `steam_set_lizard_mode`, `hid-steam.c:891-892`). SDL doesn't send it.
+/// The pad's own keys and pointer turned off: the kernel sends it before
+/// it writes lizard mode off (`ID_CLEAR_DIGITAL_MAPPINGS`,
+/// `steam_set_lizard_mode`, `hid-steam.c:891-892`), and SDL never sends
+/// it, relying on lizard mode off alone. Whether it is sent is for
+/// whatever opens the pad to choose; what it adds over lizard mode off
+/// only a real pad can show.
 pub(crate) fn clear_digital_mappings() -> [u8; FEATURE_SIZE] {
     command(CLEAR_DIGITAL_MAPPINGS)
 }
@@ -1041,7 +1066,6 @@ mod tests {
         all_close(&sample.accel, &[0.25, 1.0, 0.5]);
         all_close(&sample.gyro, &[62.5, 250.0, 125.0]);
         assert_eq!(sample.time, SensorTime::Wide(0xdead_beef));
-        assert_eq!(sample.time.micros(), 0xdead_beef);
         assert_eq!(sample.trackpad_time, None);
         assert_eq!(sample.orientation, Some([11, -22, 33, -44]));
     }
@@ -1069,7 +1093,6 @@ mod tests {
         assert_eq!(sample.right_trackpad, full.right_trackpad);
         assert_eq!(sample.trackpad_time, Some(0x1234));
         assert_eq!(sample.time, SensorTime::Narrow(0xabcd));
-        assert_eq!(sample.time.micros(), 0xabcd * 32);
         assert_eq!(
             sample,
             Sample {
@@ -1196,6 +1219,37 @@ mod tests {
     }
 
     #[test]
+    fn a_lifted_trackpad_is_untouched_and_its_place_passed_through() {
+        // No touch bits, both trackpads' fields at places of their own:
+        // untouched, and whatever the fields say, for the pad state's
+        // builder to keep the last touched place over.
+        let raw = Raw {
+            buttons: 0,
+            left: [(-32767i16) as u16, 32767, 0],
+            right: [32767, (-32767i16) as u16, 0],
+            ..RAW
+        };
+        for id in [0x42, 0x45, 0x47] {
+            let sample = state(&report(id, raw));
+            let (left, right) = (sample.left_trackpad, sample.right_trackpad);
+            assert!(!left.touched && !right.touched, "{id:#x}");
+            assert_eq!((left.x, left.y), (0.0, 0.0), "{id:#x}");
+            assert_eq!((right.x, right.y), (1.0, 1.0), "{id:#x}");
+        }
+        // Lifted as the kernel reports one, every field 0: the middle.
+        let zero = Raw {
+            buttons: 0,
+            left: [0; 3],
+            ..RAW
+        };
+        let left = state(&report(0x45, zero)).left_trackpad;
+        assert_eq!(
+            (left.touched, left.x, left.y, left.pressure),
+            (false, 0.5, 0.5, 0.0)
+        );
+    }
+
+    #[test]
     fn motion_reaches_its_full_scale_on_the_pad_state_s_axes() {
         let at = |accel: [i16; 3], gyro: [i16; 3]| {
             let sample = state(&report(0x45, Raw { accel, gyro, ..RAW }));
@@ -1285,8 +1339,8 @@ mod tests {
     fn a_wireless_event_says_what_became_of_the_slot() {
         for id in [0x79, 0x46] {
             for (state, event) in [
-                (1, Wireless::Left),
-                (2, Wireless::Joined),
+                (1, Wireless::Disconnected),
+                (2, Wireless::Connected),
                 (3, Wireless::Pairing),
                 (0, Wireless::Other(0)),
                 (9, Wireless::Other(9)),
@@ -1309,24 +1363,26 @@ mod tests {
         assert_eq!(narrow(200).since(narrow(75)), Some(4000));
         assert_eq!(narrow(100).since(narrow(65511)), Some(4000));
         assert_eq!(narrow(0).since(narrow(u16::MAX)), Some(32));
-        assert_eq!(narrow(u16::MAX).micros(), 65535 * 32);
+        assert_eq!(narrow(u16::MAX).since(narrow(0)), Some(65535 * 32));
         // One clock says nothing of the other's.
         assert_eq!(wide(4000).since(narrow(0)), None);
         assert_eq!(narrow(125).since(wide(0)), None);
     }
 
     #[test]
-    fn rumble_is_the_report_the_kernel_sends() {
-        // The kernel's `steam_haptic_rumble(steam, 0, strong, weak, 2,
-        // 0)`, laid out by `struct steam_ibex_haptic_rumble`.
+    fn rumble_is_the_report_sdl_sends() {
+        // SDL's `HIDAPI_DriverSteamTriton_RumbleJoystick` with the low
+        // frequency strong and the high weak, laid out by
+        // `MsgHapticRumble`: both gains 0, where the kernel's would have
+        // a left gain of 2 at byte 6.
         assert_eq!(
             rumble(Level {
                 strong: 0x1234,
                 weak: 0xabcd
             }),
-            [0x80, 0x00, 0x00, 0x00, 0x34, 0x12, 0x02, 0xcd, 0xab, 0x00]
+            [0x80, 0x00, 0x00, 0x00, 0x34, 0x12, 0x00, 0xcd, 0xab, 0x00]
         );
-        assert_eq!(rumble(Level::default()), [0x80, 0, 0, 0, 0, 0, 2, 0, 0, 0]);
+        assert_eq!(rumble(Level::default()), [0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     }
 
     /// A 64-byte feature report beginning with `head`, the rest zero.
@@ -1357,15 +1413,9 @@ mod tests {
             motion_sensors(false),
             frame(&[0x01, 0x87, 0x03, 0x30, 0x00, 0x00])
         );
-        assert_eq!(watchdog_off(), frame(&[0x01, 0x87, 0x03, 0x47, 0x00, 0x00]));
-        // The kernel's `steam_set_lizard_mode(steam, false)`: the
-        // mappings cleared, then lizard mode and the watchdog off in one
-        // write.
+        // What the kernel's `steam_set_lizard_mode(steam, false)` sends
+        // first: the mappings cleared.
         assert_eq!(clear_digital_mappings(), frame(&[0x01, 0x81]));
-        assert_eq!(
-            settings([(SETTING_LIZARD_MODE, 0), (SETTING_STEAM_WATCHDOG_ENABLE, 0)]),
-            frame(&[0x01, 0x87, 0x06, 0x09, 0x00, 0x00, 0x47, 0x00, 0x00])
-        );
         // And `steam_set_lizard_mode(steam, true)`.
         assert_eq!(
             lizard_mode_on(),
