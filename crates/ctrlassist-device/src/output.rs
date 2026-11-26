@@ -396,10 +396,11 @@ impl SteamOut for File {
 ///
 /// The pad's mappings of its buttons to keys and its pointer are not
 /// cleared first, as the kernel's driver clears them as it turns lizard
-/// mode off (`clear_digital_mappings`): SDL's driver, written for this
-/// pad, doesn't, and the plan took SDL's way of keeping lizard mode off.
-/// Whether the pad types or points with lizard mode off and its mappings
-/// kept only a real pad can show.
+/// mode off (`clear_digital_mappings`): lizard mode is kept off SDL's
+/// way, its watchdog left on so that a daemon that hangs leaves the pad
+/// to type and point again, and SDL's driver, written for this pad,
+/// sends lizard mode off alone. Whether the pad types or points with
+/// lizard mode off and its mappings kept only a real pad can show.
 ///
 /// Rumble is the plain level every pad is sent. The pad's richer haptics
 /// (a pulse on either trackpad, output report `0x81`, and the reports
@@ -482,6 +483,13 @@ impl<O: SteamOut> Target for SteamNode<O> {
 
     fn keep_up(&mut self, now: Instant) {
         if self.lizard_due.is_some_and(|due| due <= now) {
+            // One try, as SDL makes it, and the next an interval later. The
+            // kernel's driver tries a feature report again on `EPIPE`, up to
+            // 50 times 20 ms apart, because "the wireless controller fails
+            // with EPIPE" (`steam_send_report_id`, `hid-steam.c:549-562`):
+            // whether a pad behind a Puck or over Bluetooth needs that, so
+            // that lizard mode isn't left on for an interval, only a real
+            // one can show.
             let result = self.out.feature(&steam::lizard_mode_off_motion_on());
             self.heard(&result);
             // From now, not from when it was due: a write that waited on
@@ -932,6 +940,13 @@ fn write_out<T: Target>(shared: &Shared, target: &mut T, between: &impl Fn()) {
                         unsent = asked;
                     }
                 }
+            }
+            // What the pad's protocol has due goes before the next change:
+            // changes that come faster than writes are made would put it
+            // off for as long as they came.
+            let now = Instant::now();
+            if !stopping && target.due().is_some_and(|due| due <= now) {
+                target.keep_up(now);
             }
             continue;
         }
@@ -1688,5 +1703,68 @@ mod tests {
         writer.join().unwrap();
         let rest: Vec<Steam> = written.try_iter().collect();
         assert_eq!(rest, [rumbled(Level::default())]);
+    }
+
+    /// What a pad whose protocol asks for writes of its own was told.
+    #[derive(PartialEq, Debug)]
+    enum Done {
+        Sent(Level),
+        KeptUp,
+    }
+
+    /// Stands in for such a pad: something falls due as its first level
+    /// is being written, which is held until the test lets it finish.
+    struct Due {
+        told: mpsc::Sender<Done>,
+        gate: mpsc::Receiver<()>,
+        due: Option<Instant>,
+        sent: bool,
+    }
+
+    impl Target for Due {
+        fn send(&mut self, _: Option<&[u8; GAME_SIZE]>, level: Level, _: Once) -> io::Result<()> {
+            self.told.send(Done::Sent(level)).unwrap();
+            if !std::mem::replace(&mut self.sent, true) {
+                self.due = Some(Instant::now());
+                self.gate.recv().unwrap();
+            }
+            Ok(())
+        }
+
+        fn due(&self) -> Option<Instant> {
+            self.due
+        }
+
+        fn keep_up(&mut self, _: Instant) {
+            self.due = None;
+            self.told.send(Done::KeptUp).unwrap();
+        }
+
+        fn rest(self) {}
+    }
+
+    /// What falls due while a write is under way is written before the
+    /// level told meanwhile: levels told faster than they are written
+    /// can't put it off.
+    #[test]
+    fn what_falls_due_goes_before_the_next_change() {
+        let (told_by, told) = mpsc::channel();
+        let (open, gate) = mpsc::channel();
+        let target = Due {
+            told: told_by,
+            gate,
+            due: None,
+            sent: false,
+        };
+        let (mut output, writer) = Output::start(target, To::Steam, "pad-output").unwrap();
+        output.rumble(level(0x1000, 0)).unwrap();
+        assert_eq!(told.recv().unwrap(), Done::Sent(level(0x1000, 0)));
+        // The writer is held in that write, with something due.
+        output.rumble(level(0x2000, 0)).unwrap();
+        open.send(()).unwrap();
+        assert_eq!(told.recv().unwrap(), Done::KeptUp);
+        assert_eq!(told.recv().unwrap(), Done::Sent(level(0x2000, 0)));
+        drop(output);
+        writer.join().unwrap();
     }
 }

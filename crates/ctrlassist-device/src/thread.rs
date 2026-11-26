@@ -101,8 +101,11 @@ fn is_raw(token: u64) -> bool {
 /// Listens to a pad's event node, and its raw node where it is read,
 /// under the pad's source number; or to neither. A Steam Controller read
 /// from its raw node is listened to there alone: its event node has
-/// gone, and would say so at every wait.
-fn listen(epoll: &OwnedFd, pad: &Pad, slot: usize, index: usize) -> io::Result<()> {
+/// gone, and would say so at every wait. The first time, it has what its
+/// raw node kept since it was given it read away, those reports being
+/// from before its setup ran.
+fn listen(epoll: &OwnedFd, pad: &mut Pad, slot: usize, index: usize) -> io::Result<()> {
+    pad.begin();
     let event = pad.event_node();
     if let Some(event) = event {
         epoll::add(
@@ -398,8 +401,8 @@ impl Setup {
         })
     }
 
-    fn register(&self, epoll: &OwnedFd, slot: usize) -> io::Result<()> {
-        for (index, pad) in self.pads.iter().enumerate() {
+    fn register(&mut self, epoll: &OwnedFd, slot: usize) -> io::Result<()> {
+        for (index, pad) in self.pads.iter_mut().enumerate() {
             if let Some(pad) = pad {
                 listen(epoll, pad, slot, index)?;
             }
@@ -530,12 +533,12 @@ impl Setup {
     fn pad_back(
         &mut self,
         index: usize,
-        pad: Box<Pad>,
+        mut pad: Box<Pad>,
         epoll: &OwnedFd,
         slot: usize,
     ) -> Option<Box<Pad>> {
         let free = self.pads.get(index).is_some_and(Option::is_none);
-        if !free || listen(epoll, &pad, slot, index).is_err() {
+        if !free || listen(epoll, &mut pad, slot, index).is_err() {
             return Some(pad);
         }
         self.graph.set_present(SourceId(index), true, &mut |_| {});
@@ -614,7 +617,7 @@ impl Setup {
         // and sent what the games last sent beyond rumble.
         self.router.swap_sources(&mut new.reported);
         self.passed.fill(SourceSet::EMPTY);
-        for (index, pad) in self.pads.iter().enumerate() {
+        for (index, pad) in self.pads.iter_mut().enumerate() {
             let Some(pad) = pad else { continue };
             if listen(epoll, pad, slot, index).is_err() {
                 self.failed = true;
@@ -1564,7 +1567,7 @@ impl State {
 
     fn carry_out(&mut self, command: Command, now: u64) {
         match command {
-            Command::Start(id, setup) => {
+            Command::Start(id, mut setup) => {
                 let free = self.slots.iter().position(Option::is_none);
                 let duplicate = self.slot_of(id).is_some();
                 // More pads than a graph has would break the count of

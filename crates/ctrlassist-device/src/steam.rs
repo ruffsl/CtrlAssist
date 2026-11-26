@@ -185,10 +185,13 @@ pub(crate) const RUMBLE_AGAIN: Duration = Duration::from_millis(40);
 /// lizard mode off, once, and sends nothing again
 /// (`steam_set_lizard_mode`, `hid-steam.c:894-900`). That is not done
 /// here, and no frame for it is offered: with the watchdog off, a daemon
-/// that crashed would leave the pad out of lizard mode, neither typing
-/// nor pointing for the player, until it is turned off. With the
-/// watchdog on, the pad falls back to lizard mode by itself once nothing
-/// sends this.
+/// that hangs with the pad's raw node held would leave the pad out of
+/// lizard mode, neither typing nor pointing for the player, for as long
+/// as it hung. One that crashes doesn't: its raw node is closed, and the
+/// kernel's driver sets the pad up again itself (`steam_work_connect_cb`,
+/// `steam_register` and its `steam_set_lizard_mode`, `hid-steam.c:1406`).
+/// With the watchdog on, the pad falls back to lizard mode by itself once
+/// nothing sends this, the node held or not.
 pub(crate) const LIZARD_MODE_AGAIN: Duration = Duration::from_secs(3);
 
 /// The commands a feature report carries, by their first byte
@@ -871,8 +874,10 @@ pub(crate) const RIGHT_TRIGGER_CLICK: Control = Control::Button(23);
 /// click the first touchpad's click; the left is the second. SDL numbers
 /// them the other way, its first touchpad the left and its `touchpad`
 /// button the left's click (`SDL_hidapi_steam_triton.c:262-285`,
-/// `SDL_gamepad.c:1265`): the right one here is what a virtual DualSense
-/// shows as its touchpad, as the plan decided.
+/// `SDL_gamepad.c:1265`). The right one is first here because the first
+/// touchpad is what a virtual DualSense shows, and the right trackpad is
+/// the one chosen to stand for a DualSense's touchpad: a profile that
+/// maps the pad to a DualSense gives the game the right trackpad.
 ///
 /// A trackpad's touch is no button: it is whether its contact is down. A
 /// trigger's click is kept apart from its axis, which carries the pull:
@@ -959,6 +964,10 @@ impl Reading {
     /// from the reading before's, a pad that sent `0x45` and then `0x47`:
     /// neither clock says anything of the other, and the new one is
     /// counted from there.
+    ///
+    /// A report whose sensor clock hasn't moved since the reading before
+    /// is no new reading: its other controls are taken, and the motion is
+    /// kept as it was, its count and interval with it.
     pub(crate) fn take(&mut self, sample: &Sample) -> &PadState {
         let state = &mut self.state;
         for button in Button::ALL {
@@ -981,18 +990,26 @@ impl Reading {
         }
         state.set_touchpad(touchpad(state.touchpad(), sample.right_trackpad));
         state.set_second_touchpad(touchpad(state.second_touchpad(), sample.left_trackpad));
-        let interval_us = self
-            .last
-            .and_then(|last| sample.time.since(last))
-            .unwrap_or(0);
-        self.last = Some(sample.time);
-        self.readings = self.readings.wrapping_add(1);
-        state.set_motion(Motion::new(
-            sample.gyro,
-            sample.accel,
-            self.readings,
-            interval_us,
-        ));
+        // A report whose sensor clock hasn't moved since the last is no new
+        // reading of the sensors, as SDL reads it
+        // (`SDL_hidapi_steam_triton.c:289, 346`): its motion is passed over,
+        // the last kept with its count. Counted, its interval of nothing
+        // would be counted again on top of the next one's by a virtual pad
+        // that advances its own clock by each.
+        if self.last != Some(sample.time) {
+            let interval_us = self
+                .last
+                .and_then(|last| sample.time.since(last))
+                .unwrap_or(0);
+            self.last = Some(sample.time);
+            self.readings = self.readings.wrapping_add(1);
+            state.set_motion(Motion::new(
+                sample.gyro,
+                sample.accel,
+                self.readings,
+                interval_us,
+            ));
+        }
         &self.state
     }
 }
@@ -1015,6 +1032,8 @@ pub(crate) struct Reader {
     /// nothing.
     buffer: [u8; BUFFER],
     reading: Reading,
+    /// Whether the input thread has listened to the node yet.
+    begun: bool,
 }
 
 impl std::fmt::Debug for Reader {
@@ -1047,6 +1066,20 @@ impl Reader {
             raw,
             buffer: [0; BUFFER],
             reading: Reading::NEW,
+            begun: false,
+        }
+    }
+
+    /// Reads away, once, the reports the node kept since this was made:
+    /// called as the input thread first listens to the node, for the
+    /// reports of the moments between the pad being given its node and
+    /// its setup running, which a pad that reports every 4 ms fills, are
+    /// from before then too. Again after that it does nothing, so that a
+    /// pad listened to anew, as a running setup takes a new graph, loses
+    /// nothing. Waits for nothing and allocates nothing.
+    pub(crate) fn begin(&mut self) {
+        if !std::mem::replace(&mut self.begun, true) {
+            crate::motion::forget(self.raw.as_fd());
         }
     }
 
@@ -1972,6 +2005,38 @@ mod tests {
         assert_eq!(take(0x47, 0, 89), (5, 125 * 32));
         assert_eq!(take(0x45, 50, 0), (6, 0));
         assert_eq!(take(0x45, 4050, 0), (7, 4000));
+    }
+
+    /// A report whose sensor clock hasn't moved is no new reading: the
+    /// motion stays as the reading before left it, count, interval and
+    /// values, while every other control is the report's.
+    #[test]
+    fn a_report_whose_clock_has_not_moved_is_no_new_reading() {
+        let mut reading = Reading::NEW;
+        let mut take = |sensor_time: u32, gyro: [i16; 3], buttons: u32| {
+            let raw = Raw {
+                sensor_time,
+                gyro,
+                buttons,
+                ..RAW
+            };
+            *reading.take(&state(&report(0x45, raw)))
+        };
+        take(1000, [0; 3], 0);
+        let read = take(5000, [1024, 0, 0], 0);
+        assert_eq!(
+            (read.motion().readings(), read.motion().interval_us()),
+            (2, 4000)
+        );
+        let again = take(5000, [-4096, 0, 0], Button::South.mask());
+        assert_eq!(again.motion(), read.motion(), "the reading before's");
+        assert_eq!(again.get(gamepad::SOUTH), 1.0, "the report's button");
+        // The next reading's interval is its own, from the last that was.
+        let next = take(9000, [0; 3], 0);
+        assert_eq!(
+            (next.motion().readings(), next.motion().interval_us()),
+            (3, 4000)
+        );
         // The motion is the sample's.
         let state = first(0x45, RAW);
         assert_eq!(state.motion().gyro(), state_of(0x45).gyro);
@@ -2003,7 +2068,12 @@ mod tests {
         pad.send(&battery).unwrap();
         pad.send(&[0x44; 46]).unwrap();
         pad.send(&[0x79, 2]).unwrap();
-        pad.send(&report(0x42, Raw { buttons: 0, ..RAW })).unwrap();
+        let later = Raw {
+            buttons: 0,
+            sensor_time: RAW.sensor_time.wrapping_add(4000),
+            ..RAW
+        };
+        pad.send(&report(0x42, later)).unwrap();
         let mut steps = Vec::new();
         reader.read(|state| steps.push(*state)).unwrap();
         assert_eq!(steps.len(), 2, "{steps:?}");
