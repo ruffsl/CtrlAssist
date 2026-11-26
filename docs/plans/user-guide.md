@@ -2,7 +2,7 @@
 
 ## State
 
-- **Status:** drafted, and its first questions answered (see Decided). Nothing in the book has been changed.
+- **Status:** drafted, its first questions answered and the README added to it (see Decided). Nothing in the book or the README has been changed.
 - **Next action:** the maintainer's go-ahead on the plan as a whole; then step 1.
 - **Branch:** `docs/user-guide`, from `main` at `39c1b4c`.
 
@@ -34,7 +34,8 @@ Found by reading the two side by side on 2026-11-25. Each is corrected by a step
 | Sections | Getting Started, Using, Help, Advanced, Reference | Getting Started, Using, Help, Reference; Command Line sits under Using |
 | Files | A Configuration Files page under Advanced holds the schema; the pages before it say what things do | Profiles holds both: presets and identities, then the full form, hand edits and where files live |
 | Screenshots | Fourteen, under `docs/screenshots/`, in LFS, linked into the book through `src/docs/` | None; no `docs/screenshots/`, no links |
-| README | A Screenshots section, and an `overview` anchor the book's introduction includes | Neither; the introduction repeats the README by hand |
+| README | TisVlay's stanzas, each headed by an emoji: Features as emoji bullets of two lines each, Screenshots, Architecture with a diagram, Documentation, Acknowledgments; an `overview` anchor the book's introduction includes | Plain headings and long feature sentences; no screenshots, diagram or anchor, so the introduction repeats the README by hand; Installing and License stanzas TisVlay doesn't have |
+| Diagrams | mdbook-mermaid, for the architecture diagram | None; the rewrite plan left it out |
 | FAQ | A page under Reference | None |
 | Terminal asides | Collapsed `<details>` where a terminal is the fix | The rule was copied without that half |
 | Writing rules | Say the guide is published | Still say it isn't |
@@ -56,7 +57,12 @@ Later the same day, on the questions this plan first left open:
 - **Dark for every shot, and one in light,** as TisVlay's are: dark Breeze with its default accent, and one page again in light to show the window follows the desktop.
 - **At the size the window opens at,** at a scale of one.
 - **The made-up state as proposed:** a DualSense and an Xbox pad connected, an 8BitDo remembered, `couch` running and `desk` stopped.
-- **The FAQ's first questions** are of three kinds. Games, Steam and Proton: does the game need to support it, does it work with Steam Input and Proton, why does my game see two controllers. Controllers and latency: which controllers work, does it add latency, do the gyro and the touchpad carry over. Setup and safety: does it need root, where are my profiles kept, can two people each have a virtual controller. Nothing on coming from 0.4.0.
+- **The README takes TisVlay's stanzas,** as a step of this plan (see The README below), with what is worth keeping of 0.4.0's README harvested into it and into the guide.
+- **Background goes to the FAQ:** who CtrlAssist is for, why not pass one controller around, why it was made, and the links to the consoles' own features. The README's opening keeps one sentence naming them.
+- **The modes' emojis and examples** from 0.4.0 go into the guide's Profiles page, rewritten for what each mode does now; the README names the modes in one feature bullet.
+- **A diagram of the parts, in mermaid,** in the README and so in the guide's introduction: mdbook-mermaid joins the dev shell, the docs job and Read the Docs.
+- **No cookbook yet.** 0.4.0's recipes haven't been tried on the rewrite, a virtual pad as another setup's input least of all; filed as `docs/ideas/cookbook.md`, for after this plan.
+- **The FAQ's first questions** are of three kinds. Games, Steam and Proton: does the game need to support it, does it work with Steam Input and Proton, why does my game see two controllers. Controllers and latency: which controllers work, does it add latency, do the gyro and the touchpad carry over. Setup and safety: does it need root, where are my profiles kept, can two people each have a virtual controller. Nothing on coming from 0.4.0. Before them, the background above.
 
 ## Contents
 
@@ -97,6 +103,29 @@ Canonical homes that change:
 | A profile file's keys, the full form, hand edits and `reload`, where profiles live | Profiles | Configuration Files |
 | Motion and the touchpad, the assist's Gyro button | Profiles | Profiles for what it does, Configuration Files for the keys |
 
+## The README
+
+TisVlay's README is a fixed run of stanzas, and CtrlAssist's takes the same, in the same order:
+
+| Stanza | Holds |
+|---|---|
+| Banner, one paragraph, badges | What it is in a sentence or two, with who it is for and the consoles' features it brings to Linux named once. The note that 0.5.0 isn't released stays until it is. |
+| ✨ Features | Emoji bullets, each a short line with two shorter lines under it, as TisVlay's are and 0.4.0's were. |
+| 📸 Screenshots | A table of the window's pages and the tray, from `docs/screenshots/`. |
+| 🏛️ Architecture | A mermaid diagram of the parts, then a table of two columns, component and description. |
+| 📖 Documentation | Where the rendered guide is, then emoji bullets by what the reader wants. |
+| 🙏 Acknowledgments | As now. |
+
+Everything from the banner to the end of Architecture is inside `<!-- ANCHOR: overview -->`, which the guide's introduction includes in place of repeating it.
+
+**Features,** as a first list for the maintainer to cut: 🎮 two controllers as one (primary and assist); 🎛️ the modes, named, with a link to Profiles; 🔁 one controller as several; 🙈 real controllers hidden while it runs, Steam included; 🕹️ the virtual controller's identity; 🫨 rumble, lights and trigger effects passed back; 🧭 motion and the touchpad; 🔌 a controller that disconnects and returns; 🖱️ the window and the tray; 🛋️ couch mode; ⌨️ the command and profiles as files; ⚡ latency.
+
+**Harvested from 0.4.0** (`git show v0.4.0:README.md`): the emoji for each feature and each mode; the two-line bullet form; the list of who it is for; the FAQ's first three answers and the Background links, into the guide's FAQ; each mode's "ideal for" example, into Profiles.
+
+**Not carried:** the Install, Usage and Configuration stanzas, which are the guide's now; the Limitations, which were 0.4.0's; the screencasts, which show 0.4.0's tray; the crates.io badges; the Cookbook, for the reason under Decided.
+
+**Goes from today's README:** the Installing stanza, whose one paragraph becomes the Documentation stanza's first link, and the License stanza, which the badge and the file already say. TisVlay has neither.
+
 ## Screenshots
 
 **The tool.** A binary, `ctrlassist-screenshots`, in a crate of its own beside `ctrlassist-docgen` or as a second binary of it; step 2 decides which by what it costs the docs job to build. It links the window's library, builds an `AppWindow` on a platform of its own with Slint's software renderer, fills it as the window's tests fill theirs, and for each shot sets the page and the selection, renders to a buffer and writes a PNG. `just docs-screenshots` runs it and writes `docs/screenshots/`.
@@ -115,7 +144,7 @@ Canonical homes that change:
 | `about_pane.png` | The parts and their releases |
 | `pads_pane_light.png` | The Pads page again, in the light theme |
 | `couch_mode.png` | The window in its ten-foot layout |
-| `system_tray_menu.png`, `system_tray_hover.png` | The tray, last, by whatever means step 7 finds |
+| `system_tray_menu.png`, `system_tray_hover.png` | The tray, last, by whatever means step 8 finds |
 
 **What isn't known yet,** and step 2 finds out before anything is built on it:
 
@@ -134,11 +163,12 @@ Each is one commit or a few, with `prek run -a --skip build --skip clippy --skip
 1. **The reasons.** `docs/book/README.md` gains "Who the guide is for and why it is shaped this way" from the section above, loses "It isn't published anywhere yet", and gains the terminal-aside rule and, once step 2 has settled them, the screenshot rules. The same section goes into TisVlay's `docs/book/README.md` on `chore/from-ctrlassist`.
 2. **The capture tool, one shot.** The binary, the made-up state and `pads_pane.png` alone. **Stop:** the maintainer looks at it beside the real window and says whether the software renderer will do. If it won't, the fallback is the real window under a headless compositor, and this plan is revised before going on.
 3. **The rest of the window's shots,** `just docs-screenshots`, the links under `docs/book/src/docs/`, and a line in `docs/build.md` and `docs/testing.md`.
-4. **The new contents, without new prose.** `SUMMARY.md` in the order above; Command Line moves; `guide/tray.md` becomes `guide/gui-tray.md`; Profiles' file half moves to `guide/configuration.md`; every link and anchor re-pointed; the README gains its `overview` anchor and the introduction includes it. The book reads as before, in a new order.
+4. **The new contents, without new prose.** `SUMMARY.md` in the order above; Command Line moves; `guide/tray.md` becomes `guide/gui-tray.md`; Profiles' file half moves to `guide/configuration.md`; every link and anchor re-pointed. The book reads as before, in a new order.
 5. **GUI & Tray, and Quick Start from the window.** The window's pages by their labels, with their screenshots; couch mode and navigating by keys and gamepad, from `docs/gui/`; the tray after. Quick Start leads with the window.
-6. **Profiles by the window's labels,** Configuration Files finished, the FAQ, the README's Screenshots section, and the canonical homes table in `docs/book/README.md`.
-7. **The tray's shots.** Tried in this order: a nested Plasma session driven over D-Bus; the menu as the tray's own data, drawn by a small page of the tool; by hand. Its own stop, since each costs differently.
-8. **A read of every page against the code,** as TisVlay's sweep was: each label quoted is the label shown, each command runs, each claim holds. Then the plan is retired: what lasts is already in `docs/book/README.md` after step 1.
+6. **Profiles by the window's labels,** with each mode's emoji and example; Configuration Files finished; the FAQ, opening with the background; and the canonical homes table in `docs/book/README.md`.
+7. **The README in TisVlay's stanzas,** as The README above: mdbook-mermaid in `flake.nix`, the docs job and `.config/.readthedocs.yaml`, their versions in step; the diagram; the Screenshots table; the `overview` anchor widened to the whole of it, and the introduction's own copy of anything it now includes removed.
+8. **The tray's shots.** Tried in this order: a nested Plasma session driven over D-Bus; the menu as the tray's own data, drawn by a small page of the tool; by hand. Its own stop, since each costs differently.
+9. **A read of every page against the code,** as TisVlay's sweep was: each label quoted is the label shown, each command runs, each claim holds. Then the plan is retired: what lasts is already in `docs/book/README.md` after step 1.
 
 ## Open questions
 
