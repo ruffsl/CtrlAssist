@@ -18,6 +18,8 @@ The hiding service is kept small so it can be read in one sitting, and is closed
 
 What this protects is the rest of the system and other users from a program running as you. It does not protect you from your own programs: a game running as you could already read your controllers. If the hiding service itself were taken over, the most it could do is what its user's group may: read the game controllers it hid; read and write the raw interface of any PlayStation controller, which takes the output and feature reports that set its lights, its rumble and its settings; reset any game controller's driver, or send any game controller's device a made-up event, which the system's own rules then act on as on a real one; and hide game controllers. That would disrupt play, not hand over the machine.
 
+Two grants are made to you, the person at the machine, by a udev rule the packages install, as your desktop grants you your controllers themselves. One is `/dev/uinput` and `/dev/uhid`, which virtual controllers are made through. The other is the raw interface of a Steam Controller (2026), which CtrlAssist reads it through: with it, any program of yours can read everything that controller reports and change its settings, as Steam's own rules allow already wherever Steam is installed. It reaches no other device of Valve's.
+
 
 ## Checking a download
 
