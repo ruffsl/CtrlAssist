@@ -40,7 +40,7 @@ fn asked(hider: &ctrlassist_test::FakeHider) -> Vec<ctrlassist_test::Asked> {
 }
 
 /// A client whose mirror holds all the daemon has published.
-async fn hydrated(socket: &Path) -> DaemonClient {
+pub(crate) async fn hydrated(socket: &Path) -> DaemonClient {
     let client = DaemonClient::connect(socket).await.unwrap();
     eventually("the client never hydrated", async || client.is_hydrated()).await;
     client
@@ -60,7 +60,7 @@ async fn hiding_is(client: &DaemonClient, wanted: ctrlassist::Hiding) {
 }
 
 /// The setup, once its state is `phase`.
-async fn in_phase(client: &DaemonClient, name: &str, phase: Phase) -> Setup {
+pub(crate) async fn in_phase(client: &DaemonClient, name: &str, phase: Phase) -> Setup {
     eventually(
         &format!("{name} never was {}", phase.as_str()),
         async || {
@@ -76,7 +76,7 @@ async fn in_phase(client: &DaemonClient, name: &str, phase: Phase) -> Setup {
 
 /// Reads a virtual pad as a game would: once udev has announced it, by
 /// when its node can be opened.
-async fn game(setup: &Setup) -> Pad {
+pub(crate) async fn game(setup: &Setup) -> Pad {
     let node = setup.sinks[0].node.clone().unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {

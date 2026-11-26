@@ -31,6 +31,7 @@ use crate::blacklist::Blacklist;
 use crate::book::Book;
 use crate::device_identity;
 use crate::hiding::{Errand, Hidden, Hiding, Reading, Token, Unhidden};
+use crate::hotplug::Holds;
 use crate::reactor::Reactor;
 
 /// One of a setup's pads.
@@ -53,6 +54,12 @@ struct Slot {
     again: bool,
     /// The hiding service's name for the pad, while it has it hidden.
     token: Option<Token>,
+    /// Why its pad, there, wasn't taken back as the profile asks, if it
+    /// wasn't: it isn't sent for again until it is plugged in afresh.
+    /// Taking a Steam Controller back can make its node go and come back
+    /// whether it is taken or not, which would send for it again for
+    /// ever.
+    refused: bool,
 }
 
 impl Slot {
@@ -65,6 +72,7 @@ impl Slot {
             returning: false,
             again: false,
             token: None,
+            refused: false,
         }
     }
 }
@@ -237,6 +245,7 @@ fn rebind(
             Slot {
                 present: kept.is_some_and(|kept| kept.present),
                 token: kept.and_then(|kept| kept.token),
+                refused: kept.is_some_and(|kept| kept.refused),
                 ..Slot::new(source.name.clone(), source.pad.clone(), pad)
             }
         })
@@ -579,6 +588,9 @@ pub(crate) enum Done {
         graph: Box<Graph>,
         ids: Vec<Option<String>>,
         pads: Vec<Option<(Pad, Option<Token>)>>,
+        /// Why a pad it brings, there, couldn't be taken as the profile
+        /// asks, if one couldn't: the change isn't made.
+        refused: Option<String>,
     },
     /// A graph the input thread replaced is gone, and the pads it had no
     /// place for are to be shown again: the update is answered.
@@ -601,6 +613,9 @@ pub(crate) enum Done {
         /// it hid it under just now; none for a pad only grabbed, or left
         /// as it is.
         token: Option<Token>,
+        /// Whether it was there and couldn't be taken back as the profile
+        /// asks: see [`Untaken::Refused`].
+        refused: bool,
     },
     /// A pad a setup holds grabbed for want of the hiding service has
     /// been hidden now that the service is back, or couldn't be.
@@ -804,20 +819,95 @@ fn opened(wanted: &Wanted, database: &Database) -> Result<(OwnedFd, Pad), String
     Ok((fd, opened))
 }
 
+/// Why a pad wasn't taken.
+#[derive(Debug)]
+pub(crate) enum Untaken {
+    /// It isn't there to take, or its node is another pad's by now: the
+    /// setup goes on without it, and takes it when it comes back.
+    Missing(String),
+    /// It is there, and can't be taken as its setup's profile asks, for a
+    /// reason a person can act on: a setup doesn't start with it, and
+    /// doesn't send for it again until it is plugged in afresh.
+    Refused(String),
+}
+
+impl Untaken {
+    fn why(&self) -> &str {
+        match self {
+            Self::Missing(why) | Self::Refused(why) => why,
+        }
+    }
+}
+
+/// Takes a Steam Controller opened on its event node for a setup: gives
+/// it its raw node, which it is read through. Its driver takes its event
+/// node away while that is open, which is told to the book first, through
+/// `holds`. That is as games see it grabbed: those that read event nodes
+/// see nothing of it, and a program that reads its raw node, as Steam and
+/// SDL's own driver do, still does. The hiding service is never asked: it
+/// refuses a pad that could type or point, which this one's HID device
+/// can. Nothing else keeps the pad from games either, and nothing can
+/// leave it to them, so a profile that asks for that is refused.
+fn hold_raw(mut pad: Pad, id: &str, hide: Hide, holds: &Holds) -> Result<Pad, Untaken> {
+    if hide == Hide::None {
+        return Err(Untaken::Refused(format!(
+            "{id} is a Steam Controller, read through its raw node, which takes it away from games: it can't be left to them as `hide = \"none\"` asks; choose \"grab\" or \"full\""
+        )));
+    }
+    let raw = ctrlassist_device::steam_raw_node(pad.as_fd()).map_err(|error| {
+        Untaken::Refused(format!(
+            "{id} is a Steam Controller, read through its raw node, which can't be found: {error}"
+        ))
+    })?;
+    holds.holding(&raw.syspath);
+    let opened = OpenOptions::new().read(true).write(true).open(&raw.node);
+    let file = match opened {
+        Ok(file) => file,
+        Err(error) => {
+            // Never opened, so its driver leaves its event node be.
+            holds.not_holding(&raw.syspath);
+            let rule = if error.kind() == std::io::ErrorKind::PermissionDenied {
+                ": CtrlAssist's udev rule, 70-ctrlassist.rules, gives it to the person at the machine; install it, or reconnect the controller once it is"
+            } else {
+                ""
+            };
+            return Err(Untaken::Refused(format!(
+                "{id} is a Steam Controller, read through its raw node, {}, which can't be opened: {error}{rule}",
+                raw.node.display()
+            )));
+        }
+    };
+    // Opened, the driver is taking the event node away, and the pad holds
+    // a descriptor on a node that is going: one that isn't read from its
+    // raw node is no use, and is let go, to come back as its node does.
+    pad.set_raw(OwnedFd::from(file)).map_err(|error| {
+        Untaken::Refused(format!(
+            "{id} is a Steam Controller, and its raw node, {}, can't be read: {error}",
+            raw.node.display()
+        ))
+    })?;
+    Ok(pad)
+}
+
 /// Takes a pad for a setup, keeping it from games as far as the setup's
 /// profile asks: hidden by the hiding service, which hands back the
 /// only descriptor left open on it, or else grabbed; grabbed only; or
-/// left as it is. Returns the daemon's name for the pad if the service
-/// hid it. A setup stopped meanwhile takes nothing more.
+/// left as it is. A Steam Controller is [read through its raw
+/// node](hold_raw) instead. Returns the daemon's name for the pad if the
+/// service hid it. A setup stopped meanwhile takes nothing more.
 fn take(
     wanted: &Wanted,
     database: &Database,
-    asking: Asking<'_>,
+    (asking, holds): (Asking<'_>, &Holds),
     hide: Hide,
-) -> Result<(Pad, Option<Token>), String> {
+) -> Result<(Pad, Option<Token>), Untaken> {
     let (hiding, errand) = asking;
     let node = wanted.node.as_path();
-    let (fd, opened) = opened(wanted, database)?;
+    let (fd, opened) = opened(wanted, database).map_err(Untaken::Missing)?;
+    if opened.identifiers().is_steam_controller() {
+        drop(fd);
+        return hold_raw(opened, &wanted.id, hide, holds).map(|pad| (pad, None));
+    }
     // Holding the pad open is what shows the service it is ours to hide.
     if hide == Hide::Full {
         match hiding.hide(errand, &wanted.id, fd.as_fd()) {
@@ -826,11 +916,11 @@ fn take(
                 drop(fd);
                 // Shown again, the hold dropped, should this fail or
                 // panic before it is kept.
-                let mut pad = read(event, node, database)?;
+                let mut pad = read(event, node, database).map_err(Untaken::Missing)?;
                 give_raw(&mut pad, hold.token(), asking);
                 return Ok((pad, Some(hold.keep())));
             }
-            Err(Unhidden::Ended) => return Err(STOPPED.to_string()),
+            Err(Unhidden::Ended) => return Err(Untaken::Missing(STOPPED.to_string())),
             // Grabbed instead.
             Err(Unhidden::Not) => {}
         }
@@ -854,20 +944,22 @@ fn retake(
     wanted: &Wanted,
     token: Option<Token>,
     database: &Database,
-    asking: Asking<'_>,
+    (asking, holds): (Asking<'_>, &Holds),
     hide: Hide,
-) -> Result<(Pad, Option<Token>), String> {
+) -> Result<(Pad, Option<Token>), Untaken> {
     let (hiding, errand) = asking;
     if let Some(token) = token
         && let Some(event) = hiding.reopen(errand, token)
     {
         // The service knows the pad by what it is, not by its node.
-        return read(event, &wanted.node, database).map(|mut pad| {
-            give_raw(&mut pad, token, asking);
-            (pad, Some(token))
-        });
+        return read(event, &wanted.node, database)
+            .map(|mut pad| {
+                give_raw(&mut pad, token, asking);
+                (pad, Some(token))
+            })
+            .map_err(Untaken::Missing);
     }
-    let taken = take(wanted, database, asking, hide);
+    let taken = take(wanted, database, (asking, holds), hide);
     // Taken, and not under the old name: hidden afresh, or grabbed. The
     // old name is given up, so that what it hid isn't left for the
     // connection's end to show again, nor the pad said to be hidden by
@@ -938,7 +1030,7 @@ fn make(
     setup: &str,
     nodes: &[Option<Wanted>],
     database: &Database,
-    asking: Asking<'_>,
+    (asking, holds): (Asking<'_>, &Holds),
     dualsense: &(PathBuf, DualSenseData),
     blacklist: &Mutex<Blacklist>,
 ) -> Result<Made, Unmade> {
@@ -965,16 +1057,26 @@ fn make(
             return Err(undone(STOPPED.to_string(), &taken, pads));
         }
         // A pad that went between being chosen and being taken is one
-        // the setup starts without.
-        let pad = node.as_ref().and_then(|node| {
+        // the setup starts without; one there that can't be taken as the
+        // profile asks is one it doesn't start with at all.
+        let taking = node.as_ref().map(|node| {
             caught(
                 "taking a pad",
-                || take(node, database, asking, hide),
-                || Err("taking it panicked".to_string()),
+                || take(node, database, (asking, holds), hide),
+                || Err(Untaken::Missing("taking it panicked".to_string())),
             )
-            .inspect_err(|error| warn!(error, "a setup starts without a pad"))
-            .ok()
         });
+        let pad = match taking {
+            Some(Ok(pad)) => Some(pad),
+            Some(Err(Untaken::Refused(reason))) => {
+                return Err(undone(reason, &taken, pads));
+            }
+            Some(Err(Untaken::Missing(error))) => {
+                warn!(error, "a setup starts without a pad");
+                None
+            }
+            None => None,
+        };
         let (pad, token) = pad.unzip();
         taken.push((pad.is_some(), token.flatten()));
         pads.push(pad);
@@ -1391,11 +1493,12 @@ impl Reactor {
             self.copied.dualsense_or_shipped(),
         );
         let blacklist = Arc::clone(&self.blacklist);
+        let holds = self.holds.clone();
         self.work.spawn_blocking(move || {
             let outcome = caught(
                 "starting a setup",
                 || {
-                    let asking = (&*hiding, &errand);
+                    let asking = ((&*hiding, &errand), &holds);
                     make(
                         plan, &name, &nodes, &database, asking, &dualsense, &blacklist,
                     )
@@ -1738,29 +1841,40 @@ impl Reactor {
                 let hide = plan.hide;
                 let database = Arc::clone(&self.database);
                 let hiding = Arc::clone(&self.hiding);
+                let holds = self.holds.clone();
                 self.work.spawn_blocking(move || {
-                    let pads = fresh
-                        .iter()
-                        .map(|wanted| {
+                    // A pad there that can't be taken as the profile asks
+                    // is a change not made, and no more are taken for it.
+                    let mut refused = None;
+                    let mut pads = Vec::with_capacity(fresh.len());
+                    for wanted in &fresh {
+                        let taken = wanted.as_ref().filter(|_| refused.is_none()).map(|wanted| {
                             caught(
                                 "taking a pad",
-                                || {
-                                    take(wanted.as_ref()?, &database, (&hiding, &errand), hide)
-                                        .inspect_err(|error| {
-                                            warn!(error, "a setup changes without a pad");
-                                        })
-                                        .ok()
-                                },
-                                || None,
+                                || take(wanted, &database, ((&hiding, &errand), &holds), hide),
+                                || Err(Untaken::Missing("taking it panicked".to_string())),
                             )
-                        })
-                        .collect();
+                        });
+                        pads.push(match taken {
+                            Some(Ok(pad)) => Some(pad),
+                            Some(Err(Untaken::Refused(why))) => {
+                                refused = Some(why);
+                                None
+                            }
+                            Some(Err(Untaken::Missing(error))) => {
+                                warn!(error, "a setup changes without a pad");
+                                None
+                            }
+                            None => None,
+                        });
+                    }
                     Done::Retaken {
                         name,
                         setup,
                         graph: Box::new(graph),
                         ids,
                         pads,
+                        refused,
                     }
                 });
             }
@@ -2244,7 +2358,7 @@ impl Reactor {
         let Some(slot) = entry.slots.get_mut(source) else {
             return;
         };
-        if slot.present {
+        if slot.present || slot.refused {
             return;
         }
         if slot.returning {
@@ -2270,15 +2384,28 @@ impl Reactor {
         let token = slot.token;
         let database = Arc::clone(&self.database);
         let hiding = Arc::clone(&self.hiding);
+        let holds = self.holds.clone();
         let name = name.to_string();
         self.work.spawn_blocking(move || {
             // A node from before the pad left doesn't open, or is some
             // other pad's by now; the pad's arrival will bring it back.
             let retaken = caught(
                 "taking a pad back",
-                || retake(&wanted, token, &database, (&hiding, &errand), hide),
-                || Err("taking it back panicked".to_string()),
+                || {
+                    let asking = ((&*hiding, &errand), &holds);
+                    retake(&wanted, token, &database, asking, hide)
+                },
+                || Err(Untaken::Missing("taking it back panicked".to_string())),
             );
+            let refused = matches!(retaken, Err(Untaken::Refused(_)));
+            if let Err(untaken) = &retaken {
+                warn!(
+                    setup = name,
+                    pad = wanted.id,
+                    reason = untaken.why(),
+                    "a pad couldn't be taken back"
+                );
+            }
             let (pad, token) = retaken.ok().unzip();
             Done::Returned {
                 pad: pad.map(Box::new),
@@ -2286,6 +2413,7 @@ impl Reactor {
                 name,
                 setup,
                 id: wanted.id,
+                refused,
             }
         });
     }
@@ -2296,6 +2424,7 @@ impl Reactor {
         id: String,
         pad: Option<Box<Pad>>,
         token: Option<Token>,
+        refused: bool,
     ) {
         // By the pad, not by where it was when it was sent for: a setup
         // that took a change since has its pads numbered anew. Only to
@@ -2325,10 +2454,12 @@ impl Reactor {
             return self.show_again(pad, shows);
         };
         slot.returning = false;
+        slot.refused = refused;
         let again = std::mem::take(&mut slot.again);
         let Some(pad) = pad else {
-            // It may be back by now, where it wasn't when sent for.
-            if again {
+            // It may be back by now, where it wasn't when sent for; one
+            // there that was refused waits to be plugged in afresh.
+            if again && !refused {
                 self.bring_back(&name, source);
             }
             return;
@@ -2476,8 +2607,10 @@ impl Reactor {
         }
     }
 
-    /// A pad connected: a setup waiting for it takes it.
-    pub(crate) async fn pad_arrived(&mut self, id: &str) {
+    /// A pad connected: a setup waiting for it takes it. One `plugged_in`,
+    /// not back from something the daemon did, is tried afresh where it
+    /// was refused before.
+    pub(crate) async fn pad_arrived(&mut self, id: &str, plugged_in: bool) {
         // One pad, one place: its own, in a setup that hasn't failed and
         // that no other setup's use of it comes before; or else the first
         // place it fits that has no pad yet, in a setup that runs. A
@@ -2511,10 +2644,14 @@ impl Reactor {
             .entries
             .get_mut(&name)
             .and_then(|entry| entry.slots.get_mut(source))
-            && slot.pad.is_none()
         {
-            slot.pad = Some(id.to_string());
-            placed = true;
+            if plugged_in {
+                slot.refused = false;
+            }
+            if slot.pad.is_none() {
+                slot.pad = Some(id.to_string());
+                placed = true;
+            }
         }
         // Noted as the setup's, if it wasn't: an exact pad never seen
         // before had nothing to note until now.
@@ -2557,7 +2694,8 @@ impl Reactor {
                 id,
                 pad,
                 token,
-            } => self.returned((name, setup), id, pad, token).await,
+                refused,
+            } => self.returned((name, setup), id, pad, token, refused).await,
             Done::Rehidden {
                 name,
                 setup,
@@ -2570,7 +2708,31 @@ impl Reactor {
                 graph,
                 ids,
                 pads,
+                refused: None,
             } => self.send_graph((name, setup), *graph, ids, pads).await,
+            Done::Retaken {
+                name,
+                setup,
+                ids,
+                pads,
+                refused: Some(why),
+                ..
+            } => {
+                // What it brought is let go, and shown again if hidden.
+                let hidden = pads
+                    .iter()
+                    .zip(ids)
+                    .filter_map(|(pad, id)| Some((id?, pad.as_ref()?.1?)))
+                    .collect();
+                warn!(setup = name, reason = why, "a setup couldn't take a change");
+                let refusal = WireError::refusal(
+                    ErrorCode::SetupFailed,
+                    format!("the change wasn't made: {why}"),
+                );
+                let rested = rested_of(pads.iter().flatten().map(|(pad, _)| pad));
+                self.abandon((&name, setup), (pads, rested), hidden, &refusal)
+                    .await;
+            }
             Done::Shown { pad } => {
                 // Published as hidden until now.
                 self.book.shown(&pad);
@@ -2775,7 +2937,18 @@ impl Reactor {
                 self.retire((name, id), setup, shows, stopping);
             }
             Report::PadGone { setup, source, pad } => {
+                // A pad read through its raw node has truly gone: that is
+                // all there is of it, and udev says nothing of it while it
+                // is held. Its raw node is closed as it is dropped, which
+                // is what lets its driver make its node again, should it
+                // be there still.
+                let id = pad.identifiers().id().to_string();
+                let raw = pad.identifiers().is_steam_controller();
                 self.drop_off(pad);
+                if raw && self.book.lost(&id) {
+                    info!(pad = id, "a pad disconnected");
+                    self.publish_pad_logged(&id).await;
+                }
                 let Some(name) = self.setups.name_of(setup) else {
                     return;
                 };
@@ -2922,6 +3095,7 @@ mod tests {
             Database::parse(""),
             Hiding::grab(),
             crate::copied::Copied::open(&dir.path().join("state")),
+            Holds::new(tokio::sync::mpsc::unbounded_channel().0),
         );
         let mut reactor = reactor;
         reactor.test_pads = true;
@@ -3287,6 +3461,7 @@ mod tests {
                 id: "address:0a:1b:2c:3d:4e:14".to_string(),
                 pad: None,
                 token: None,
+                refused: false,
             })
             .await;
         let slot = &rig.reactor.setups.entries["couch"].slots[1];
@@ -3299,6 +3474,7 @@ mod tests {
                 id: "address:0a:1b:2c:3d:4e:14".to_string(),
                 pad: None,
                 token: None,
+                refused: false,
             })
             .await;
         rig.reactor.done(Done::Dropped(Vec::new())).await;
@@ -3572,6 +3748,7 @@ mod tests {
                 id: pad.to_string(),
                 pad: None,
                 token: None,
+                refused: false,
             })
             .await;
 
@@ -3617,6 +3794,7 @@ mod tests {
                 id: pad.to_string(),
                 pad: None,
                 token: None,
+                refused: false,
             })
             .await;
         // A report of a graph nobody waits for is only a graph to drop.
@@ -3684,6 +3862,7 @@ mod tests {
                 graph: Box::new(graph),
                 ids: vec![None, None],
                 pads: vec![None, None],
+                refused: None,
             })
             .await;
         refused(updating.await.unwrap(), ErrorCode::SetupBusy);
@@ -3914,7 +4093,7 @@ mod tests {
         follow(&mut rig.reactor, 7, Phase::Starting);
         for (id, node) in [(PRIMARY, "/nowhere/event1"), (ASSIST, "/nowhere/event2")] {
             rig.reactor.book.arrived(&connecting(id, node));
-            rig.reactor.pad_arrived(id).await;
+            rig.reactor.pad_arrived(id, true).await;
         }
         // The sources go by name: the assist, then the primary.
         let entry = &rig.reactor.setups.entries["couch"];
@@ -3959,7 +4138,7 @@ mod tests {
         let primary = connecting(PRIMARY, "/nowhere/event1");
         rig.reactor.book.arrived(&primary);
         rig.reactor.bring_back("couch", 1);
-        rig.reactor.pad_arrived(PRIMARY).await;
+        rig.reactor.pad_arrived(PRIMARY, true).await;
         assert!(rig.reactor.setups.entries["couch"].slots[1].again);
 
         let first = rig.reactor.work.join_next().await.unwrap().unwrap();
@@ -3982,7 +4161,7 @@ mod tests {
             .await;
         for (id, node) in [(ASSIST, "/nowhere/event2"), (PRIMARY, "/nowhere/event1")] {
             rig.reactor.book.arrived(&connecting(id, node));
-            rig.reactor.pad_arrived(id).await;
+            rig.reactor.pad_arrived(id, true).await;
             assert_eq!(rig.reactor.book.user(id), None, "{id}");
         }
         let entry = &rig.reactor.setups.entries["couch"];
@@ -4030,6 +4209,7 @@ mod tests {
                 id: PRIMARY.to_string(),
                 pad: None,
                 token: None,
+                refused: false,
             })
             .await;
         assert!(rig.reactor.setups.entries["couch"].slots[1].returning);
@@ -4693,6 +4873,7 @@ mod tests {
                 id: PRIMARY.to_string(),
                 pad: Some(pad),
                 token: None,
+                refused: false,
             })
             .await;
         let failed = rig.reactor.setups.setup("couch").unwrap();
@@ -4769,6 +4950,7 @@ mod tests {
                 graph: Box::new(graph),
                 ids: vec![None, None],
                 pads: vec![None, None],
+                refused: None,
             })
             .await;
         let taking = rig.reactor.setups.entries["couch"].taking.as_ref();

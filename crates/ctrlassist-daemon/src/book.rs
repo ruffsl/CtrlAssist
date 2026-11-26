@@ -31,6 +31,30 @@
 //! driver comes back from leaves the pad away, and so connected, until
 //! its anchor goes.
 //!
+//! **So is a raw node held.** A Steam Controller is read through its raw
+//! node, and its driver takes the pad's event node away for as long as
+//! anything has that open, making it anew, under another input device,
+//! once nothing has; its HID device, the anchor, stays throughout. So the
+//! invariant: before the daemon opens a pad's raw node, the node the pad
+//! is on is marked as going for that, the mark being heard ahead of
+//! every udev event the opening causes (the work that opens it says so
+//! on the hotplug watch's own queue first). A node so marked that goes is
+//! the pad away, as for a re-bind: still connected, nothing published,
+//! and its setup never told; a node come on its anchor is the pad back,
+//! not plugged in, which starts no profile, so a profile stopped by hand
+//! stays stopped as the node returns. The mark goes with its node, or
+//! is taken off at once if the raw node wasn't opened after all. A pad
+//! that truly goes while held is said so by what reads it, the input
+//! thread, and is then [lost](Book::lost): whatever of it is away or
+//! marked goes, and its next node is a pad plugged in. Nothing waits on
+//! the node's return: another program holding the raw node too, as
+//! Steam does, keeps the node away after the daemon lets go, and the pad
+//! stays away, connected and with no node to open, until it returns or
+//! its anchor goes. A hold so short that the driver never took the node
+//! leaves its mark on a node still there; the next hold marks it anyway,
+//! and its anchor's going unplugs it, so the mark matters only to a pad
+//! in a receiver's slot, whose anchor stays as the pad leaves.
+//!
 //! A node's going that the hotplug watch lost is learned from what udev
 //! sends after it, as well as from a look at what is connected: a node
 //! arriving under its name, or on the anchor it was marked as going from
@@ -69,6 +93,17 @@ struct Held {
     /// Whether it is going for a re-bind the hiding service asked: it was
     /// gone from sysfs as the request was heard.
     rebinding: bool,
+    /// Whether a setup is about to read the pad through its raw node, or
+    /// does: its driver takes this node away while that is open.
+    raw: bool,
+}
+
+impl Held {
+    /// Whether this node's going is the pad away, not gone: for a re-bind
+    /// the hiding service asked, or the pad's raw node held.
+    fn goes_away(&self) -> bool {
+        self.rebinding || self.raw
+    }
 }
 
 #[derive(Debug)]
@@ -138,7 +173,7 @@ impl Row {
 fn has_gone(held: &Held, found: &Found, come: bool) -> bool {
     held.syspath != found.syspath
         && (held.node == found.node
-            || (come && held.rebinding && held.anchor.is_some() && held.anchor == found.anchor))
+            || (come && held.goes_away() && held.anchor.is_some() && held.anchor == found.anchor))
 }
 
 /// What a change to the book touched.
@@ -210,7 +245,7 @@ impl Book {
             row.nodes = kept;
             row.away.extend(
                 gone.into_iter()
-                    .filter(|held| held.rebinding)
+                    .filter(Held::goes_away)
                     .filter_map(|held| held.anchor),
             );
             // A node is one pad's at a time: one that now reports another
@@ -264,6 +299,7 @@ impl Book {
                 syspath: found.syspath.clone(),
                 anchor: found.anchor.clone(),
                 rebinding: false,
+                raw: false,
             });
             row.bus = found.identifiers.bus;
         }
@@ -332,17 +368,59 @@ impl Book {
             .iter_mut()
             .find(|(_, row)| row.nodes.iter().any(|held| held.syspath == syspath))?;
         let at = row.nodes.iter().position(|held| held.syspath == syspath)?;
-        match row.nodes.remove(at) {
-            Held {
-                anchor: Some(anchor),
-                rebinding: true,
-                ..
-            } => {
+        let held = row.nodes.remove(at);
+        match held.anchor {
+            Some(anchor) if held.rebinding || held.raw => {
                 row.away.push(anchor);
                 None
             }
             _ => (!row.connected()).then(|| id.clone()),
         }
+    }
+
+    /// A setup is about to open the raw node of the pad on the event node
+    /// at `syspath`, which has the pad's driver take that node away while
+    /// it is open and make it anew after: the node's going is the pad
+    /// away, and a node come on its anchor the pad back, as for a re-bind.
+    /// Heard before any udev event the opening causes. Nothing published
+    /// changes; nothing for a node the book doesn't hold.
+    pub(crate) fn holding(&mut self, syspath: &Path) {
+        if let Some(held) = self.held_at(syspath) {
+            held.raw = true;
+        }
+    }
+
+    /// The raw node of the pad on the event node at `syspath` wasn't
+    /// opened after all, so its driver leaves the node where it is: a
+    /// going of the node is again the pad's own.
+    pub(crate) fn not_holding(&mut self, syspath: &Path) {
+        if let Some(held) = self.held_at(syspath) {
+            held.raw = false;
+        }
+    }
+
+    fn held_at(&mut self, syspath: &Path) -> Option<&mut Held> {
+        self.rows
+            .values_mut()
+            .flat_map(|row| &mut row.nodes)
+            .find(|held| held.syspath == syspath)
+    }
+
+    /// The pad `id`, which a setup read through its raw node, has gone, as
+    /// the input thread says: the node failed or hung up, or a receiver's
+    /// slot said its pad left. What of it is away, or marked to go, goes
+    /// with it, so that its next node is a pad plugged in. Its nodes go
+    /// only for a hold of its raw node, the hiding service never being
+    /// asked to hide such a pad, so whatever of it is away is away for
+    /// that. Returns whether that leaves it no longer connected.
+    pub(crate) fn lost(&mut self, id: &str) -> bool {
+        let Some(row) = self.rows.get_mut(id) else {
+            return false;
+        };
+        let was = row.connected();
+        row.nodes.retain(|held| !held.raw);
+        row.away.clear();
+        was && !row.connected()
     }
 
     /// The device at `path` has gone, which unplugs each pad anchored to
@@ -402,7 +480,7 @@ impl Book {
                 row.nodes = kept;
                 row.away.extend(
                     gone.into_iter()
-                        .filter(|held| held.rebinding)
+                        .filter(Held::goes_away)
                         .filter_map(|held| held.anchor),
                 );
                 row.away.retain(there);
@@ -1432,6 +1510,94 @@ mod tests {
         assert_eq!(changed[0].id, id, "left");
         assert!(!book.pad(&id).unwrap().connected);
         assert!(book.was_restored(&changed[1].id), "back");
+    }
+
+    /// A pad whose raw node a setup holds, as a Steam Controller's: its
+    /// node, marked before the raw node is opened, goes as the driver
+    /// takes it away, and the pad is away, connected and nothing
+    /// published, as many times as it is held. Let go, its node comes back
+    /// on the same anchor, under another place and perhaps the same name:
+    /// back, not plugged in, which starts nothing. Its anchor's going
+    /// while it is away unplugs it.
+    #[test]
+    fn a_pad_whose_raw_node_is_held_never_left() {
+        let mut book = Book::default();
+        let hid = anchor(HID, 1);
+        let first = on("/dev/input/event5", &hid);
+        let id = book.arrived(&first).remove(0).id;
+        let mut at = first.syspath;
+        for round in 0..3 {
+            book.holding(&at);
+            assert_eq!(book.left(&at), None, "round {round}: away");
+            let away = book.pad(&id).unwrap();
+            assert!(away.connected && away.bus.is_some());
+            assert!(book.is_away(&id) && book.node(&id).is_none());
+            let back = elsewhere(on("/dev/input/event5", &hid));
+            let back = Found {
+                syspath: back.syspath.join(round.to_string()),
+                ..back
+            };
+            assert_eq!(book.arrived(&back).len(), 1);
+            assert!(book.was_restored(&id), "round {round}: back");
+            at = back.syspath;
+        }
+        book.holding(&at);
+        assert_eq!(book.left(&at), None);
+        assert_eq!(book.unplugged(&hid.path), std::slice::from_ref(&id));
+        assert!(!book.pad(&id).unwrap().connected);
+    }
+
+    /// A raw node that wasn't opened after all leaves the node where it
+    /// is, and its going later is the pad's own; a mark on a node the
+    /// book doesn't hold marks nothing.
+    #[test]
+    fn a_raw_node_not_opened_leaves_the_node_the_pad_s() {
+        let mut book = Book::default();
+        let hid = anchor(HID, 1);
+        let found = on("/dev/input/event5", &hid);
+        let id = book.arrived(&found).remove(0).id;
+        book.holding(Path::new("/sys/devices/elsewhere/event9"));
+        book.holding(&found.syspath);
+        book.not_holding(&found.syspath);
+        assert_eq!(book.left(&found.syspath), Some(id.clone()));
+        assert!(!book.pad(&id).unwrap().connected);
+    }
+
+    /// A pad held by its raw node that the input thread says has gone is
+    /// gone, whether its node's going was heard yet or not; its next node
+    /// is a pad plugged in, and a late removal of the old one says
+    /// nothing. One whose new node came first, as when what reads it
+    /// failed and let it go, is there on that node.
+    #[test]
+    fn a_pad_lost_while_its_raw_node_is_held_is_gone() {
+        let hid = anchor(HID, 1);
+        for heard in [true, false] {
+            let mut book = Book::default();
+            let found = on("/dev/input/event5", &hid);
+            let id = book.arrived(&found).remove(0).id;
+            book.holding(&found.syspath);
+            if heard {
+                assert_eq!(book.left(&found.syspath), None);
+            }
+            assert!(book.lost(&id), "heard: {heard}");
+            assert!(!book.pad(&id).unwrap().connected);
+            assert_eq!(book.left(&found.syspath), None, "said once");
+            assert!(!book.lost(&id), "once");
+            book.arrived(&elsewhere(on("/dev/input/event5", &hid)));
+            assert!(!book.was_restored(&id), "plugged in");
+        }
+
+        let mut book = Book::default();
+        let found = on("/dev/input/event5", &hid);
+        let id = book.arrived(&found).remove(0).id;
+        book.holding(&found.syspath);
+        book.left(&found.syspath);
+        let back = elsewhere(on("/dev/input/event6", &hid));
+        book.arrived(&back);
+        assert!(book.was_restored(&id));
+        assert!(!book.lost(&id), "there on its new node");
+        assert_eq!(book.node(&id), Some(Path::new("/dev/input/event6")));
+        assert!(!book.lost("address:none"));
     }
 
     /// A pad being shown again is published as hidden until that is

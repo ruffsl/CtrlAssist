@@ -58,6 +58,40 @@ pub(crate) enum Seen {
     /// The hiding service's socket was made, or made to take
     /// connections, as the [socket's watch](crate::hider_socket) heard.
     HiderSocket,
+    /// The raw node of the pad on the event node at this place in sysfs
+    /// is about to be opened, which has the pad's driver take that node
+    /// away: see [`Holds`].
+    Holding(PathBuf),
+    /// That raw node wasn't opened after all.
+    NotHolding(PathBuf),
+}
+
+/// What says, on the hotplug watch's own queue, that a pad's raw node is
+/// about to be opened, as a Steam Controller's is to be read. Said before
+/// the opening, it is heard before every udev event the opening causes,
+/// which the watch queues only after the kernel has acted on it: so the
+/// book knows the pad's event node is going for the daemon's own hold
+/// before it hears it go.
+#[derive(Clone, Debug)]
+pub(crate) struct Holds(UnboundedSender<Seen>);
+
+impl Holds {
+    /// Says so on `seen`, the queue the hotplug watch sends to.
+    pub(crate) const fn new(seen: UnboundedSender<Seen>) -> Self {
+        Self(seen)
+    }
+
+    /// The raw node of the pad on the event node at `syspath` is about to
+    /// be opened. Not heard once the daemon has stopped, when nothing is
+    /// left to know it.
+    pub(crate) fn holding(&self, syspath: &Path) {
+        let _ = self.0.send(Seen::Holding(syspath.to_path_buf()));
+    }
+
+    /// It wasn't opened after all.
+    pub(crate) fn not_holding(&self, syspath: &Path) {
+        let _ = self.0.send(Seen::NotHolding(syspath.to_path_buf()));
+    }
 }
 
 /// Whether the pad on `node`, at `syspath`, can rumble; `None` when it
