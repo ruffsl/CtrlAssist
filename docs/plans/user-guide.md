@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** approved by the maintainer on 2026-11-25, after the capture was spiked (see Spike: drawing the window off screen). Steps 1 and 2 are done.
-- **Next action:** step 2's stop: the maintainer looks at `docs/screenshots/pads_pane.png` beside the real window. Then step 3.
+- **Status:** approved by the maintainer on 2026-11-25, after the capture was spiked (see Spike: drawing the window off screen). Steps 1 to 3 are done; the maintainer passed step 2's stop on the capture seen.
+- **Next action:** step 4, the new contents.
 - **Branch:** `docs/user-guide`, from `main` at `39c1b4c`.
 
 ## Goal
@@ -63,6 +63,8 @@ Later the same day, on the questions this plan first left open:
 - **A diagram of the parts, in mermaid,** in the README and so in the guide's introduction: mdbook-mermaid joins the dev shell, the docs job and Read the Docs.
 - **The capture tool is a second binary of the window's crate,** behind a feature that turns the software renderer on, so it reaches the window's icon loader and the shipped window is built without it. It sets the color scheme through Slint's internals, at the workspace's exact pin, and the window gains nothing for the tool's sake.
 - **No cookbook yet.** 0.4.0's recipes haven't been tried on the rewrite, a virtual pad as another setup's input least of all; filed as `docs/ideas/cookbook.md`, for after this plan.
+- **A third profile, `handoff`, in toggle,** so one picture shows who has control; `couch` stays in priority, the mode most will use. With it come two more pads.
+- **The accents follow TisVlay's screenshots in order:** blue for the Pads page in dark and in light, yellow for the virtual pad, green and lavender for the two of Profiles, red for Settings, blue for About.
 - **The FAQ's first questions** are of three kinds. Games, Steam and Proton: does the game need to support it, does it work with Steam Input and Proton, why does my game see two controllers. Controllers and latency: which controllers work, does it add latency, do the gyro and the touchpad carry over. Setup and safety: does it need root, where are my profiles kept, can two people each have a virtual controller. Nothing on coming from 0.4.0. Before them, the background above.
 
 ## Contents
@@ -131,7 +133,7 @@ Everything from the banner to the end of Architecture is inside `<!-- ANCHOR: ov
 
 **The tool.** A binary, `ctrlassist-screenshots`, of the window's crate, built only with its `screenshots` feature. It builds an `AppWindow` on a platform of its own with Slint's software renderer, fills it as the window's tests fill theirs, and for each shot sets the page and the selection, renders to a buffer and writes a PNG. `just docs-screenshots` runs it and writes `docs/screenshots/`.
 
-**Made-up state.** One set, in the tool, shared by every shot so the screenshots agree with each other: a DualSense and an Xbox pad connected, one more remembered, a `couch` profile running in priority with the DualSense hidden, a `desk` profile stopped, a virtual pad, every part of About at one release. No real serial, address or user name appears; the addresses are the tests' own.
+**Made-up state.** One set, in the tool, shared by every shot so the screenshots agree with each other: a DualSense and an Xbox pad playing as one in `couch`, in priority, with a virtual DualSense; a DualShock 4 and a Switch Pro pad taking turns in `handoff`, in toggle; an 8BitDo remembered, which the stopped `desk` names; every part of About at one release. No real serial, address or user name appears; the addresses are the tests' own.
 
 **The shots,** to start with:
 
@@ -184,7 +186,7 @@ Each is one commit or a few, with `prek run -a --skip build --skip clippy --skip
 2. **The capture tool, one shot.** The binary, the made-up state and `pads_pane.png` alone, and `spikes/screenshots` deleted. **Stop:** the maintainer looks at it beside the real window.
 3. **The rest of the window's shots,** `just docs-screenshots`, the links under `docs/book/src/docs/`, and a line in `docs/build.md` and `docs/testing.md`.
 4. **The new contents, without new prose.** `SUMMARY.md` in the order above; Command Line moves; `guide/tray.md` becomes `guide/gui-tray.md`; Profiles' file half moves to `guide/configuration.md`; every link and anchor re-pointed. The book reads as before, in a new order.
-5. **GUI & Tray, and Quick Start from the window.** The window's pages by their labels, with their screenshots; couch mode and navigating by keys and gamepad, from `docs/gui/`; the tray after. Quick Start leads with the window.
+5. **GUI & Tray, and Quick Start from the window.** With the first page that shows a screenshot, Read the Docs pulls the LFS files, as TisVlay's build does (`git lfs pull` for `docs/screenshots` and `docs/artwork`, and a check that none is left a pointer). The window's pages by their labels, with their screenshots; couch mode and navigating by keys and gamepad, from `docs/gui/`; the tray after. Quick Start leads with the window.
 6. **Profiles by the window's labels,** with each mode's emoji and example; Configuration Files finished; the FAQ, opening with the background; and the canonical homes table in `docs/book/README.md`.
 7. **The README in TisVlay's stanzas,** as The README above: mdbook-mermaid in `flake.nix`, the docs job and `.config/.readthedocs.yaml`, their versions in step; the diagram; the Screenshots table; the `overview` anchor widened to the whole of it, and the introduction's own copy of anything it now includes removed.
 8. **The tray's shots.** Tried in this order: a nested Plasma session driven over D-Bus; the menu as the tray's own data, drawn by a small page of the tool; by hand. Its own stop, since each costs differently.
@@ -200,4 +202,6 @@ For the maintainer:
 
 - **`just docs-screenshots` arrived with the tool,** at step 2 and not step 3: a recipe is added in the commit that first gives it something to do, and the tool is run through it.
 - **The tool is kept out of the coverage figure,** as the tray's desktop files are: it is run and looked at, and its lines would otherwise count as untested against a floor half a point below the figure.
+- **The accents are not Plasma's swatches but what Plasma reports for them under a dark scheme,** which is darker: the window is told the reported color, and TisVlay's screenshots, taken on such a desktop, show it. The values were read off those screenshots; the swatches are in Plasma's `AccentColorUI.qml`.
+- **What the pictures showed that the plan didn't expect,** left for the steps that write the pages: a profile's form fields (Identity, Rumble, Gyro, Visibility) are below the fold at the size the window opens at, so `profiles_pane.png` shows a profile's status, inputs and the top of its outputs; and the window says "Games see a Xbox pad", an article to mend in the window.
 - **The license bundle names the software renderer,** a crate the packages don't hold: the bundle is made with every feature on, the tool's among them. Its license is Slint's, as the rest of Slint's crates are.
