@@ -46,7 +46,7 @@ managed = true       # optional
 
 `rumble` is who feels what a game rumbles, for the three presets of two controllers: `both` (the default), `primary`, `assist` or `none`. See [Rumble](./profiles.md#rumble).
 
-`assist-gyro` is the assist's button that gives a game the assist's motion sensors while it is held, for the `priority` and `average` presets: a button's name (`south`, `east`, `north`, `west`, `left-bumper`, `right-bumper`, `select`, `start`, `mode`, `left-thumb`, `right-thumb`, `dpad-up`, `dpad-down`, `dpad-left`, `dpad-right` or `touchpad`), or `none`, the default. See [Gyro](./profiles.md#gyro).
+`assist-gyro` is the assist's button that gives a game the assist's motion sensors while it is held, for the `priority` and `average` presets: a button's name (`south`, `east`, `north`, `west`, `left-bumper`, `right-bumper`, `select`, `start`, `mode`, `left-thumb`, `right-thumb`, `dpad-up`, `dpad-down`, `dpad-left`, `dpad-right`, `touchpad`, or on a controller with back buttons `paddle-1` (upper right), `paddle-2` (upper left), `paddle-3` (lower right) or `paddle-4` (lower left)), or `none`, the default. See [Gyro](./profiles.md#gyro).
 
 `hide` is how the real controllers are kept from games while the arrangement runs, in any profile, a preset or not: `full` (the default), `grab` or `none`, which the window calls Hidden, Grabbed and Visible. See [Visibility](./profiles.md#visibility).
 
@@ -114,7 +114,7 @@ identity = "xbox"
 - A **sink** is a virtual controller, following a source or a node.
 - `engage` and `release` are how far a stick or trigger must move for a mux to count an input as touching it, and how far back before it lets go.
 - `feedback` says who feels rumble: `"active"` (whoever is playing), `"none"`, or a list of a mux's inputs.
-- `switch` is the button that hands over a toggle or a unicast: a button's name, or `false` for none.
+- `switch` is the button that hands over a toggle or a unicast: a button's name, the same names as `assist-gyro`'s, or `false` for none.
 - `gyro` is a mux's button that hands the motion sensors to one of its inputs while that input holds it: `{ button = "left-bumper", input = "assist" }`. A mux that selects an input, as a toggle does, has none.
 
 A preset and the full form don't mix in one file.
