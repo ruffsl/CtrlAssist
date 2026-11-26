@@ -21,11 +21,11 @@ use ctrlassist_core::{
 use ctrlassist_device::{Command, InputThread, Pad, Report, Setup, VirtualPad};
 use ctrlassist_test::{
     FakeSteamController, Received, StateReport, SteamButton, SteamState, SteamTransport, Trackpad,
-    can_make_steam_pads,
+    can_make_steam_pads, may_open_once_udev_is_done,
 };
 
 use crate::thread::{ID, PRIMARY, input_thread_switches, last, mux, sink};
-use crate::{can_make_pads, openable, read_until};
+use crate::{can_make_pads, read_until};
 
 const ASSIST: SourceId = SourceId(1);
 
@@ -52,7 +52,8 @@ fn nodes(
     let gamepad = fake.gamepad().expect("the driver makes the gamepad");
     let raw = fake.raw_node().expect("the driver makes a raw node");
     settle();
-    if !openable(&gamepad.event, false) || !openable(&raw, true) {
+    if !may_open_once_udev_is_done(&gamepad.event, false) || !may_open_once_udev_is_done(&raw, true)
+    {
         skip(test, "the fake's nodes aren't this user's to open here");
         return None;
     }
@@ -107,6 +108,60 @@ fn send(fake: &FakeSteamController, state: &SteamState) {
     fake.send_state(state, StateReport::Full).unwrap();
 }
 
+/// Sends `state` again and again until `seen` says the game has it: the
+/// first state a newly started setup is sent may come before the input
+/// thread has begun reading the pad, which reads away what came before
+/// then, and nothing says when it has. Each look waits a little for what
+/// it looks for; ten seconds in all at most, so that a test that fails
+/// ends. Whether it was seen.
+fn send_until(
+    fake: &FakeSteamController,
+    state: &SteamState,
+    mut seen: impl FnMut() -> bool,
+) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(10) {
+        send(fake, state);
+        if seen() {
+            return true;
+        }
+    }
+    false
+}
+
+/// The frames the game's pad has now, waiting a little for one.
+fn frames_now(game: &mut Pad) -> Vec<PadState> {
+    let mut fds = [rustix::event::PollFd::new(
+        &*game,
+        rustix::event::PollFlags::IN,
+    )];
+    let wait = rustix::event::Timespec {
+        tv_sec: 0,
+        tv_nsec: 50_000_000,
+    };
+    let _ = rustix::event::poll(&mut fds, Some(&wait));
+    let mut frames = Vec::new();
+    game.read(|state| frames.push(*state)).unwrap();
+    frames
+}
+
+/// Sends `state` until the game's last frame is `wanted`, and says every
+/// frame the game had on the way.
+fn played(
+    fake: &FakeSteamController,
+    state: &SteamState,
+    game: &mut Pad,
+    wanted: PadState,
+) -> Vec<PadState> {
+    let mut frames = Vec::new();
+    let seen = send_until(fake, state, || {
+        frames.extend(frames_now(game));
+        frames.last() == Some(&wanted)
+    });
+    assert!(seen, "{wanted:?} never came: {frames:?}");
+    frames
+}
+
 /// Every report until the setup comes back stopped.
 fn until_stopped(thread: &InputThread, reports: &Receiver<Report>) -> Vec<Report> {
     thread.send(Command::Stop(ID)).unwrap();
@@ -123,7 +178,8 @@ fn until_stopped(thread: &InputThread, reports: &Receiver<Report>) -> Vec<Report
 
 /// Every control a generic virtual pad shows, from a Steam Controller,
 /// each where the pad state has it: the face buttons by where they are,
-/// the menu button as start and the view button as select, the Steam
+/// the menu button as start and the view button as select, each pressed
+/// alone so that the two can't pass swapped, the Steam
 /// button as the mode button, the sticks with up as negative, and the
 /// triggers by their axes.
 #[test]
@@ -141,8 +197,8 @@ fn a_steam_controller_s_controls_reach_the_game_through_a_setup() {
     let (thread, _reports) = InputThread::spawn().unwrap();
     thread.send(Command::Start(ID, Box::new(setup))).unwrap();
 
-    // In two reports, as a generic virtual pad's frame holds only so many
-    // changes at once.
+    // In several reports, as a generic virtual pad's frame holds only so
+    // many changes at once.
     let buttons = SteamState::default()
         .with(SteamButton::South)
         .with(SteamButton::East)
@@ -151,11 +207,9 @@ fn a_steam_controller_s_controls_reach_the_game_through_a_setup() {
         .with(SteamButton::LeftBumper)
         .with(SteamButton::RightBumper)
         .with(SteamButton::View)
-        .with(SteamButton::Menu)
         .with(SteamButton::Steam)
         .with(SteamButton::LeftStickClick)
         .with(SteamButton::RightStickClick);
-    send(&fake, &buttons);
     let pressed = PadState::NEUTRAL
         .with(gamepad::SOUTH, 1.0)
         .with(gamepad::EAST, 1.0)
@@ -164,10 +218,18 @@ fn a_steam_controller_s_controls_reach_the_game_through_a_setup() {
         .with(gamepad::LEFT_BUMPER, 1.0)
         .with(gamepad::RIGHT_BUMPER, 1.0)
         .with(gamepad::SELECT, 1.0)
-        .with(gamepad::START, 1.0)
         .with(gamepad::MODE, 1.0)
         .with(gamepad::LEFT_THUMB, 1.0)
         .with(gamepad::RIGHT_THUMB, 1.0);
+    played(&fake, &buttons, &mut game, pressed);
+
+    // The two middle buttons apart, so that one taken for the other shows.
+    let menu = SteamState {
+        buttons: (buttons.buttons & !SteamButton::View.bit()) | SteamButton::Menu.bit(),
+        ..buttons
+    };
+    send(&fake, &menu);
+    let pressed = pressed.with(gamepad::SELECT, 0.0).with(gamepad::START, 1.0);
     let frames = read_until(&mut game, |frames| frames.last() == Some(&pressed));
     assert_eq!(last(&frames), pressed);
 
@@ -177,7 +239,7 @@ fn a_steam_controller_s_controls_reach_the_game_through_a_setup() {
         // Right and up on the left stick, left and down on the right.
         left_stick: [32767, 32767],
         right_stick: [-32767, -32767],
-        ..buttons
+        ..menu
     }
     .with(SteamButton::DpadUp)
     .with(SteamButton::DpadRight);
@@ -242,12 +304,10 @@ fn two_steam_controllers_merge_with_the_assist_outranking_the_primary() {
         ..SteamState::default()
     }
     .with(SteamButton::South);
-    send(&primary, &held);
     let primary_only = PadState::NEUTRAL
         .with(gamepad::SOUTH, 1.0)
         .with(gamepad::LEFT_X, 1.0);
-    let frames = read_until(&mut game, |frames| frames.last() == Some(&primary_only));
-    assert_eq!(last(&frames), primary_only);
+    played(&primary, &held, &mut game, primary_only);
 
     send(
         &assist,
@@ -272,16 +332,41 @@ fn two_steam_controllers_merge_with_the_assist_outranking_the_primary() {
 /// one says what `wanted` waits for, or for four seconds at most; the
 /// last report read.
 fn dualsense_until(raw: &mut File, wanted: impl Fn(&[u8; 64]) -> bool) -> [u8; 64] {
+    dualsense_within(raw, Duration::from_secs(4), wanted)
+}
+
+/// As [`dualsense_until`], for `bound` at most.
+fn dualsense_within(
+    raw: &mut File,
+    bound: Duration,
+    wanted: impl Fn(&[u8; 64]) -> bool,
+) -> [u8; 64] {
     let started = Instant::now();
     let mut report = [0u8; 64];
     // It reports every 10 ms whatever happens behind it, so a read never
     // waits long.
-    while started.elapsed() < Duration::from_secs(4) {
+    while started.elapsed() < bound {
         assert_eq!(raw.read(&mut report).unwrap(), 64);
         if wanted(&report) {
             break;
         }
     }
+    report
+}
+
+/// Sends `state` until a report of the virtual DualSense says what
+/// `wanted` waits for, as [`send_until`]; that report.
+fn sent_to_dualsense(
+    fake: &FakeSteamController,
+    state: &SteamState,
+    game: &mut File,
+    wanted: impl Fn(&[u8; 64]) -> bool,
+) -> [u8; 64] {
+    let mut report = [0u8; 64];
+    send_until(fake, state, || {
+        report = dualsense_within(game, Duration::from_millis(50), &wanted);
+        wanted(&report)
+    });
     report
 }
 
@@ -307,7 +392,7 @@ fn virtual_dualsense(test: &str, last: u32) -> Option<(VirtualPad, File)> {
         VirtualPad::dualsense(&data, ctrlassist_device::own_address(0x7e_5c00 + last)).unwrap();
     settle();
     let raw = ctrlassist_test::raw_node_of(sink.event_node()).unwrap();
-    if !openable(&raw, false) {
+    if !may_open_once_udev_is_done(&raw, false) {
         skip(
             test,
             "a virtual DualSense's raw node isn't this user's to open here",
@@ -358,8 +443,7 @@ fn the_right_trackpad_and_the_motion_reach_a_virtual_dualsense() {
         accel: [0, 0, 16384],
         ..SteamState::default()
     };
-    send(&fake, &touched);
-    let report = dualsense_until(&mut game, |report| contact(report).0);
+    let report = sent_to_dualsense(&fake, &touched, &mut game, |report| contact(report).0);
     let (down, x, y) = contact(&report);
     assert!(down, "{report:?}");
     // 0.75 of 1919 across, and half of 1079 down, within a count.
@@ -427,9 +511,10 @@ fn a_paddle_held_by_the_assist_hands_the_motion_over() {
         accel: [0, 0, 16384],
         ..SteamState::default()
     };
-    send(&primary, &turning(8192));
+    let report = sent_to_dualsense(&primary, &turning(8192), &mut game, |report| {
+        pitch(report) > 0
+    });
     send(&assist, &turning(-8192));
-    let report = dualsense_until(&mut game, |report| pitch(report) > 0);
     assert!(pitch(&report) > 0, "the primary's motion: {report:?}");
 
     // R4 is the first paddle.
@@ -451,19 +536,22 @@ fn lizard_off() -> Received {
     Received::SetFeature(frame)
 }
 
-/// How many lizard-mode-off frames the fake has been set.
-fn lizard_offs(fake: &FakeSteamController) -> usize {
+/// How many of `received` set lizard mode off.
+fn lizard_offs(received: &[Received]) -> usize {
     let wanted = lizard_off();
-    fake.received()
+    received
         .iter()
         .filter(|received| **received == wanted)
         .count()
 }
 
 /// Lizard mode is set off, with the motion sensors on, as the pad is
-/// given its raw node, before anything reads it; and again once the
-/// pad's own interval has passed, and not before. This waits for that
-/// interval, three seconds.
+/// given its raw node, with no setup reading it; and again once the pad's
+/// own interval of three seconds has passed, not in a burst before it.
+/// By the fake's own times, as its thread read each, which a busy test
+/// thread looking late moves neither of; the first read late only makes
+/// the two look closer, so the bound is well under three seconds. This
+/// waits for that interval.
 #[test]
 fn lizard_mode_is_set_off_at_once_and_again_after_the_pad_s_interval() {
     const TEST: &str = "lizard_mode_is_set_off_at_once_and_again_after_the_pad_s_interval";
@@ -475,27 +563,20 @@ fn lizard_mode_is_set_off_at_once_and_again_after_the_pad_s_interval() {
         return;
     };
     assert!(
-        fake.wait_for(|_| lizard_offs(&fake) >= 1),
+        fake.wait_for(|received| lizard_offs(received) >= 2),
         "{:?}",
         fake.received()
     );
-    let first = Instant::now();
-    let mut again = None;
-    // Ten seconds at most, so that a test that fails ends.
-    while first.elapsed() < Duration::from_secs(10) {
-        if lizard_offs(&fake) >= 2 {
-            again = Some(first.elapsed());
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let again = again.expect("lizard mode is set off again");
-    // Seen up to a look late the first time: a little under the three
-    // seconds between the two writes.
-    assert!(
-        again >= Duration::from_millis(2950),
-        "again after {again:?}"
-    );
+    let wanted = lizard_off();
+    let at: Vec<Instant> = fake
+        .received_at()
+        .into_iter()
+        .filter(|(_, received)| *received == wanted)
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(at.len(), 2, "no burst: {at:?}");
+    let between = at[1] - at[0];
+    assert!(between >= Duration::from_secs(2), "again after {between:?}");
     drop(pad);
 }
 
@@ -617,10 +698,13 @@ fn a_steam_controller_that_goes_is_reported_and_the_setup_carries_on() {
     );
     let (thread, reports) = InputThread::spawn().unwrap();
     thread.send(Command::Start(ID, Box::new(setup))).unwrap();
-    send(&assist, &SteamState::default().with(SteamButton::East));
     let held = PadState::NEUTRAL.with(gamepad::EAST, 1.0);
-    let frames = read_until(&mut game, |frames| frames.last() == Some(&held));
-    assert_eq!(last(&frames), held);
+    played(
+        &assist,
+        &SteamState::default().with(SteamButton::East),
+        &mut game,
+        held,
+    );
 
     drop(assist);
     let gone = loop {
@@ -636,10 +720,13 @@ fn a_steam_controller_that_goes_is_reported_and_the_setup_carries_on() {
         frames.last() == Some(&PadState::NEUTRAL)
     });
     assert_eq!(last(&frames), PadState::NEUTRAL);
-    send(&primary, &SteamState::default().with(SteamButton::South));
     let south = PadState::NEUTRAL.with(gamepad::SOUTH, 1.0);
-    let frames = read_until(&mut game, |frames| frames.last() == Some(&south));
-    assert_eq!(last(&frames), south);
+    played(
+        &primary,
+        &SteamState::default().with(SteamButton::South),
+        &mut game,
+        south,
+    );
 }
 
 /// A pad in a Puck's slot is gone when the slot says its pad left, though
@@ -661,10 +748,13 @@ fn a_puck_s_slot_saying_its_pad_left_is_the_pad_going() {
     let setup = Setup::new(straight(1), vec![Some(pad)], vec![sink]);
     let (thread, reports) = InputThread::spawn().unwrap();
     thread.send(Command::Start(ID, Box::new(setup))).unwrap();
-    send(&fake, &SteamState::default().with(SteamButton::North));
     let held = PadState::NEUTRAL.with(gamepad::NORTH, 1.0);
-    let frames = read_until(&mut game, |frames| frames.last() == Some(&held));
-    assert_eq!(last(&frames), held);
+    played(
+        &fake,
+        &SteamState::default().with(SteamButton::North),
+        &mut game,
+        held,
+    );
 
     fake.send_wireless(false).unwrap();
     match reports.recv().unwrap() {
@@ -677,9 +767,10 @@ fn a_puck_s_slot_saying_its_pad_left_is_the_pad_going() {
     assert_eq!(last(&frames), PadState::NEUTRAL);
 }
 
-/// What the raw node kept from before the pad was read, a press and its
-/// release among it, is not played: the game sees what the pad sent once
-/// it was read.
+/// What the raw node kept from before the pad was read is not played:
+/// neither what came before the pad was given its raw node, nor what came
+/// after, while its setup wasn't yet running. The game sees what the pad
+/// sent once it was read, and nothing else.
 #[test]
 fn reports_kept_before_the_pad_was_read_are_not_played() {
     const TEST: &str = "reports_kept_before_the_pad_was_read_are_not_played";
@@ -697,14 +788,22 @@ fn reports_kept_before_the_pad_was_read_are_not_played() {
     send(&fake, &SteamState::default().with(SteamButton::West));
     pad.set_raw(raw).unwrap();
     assert_eq!(*pad.state(), PadState::NEUTRAL);
+    // After, as a pad that reports every few milliseconds does while its
+    // setup is made.
+    send(&fake, &SteamState::default().with(SteamButton::North));
+    send(&fake, &SteamState::default().with(SteamButton::RightBumper));
 
     let (sink, mut game) = sink();
     let setup = Setup::new(straight(1), vec![Some(pad)], vec![sink]);
     let (thread, _reports) = InputThread::spawn().unwrap();
     thread.send(Command::Start(ID, Box::new(setup))).unwrap();
-    send(&fake, &SteamState::default().with(SteamButton::East));
     let east = PadState::NEUTRAL.with(gamepad::EAST, 1.0);
-    let frames = read_until(&mut game, |frames| frames.last() == Some(&east));
+    let frames = played(
+        &fake,
+        &SteamState::default().with(SteamButton::East),
+        &mut game,
+        east,
+    );
     assert_eq!(frames, [east], "only what came once it was read");
 }
 
@@ -727,10 +826,13 @@ fn the_event_node_s_going_is_not_the_pad_s() {
     let setup = Setup::new(straight(1), vec![Some(pad)], vec![sink]);
     let (thread, reports) = InputThread::spawn().unwrap();
     thread.send(Command::Start(ID, Box::new(setup))).unwrap();
-    send(&fake, &SteamState::default().with(SteamButton::South));
     let south = PadState::NEUTRAL.with(gamepad::SOUTH, 1.0);
-    let frames = read_until(&mut game, |frames| frames.last() == Some(&south));
-    assert_eq!(last(&frames), south);
+    played(
+        &fake,
+        &SteamState::default().with(SteamButton::South),
+        &mut game,
+        south,
+    );
 
     // While the pad sends nothing, the thread sleeps: a node gone that it
     // listened to would wake it at every wait.

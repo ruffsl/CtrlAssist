@@ -126,6 +126,65 @@ pub fn can_open(path: &Path, write: bool) -> bool {
         .is_ok()
 }
 
+/// Whether this process may open a node just made, once udev is done
+/// with it: for reading, or for reading and writing. It is asked of the
+/// kernel without opening the node, which for some nodes is an act: a
+/// Steam Controller's raw node opened takes its input devices away.
+///
+/// udev gives a node to the seat's user as it handles the node's coming,
+/// after the node is made, and `udevadm settle` alone can return before
+/// udev has even heard of it. So this waits, woken by udev's own events,
+/// until udev has the node's device in its database, which it has once
+/// it has heard of it, and then until udev's queue is empty, which it is
+/// once it has done what its rules say, the seat's access among it; and
+/// only then asks. A node a machine gives nobody is answered as soon as
+/// udev is done with it. The wait gives up after ten seconds, only so
+/// that a test whose udev never answers ends.
+#[must_use]
+pub fn may_open_once_udev_is_done(path: &Path, write: bool) -> bool {
+    // Listening first, so that nothing between the look and the wait is
+    // missed.
+    let monitor = udev::MonitorBuilder::new().and_then(udev::MonitorBuilder::listen);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if is_in_udev_database(path) {
+            break;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        let wait = Timespec::try_from(left).expect("ten seconds fit in a timespec");
+        match &monitor {
+            Ok(monitor) => {
+                let mut fds = [PollFd::new(monitor, PollFlags::IN)];
+                let _ = poll(&mut fds, Some(&wait));
+                // What the events say isn't read: the look after them is.
+                for _ in monitor.iter() {}
+            }
+            Err(_) => {
+                let _ = poll(&mut [], Some(&wait));
+            }
+        }
+    }
+    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    let mode = if write {
+        rustix::fs::Access::READ_OK | rustix::fs::Access::WRITE_OK
+    } else {
+        rustix::fs::Access::READ_OK
+    };
+    rustix::fs::access(path, mode).is_ok()
+}
+
+/// Whether udev has the device of the node at `path` in its database.
+fn is_in_udev_database(path: &Path) -> bool {
+    let Ok(stat) = rustix::fs::stat(path) else {
+        return false;
+    };
+    udev::Device::from_devnum(udev::DeviceType::Character, stat.st_rdev)
+        .is_ok_and(|device| device.is_initialized())
+}
+
 /// What became of a reader that watched a node for a while.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Reads {

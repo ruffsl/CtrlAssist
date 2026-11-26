@@ -12,7 +12,7 @@ use rustix::fs::fstat;
 
 use crate::database::Database;
 use crate::layout::{AxisRange, Mapping};
-use crate::{hidraw, motion, steam};
+use crate::{descriptor, hidraw, motion, steam};
 
 /// Why a pad couldn't be opened or read.
 #[derive(Debug)]
@@ -511,9 +511,14 @@ impl Pad {
     /// pad is opened on its event node first, which says what it is, and
     /// given this after; the event node it holds is never read or
     /// listened to again, its `ENODEV` being no sign of the pad going, and
-    /// is closed as the pad is dropped. The pad's state is at rest until
-    /// its first report: the reports the node kept before now are read
-    /// away here. Its thread sets lizard mode off, with the motion sensors
+    /// is closed as the pad is dropped. The node must be the pad's own,
+    /// whose report descriptor declares its state report: the driver
+    /// starts the HID device's other interfaces too, with the same numbers
+    /// and raw nodes of their own on which the pad says nothing. The pad's
+    /// state is at rest until its first report: the reports the node kept
+    /// before now are read away here, and again as the input thread first
+    /// listens to it, so that none from before the setup runs is played.
+    /// Its thread sets lizard mode off, with the motion sensors
     /// on, as it starts and again as the pad's protocol asks, and sends
     /// its rumble again while it runs; dropping the pad has it stop the
     /// motors, and the raw node closed then gives the pad back to its
@@ -528,9 +533,26 @@ impl Pad {
     ///
     /// Fails, leaving the pad as it was, if the node isn't such a pad's,
     /// can't be read or duplicated, or the thread can't be started.
+    ///
+    /// For a Steam Controller "as it was" is a pad whose event node may
+    /// be gone: the caller opened the raw node, which had the driver take
+    /// the event node away, or will. So a failure means the pad must be
+    /// dropped and found again, its event node coming back once the raw
+    /// node is closed; with one exception, a node that isn't the pad's own,
+    /// refused with [`io::ErrorKind::InvalidInput`], whose opening took
+    /// nothing away. A pad that failed so and is run all the same is safe:
+    /// its event node, listened to, reads `ENODEV` and the pad is reported
+    /// gone; if the driver hadn't yet taken it away, it reads as the
+    /// driver's gamepad presents it, silent in lizard mode.
     pub fn set_raw(&mut self, raw: OwnedFd) -> io::Result<()> {
         let (bus, vendor, product) = hidraw::info(raw.as_fd())?;
         if steam::is_pad(bus, vendor, product) {
+            if !descriptor::is_steam_controller(&hidraw::descriptor(raw.as_fd())?) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a raw node of the Steam Controller's HID device that isn't the pad's own: its descriptor declares none of the pad's state reports",
+                ));
+            }
             let reader = steam::Reader::new(raw.as_fd())?;
             self.output = Ok(Output::steam(raw)?);
             self.raw = Some(Raw::Whole(reader));
@@ -564,6 +586,16 @@ impl Pad {
     /// The pad's raw node, while it is read.
     pub(crate) fn raw_node(&self) -> Option<BorrowedFd<'_>> {
         self.raw.as_ref().map(AsFd::as_fd)
+    }
+
+    /// Readies the pad to be listened to on the input thread: a Steam
+    /// Controller's raw node has what it kept since the pad was given it
+    /// read away, the first time. Waits for nothing and allocates
+    /// nothing.
+    pub(crate) fn begin(&mut self) {
+        if let Some(Raw::Whole(reader)) = &mut self.raw {
+            reader.begin();
+        }
     }
 
     /// Reads every report waiting on the raw node, and calls `frame` with
