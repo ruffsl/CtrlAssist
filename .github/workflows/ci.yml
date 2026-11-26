@@ -178,8 +178,8 @@ jobs:
       # kernel is older than, and its tests skip by the kernel's module
       # aliases, required or not. On a newer image whose installed
       # hid-steam knows it, udev loads the module for the first fake by
-      # its alias, as for a real controller; the device virtual machine
-      # check runs it on 7.3 meanwhile.
+      # its alias, as for a real pad. The device virtual machine check
+      # drives the fake through the fixture on 7.3 meanwhile.
       - name: Let the tests make fake pads
         run: |
           sudo modprobe uinput
