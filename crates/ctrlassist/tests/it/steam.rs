@@ -620,7 +620,9 @@ async fn a_steam_controller_is_identified_through_its_raw_node_while_a_setup_use
         let refused = free.unwrap_err();
         assert_eq!(refused.rpc_code(), Some(ErrorCode::PadWithoutRumble));
         assert!(
-            refused.to_string().contains("while a profile uses it"),
+            refused
+                .to_string()
+                .contains("while a running profile is using it"),
             "{refused}"
         );
     }

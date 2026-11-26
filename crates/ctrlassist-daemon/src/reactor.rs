@@ -349,8 +349,28 @@ impl Reactor {
 
     async fn publish_pad(&mut self, id: &str) -> zenoh::Result<()> {
         match self.book.pad(id) {
-            Some(pad) => self.publish(keys::pad(&keys::pad_id(id)), &pad).await,
+            Some(pad) => {
+                let pad = payload::Pad {
+                    rumble: self.rumble_now(id),
+                    ..pad
+                };
+                self.publish(keys::pad(&keys::pad_id(id)), &pad).await
+            }
             None => Ok(()),
+        }
+    }
+
+    /// Whether the pad can be rumbled now, which is what is published and
+    /// what `identify` goes by: what its event node said when last asked,
+    /// but for a Steam Controller a setup reads, which is rumbled through
+    /// its raw node whatever its kernel driver has. A setup that names it
+    /// and doesn't read it, waiting for it or having refused it, makes no
+    /// difference.
+    pub(crate) fn rumble_now(&self, id: &str) -> Option<bool> {
+        if self.book.is_steam_controller(id) && self.setups.reads(id) {
+            Some(true)
+        } else {
+            self.book.rumble(id)
         }
     }
 
@@ -714,15 +734,15 @@ impl Reactor {
                 WireError::refusal(ErrorCode::PadDisconnected, format!("{id} isn't connected"))
             })?),
         };
-        // A Steam Controller a setup uses is rumbled through its raw node,
-        // and can always be. One that is free could be only by holding
-        // its raw node for the buzz, which would take its joystick from
-        // games and give it back as a pad plugged in: it is buzzed
-        // through its kernel driver, or not at all.
-        if self.book.rumble(id) == Some(false) {
+        // A Steam Controller a setup reads is rumbled through its raw node,
+        // and can always be. Any other, free or waited for by a setup,
+        // could be only by holding its raw node for the buzz, which would
+        // take its joystick from games and give it back as a pad plugged
+        // in: it is buzzed through its kernel driver, or not at all.
+        if self.rumble_now(id) == Some(false) {
             let why = if self.book.is_steam_controller(id) {
                 format!(
-                    "{id} is a Steam Controller whose kernel driver has no rumble here (a kernel built without CONFIG_STEAM_FF): it can be buzzed while a profile uses it, through its raw interface"
+                    "{id} is a Steam Controller that this system's kernel gives no rumble of its own: it can be buzzed while a running profile is using it"
                 )
             } else {
                 format!("{id} has no rumble to buzz with")

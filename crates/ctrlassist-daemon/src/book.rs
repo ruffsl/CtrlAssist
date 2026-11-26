@@ -172,17 +172,6 @@ impl Row {
         !self.nodes.is_empty() || !self.away.is_empty()
     }
 
-    /// Whether the pad can be rumbled now ([`Book::rumble`]).
-    fn rumble(&self) -> Option<bool> {
-        let steam =
-            ctrlassist_device::is_steam_controller_model(self.known.vendor, self.known.product);
-        if steam && self.setup.is_some() {
-            Some(true)
-        } else {
-            self.known.rumble
-        }
-    }
-
     /// Notes that no setup uses the pad any more, nor hides it.
     fn let_go(&mut self) {
         self.setup = None;
@@ -728,12 +717,11 @@ impl Book {
             .map(|held| (held.node.as_path(), held.syspath.as_path()))
     }
 
-    /// Whether the pad can be rumbled now, which `identify` asks and
-    /// which is published: as its event node said when last asked, but
-    /// for a Steam Controller a setup uses, which is rumbled through its
-    /// raw node whatever its kernel driver has.
+    /// Whether the pad's event node said it can rumble when last asked.
+    /// What is published, and what `identify` goes by, is the reactor's
+    /// `rumble_now`, which knows whether a setup reads the pad.
     pub(crate) fn rumble(&self, id: &str) -> Option<bool> {
-        self.rows.get(id).and_then(Row::rumble)
+        self.rows.get(id)?.known.rumble
     }
 
     /// The pad's published state.
@@ -748,7 +736,7 @@ impl Book {
             // Until the service has shown it again.
             hidden: row.hidden || row.showing > 0,
             setup: row.setup.clone(),
-            rumble: row.rumble(),
+            rumble: row.known.rumble,
             bus: row.connected().then_some(row.bus),
         })
     }
@@ -853,48 +841,6 @@ mod tests {
         assert_eq!(book.rumble(&id), Some(true));
         assert_eq!(book.pad("address:none"), None);
         assert_eq!(book.rumble("address:none"), None);
-    }
-
-    /// A Steam Controller whose kernel driver has no force feedback can
-    /// be rumbled while a setup uses it, through its raw node, and is
-    /// published so; free, it can't. Another pad without rumble has none
-    /// in a setup either.
-    #[test]
-    fn a_steam_controller_in_a_setup_can_rumble_whatever_its_driver_has() {
-        let mut book = Book::new(Vec::new());
-        let steam = Found {
-            identifiers: Identifiers {
-                name: "Steam Controller".to_string(),
-                vendor: 0x28de,
-                product: 0x1302,
-                address: Some("FX12345678".to_string()),
-                ..dualsense("/dev/input/event7").identifiers
-            },
-            ..dualsense("/dev/input/event7")
-        };
-        book.arrived(&steam);
-        book.arrived(&dualsense("/dev/input/event5"));
-        let steam_id = "address:FX12345678";
-        let other = format!("address:{ADDRESS}");
-        for (node, id) in [
-            ("/dev/input/event7", steam_id),
-            ("/dev/input/event5", &other),
-        ] {
-            book.learned(Path::new(node), &syspath(node), false);
-            assert_eq!(book.rumble(id), Some(false), "{id}");
-            book.claim(id, "couch");
-        }
-        assert_eq!(book.rumble(steam_id), Some(true));
-        assert_eq!(book.pad(steam_id).unwrap().rumble, Some(true));
-        assert_eq!(book.rumble(&other), Some(false));
-        assert_eq!(book.release("couch").len(), 2);
-        assert_eq!(book.rumble(steam_id), Some(false));
-        let remembered = book.known().into_iter().find(|known| known.id == steam_id);
-        assert_eq!(
-            remembered.unwrap().rumble,
-            Some(false),
-            "what is remembered"
-        );
     }
 
     /// The protocol's list of the Steam Controller's numbers, which the

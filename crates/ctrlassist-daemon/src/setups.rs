@@ -421,6 +421,16 @@ pub(crate) struct Setups {
 }
 
 impl Setups {
+    /// Whether a setup reads the pad `id` now: the input thread holds it
+    /// for one of its slots, which hasn't refused it.
+    pub(crate) fn reads(&self, id: &str) -> bool {
+        self.entries.values().any(|entry| {
+            entry.slots.iter().any(|slot| {
+                slot.present && slot.refused.is_none() && slot.pad.as_deref() == Some(id)
+            })
+        })
+    }
+
     fn name_of(&self, id: SetupId) -> Option<String> {
         self.entries
             .iter()
@@ -866,16 +876,19 @@ fn hold_raw(mut pad: Pad, id: &str, hide: Hide, holds: &Holds) -> Result<Pad, Un
                 "{id}'s raw node isn't there: {error}"
             )));
         }
+        // What a person reads says what happened and what to do; the
+        // node, the device and the system's error go to the log.
         Err(error) => {
-            let advice = match error {
-                SteamRawError::Ambiguous { .. } => {
-                    ". Two Steam Controllers over Bluetooth on one adapter can't be told apart: connect one by its cable, or use one at a time"
-                }
-                _ => "",
+            warn!(pad = id, %error, "a Steam Controller's raw node can't be told");
+            let why = match error {
+                SteamRawError::Ambiguous { .. } => format!(
+                    "{id} is a Steam Controller that can't be told apart from another on the same Bluetooth adapter: connect one of them by its cable, or use one at a time"
+                ),
+                _ => format!(
+                    "{id} is a Steam Controller whose raw interface can't be found. Unplug it and plug it in again to have it tried once more"
+                ),
             };
-            return Err(Untaken::Refused(format!(
-                "{id} is a Steam Controller that can't be read: {error}{advice}"
-            )));
+            return Err(Untaken::Refused(why));
         }
     };
     // Kept to ask, once the hold ends, whether it had any effect.
@@ -897,15 +910,17 @@ fn hold_raw(mut pad: Pad, id: &str, hide: Hide, holds: &Holds) -> Result<Pad, Un
                     "{id}'s raw node went as it was opened: {error}"
                 )));
             }
-            let rule = if error.kind() == std::io::ErrorKind::PermissionDenied {
-                ". CtrlAssist's udev rule, 70-ctrlassist.rules, gives it to the person at the machine and comes with CtrlAssist's package: once it is installed, unplug the controller and plug it in again, or run `sudo udevadm trigger`, and a running profile takes it as soon as udev has applied the rule"
+            warn!(pad = id, node = %raw.node.display(), %error, "a Steam Controller's raw node can't be opened");
+            let why = if error.kind() == std::io::ErrorKind::PermissionDenied {
+                format!(
+                    "{id} is a Steam Controller whose raw interface isn't yours to open. CtrlAssist's udev rule gives it to the person at the machine, and comes with its packages and its NixOS module: with the rule installed, and you at the machine, unplug the controller and plug it in again"
+                )
             } else {
-                ""
+                format!(
+                    "{id} is a Steam Controller whose raw interface can't be opened. Unplug it and plug it in again to have it tried once more"
+                )
             };
-            return Err(Untaken::Refused(format!(
-                "{id} is a Steam Controller, and its raw interface, {}, can't be opened: {error}{rule}",
-                raw.node.display()
-            )));
+            return Err(Untaken::Refused(why));
         }
     };
     if let Err(error) = pad.set_raw(OwnedFd::from(file)) {
@@ -919,9 +934,9 @@ fn hold_raw(mut pad: Pad, id: &str, hide: Hide, holds: &Holds) -> Result<Pad, Un
             drop(pad);
             hold_ended(&event, &raw.syspath, holds);
         }
+        warn!(pad = id, node = %raw.node.display(), %error, "a Steam Controller's raw node can't be read");
         return Err(Untaken::Refused(format!(
-            "{id} is a Steam Controller, and its raw interface, {}, can't be read: {error}. Unplug it and plug it in again to have it tried once more",
-            raw.node.display()
+            "{id} is a Steam Controller whose raw interface can't be read. Unplug it and plug it in again to have it tried once more"
         )));
     }
     watch_the_hold(&pad, event, raw.syspath, holds.clone());
@@ -932,7 +947,7 @@ fn hold_raw(mut pad: Pad, id: &str, hide: Hide, holds: &Holds) -> Result<Pad, Un
 /// a Steam Controller, `what` naming it.
 fn cant_be_left(what: &str) -> String {
     format!(
-        "{what} is a Steam Controller, which CtrlAssist reads through its raw interface, and that takes it from games: it can't be left visible to them. Choose Hidden or Grabbed for Visibility (`hide = \"full\"` or `\"grab\"`)"
+        "{what} is a Steam Controller, which CtrlAssist reads in a way that takes it from games, so it can't be left visible to them. Choose Hidden or Grabbed for Visibility (`hide = \"full\"` or `\"grab\"`)"
     )
 }
 
@@ -1426,6 +1441,19 @@ impl Reactor {
         if let Err(error) = outcome {
             warn!(setup = name, %error, "publishing a setup's state failed");
         }
+        // Whether a Steam Controller can be rumbled follows whether the
+        // setup reads it, which is what changed if anything did.
+        let steam: Vec<String> = self
+            .setups
+            .entries
+            .get(name)
+            .into_iter()
+            .flat_map(|entry| entry.slots.iter().filter_map(|slot| slot.pad.clone()))
+            .filter(|pad| self.book.is_steam_controller(pad))
+            .collect();
+        for pad in steam {
+            self.publish_pad_logged(&pad).await;
+        }
     }
 
     /// Gives up a setup's pads, and says so. Those it hid are to be shown
@@ -1474,7 +1502,12 @@ impl Reactor {
         })?;
         Some(WireError::refusal(
             ErrorCode::SetupFailed,
-            cant_be_left(&format!("source.{}.pad", source.name)),
+            cant_be_left(&match &source.pad {
+                PadRef::Exact(id) => format!("The {}, {id},", source.name),
+                PadRef::Model(vendor, product) => {
+                    format!("The {}, model:{vendor:04x}:{product:04x},", source.name)
+                }
+            }),
         ))
     }
 
@@ -5251,6 +5284,44 @@ mod tests {
         let mut found = connecting(id, "/dev/input/event77");
         (found.identifiers.vendor, found.identifiers.product) = (0x28de, 0x1302);
         rig.reactor.book.arrived(&found);
+    }
+
+    /// A Steam Controller whose kernel driver has no rumble can be rumbled
+    /// only while a setup reads it, through its raw node: not while the
+    /// setup waits for it, nor once it refused it, though the setup names
+    /// it all along. Another pad without rumble has none either way.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_steam_controller_can_be_rumbled_only_while_a_setup_reads_it() {
+        let mut rig = rig().await;
+        steam_controller(&mut rig, PRIMARY);
+        let at = place(PRIMARY, "/dev/input/event77");
+        rig.reactor
+            .book
+            .learned(Path::new("/dev/input/event77"), &at, false);
+        follow(&mut rig.reactor, 7, Phase::Held);
+        assert_eq!(rig.reactor.book.user(PRIMARY), Some("couch"));
+        assert_eq!(rig.reactor.rumble_now(PRIMARY), Some(false), "waited for");
+
+        fn slot(rig: &mut Rig) -> &mut Slot {
+            &mut rig.reactor.setups.entries.get_mut("couch").unwrap().slots[1]
+        }
+        slot(&mut rig).present = true;
+        assert_eq!(rig.reactor.rumble_now(PRIMARY), Some(true), "read");
+        slot(&mut rig).refused = Some("its raw interface can't be opened".to_string());
+        assert_eq!(rig.reactor.rumble_now(PRIMARY), Some(false), "refused");
+
+        slot(&mut rig).refused = None;
+        let mut other = connecting(ASSIST, "/dev/input/event78");
+        other.identifiers.vendor = 0x054c;
+        rig.reactor.book.arrived(&other);
+        rig.reactor.book.learned(
+            Path::new("/dev/input/event78"),
+            &place(ASSIST, "/dev/input/event78"),
+            false,
+        );
+        rig.reactor.setups.entries.get_mut("couch").unwrap().slots[0].present = true;
+        assert_eq!(rig.reactor.rumble_now(ASSIST), Some(false), "no rumble");
+        finish(&mut rig.reactor).await;
     }
 
     /// A profile that asks for its pads to be left to games, with a Steam
