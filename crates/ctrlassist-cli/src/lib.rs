@@ -320,14 +320,16 @@ mod tests {
     #[test]
     fn candidates_are_none_and_prompt_without_a_daemon() {
         let dead = Path::new("/nonexistent/ctrlassist/completion.sock");
-        let start = Instant::now();
+        // Each by itself: the budget is one completion's, a key press
+        // asking for one.
         for read in [pads, profiles, setups] {
+            let start = Instant::now();
             assert!(candidates(dead, read).is_empty());
+            assert!(
+                start.elapsed() < COMPLETION_BUDGET,
+                "completion should fail fast on an unreachable daemon"
+            );
         }
-        assert!(
-            start.elapsed() < COMPLETION_BUDGET,
-            "completion should fail fast on an unreachable daemon"
-        );
     }
 
     #[test]
