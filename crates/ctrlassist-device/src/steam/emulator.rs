@@ -188,16 +188,25 @@ fn u16_at(bytes: &[u8], at: usize) -> u16 {
         .map_or(0, |bytes| u16::from_ne_bytes(*bytes))
 }
 
-/// The firmware's build time a virtual pad says, in seconds since 1970:
-/// the latest a signed 32 bits hold, so that a reader that offers a pad
-/// newer firmware than its own finds none newer.
-const FIRMWARE_BUILT: u32 = 0x7fff_ffff;
+/// The build time of the firmware Steam had for the pad in November
+/// 2026, in seconds since 1970 (`TRITON_FW_TS` in its
+/// `hardwareupdater.cfg`): what a virtual pad says its own was built at
+/// where nothing says what the installed Steam has.
+///
+/// Steam offers a pad its firmware whenever the two times differ, a
+/// later one as a downgrade, and never asks which is newer: a virtual
+/// pad that said the latest time 32 bits hold was offered one, seen with
+/// Steam. So the time said has to be the one Steam has, which whoever
+/// makes the pad reads from the installed Steam where there is one.
+pub const KNOWN_FIRMWARE: u32 = 0x6ae9_0bc5;
+/// The build time of a retail pad's bootloader, as published from one.
+const BOOTLOADER_BUILT: u32 = 0x68d2_f92e;
 
 /// The answer to a GET of the commands' feature report, from the command
 /// last set on it: the serial for a string asked for, the pad's
 /// attributes, and for anything else the command as it was set, which is
 /// how a pad acknowledges one.
-fn answer(serial: &str, last: &[u8; FEATURE_SIZE]) -> [u8; FEATURE_SIZE] {
+fn answer(serial: &str, firmware: u32, last: &[u8; FEATURE_SIZE]) -> [u8; FEATURE_SIZE] {
     let mut reply = *last;
     let [_, command, _, which, ..] = *last;
     match command {
@@ -222,8 +231,8 @@ fn answer(serial: &str, last: &[u8; FEATURE_SIZE]) -> [u8; FEATURE_SIZE] {
             let attributes: [(u8, u32); 6] = [
                 (1, u32::from(PRODUCT_CABLE)),
                 (2, 0),
-                (10, FIRMWARE_BUILT),
-                (4, FIRMWARE_BUILT),
+                (10, BOOTLOADER_BUILT),
+                (4, firmware),
                 (9, 0x4a),
                 (11, 4000),
             ];
@@ -249,6 +258,8 @@ pub(crate) struct Emulator {
     /// Its raw node, the client HID device's: what SDL and Steam read.
     raw_node: PathBuf,
     serial: String,
+    /// The build time it says its firmware has.
+    firmware: u32,
     /// The report last sent, from its buttons on, so that a state that
     /// changes nothing a report says sends none.
     sent: Option<[u8; STATE_SIZE]>,
@@ -275,9 +286,10 @@ pub(crate) struct Emulator {
 }
 
 impl Emulator {
-    /// Creates the pad with `serial`, answers the driver as it binds,
-    /// and waits for the raw node of the client device the driver makes.
-    pub(crate) fn create(serial: &str) -> io::Result<Self> {
+    /// Creates the pad with `serial`, saying its firmware was built at
+    /// `firmware`, answers the driver as it binds, and waits for the raw
+    /// node of the client device the driver makes.
+    pub(crate) fn create(serial: &str, firmware: u32) -> io::Result<Self> {
         // With the driver there, it is the one to bind. Without, the
         // generic driver would, and the pad would be no Steam Controller
         // to anything.
@@ -305,6 +317,7 @@ impl Emulator {
             uhid,
             raw_node: PathBuf::new(),
             serial: serial.chars().take(SERIAL_MOST).collect(),
+            firmware,
             sent: None,
             sequence: 0,
             time: 0,
@@ -480,7 +493,7 @@ impl Emulator {
                     let report = self
                         .command
                         .filter(|_| number == FEATURE_PAD)
-                        .map(|last| answer(&self.serial, &last));
+                        .map(|last| answer(&self.serial, self.firmware, &last));
                     let _ = handle(Request::Feature {
                         number,
                         set: false,
@@ -565,23 +578,35 @@ mod tests {
     /// and any other command is acknowledged as it was set.
     #[test]
     fn the_driver_s_questions_are_answered_and_the_rest_acknowledged() {
-        let serial = answer("CAVIRTUAL0001", &command(&[1, 0xae, 0x16, 0x01]));
+        let serial = answer(
+            "CAVIRTUAL0001",
+            KNOWN_FIRMWARE,
+            &command(&[1, 0xae, 0x16, 0x01]),
+        );
         assert_eq!(serial[..4], [1, 0xae, 0x15, 0x01]);
         assert_eq!(&serial[4..17], b"CAVIRTUAL0001");
         assert_eq!(serial[17], 0);
         // A serial too long for the driver's battery is cut.
-        let long = answer("0123456789ABCDEFGH", &command(&[1, 0xae, 0x16, 0x01]));
+        let long = answer(
+            "0123456789ABCDEFGH",
+            KNOWN_FIRMWARE,
+            &command(&[1, 0xae, 0x16, 0x01]),
+        );
         assert_eq!(&long[4..17], b"0123456789ABC");
         assert_eq!(long[17], 0);
 
-        let attributes = answer("X", &command(&[1, 0x83]));
+        let attributes = answer("X", 0x1234_5678, &command(&[1, 0x83]));
         assert_eq!(attributes[..3], [1, 0x83, 30]);
         assert_eq!(attributes[3..8], [1, 0x02, 0x13, 0, 0]);
+        // The firmware's build time as it was given, after a retail
+        // bootloader's.
+        assert_eq!(attributes[13..18], [10, 0x2e, 0xf9, 0xd2, 0x68]);
+        assert_eq!(attributes[18..23], [4, 0x78, 0x56, 0x34, 0x12]);
         // The interval the driver reads, 4000 µs, is the last.
         assert_eq!(attributes[28..33], [11, 0xa0, 0x0f, 0, 0]);
 
         let settings = command(&[1, 0x87, 3, 9, 0, 0]);
-        assert_eq!(answer("X", &settings), settings);
+        assert_eq!(answer("X", KNOWN_FIRMWARE, &settings), settings);
     }
 
     /// A haptic report is one of the pad's haptic output reports, whole,

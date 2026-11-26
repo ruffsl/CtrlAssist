@@ -479,15 +479,19 @@ impl VirtualPad {
     /// Creates a virtual Steam Controller through uhid, answers the
     /// kernel's driver as it binds, and waits for the pad's raw node.
     /// `serial` is the pad's own, which a reader keeps what it knows of
-    /// the pad by: at most 13 characters of it are used.
+    /// the pad by: at most 13 characters of it are used. `firmware` is
+    /// the build time it says its firmware has, which Steam offers to
+    /// change unless it is the time of the firmware Steam has itself:
+    /// [`STEAM_CONTROLLER_FIRMWARE`](crate::STEAM_CONTROLLER_FIRMWARE)
+    /// where nothing says.
     ///
     /// # Errors
     ///
     /// Fails if uhid can't be opened, or the kernel has no driver for
     /// the pad, as before Linux 7.3, or it doesn't take the pad.
-    pub fn steam_controller(serial: &str) -> io::Result<Self> {
+    pub fn steam_controller(serial: &str, firmware: u32) -> io::Result<Self> {
         Ok(Self {
-            kind: Kind::Steam(Box::new(SteamEmulator::create(serial)?)),
+            kind: Kind::Steam(Box::new(SteamEmulator::create(serial, firmware)?)),
         })
     }
 

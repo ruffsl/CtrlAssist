@@ -1184,11 +1184,18 @@ fn make_sink(
     name: &str,
     identity: Identity,
     dualsense: &(PathBuf, DualSenseData),
+    steam: &[PathBuf],
 ) -> std::io::Result<VirtualPad> {
     let (home, data) = dualsense;
     match identity {
         Identity::DualSense => VirtualPad::dualsense(data, address_of(home, setup, name)),
-        Identity::SteamController => VirtualPad::steam_controller(&serial_of(home, setup, name)),
+        Identity::SteamController => {
+            // What the installed Steam has for the pad, read as the pad
+            // is made, so that Steam has nothing to offer it.
+            let firmware = crate::blacklist::steam_controller_firmware(steam)
+                .unwrap_or(ctrlassist_device::STEAM_CONTROLLER_FIRMWARE);
+            VirtualPad::steam_controller(&serial_of(home, setup, name), firmware)
+        }
         identity @ (Identity::Generic | Identity::Xbox) => {
             VirtualPad::create(device_identity(identity))
         }
@@ -1252,6 +1259,10 @@ fn make(
         taken.push((pad.is_some(), token.flatten()));
         pads.push(pad);
     }
+    let steam: Vec<PathBuf> = blacklist
+        .lock()
+        .map(|blacklist| blacklist.configs().to_vec())
+        .unwrap_or_default();
     let mut sinks = Vec::new();
     for sink in &plan.sinks {
         // Nor does one stopped as it makes its virtual pads, each of which
@@ -1261,7 +1272,7 @@ fn make(
         }
         let made = caught(
             "making a virtual pad",
-            || make_sink(setup, &sink.name, sink.identity, dualsense),
+            || make_sink(setup, &sink.name, sink.identity, dualsense, &steam),
             || Err(std::io::Error::other("making it panicked")),
         );
         match made {

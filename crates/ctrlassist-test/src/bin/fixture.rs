@@ -566,8 +566,11 @@ fn run(command: Command) -> Result<()> {
             hold(pulse, |pressed| pad.report(u8::from(pressed), 0, 0))
         }
         Command::VirtualSteam { pulse } => {
-            let mut pad = VirtualPad::steam_controller("CAFIXTURE0001")
-                .context("creating the virtual Steam Controller")?;
+            let mut pad = VirtualPad::steam_controller(
+                "CAFIXTURE0001",
+                ctrlassist_device::STEAM_CONTROLLER_FIRMWARE,
+            )
+            .context("creating the virtual Steam Controller")?;
             say(format_args!("node {}", pad.event_node().display()))?;
             let mut pressed = false;
             loop {

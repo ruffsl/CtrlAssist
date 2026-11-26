@@ -122,7 +122,36 @@ pub(crate) struct Blacklist {
     cleared: bool,
 }
 
+/// The build time of the firmware an installed Steam has for a Steam
+/// Controller (2026), from the configuration of its hardware updater,
+/// `bin/hardwareupdater/hardwareupdater.cfg` beside the `config`
+/// directory of each of `configs`, as `TRITON_FW_TS:<hex>`: the first
+/// install that says one. A virtual Steam Controller says its own
+/// firmware was built then, so that Steam finds it has nothing to offer
+/// it: Steam offers whenever the two differ.
+pub(crate) fn steam_controller_firmware(configs: &[PathBuf]) -> Option<u32> {
+    configs.iter().find_map(|config| {
+        let install = config.parent()?.parent()?;
+        let said =
+            fs::read_to_string(install.join("bin/hardwareupdater/hardwareupdater.cfg")).ok()?;
+        firmware_in(&said)
+    })
+}
+
+/// The time `TRITON_FW_TS` is given in an updater's configuration.
+fn firmware_in(configuration: &str) -> Option<u32> {
+    configuration.lines().find_map(|line| {
+        let time = line.trim().strip_prefix("TRITON_FW_TS:")?;
+        u32::from_str_radix(time.trim(), 16).ok()
+    })
+}
+
 impl Blacklist {
+    /// Steam's `config.vdf` files, one per way Steam may be installed.
+    pub(crate) fn configs(&self) -> &[PathBuf] {
+        &self.configs
+    }
+
     /// Opens the lists, and takes out whatever an earlier daemon added
     /// and left: no setup runs yet.
     pub(crate) fn open(configs: Vec<PathBuf>, state: &Path) -> Self {
@@ -262,6 +291,36 @@ impl Blacklist {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The firmware's time is read from the updater's configuration of
+    /// the first install that has one, among its other lines; and there
+    /// is none where no install says.
+    #[test]
+    fn the_firmware_s_time_is_read_from_steam_s_updater() {
+        let said = "MUST_UPDATE_TRITON_FW_TS:6A18D057\nMUST_UPDATE_PROTEUS_FW_TS:6A18D053\nTRITON_FW_TS:6AE90BC5\nPROTEUS_FW_TS:6AC6869B";
+        assert_eq!(firmware_in(said), Some(0x6ae9_0bc5));
+        assert_eq!(
+            firmware_in("TRITON_FW_TS: 6ae90bc5 \r\n"),
+            Some(0x6ae9_0bc5)
+        );
+        assert_eq!(
+            firmware_in("PROTEUS_FW_TS:6AC6869B\nTRITON_FW_TS:nope"),
+            None
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let none = dir.path().join("none/config/config.vdf");
+        let has = dir.path().join("Steam/config/config.vdf");
+        let updater = dir.path().join("Steam/bin/hardwareupdater");
+        fs::create_dir_all(&updater).unwrap();
+        fs::write(
+            updater.join("hardwareupdater.cfg"),
+            "TRITON_FW_TS:0000ABCD\n",
+        )
+        .unwrap();
+        assert_eq!(steam_controller_firmware(std::slice::from_ref(&none)), None);
+        assert_eq!(steam_controller_firmware(&[none, has]), Some(0xabcd));
+    }
 
     const STEAM: &str = "\"InstallConfigStore\"\n{\n\t\"controller_blacklist\"\t\t\"\"\n\t\"Software\"\n\t{\n\t\t\"Valve\"\n\t\t{\n\t\t}\n\t}\n}\n";
 

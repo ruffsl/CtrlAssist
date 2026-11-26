@@ -46,5 +46,6 @@ pub use sink::{
     Identity, OWN_ADDRESS, OWN_MARKER, Request, TEST_ADDRESS, TEST_MARKER, VirtualPad, own_address,
 };
 pub use steam::Haptic;
+pub use steam::emulator::KNOWN_FIRMWARE as STEAM_CONTROLLER_FIRMWARE;
 pub use steam::is_model as is_steam_controller_model;
 pub use thread::{Command, InputThread, NewGraph, Place, Report, SendError, Setup, SetupId, Tap};

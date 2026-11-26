@@ -752,7 +752,11 @@ fn a_virtual_steam_controller_is_one_to_the_kernel_s_driver() {
     }
     // Made with a serial of its own and nothing else.
     assert!(VirtualPad::create(Identity::SteamController).is_err());
-    let mut sink = VirtualPad::steam_controller("CAVIRTTEST001").unwrap();
+    let mut sink = VirtualPad::steam_controller(
+        "CAVIRTTEST001",
+        ctrlassist_device::STEAM_CONTROLLER_FIRMWARE,
+    )
+    .unwrap();
     assert_eq!(sink.identity(), Identity::SteamController);
     assert_eq!(Identity::SteamController.model(), (0x28de, 0x1302));
     let node = sink.event_node().to_path_buf();
