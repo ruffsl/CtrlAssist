@@ -83,6 +83,12 @@ slint = { version = "=1.19.0", default-features = false, features = ["std", "bac
 i-slint-core = "=1.19.0"
 png = "0.18"
 
+# For the test crate's SDL probe alone, which a virtual machine check
+# runs to see a virtual pad as a game built on SDL does: SDL3's C API,
+# linked from the system's library through pkg-config and never built
+# here.
+sdl3-sys = { version = "0.7", default-features = false, features = ["use-pkg-config"] }
+
 # The system's monospace family for the window (the font library Slint
 # uses; kept on the version Slint pins so the graph holds one copy).
 # TisVlay's pin.

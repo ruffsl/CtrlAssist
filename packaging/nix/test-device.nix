@@ -4,6 +4,8 @@
 {
   pkgs,
   fixture,
+  # The test crate's SDL probe: what a game built on SDL makes of a pad.
+  sdl-probe,
 }:
 pkgs.testers.runNixOSTest {
   name = "ctrlassist-device";
@@ -278,6 +280,24 @@ pkgs.testers.runNixOSTest {
             assert all(axes[code] == value for code, value in motion_axes.items()), (lizard, axes)
             machine.succeed(f"systemctl stop {unit}")
         machine.succeed("cat /sys/module/hid_steam/parameters/lizard_mode | grep -x Y")
+
+    with subtest("SDL takes a virtual Steam Controller for one, by its own driver for the pad, and reads what it presses"):
+        machine.succeed("systemd-run --unit vsteam ctrlassist-fixture virtual-steam --pulse 50")
+        machine.wait_until_succeeds("journalctl -u vsteam -o cat | grep '^node '")
+        steam_node = said("node", "vsteam")
+        # Its node is its raw node, the seat user's by the packaged rule.
+        assert steam_node.startswith("/dev/hidraw"), steam_node
+        machine.succeed("udevadm settle")
+        machine.succeed(f"su -l alice -c 'test -r {steam_node} -a -w {steam_node}'")
+        sdl_said = machine.succeed("su -l alice -c 'SDL_VIDEODRIVER=dummy ${sdl-probe}/bin/ctrlassist-sdl-probe 3000'")
+        sdl_added = [line for line in sdl_said.splitlines() if line.startswith("added ") and "pid=1302" in line]
+        assert len(sdl_added) == 1, sdl_said
+        # By the raw node, which is SDL's own driver for the pad, and as
+        # the kind of gamepad SDL has for it.
+        assert "vid=28de" in sdl_added[0] and "type=steam" in sdl_added[0] and f"path={steam_node} " in sdl_added[0], sdl_said
+        sdl_pad = sdl_added[0].split()[1]
+        assert f"button {sdl_pad} a down" in sdl_said, sdl_said
+        machine.succeed("systemctl stop vsteam")
 
     with subtest("a fake Steam Controller with lizard mode's mouse and keyboard has them in the gamepad's HID device"):
         machine.succeed("systemd-run --unit lizard ctrlassist-fixture fake-steam --lizard-mouse-and-keyboard")

@@ -17,6 +17,9 @@
   # udev rules to install beside it, with the programs they run pointed
   # at the store.
   udevRules ? [ ],
+  # The crate's features to build with, and the libraries they link.
+  features ? [ ],
+  extraBuildInputs ? [ ],
 }:
 rustPlatform.buildRustPackage {
   pname = mainProgram;
@@ -38,13 +41,17 @@ rustPlatform.buildRustPackage {
   cargoBuildFlags = [
     "--package"
     crate
+  ]
+  ++ lib.optionals (features != [ ]) [
+    "--features"
+    (lib.concatStringsSep "," features)
   ];
   # The workspace's tests run in the dev shell and in CI, not here.
   doCheck = false;
 
   nativeBuildInputs = [ pkg-config ];
   # libudev, and libsystemd for the hiding service's session check.
-  buildInputs = [ udev ];
+  buildInputs = [ udev ] ++ extraBuildInputs;
 
   postInstall =
     lib.concatMapStrings (unit: ''

@@ -17,6 +17,17 @@ path = "src/bin/fixture.rs"
 name = "ctrlassist-bench"
 path = "src/bin/bench.rs"
 
+# Says what SDL3 makes of the machine's pads, for the `device` virtual
+# machine check. Built only with its feature, so that nothing else links
+# SDL.
+[[bin]]
+name = "ctrlassist-sdl-probe"
+path = "src/bin/sdl_probe.rs"
+required-features = ["sdl-probe"]
+
+[features]
+sdl-probe = ["dep:sdl3-sys"]
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -26,6 +37,7 @@ ctrlassist-hider = { workspace = true }
 evdev = { workspace = true }
 libc = { workspace = true }
 rustix = { workspace = true, features = ["event", "fs", "net", "param"] }
+sdl3-sys = { workspace = true, optional = true }
 udev = { workspace = true }
 
 [lints]

@@ -123,6 +123,14 @@ enum Command {
         #[arg(long)]
         motion: bool,
     },
+    /// Create a virtual Steam Controller, as a profile's Steam Controller
+    /// identity makes one, and hold it, answering the kernel; says its
+    /// `node`, which is its raw node. With --pulse, press and release its
+    /// south button on that period in milliseconds.
+    VirtualSteam {
+        #[arg(long, default_value_t = 0)]
+        pulse: u64,
+    },
     /// Create a fake Steam Controller on a cable and hold it, saying its
     /// `serial`, its `phys`, the driver's `gamepad` and `motion` event
     /// nodes and its `raw` node, then each thing it is sent, as
@@ -556,6 +564,30 @@ fn run(command: Command) -> Result<()> {
                 FakeHidPad::new(&name, &uniq, vendor, product).context("creating the uhid pad")?;
             say("created")?;
             hold(pulse, |pressed| pad.report(u8::from(pressed), 0, 0))
+        }
+        Command::VirtualSteam { pulse } => {
+            let mut pad = VirtualPad::steam_controller("CAFIXTURE0001")
+                .context("creating the virtual Steam Controller")?;
+            say(format_args!("node {}", pad.event_node().display()))?;
+            let mut pressed = false;
+            loop {
+                // Whatever reads the pad's raw node is answered at once;
+                // the press waits its turn.
+                let wait = (pulse > 0).then(|| rustix::event::Timespec {
+                    tv_sec: (pulse / 1000) as i64,
+                    tv_nsec: ((pulse % 1000) * 1_000_000) as i64,
+                });
+                let mut fds = [PollFd::new(&pad, PollFlags::IN)];
+                let ready = poll(&mut fds, wait.as_ref())?;
+                pad.serve(|_| Ok(()))?;
+                if ready == 0 {
+                    pressed = !pressed;
+                    pad.write(
+                        &ctrlassist_core::PadState::NEUTRAL
+                            .with(gamepad::SOUTH, f32::from(u8::from(pressed))),
+                    )?;
+                }
+            }
         }
         Command::FakeDualsense {
             real,
