@@ -21,3 +21,7 @@ Things the design depends on that have not been observed, or risks accepted for 
 - [`touchpad-shown-without-rebind.md`](touchpad-shown-without-rebind.md) — a hidden pad's touchpad that libinput let go, shown again with no re-bind after, as a hide whose re-bind was never asked is, stays let go until the pad is plugged in again.
 - [`motion-unplayed.md`](motion-unplayed.md) — a virtual DualSense's motion was seen in Steam's controller test and never in a game, through SDL or Proton, the assist's button among it.
 - [`motion-untried-transports.md`](motion-untried-transports.md) — a DualSense's motion over Bluetooth and a DualShock 4's over USB are read from reports laid out by hand, never from the pad.
+- [`kde-tray-submenu-collapse.md`](kde-tray-submenu-collapse.md) — KDE's tray may close a profile's submenu the first time one of its fields is opened, an upstream bug TisVlay records; not looked for here.
+- [`joystick-node-hidden-late.md`](joystick-node-hidden-late.md) — a joystick node with many keys or a touchpad's mark, hidden after libinput took it up, would still be read by the compositor; no such pad is known.
+- [`cli-closed-pipe-untested.md`](cli-closed-pipe-untested.md) — the CLI's quiet end on a closed pipe was copied from TisVlay without the test that holds it.
+- [`hide-refused-not-asked-again.md`](hide-refused-not-asked-again.md) — a hide the service refuses for a moment, as for a session not in front, is not asked again until the pad returns or its setup restarts, the pad staying grabbed.
