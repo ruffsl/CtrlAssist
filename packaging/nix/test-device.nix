@@ -9,12 +9,20 @@ pkgs.testers.runNixOSTest {
   name = "ctrlassist-device";
 
   nodes.machine = {
+    # The first release whose hid-steam knows the 2026 Steam Controller,
+    # from the binary cache, so that a fake one is bound here as nowhere
+    # older can.
+    boot.kernelPackages = pkgs.linuxPackages_7_3;
     boot.kernelModules = [
       "uinput"
       "uhid"
       "hid-playstation"
+      "hid-steam"
       "joydev"
     ];
+    # Says this is a virtual machine check, where a fake that can type and
+    # point troubles nobody.
+    environment.etc."ctrlassist-vm-check".text = "";
     users.users.alice = {
       isNormalUser = true;
       uid = 1000;
@@ -153,6 +161,94 @@ pkgs.testers.runNixOSTest {
         assert set(places) == {(1439, 1079), (1919, 809)}, places
         assert all(a != b for a, b in zip(places, places[1:])), places
         machine.succeed("systemctl stop motion-events touch-events ds")
+
+    with subtest("a fake Steam Controller is bound by hid-steam and read through its raw node"):
+        import re
+        machine.succeed("systemd-run --unit steam ctrlassist-fixture fake-steam --pulse 20")
+        machine.wait_until_succeeds("journalctl -u steam -o cat | grep '^raw '")
+        def steam_log(unit="steam"):
+            return machine.succeed(f"journalctl -u {unit} -o cat")
+        def said(key, unit="steam"):
+            """What the fixture said `key` was, in the unit's log."""
+            found = re.search(rf"^{key} (\S+)$", steam_log(unit), re.M)
+            assert found, (key, unit)
+            return found.group(1)
+        serial, phys, gamepad, motion, raw = (said(key) for key in ["serial", "phys", "gamepad", "motion", "raw"])
+        assert serial.startswith("CATEST") and phys.startswith("ctrlassist/test/steam/"), (serial, phys)
+        machine.succeed("udevadm settle")
+        # The driver's gamepad and motion sensors, each with the fake's
+        # serial as uniq and its phys, which marks it as the tests'.
+        for event, name in [(gamepad, "Steam Controller"), (motion, "Steam Controller Motion Sensors")]:
+            device = f"/sys/class/input/{event.split('/')[-1]}/device"
+            assert machine.succeed(f"cat {device}/name").strip() == name, event
+            assert machine.succeed(f"cat {device}/uniq").strip() == serial, event
+            assert machine.succeed(f"cat {device}/phys").strip() == phys, event
+        machine.succeed(f"udevadm info {gamepad} | grep -x 'E: ID_INPUT_JOYSTICK=1'")
+        machine.succeed(f"udevadm info {motion} | grep -x 'E: ID_INPUT_ACCELEROMETER=1'")
+        machine.succeed(f"ctrlassist-fixture pads | grep 'name=\"Steam Controller\" uniq=\"{serial}\" id=28de:1302'")
+        # It asked the serial and the attributes, each a SET then a GET,
+        # which the fake answered at once.
+        log = steam_log()
+        assert re.search(r"^received set-feature 01ae1601", log, re.M), log
+        assert re.search(r"^received set-feature 0183", log, re.M), log
+        assert log.count("received get-feature 1") >= 2, log
+
+        # The raw node is the client device's, root's alone without a rule
+        # like Steam's; root opens it, and the driver takes its input
+        # devices away while it is open.
+        machine.fail(f"su -l alice -c 'test -r {raw}'")
+        machine.succeed(
+            f"systemd-run --unit steam-raw ctrlassist-fixture hidraw {raw} --reads 6 "
+            "--write 80000040001000002000 --set-feature 0187030900 --hold"
+        )
+        machine.wait_until_succeeds("test $(journalctl -u steam-raw -o cat | grep -c '^read ') -ge 6")
+        machine.wait_until_fails(f"ctrlassist-fixture pads | grep 'uniq=\"{serial}\"'")
+        machine.fail(f"grep -lx '{phys}' /sys/class/input/input*/phys")
+        out = machine.succeed("journalctl -u steam-raw -o cat")
+        # Every report read is one the fake sent, byte for byte.
+        sent = set(re.findall(r"^sent (\S+)$", steam_log(), re.M))
+        reads = re.findall(r"^read (\S+)$", out, re.M)
+        assert len(reads) >= 6 and all(read in sent for read in reads), (reads, sorted(sent)[:4])
+        assert all(read.startswith("42") and len(read) == 108 for read in reads), reads
+        # What was written reached the fake as it was written: the output
+        # report as it is, the feature report padded to 64 bytes, and the
+        # fake's echo of it came back.
+        feature = "0187030900" + "00" * 59
+        machine.wait_until_succeeds("journalctl -u steam -o cat | grep -x 'received output 80000040001000002000'")
+        machine.wait_until_succeeds(f"journalctl -u steam -o cat | grep -x 'received set-feature {feature}'")
+        assert re.search(rf"^get-feature {feature}$", out, re.M), out
+
+        # Closed, the driver makes them anew and asks the serial again.
+        asked = steam_log().count("received set-feature 01ae")
+        machine.succeed("systemctl stop steam-raw")
+        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep 'uniq=\"{serial}\"'")
+        machine.wait_until_succeeds(f"test $(journalctl -u steam -o cat | grep -c '^received set-feature 01ae') -gt {asked}")
+        machine.succeed("systemctl stop steam")
+        machine.wait_until_fails(f"grep -lx '{phys}' /sys/class/input/input*/phys")
+
+    with subtest("a fake Steam Controller with lizard mode's mouse and keyboard has them in the gamepad's HID device"):
+        machine.succeed("systemd-run --unit lizard ctrlassist-fixture fake-steam --lizard-mouse-and-keyboard")
+        machine.wait_until_succeeds("journalctl -u lizard -o cat | grep '^raw '")
+        phys, gamepad = said("phys", "lizard"), said("gamepad", "lizard")
+        machine.succeed("udevadm settle")
+        inputs = machine.succeed(f"grep -lx '{phys}' /sys/class/input/input*/phys | xargs -n1 dirname").split()
+        assert len(inputs) == 3, inputs
+        hid = machine.succeed(f"readlink -f /sys/class/input/{gamepad.split('/')[-1]}/device/device").strip()
+        keyboards = []
+        for input in inputs:
+            assert machine.succeed(f"readlink -f {input}/device").strip() == hid, (input, hid)
+            event = machine.succeed(f"ls -d {input}/event* | xargs -n1 basename").strip()
+            if "ID_INPUT_KEYBOARD=1" in machine.succeed(f"udevadm info /dev/input/{event}"):
+                keyboards.append(event)
+                machine.succeed(f"udevadm info /dev/input/{event} | grep -x 'E: ID_INPUT_MOUSE=1'")
+        assert len(keyboards) == 1, keyboards
+        machine.succeed("systemctl stop lizard")
+
+        # Outside a virtual machine check the fixture refuses to make one.
+        machine.succeed("mv /etc/ctrlassist-vm-check /etc/ctrlassist-vm-check.aside")
+        out = machine.fail("ctrlassist-fixture fake-steam --lizard-mouse-and-keyboard 2>&1")
+        assert "only in a virtual machine check" in out, out
+        machine.succeed("mv /etc/ctrlassist-vm-check.aside /etc/ctrlassist-vm-check")
 
     with subtest("a seat user's input thread merges two pads and sleeps when they do"):
         # Two pads that send nothing unless told to.

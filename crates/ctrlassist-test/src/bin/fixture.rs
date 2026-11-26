@@ -41,6 +41,28 @@ fn parse_hex(text: &str) -> Result<u16, std::num::ParseIntError> {
     u16::from_str_radix(text.trim_start_matches("0x"), 16)
 }
 
+/// Bytes written as hex, two digits each, nothing between.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Bytes given as hex, one argument: a type of its own, since clap takes
+/// a `Vec` for an argument given many times.
+#[derive(Clone, Debug)]
+struct Bytes(Vec<u8>);
+
+/// Bytes read from hex, two digits each.
+fn parse_bytes(text: &str) -> Result<Bytes, String> {
+    if !text.len().is_multiple_of(2) {
+        return Err("an odd number of hex digits".into());
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).map_err(|error| error.to_string()))
+        .collect::<Result<_, _>>()
+        .map(Bytes)
+}
+
 #[derive(Parser)]
 struct Cli {
     #[command(subcommand)]
@@ -91,6 +113,38 @@ enum Command {
         pulse: u64,
         #[arg(long)]
         motion: bool,
+    },
+    /// Create a fake Steam Controller on a cable and hold it, saying its
+    /// `serial`, its `phys`, the driver's `gamepad` and `motion` event
+    /// nodes and its `raw` node, then each thing it is sent, as
+    /// `received set-feature <hex>`, `received get-feature <number>` or
+    /// `received output <hex>`. With --pulse, it sends a state report on
+    /// that period in milliseconds, pressing and releasing the south
+    /// button by turns, and says each as `sent <hex>`.
+    FakeSteam {
+        #[arg(long, default_value_t = 0)]
+        pulse: u64,
+        /// Give it lizard mode's mouse and keyboard beside Valve's
+        /// collection, as a real controller has them. Refused outside a
+        /// virtual machine check.
+        #[arg(long)]
+        lizard_mouse_and_keyboard: bool,
+    },
+    /// Open a raw HID node, read and write, and say each report read from
+    /// it as `read <hex>` until `reads` have come; first write an output
+    /// report, with --write, and set a feature report, padded to 64
+    /// bytes, with --set-feature, saying what a GET of it then returns as
+    /// `get-feature <hex>`. With --hold, keep the node open until killed.
+    Hidraw {
+        node: PathBuf,
+        #[arg(long, default_value_t = 4)]
+        reads: usize,
+        #[arg(long, value_parser = parse_bytes)]
+        write: Option<Bytes>,
+        #[arg(long, value_parser = parse_bytes)]
+        set_feature: Option<Bytes>,
+        #[arg(long)]
+        hold: bool,
     },
     /// List pads, one per line: name, uniq, vendor:product, then each node
     /// with whether the caller can open it.
@@ -307,6 +361,100 @@ fn hide(node: &Path, socket: &Path, control: &Path) -> Result<()> {
     }
 }
 
+/// Makes a fake Steam Controller and holds it until killed; see
+/// [`Command::FakeSteam`].
+fn fake_steam(pulse: u64, lizard_mouse_and_keyboard: bool) -> Result<()> {
+    use ctrlassist_test::{
+        FakeSteamController, InVirtualMachineCheck, Received, StateReport, SteamButton, SteamState,
+    };
+    let mut builder = FakeSteamController::builder();
+    if lizard_mouse_and_keyboard {
+        let check = InVirtualMachineCheck::confirm()
+            .context("a fake that can type and point is made only in a virtual machine check")?;
+        builder = builder.with_lizard_mouse_and_keyboard(check);
+    }
+    let fake = builder
+        .build()
+        .context("creating the fake Steam Controller")?;
+    say(format_args!("serial {}", fake.serial()))?;
+    say(format_args!("phys {}", fake.phys()))?;
+    let gamepad = fake.gamepad().context("the driver made no gamepad")?;
+    say(format_args!("gamepad {}", gamepad.event.display()))?;
+    let motion = fake.motion().context("the driver made no motion sensors")?;
+    say(format_args!("motion {}", motion.event.display()))?;
+    let raw = fake.raw_node().context("the driver made no raw node")?;
+    say(format_args!("raw {}", raw.display()))?;
+    let mut told = 0;
+    let mut sequence = 0u8;
+    let mut pressed = false;
+    loop {
+        for what in fake.received().split_off(told) {
+            told += 1;
+            let line = match what {
+                Received::SetFeature(report) => format!("received set-feature {}", hex(&report)),
+                Received::GetFeature(number) => format!("received get-feature {number}"),
+                Received::Output(report) => format!("received output {}", hex(&report)),
+                other => format!("received {other:?}"),
+            };
+            say(line)?;
+        }
+        if pulse == 0 {
+            // What arrives is said within this, as a test waits for it.
+            sleep(Duration::from_millis(50));
+            continue;
+        }
+        sleep(Duration::from_millis(pulse));
+        pressed = !pressed;
+        let mut state = SteamState::default();
+        if pressed {
+            state = state.with(SteamButton::South);
+        }
+        let report = state.report(StateReport::Full, sequence);
+        sequence = sequence.wrapping_add(1);
+        fake.send(&report).context("sending a state report")?;
+        say(format_args!("sent {}", hex(&report)))?;
+    }
+}
+
+/// Reads and writes a raw HID node; see [`Command::Hidraw`].
+fn hidraw(
+    node: &Path,
+    reads: usize,
+    write: Option<&[u8]>,
+    set_feature: Option<&[u8]>,
+    hold: bool,
+) -> Result<()> {
+    let mut raw = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(node)
+        .with_context(|| format!("opening {}", node.display()))?;
+    say("opened")?;
+    if let Some(report) = write {
+        raw.write_all(report).context("writing the output report")?;
+        say("wrote")?;
+    }
+    if let Some(report) = set_feature {
+        let mut report = report.to_vec();
+        report.resize(report.len().max(64), 0);
+        ctrlassist_test::set_feature(raw.as_fd(), &report).context("setting the feature report")?;
+        let got = ctrlassist_test::get_feature(raw.as_fd(), report[0], report.len())
+            .context("getting the feature report")?;
+        say(format_args!("get-feature {}", hex(&got)))?;
+    }
+    let mut buffer = [0u8; 256];
+    for _ in 0..reads {
+        let read = raw.read(&mut buffer).context("reading the raw node")?;
+        say(format_args!("read {}", hex(&buffer[..read])))?;
+    }
+    if hold {
+        loop {
+            sleep(Duration::from_secs(3600));
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     match run(Cli::parse().command) {
         // The reader has gone, as `pads | grep -q` does once it has found
@@ -388,6 +536,23 @@ fn run(command: Command) -> Result<()> {
                 }
             }
         }
+        Command::FakeSteam {
+            pulse,
+            lizard_mouse_and_keyboard,
+        } => fake_steam(pulse, lizard_mouse_and_keyboard),
+        Command::Hidraw {
+            node,
+            reads,
+            write,
+            set_feature,
+            hold,
+        } => hidraw(
+            &node,
+            reads,
+            write.as_ref().map(|bytes| bytes.0.as_slice()),
+            set_feature.as_ref().map(|bytes| bytes.0.as_slice()),
+            hold,
+        ),
         Command::Pads => {
             for pad in pads()? {
                 let nodes: Vec<String> = pad

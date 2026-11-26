@@ -1261,6 +1261,7 @@ dependencies = [
  "ctrlassist-device",
  "ctrlassist-hider",
  "evdev",
+ "libc",
  "rustix 1.1.6",
  "udev",
 ]
