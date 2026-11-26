@@ -29,7 +29,7 @@ fi
 # the one that gives their nodes to the user at the seat, and the hiding
 # service's, applied to pads already connected. Guarded so image builds
 # without a kernel of their own stay quiet.
-modprobe -a uinput uhid hid-playstation 2>/dev/null || true
+modprobe -a uinput uhid hid-playstation hid-steam 2>/dev/null || true
 udevadm control --reload 2>/dev/null || true
 udevadm trigger --subsystem-match=misc --sysname-match=uinput --sysname-match=uhid 2>/dev/null || true
 udevadm trigger --action=change --subsystem-match=input --property-match=ID_INPUT_JOYSTICK=1 2>/dev/null || true

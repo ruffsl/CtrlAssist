@@ -247,10 +247,19 @@ async fn the_identities_are_listed_with_whether_they_can_be_made() {
                 ctrlassist_test::uhid_available()
             ),
             ("generic", 0x1234, 0x5678, available),
+            // Made through uhid for the kernel's own driver for the pad,
+            // which a machine may not have loaded.
+            (
+                "steam-controller",
+                0x28de,
+                0x1302,
+                ctrlassist_test::uhid_available()
+                    && std::path::Path::new("/sys/bus/hid/drivers/hid-steam").exists()
+            ),
             ("xbox", 0x045e, 0x0b12, available)
         ]
     );
-    assert_eq!(identities[2].name, "Microsoft Xbox Series S|X Controller");
+    assert_eq!(identities[3].name, "Microsoft Xbox Series S|X Controller");
 
     // Gone with the daemon, as everything it published is.
     let mut watcher = StateWatcher::new(&client, None, StateWatcherConfig::default());

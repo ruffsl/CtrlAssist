@@ -157,6 +157,7 @@ pub(crate) fn device_identity(identity: Identity) -> ctrlassist_device::Identity
         Identity::Generic => ctrlassist_device::Identity::Generic,
         Identity::Xbox => ctrlassist_device::Identity::Xbox,
         Identity::DualSense => ctrlassist_device::Identity::DualSense,
+        Identity::SteamController => ctrlassist_device::Identity::SteamController,
     }
 }
 

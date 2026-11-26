@@ -205,11 +205,18 @@ pub enum Identity {
     /// A DualSense, made from one that has been connected.
     #[serde(rename = "dualsense")]
     DualSense,
+    /// A Steam Controller (2026), for what reads one as Steam does.
+    SteamController,
 }
 
 impl Identity {
     /// Every identity, in the order they are listed to a person.
-    pub const ALL: [Self; 3] = [Self::Generic, Self::Xbox, Self::DualSense];
+    pub const ALL: [Self; 4] = [
+        Self::Generic,
+        Self::Xbox,
+        Self::DualSense,
+        Self::SteamController,
+    ];
 
     /// The identity's name, as a profile writes it.
     #[must_use]
@@ -218,6 +225,7 @@ impl Identity {
             Self::Generic => "generic",
             Self::Xbox => "xbox",
             Self::DualSense => "dualsense",
+            Self::SteamController => "steam-controller",
         }
     }
 }

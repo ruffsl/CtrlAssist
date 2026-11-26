@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** drafted with the maintainer on 2026-11-25, who then stepped away for the night with the coordinator left to build through the stops. The research is in, and the design it left to decide is under For review. Building.
-- **Next action:** the identity's second stage, a profile that asks for it ([The identity's stages](#the-identitys-stages)); the first, the emulator, is built. Then the maintainer's trial of it with Steam. Steps 1 to 6, 8 and 10 are done, and the hiding service takes the pad on its cable. Left besides: step 7 (the Puck and Bluetooth beyond what works already, and a controller Steam holds, now [an idea](../ideas/steam-controller-held-by-steam.md)).
+- **Next action:** the maintainer's trial of the identity with Steam, which the first two stages are enough for ([The identity's stages](#the-identitys-stages)), and the third stage, the touches following the motion. Steps 1 to 6, 8 and 10 are done, and the hiding service takes the pad on its cable. Left besides: step 7 (the Puck and Bluetooth beyond what works already, and a controller Steam holds, now [an idea](../ideas/steam-controller-held-by-steam.md)).
 - **Branch:** `feat/steam-controller`, from `docs/user-guide` at `383c798`, so the new user guide is there for the agents to read. Pushed on 2026-11-26 at the maintainer's word, with no pull request, and pushed freely since, by the same. When the guide's pull request (#63) has merged, this branch's own goes to `main`.
 
 ## Goal
@@ -275,7 +275,7 @@ Decided with the maintainer on 2026-11-26, after the second spike:
 The stages, each gated and pushed:
 
 1. **The emulator,** in the device crate: the descriptor, the driver's questions answered, pad state as the state report, rumble read back. Done: the kernel's driver binds it on 7.3, and what is written is read at its raw node.
-2. **A profile that asks for it:** the identity in the profile's schema, the daemon making one with its serial, the clients' choice and its help.
+2. **A profile that asks for it:** the identity in the profile's schema, the daemon making one with its serial, the clients' choice and its help. Done: `identity = "steam-controller"` makes one, its serial `CA` and eleven hex digits from the daemon's home, the setup and the output; a fake Steam Controller behind it is read whole at its raw node; the packages load `hid-steam` beside `hid-playstation`; and the guide says what it is for.
 3. **The merge rules for what is new:** the stick and grip touches following whichever pad gives the motion, a touch nameable as the Gyro button and not withheld.
 4. **Haptics** passed to a real Steam Controller behind it, by the Rumble choice.
 5. **The checks and the guide:** a virtual machine check with SDL's probe against the daemon's own virtual pad, the guide's page and the architecture, and the spike deleted.

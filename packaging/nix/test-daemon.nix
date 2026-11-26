@@ -200,7 +200,7 @@ pkgs.testers.runNixOSTest {
         assert pads[HID]["id"] == "address:02:00:00:00:00:01", pads[HID]
         assert not pads[HID]["hidden"] and not pads[PLAIN]["hidden"]
         identities = {identity["id"]: identity["available"] for identity in json.loads(cli("identities", "--json"))}
-        assert identities == {"generic": True, "xbox": True, "dualsense": True}, identities
+        assert identities == {"generic": True, "xbox": True, "dualsense": True, "steam-controller": True}, identities
 
     with subtest("a profile is put, and one that is wrong is refused with where"):
         machine.succeed(

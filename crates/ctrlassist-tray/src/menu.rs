@@ -1020,6 +1020,7 @@ default ✓ (Not set up) >
     (o) Generic
     ( ) Xbox
     ( ) DualSense
+    ( ) Steam Controller
   Mode: Priority >
     (o) Priority
     ( ) Average

@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::os::fd::OwnedFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -282,7 +282,8 @@ impl Reactor {
 
     /// Publishes what a virtual pad can present itself as, and whether
     /// each can be made now: through uinput, or for a DualSense through
-    /// uhid.
+    /// uhid, or for a Steam Controller through uhid with the kernel's
+    /// driver for it loaded.
     pub(crate) async fn publish_identities(&mut self) -> zenoh::Result<()> {
         let writable = |node: &str| OpenOptions::new().write(true).open(node).is_ok();
         let uinput = writable("/dev/uinput");
@@ -291,7 +292,10 @@ impl Reactor {
             let (vendor, product) = device.model();
             let available = match identity {
                 Identity::DualSense => writable("/dev/uhid"),
-                _ => uinput,
+                Identity::SteamController => {
+                    writable("/dev/uhid") && Path::new("/sys/bus/hid/drivers/hid-steam").exists()
+                }
+                Identity::Generic | Identity::Xbox => uinput,
             };
             let body = payload::Identity {
                 id: identity.as_str().to_string(),

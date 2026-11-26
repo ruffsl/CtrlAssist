@@ -286,6 +286,7 @@ pub fn identity(id: &str) -> &str {
     match id {
         "xbox" => "Xbox",
         "dualsense" => "DualSense",
+        "steam-controller" => "Steam Controller",
         other => other,
     }
 }

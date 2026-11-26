@@ -50,7 +50,7 @@ managed = true       # optional
 
 `hide` is how the real controllers are kept from games while the arrangement runs, in any profile, a preset or not: `full` (the default), `grab` or `none`, which the window calls Hidden, Grabbed and Visible. See [Visibility](./profiles.md#visibility).
 
-`identity` is what the virtual controller presents itself as: `generic` (the default), `xbox` or `dualsense`; `ctrlassist identities` lists them and whether each can be made on this machine. See [Identity](./profiles.md#identity).
+`identity` is what the virtual controller presents itself as: `generic` (the default), `xbox`, `dualsense` or `steam-controller`; `ctrlassist identities` lists them and whether each can be made on this machine. See [Identity](./profiles.md#identity).
 
 `managed = true` has the daemon start the profile whenever its controllers are connected. See [Managed](./profiles.md#managed).
 

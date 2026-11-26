@@ -252,6 +252,11 @@ fn described() -> Vec<Field> {
                         "DualSense",
                         "A PlayStation 5 controller, with PlayStation prompts where a game has them.",
                     ),
+                    choice(
+                        Identity::SteamController.as_str(),
+                        "Steam Controller",
+                        "A Steam Controller, with both trackpads and the back buttons, for Steam and games that read one as Steam does. Other games get nothing from it.",
+                    ),
                 ],
             },
             presets: Vec::new(),

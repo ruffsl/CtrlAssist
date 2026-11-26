@@ -42,6 +42,7 @@ What the virtual controller says it is to games:
 | **Generic**, the default | A plain gamepad that games map from its buttons. |
 | **Xbox** | An Xbox Series controller, which most games recognize outright. |
 | **DualSense** | A PlayStation 5 DualSense controller, with PlayStation button prompts in games that have them. |
+| **Steam Controller** | Valve's Steam Controller from 2026, with both trackpads and the back buttons, for Steam and games that read one as Steam does. [Other games get nothing from it.](./steam-controller.md#as-an-identity) |
 
 If you connect a real DualSense by USB cable, with the hiding service installed, CtrlAssist copies what that controller says of itself, keeps the copy in `~/.local/state/ctrlassist/identities/`, and makes its virtual DualSenses from that from then on; until then it uses a description of the controller that ships with it. You don't need to own one.
 

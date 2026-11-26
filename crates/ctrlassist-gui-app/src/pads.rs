@@ -110,6 +110,7 @@ fn virtual_rows(setups: &[Setup], identities: &[ctrlassist::Identity]) -> Vec<Pa
                 maker: SharedString::from(match sink.identity.as_str() {
                     "xbox" => "microsoft",
                     "dualsense" => "sony",
+                    "steam-controller" => "valve",
                     _ => "ctrlassist",
                 }),
                 word: SharedString::from(format!("In {}", setup.name)),

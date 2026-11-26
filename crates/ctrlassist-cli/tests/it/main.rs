@@ -260,21 +260,28 @@ async fn identities_lists_what_a_virtual_pad_can_be() {
     assert!(plain.status.success(), "{}", text(&plain.stderr));
     let said = text(&plain.stdout);
     let lines: Vec<&str> = said.lines().collect();
-    assert_eq!(lines.len(), 4, "{said}");
-    assert!(lines[0].starts_with("ID         NAME"), "{said}");
-    assert!(lines[1].starts_with("dualsense  "), "{said}");
+    assert_eq!(lines.len(), 5, "{said}");
+    // As wide as the longest id.
+    assert!(lines[0].starts_with("ID                NAME"), "{said}");
+    assert!(lines[1].starts_with("dualsense         "), "{said}");
     assert!(lines[1].contains("054c:0ce6  "), "{said}");
     assert!(
-        lines[2].starts_with("generic    CtrlAssist Virtual Pad"),
+        lines[2].starts_with("generic           CtrlAssist Virtual Pad"),
         "{said}"
     );
-    assert!(lines[3].contains("045e:0b12"), "{said}");
+    assert!(
+        lines[3].starts_with("steam-controller  Steam Controller"),
+        "{said}"
+    );
+    assert!(lines[3].contains("28de:1302"), "{said}");
+    assert!(lines[4].contains("045e:0b12"), "{said}");
 
     let json = ctrlassist(&socket, &["identities", "--json"]);
     let identities: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(identities[0]["id"], "dualsense");
     assert_eq!(identities[1]["id"], "generic");
-    assert_eq!(identities[2]["id"], "xbox");
+    assert_eq!(identities[2]["id"], "steam-controller");
+    assert_eq!(identities[3]["id"], "xbox");
     daemon.stop().await;
 }
 

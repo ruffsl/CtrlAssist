@@ -757,3 +757,111 @@ async fn a_paddle_named_as_the_gyro_button_hands_the_motion_over() {
     client.stop_setup("couch").await.unwrap();
     daemon.stop().await;
 }
+
+/// A profile that asks for the Steam Controller identity makes a virtual
+/// one, bound by the kernel's own driver, whose node is its raw node: a
+/// Steam Controller behind it is read there whole, its back buttons and
+/// both trackpads in the places the real one has them, and the virtual
+/// pad is none of the daemon's pads.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_steam_controller_behind_a_virtual_one_is_read_whole_at_its_raw_node() {
+    use std::io::Read as _;
+
+    const TEST: &str = "a_steam_controller_behind_a_virtual_one_is_read_whole_at_its_raw_node";
+    let Some(fake) = fake(TEST) else {
+        return;
+    };
+    let (_dir, daemon, client) = with_couch(
+        &fake,
+        &format!(
+            "{}identity = \"steam-controller\"\n",
+            unicast(&id_of(&fake))
+        ),
+    )
+    .await;
+    client.start_setup("couch").await.unwrap();
+    let setup = in_phase(&client, "couch", Phase::Running).await;
+    assert_eq!(setup.sinks[0].identity, "steam-controller");
+    let raw = std::path::PathBuf::from(setup.sinks[0].node.clone().unwrap());
+    assert!(raw.to_string_lossy().starts_with("/dev/hidraw"), "{raw:?}");
+    // The daemon lists the pad behind it and not its own virtual one,
+    // whose serial is `CA` and eleven hex digits, as no fake's is.
+    let pads = client.list_pads().unwrap();
+    assert!(pads.iter().any(|pad| pad.id == id_of(&fake)), "{pads:?}");
+    let own = |id: &str| {
+        id.strip_prefix("address:CA").is_some_and(|rest| {
+            rest.len() == 11 && rest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    };
+    let listed: Vec<&str> = pads
+        .iter()
+        .map(|pad| pad.id.as_str())
+        .filter(|id| own(id))
+        .collect();
+    assert!(listed.is_empty(), "{listed:?}");
+    if !may_open_once_udev_is_done(&raw, false) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED {TEST}: a virtual Steam Controller's raw node isn't this user's to open here"
+        );
+        client.stop_setup("couch").await.unwrap();
+        daemon.stop().await;
+        return;
+    }
+    let mut game = std::fs::File::open(&raw).unwrap();
+
+    let held = SteamState {
+        left_pad: ctrlassist_test::Trackpad {
+            touched: true,
+            x: 16384,
+            y: -16384,
+            pressure: 0,
+        },
+        left_stick: [20000, 0],
+        sensor_clock: 4000,
+        ..SteamState::default()
+    }
+    .with(SteamButton::South)
+    .with(SteamButton::UpperRightBack);
+    // South, the upper right back button, and the left trackpad's touch.
+    let wanted = 0x1 | 0x80 | 0x0200_0000;
+    let started = std::time::Instant::now();
+    let mut report = [0u8; 64];
+    let mut buttons = 0;
+    let mut clock = 4000;
+    while buttons != wanted && started.elapsed() < Duration::from_secs(20) {
+        // A fresh reading each time, so that each is one more report.
+        clock += 4000;
+        fake.send_state(
+            &SteamState {
+                sensor_clock: clock,
+                ..held
+            },
+            StateReport::Full,
+        )
+        .unwrap();
+        assert_eq!(game.read(&mut report).unwrap(), 54);
+        assert_eq!(report[0], 0x42);
+        buttons = u32::from_le_bytes([report[2], report[3], report[4], report[5]]);
+    }
+    assert_eq!(buttons, wanted, "{report:?}");
+    let at = |place: usize| i16::from_le_bytes([report[place], report[place + 1]]);
+    assert!(
+        (at(10) - 20000).abs() <= 2,
+        "the left stick's x: {}",
+        at(10)
+    );
+    assert!(
+        (at(18) - 16384).abs() <= 2,
+        "the left trackpad's x: {}",
+        at(18)
+    );
+    assert!(
+        (at(20) + 16384).abs() <= 2,
+        "the left trackpad's y: {}",
+        at(20)
+    );
+
+    client.stop_setup("couch").await.unwrap();
+    daemon.stop().await;
+}

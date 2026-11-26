@@ -16,7 +16,7 @@ Valve's Steam Controller, the one from 2026 with two trackpads and four back but
 
 ## What is dropped, and why
 
-No identity a virtual controller can take has a place for these, so a game never gets them:
+Behind any identity but [its own](#as-an-identity), these have no place, so a game never gets them:
 
 - the left trackpad, a DualSense having one touchpad;
 - the capacitive touch of a thumb on a stick or a hand on a grip, and how hard a trackpad is pressed;
@@ -24,6 +24,16 @@ No identity a virtual controller can take has a place for these, so a game never
 - the controller's own haptics beyond plain rumble, such as a pulse on a trackpad, since what a game sends a controller carries none.
 
 The lights and trigger effects a game sends a virtual DualSense don't reach it, as they don't reach any controller that is only grabbed ([Identity](./profiles.md#identity)).
+
+## As an identity
+
+A profile's **Identity** can be **Steam Controller**: the virtual controller then says it is one, on a cable, and carries what only this controller has. Both trackpads, the four back buttons, the quick access button and the touch of a thumb on a stick or a hand on a grip reach the game as a real one's do. A controller that isn't a Steam Controller can be behind it too: a DualSense's touchpad is its right trackpad, and what the controller lacks stays at rest.
+
+It is for Steam, and for games that read a Steam Controller as Steam does, which those built on a recent SDL do. **Any other game gets nothing from it.** The system keeps every Steam Controller silent to such games until the player holds its Menu button for half a second, a virtual one included, and CtrlAssist leaves that as it is. For those games choose **Xbox** or **DualSense**.
+
+Steam takes a virtual Steam Controller as its own, as it does a real one: it applies its own configuration to it and shows the game a controller of Steam's making. The virtual one keeps the same serial number each time a profile runs, so Steam keeps one configuration for each profile. What Steam writes to it, its settings and any firmware it offers, stays in the virtual controller and never reaches a real one.
+
+It needs Linux 7.3 or newer, as a real one does. **Nobody has tried it with Steam yet**: the system's own driver and SDL take it for the controller, and that is all that has been seen.
 
 ## Visibility
 
