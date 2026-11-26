@@ -980,7 +980,7 @@ mod form {
     //! The described fields against the profiles they stand for.
 
     use ctrlassist_protocol::form::{self, Kind, Values};
-    use ctrlassist_protocol::profile::{Profile, button_names};
+    use ctrlassist_protocol::profile::Profile;
 
     /// A value the field could hold, and another.
     fn samples(field: &form::Field) -> Vec<String> {
@@ -1100,20 +1100,29 @@ mod form {
         let Kind::Choice { choices } = &gyro.kind else {
             panic!("{gyro:?}");
         };
-        let values: Vec<&str> = choices.iter().map(|choice| choice.value.as_str()).collect();
-        assert_eq!(values[0], "none");
-        assert_eq!(values[1..], button_names().collect::<Vec<_>>()[..]);
-        let paddle = choices
+        let read: Vec<(&str, &str, &str, &str)> = choices
             .iter()
-            .find(|choice| choice.value == "paddle-1")
-            .unwrap();
+            .map(|choice| {
+                (
+                    choice.value.as_str(),
+                    choice.label.as_str(),
+                    choice.caption.as_str(),
+                    choice.brief.as_str(),
+                )
+            })
+            .collect();
+        // After no button and the sixteen there were before them, last.
+        assert_eq!(read.len(), 21, "{read:?}");
+        assert_eq!(read[0].0, "none");
+        assert_eq!(read[16].0, "touchpad");
         assert_eq!(
-            (
-                paddle.label.as_str(),
-                paddle.caption.as_str(),
-                paddle.brief.as_str()
-            ),
-            ("Assist · Paddle 1", "Assist holds", "Paddle 1")
+            read[17..],
+            [
+                ("paddle-1", "Assist · Paddle 1", "Assist holds", "Paddle 1"),
+                ("paddle-2", "Assist · Paddle 2", "Assist holds", "Paddle 2"),
+                ("paddle-3", "Assist · Paddle 3", "Assist holds", "Paddle 3"),
+                ("paddle-4", "Assist · Paddle 4", "Assist holds", "Paddle 4"),
+            ]
         );
     }
 

@@ -63,10 +63,20 @@ fn touching(pad: &PadState, which: usize) -> bool {
 }
 
 /// Whether a virtual pad's contacts on its touchpad `which` are `owner`'s,
-/// or lifted, as they are for the step in which one pad's fingers give way
-/// to another's.
-fn shows(sink: &PadState, owner: &PadState, which: usize) -> bool {
-    touchpads(sink)[which] == touchpads(owner)[which] || !touching(sink, which)
+/// or, for the one step in which one pad's fingers give way to another's,
+/// the fingers it showed `before` lifted where they were: only when it
+/// showed a finger down and the owner has one down too.
+fn shows(sink: &PadState, owner: &PadState, before: &PadState, which: usize) -> bool {
+    let (now, theirs, was) = (
+        touchpads(sink)[which],
+        touchpads(owner)[which],
+        touchpads(before)[which],
+    );
+    let lifted = Touchpad::new(
+        was.contacts()
+            .map(|contact| Contact::new(false, contact.x(), contact.y())),
+    );
+    now == theirs || (touching(owner, which) && touching(before, which) && now == lifted)
 }
 
 /// A pad state with neither touchpad touched, to compare the rest.
@@ -117,6 +127,11 @@ fn pad_state(with_mode: bool) -> impl Strategy<Value = PadState> {
 }
 
 fn mux(mode: Mode) -> Graph {
+    mux_with(MuxConfig::new(mode, &Layout::gamepad()))
+}
+
+/// Two pads into one mux into one virtual pad.
+fn mux_with(config: MuxConfig) -> Graph {
     let source = || SourceSpec {
         deadzone: 0.1,
         layout: Layout::gamepad(),
@@ -125,7 +140,7 @@ fn mux(mode: Mode) -> Graph {
         sources: vec![source(), source()],
         nodes: vec![NodeSpec::Mux {
             inputs: vec![Input::Source(SourceId(0)), Input::Source(SourceId(1))],
-            config: MuxConfig::new(mode, &Layout::gamepad()),
+            config,
         }],
         sinks: vec![Input::Node(NodeId(0), 0)],
     })
@@ -148,17 +163,20 @@ proptest! {
     ) {
         let mut graph = mux(Mode::Priority);
         let mut pads = [PadState::NEUTRAL; 2];
+        // What the virtual pad held after the step before.
+        let mut sink = PadState::NEUTRAL;
         let mut shadow = PadState::NEUTRAL;
         for (source, state) in steps {
             pads[source] = state;
             graph.update(SourceId(source), state, &mut |change| shadow.set(change.control, change.value));
             let [primary, assist] = pads;
-            let sink = *graph.sink(SinkId(0));
+            let before = sink;
+            sink = *graph.sink(SinkId(0));
             prop_assert_eq!(sink.motion(), primary.motion());
             for which in 0..2 {
                 let owner = if touching(&assist, which) { assist } else { primary };
                 prop_assert!(
-                    shows(&sink, &owner, which),
+                    shows(&sink, &owner, &before, which),
                     "the assist's touchpad {} while they touch it: {:?}",
                     which,
                     touchpads(&sink)
@@ -196,27 +214,30 @@ proptest! {
     /// is down exactly when someone holds it, and nothing of motion or the
     /// contacts is blended: motion is the primary's, and each touchpad's
     /// contacts one pad's, whole: whoever touched it first, until they
-    /// lift, whoever has the other.
+    /// lift, whoever has the other touchpad.
     #[test]
     fn average_stays_between_its_inputs(
         steps in prop::collection::vec((0usize..2, pad_state(true)), 1..60)
     ) {
         let mut graph = mux(Mode::Average);
         let mut pads = [PadState::NEUTRAL; 2];
+        // What the virtual pad held after the step before.
+        let mut sink = PadState::NEUTRAL;
         // Whose each touchpad is, kept the obvious way.
         let mut holders = [0usize; 2];
         for (source, state) in steps {
             pads[source] = state;
             graph.update(SourceId(source), state, &mut |_| {});
             let [primary, assist] = pads;
-            let sink = *graph.sink(SinkId(0));
+            let before = sink;
+            sink = *graph.sink(SinkId(0));
             prop_assert_eq!(sink.motion(), primary.motion());
             for (which, holder) in holders.iter_mut().enumerate() {
                 if !touching(&pads[*holder], which) {
                     *holder = (0..2).find(|pad| touching(&pads[*pad], which)).unwrap_or(*holder);
                 }
                 prop_assert!(
-                    shows(&sink, &pads[*holder], which),
+                    shows(&sink, &pads[*holder], &before, which),
                     "touchpad {} is whoever touched it first, whole: {:?}",
                     which,
                     touchpads(&sink)
@@ -236,6 +257,32 @@ proptest! {
         }
     }
 
+    /// A button of the assist's that hands motion over, a back button or
+    /// any other in no group or a group of one: the motion is the assist's
+    /// exactly while the assist holds it, and the primary's otherwise, and
+    /// the game sees only the primary's same button.
+    #[test]
+    fn an_engaging_button_hands_motion_over_while_held_and_is_never_the_games(
+        mode in prop::sample::select(vec![Mode::Priority, Mode::Average]),
+        button in prop::sample::select(BUTTONS.to_vec()),
+        steps in prop::collection::vec((0usize..2, pad_state(true)), 1..60)
+    ) {
+        let mut config = MuxConfig::new(mode, &Layout::gamepad());
+        config.gyro = Some(Switch { input: Some(1), button });
+        let mut graph = mux_with(config);
+        let mut pads = [PadState::NEUTRAL; 2];
+        for (source, state) in steps {
+            pads[source] = state;
+            graph.update(SourceId(source), state, &mut |_| {});
+            let [primary, assist] = pads;
+            let sink = graph.sink(SinkId(0));
+            let held = assist.get(button) != 0.0;
+            let carrier = if held { assist } else { primary };
+            prop_assert_eq!(sink.motion(), carrier.motion(), "{:?} held: {}", button, held);
+            prop_assert_eq!(sink.get(button), primary.get(button), "{:?}", button);
+        }
+    }
+
     /// Toggle: after any mix of events and switches, the virtual pad holds
     /// exactly what the selected pad holds, motion and contacts with the
     /// rest, the fingers lifted for a step where a switch changes whose
@@ -252,6 +299,8 @@ proptest! {
     ) {
         let mut graph = mux(Mode::Toggle);
         let mut pads = [PadState::NEUTRAL; 2];
+        // What the virtual pad held after the step before.
+        let mut sink = PadState::NEUTRAL;
         let mut selected = 0;
         for step in steps {
             match step {
@@ -264,10 +313,11 @@ proptest! {
                     graph.switch(NodeId(0), &mut |_| {});
                 }
             }
-            let sink = *graph.sink(SinkId(0));
+            let before = sink;
+            sink = *graph.sink(SinkId(0));
             prop_assert_eq!(untouched(sink), untouched(pads[selected]));
             for which in 0..2 {
-                prop_assert!(shows(&sink, &pads[selected], which), "{}: {:?}", which, touchpads(&sink));
+                prop_assert!(shows(&sink, &pads[selected], &before, which), "{}: {:?}", which, touchpads(&sink));
             }
             prop_assert_eq!(graph.feedback_targets(SinkId(0)), SourceSet::from(SourceId(selected)));
         }

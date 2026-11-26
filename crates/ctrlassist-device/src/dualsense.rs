@@ -1564,6 +1564,38 @@ mod tests {
         assert_eq!(rest, [25, 33, 37, 53, 54], "nothing else is set");
     }
 
+    /// A virtual DualSense shows a game what a DualSense has and nothing
+    /// more: a second touchpad, the back buttons, capacitive touch and
+    /// the second touchpad's click change nothing in its report.
+    #[test]
+    fn what_a_dualsense_has_not_is_not_in_its_report() {
+        let base = PadState::NEUTRAL
+            .with_touchpad(Touchpad::new([Contact::new(true, 0.25, 0.5), Contact::UP]));
+        let mut more = base.with_second_touchpad(Touchpad::new([
+            Contact::new(true, 0.75, 0.25),
+            Contact::new(true, 0.5, 0.5),
+        ]));
+        for control in [
+            gamepad::PADDLE_1,
+            gamepad::PADDLE_2,
+            gamepad::PADDLE_3,
+            gamepad::PADDLE_4,
+            gamepad::LEFT_STICK_TOUCH,
+            gamepad::RIGHT_STICK_TOUCH,
+            gamepad::LEFT_GRIP_TOUCH,
+            gamepad::RIGHT_GRIP_TOUCH,
+            gamepad::SECOND_TOUCHPAD,
+        ] {
+            more.set(control, 1.0);
+        }
+        assert_ne!(more, base);
+        let touches = Touches::FIRST.after(Touchpad::UNTOUCHED, base.touchpad());
+        assert_eq!(
+            input_report(&more, 7, touches),
+            input_report(&base, 7, touches)
+        );
+    }
+
     #[test]
     fn every_gamepad_control_has_its_place_in_the_report() {
         let held = |control| input_report(&PadState::NEUTRAL.with(control, 1.0), 0, Touches::FIRST);
