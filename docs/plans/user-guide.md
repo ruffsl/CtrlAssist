@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** drafted, for the maintainer's review. Nothing in the book has been changed.
-- **Next action:** the maintainer reads this plan and answers the open questions; then step 1.
+- **Status:** drafted, and its first questions answered (see Decided). Nothing in the book has been changed.
+- **Next action:** the maintainer's go-ahead on the plan as a whole; then step 1.
 - **Branch:** `docs/user-guide`, from `main` at `39c1b4c`.
 
 ## Goal
@@ -50,6 +50,13 @@ By the maintainer, 2026-11-25:
 - **The tray's screenshots come last,** being drawn by the desktop and not by CtrlAssist.
 - **The reasons above go into `docs/book/README.md`,** and into TisVlay's on its local branch.
 - **Screenshots are committed through git LFS,** as the artwork is.
+
+Later the same day, on the questions this plan first left open:
+
+- **Dark for every shot, and one in light,** as TisVlay's are: dark Breeze with its default accent, and one page again in light to show the window follows the desktop.
+- **At the size the window opens at,** at a scale of one.
+- **The made-up state as proposed:** a DualSense and an Xbox pad connected, an 8BitDo remembered, `couch` running and `desk` stopped.
+- **The FAQ's first questions** are of three kinds. Games, Steam and Proton: does the game need to support it, does it work with Steam Input and Proton, why does my game see two controllers. Controllers and latency: which controllers work, does it add latency, do the gyro and the touchpad carry over. Setup and safety: does it need root, where are my profiles kept, can two people each have a virtual controller. Nothing on coming from 0.4.0.
 
 ## Contents
 
@@ -106,6 +113,7 @@ Canonical homes that change:
 | `profiles_pane_running.png` | A running profile, with who has control |
 | `settings_pane.png` | Notifications and couch mode |
 | `about_pane.png` | The parts and their releases |
+| `pads_pane_light.png` | The Pads page again, in the light theme |
 | `couch_mode.png` | The window in its ten-foot layout |
 | `system_tray_menu.png`, `system_tray_hover.png` | The tray, last, by whatever means step 7 finds |
 
@@ -134,12 +142,9 @@ Each is one commit or a few, with `prek run -a --skip build --skip clippy --skip
 
 ## Open questions
 
-For the maintainer, before step 2 unless noted:
+For the maintainer:
 
-1. **Theme and size.** TisVlay shows the dark theme for most and the light for one. Which for CtrlAssist, at what window size, and with which accent color?
-2. **The made-up names.** `couch` and `desk` for profiles, as the tests use; pads by their models' names. Anything to show or to avoid?
-3. **The FAQ's questions** (before step 6). A first list: does the game need to support it; which controllers work; does it work with Steam Input, and with Proton; does it add latency; can two people each have a virtual controller; why does my game see two controllers; where are my profiles kept; does it need root.
-4. **The capture tool for TisVlay** (after step 3). It would replace fourteen screenshots taken by hand there. Carried back as an idea, or as code?
+1. **The capture tool for TisVlay** (after step 3). It would replace fourteen screenshots taken by hand there. Carried back as an idea, or as code?
 
 ## Deviations
 
