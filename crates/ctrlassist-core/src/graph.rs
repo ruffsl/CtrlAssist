@@ -105,7 +105,7 @@ impl std::error::Error for GraphError {}
 
 /// One control changing on one virtual pad.
 ///
-/// Motion and the touchpad's contacts are not controls and change by no
+/// Motion and the touchpads' contacts are not controls and change by no
 /// `Change`: a virtual pad that carries them is written its whole state,
 /// from [`Graph::sink`].
 #[derive(Clone, Copy, PartialEq, Debug)]

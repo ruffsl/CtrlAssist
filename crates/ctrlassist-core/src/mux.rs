@@ -46,10 +46,10 @@ impl Mode {
         }
     }
 
-    /// The rule this mode applies to the touchpad's contacts, as
+    /// The rule this mode applies to each touchpad's contacts, as
     /// [`MuxConfig::touchpad`] reads one: in priority the assist's
-    /// touchpad while they touch it, in average whoever touched first, in
-    /// toggle the selected pad's.
+    /// touchpad while they touch it, in average whoever touched it first,
+    /// in toggle the selected pad's.
     #[must_use]
     pub fn touchpad(self) -> Rule {
         match self {

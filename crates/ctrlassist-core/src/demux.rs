@@ -4,8 +4,8 @@ use crate::control::{ButtonBits, Control, PadState, gamepad};
 use crate::graph::GraphError;
 
 /// How a demux spreads its input. An output that follows it takes all
-/// of it, motion and the touchpad with the controls; one that rests is
-/// lying still with no finger on its touchpad.
+/// of it, motion and both touchpads with the controls; one that rests is
+/// lying still with no finger on either touchpad.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DemuxMode {
     /// The selected output follows the input; the others rest.
