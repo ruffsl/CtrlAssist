@@ -44,7 +44,7 @@ It sees a real controller beside the virtual one. A running profile keeps its re
 
 ### Which controllers work?
 
-Anything Linux presents as a gamepad. Xbox and PlayStation controllers are read through their own drivers; others through the community controller database that SDL also uses. [Requirements](./requirements.md) has what has been tried, and [How It Works](./how-it-works.md#controller-layouts) how to add a layout. Keyboards, mice, wheels and flight sticks aren't combined.
+Anything Linux presents as a gamepad. Xbox and PlayStation controllers are read through their own drivers, and others through the community controller database that SDL also uses; a [Steam Controller](../guide/steam-controller.md) is read too, on Linux 7.3 or newer, though not yet tried on a real one. [Requirements](./requirements.md) has what has been tried, and [How It Works](./how-it-works.md#controller-layouts) how to add a layout. Keyboards, mice, wheels and flight sticks aren't combined.
 
 ### Does it add latency?
 
@@ -52,7 +52,7 @@ Not that you would feel. Measured between a real controller and the virtual one,
 
 ### Do the gyro and the touchpad carry over?
 
-Yes, with a real DualSense or DualShock 4 behind a virtual controller of the **DualSense** identity, and the real one hidden. A game gets one controller's motion at a time, the primary's unless the profile gives the assist a [Gyro](../guide/profiles.md#gyro) button. With a real DualSense behind it, the game's lightbar, player lights and trigger effects reach it too. [Identity](../guide/profiles.md#identity) has the details.
+Yes, with a real DualSense or DualShock 4 behind a virtual controller of the **DualSense** identity, and the real one hidden, or with a Steam Controller behind it, whose right trackpad is the touchpad ([Steam Controller](../guide/steam-controller.md)). A game gets one controller's motion at a time, the primary's unless the profile gives the assist a [Gyro](../guide/profiles.md#gyro) button. With a real DualSense behind it, the game's lightbar, player lights and trigger effects reach it too. [Identity](../guide/profiles.md#identity) has the details.
 
 ## Setup and safety
 

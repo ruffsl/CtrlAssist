@@ -45,7 +45,7 @@ What the virtual controller says it is to games:
 
 If you connect a real DualSense by USB cable, with the hiding service installed, CtrlAssist copies what that controller says of itself, keeps the copy in `~/.local/state/ctrlassist/identities/`, and makes its virtual DualSenses from that from then on; until then it uses a description of the controller that ships with it. You don't need to own one.
 
-A virtual DualSense carries the buttons, sticks, triggers and rumble. Its touchpad and motion sensors report those of a hidden DualSense or DualShock 4 behind it, and nothing with any other pad or one that isn't hidden. With two controllers, the touchpad is the assist's while the assist has a finger on it in Priority, whoever's touched it first in Average, and the controller's that has control in Toggle; the motion sensors follow [Gyro](#gyro). The touchpad moves the desktop's pointer as a real DualSense's does, and the system shows a battery and lights for it, as it does for a real one.
+A virtual DualSense carries the buttons, sticks, triggers and rumble. Its touchpad and motion sensors report those of a hidden DualSense or DualShock 4 behind it, or a [Steam Controller](./steam-controller.md)'s right trackpad and motion, and nothing with any other controller, or a PlayStation one that isn't hidden. With two controllers, the touchpad is the assist's while the assist has a finger on it in Priority, whoever's touched it first in Average, and the controller's that has control in Toggle; the motion sensors follow [Gyro](#gyro). The touchpad moves the desktop's pointer as a real DualSense's does, and the system shows a battery and lights for it, as it does for a real one.
 
 When the controller behind it is a real DualSense, on a USB cable or over Bluetooth, and the hiding service has hidden it ([Visibility](#visibility) left at Hidden, with the service installed), the game's lightbar, player lights and adaptive trigger effects reach it too. A DualShock 4 behind it, either way, gets the lightbar's color. A controller that is only grabbed, or not hidden, gets only the rumble. A controller that a game-streaming host presents as a DualSense is treated as one; whether the lights and trigger effects then reach the controller at the far end depends on the host.
 
@@ -58,7 +58,7 @@ Who feels what a game rumbles, in the modes of two controllers: **Both pads**, t
 Whose motion sensors a game gets, in Priority and Average. A game reads one controller's gyroscope and accelerometer, never a blend, so that the two agree.
 
 - **Primary only**, the default: always the primary's.
-- **Assist**, with a button: the assist's while the assist holds that button of their own controller, and the primary's again when they let go. The game doesn't see that button of the assist's; the primary's same button is untouched.
+- **Assist**, with a button: the assist's while the assist holds that button of their own controller, and the primary's again when they let go. The game doesn't see that button of the assist's; the primary's same button is untouched. A [Steam Controller](./steam-controller.md)'s back buttons can be that button, as **Paddle 1** to **Paddle 4**.
 
 In Toggle the sensors follow whoever has control, and there is no such choice. Only a virtual controller with the DualSense identity carries motion.
 
@@ -68,9 +68,9 @@ How the real controllers are kept from games while the profile runs, so that a g
 
 | Visibility | Do games see the real controllers? |
 |---|---|
-| **Hidden**, the default | No. The hiding service takes them away; where it isn't installed they are grabbed, and Steam is told to leave them alone. |
+| **Hidden**, the default | No. The hiding service takes them away; where it isn't installed they are grabbed, and Steam is told to leave them alone. A [Steam Controller](./steam-controller.md) is always grabbed. |
 | **Grabbed** | Most don't. A program that reads controllers another way, as Steam does, still sees them. |
-| **Visible** | Yes, beside the virtual one. Use it when a game should read a real controller directly, and expect a game that reads both to take a press twice. |
+| **Visible** | Yes, beside the virtual one. Use it when a game should read a real controller directly, and expect a game that reads both to take a press twice. Not with a [Steam Controller](./steam-controller.md#grabbed-not-hidden). |
 
 The Pads page shows the same three words for each controller a running profile is using: what came of it, which is **Grabbed** where Hidden was asked and the hiding service isn't there. [How It Works](../reference/how-it-works.md#hiding) says what the hiding service does.
 

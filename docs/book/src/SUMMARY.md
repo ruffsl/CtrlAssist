@@ -11,6 +11,7 @@
 
 - [GUI & Tray](./guide/gui-tray.md)
 - [Profiles](./guide/profiles.md)
+- [Steam Controller](./guide/steam-controller.md)
 
 # Help
 
