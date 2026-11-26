@@ -23,6 +23,15 @@ pub struct Choice {
     /// A sentence on what choosing it does; empty when the label says it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// What a run of choices has in common, for a form that can say it
+    /// once above them, as a menu can: "Assist holds". Empty for a
+    /// choice that stands by itself.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub caption: String,
+    /// The choice as it reads under its caption, which says the rest:
+    /// "Right bumper". Empty where there is no caption.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub brief: String,
 }
 
 /// What a field holds, and so what a form shows for it.
@@ -109,6 +118,8 @@ fn choice(value: &str, label: &str, description: &str) -> Choice {
         value: value.to_string(),
         label: label.to_string(),
         description: description.to_string(),
+        caption: String::new(),
+        brief: String::new(),
     }
 }
 
@@ -261,7 +272,12 @@ fn described() -> Vec<Field> {
                 // the choice alone still reads.
                 choices: std::iter::once(choice(NO_BUTTON, "Primary only", ""))
                     .chain(button_names().map(|name| {
-                        choice(name, &format!("Assist on {}", button_label(name)), "")
+                        let button = button_label(name);
+                        Choice {
+                            caption: "Assist holds".to_string(),
+                            brief: button.clone(),
+                            ..choice(name, &format!("Assist · {button}"), "")
+                        }
                     }))
                     .collect(),
             },
