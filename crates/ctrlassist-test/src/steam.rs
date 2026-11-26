@@ -1,7 +1,7 @@
 //! A fake Steam Controller, the 2026 one, made through uhid for the
 //! kernel's own `hid-steam` to bind, as a real one is.
 //!
-//! Its bytes are this crate's own reading of the controller's reports,
+//! Its bytes are this crate's own reading of the Steam Controller's reports,
 //! from the kernel's driver and SDL's: a second reading, apart from the
 //! device crate's, so that each checks the other. Its report descriptor
 //! is written here and declares Valve's vendor collection alone: no mouse
@@ -10,10 +10,12 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 /// Valve's vendor number.
 pub const VALVE: u16 = 0x28de;
@@ -37,10 +39,10 @@ const UHID_REFUSED: u16 = 5;
 const BUS_USB: u16 = 3;
 const BUS_BLUETOOTH: u16 = 5;
 
-/// The version the fake's HID device reports, as a cabled controller's.
+/// The version the fake's HID device reports, as a cabled Steam Controller's.
 const VERSION: u32 = 0x0307;
 
-// The controller's report numbers.
+// The Steam Controller's report numbers.
 const STATE: u8 = 0x42;
 const STATE_WITHOUT_ORIENTATION: u8 = 0x45;
 const STATE_WITH_SHORT_CLOCKS: u8 = 0x47;
@@ -58,6 +60,9 @@ const GET_WIRELESS_STATE: u8 = 0xb4;
 /// The length of the field a serial is answered in, as the kernel's
 /// driver asks for it.
 const SERIAL_FIELD: u8 = 0x15;
+/// One tick of report `0x47`'s sensors' clock, in microseconds, as SDL
+/// reads it (`SDL_hidapi_steam_triton.c:347-348`).
+const NARROW_TICK_US: u32 = 32;
 
 /// How the fake is connected, which decides its bus and product number.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -68,10 +73,10 @@ pub enum SteamTransport {
     /// Bluetooth: bus Bluetooth, product `0x1303`.
     Bluetooth,
     /// One of a Puck's slots: bus USB, product `0x1304`. It answers the
-    /// receiver's wireless state on feature report 2, with a controller
+    /// receiver's wireless state on feature report 2, with a pad
     /// in the slot as it is made if `joined`.
     Puck {
-        /// Whether a controller is in the slot as it is made.
+        /// Whether a pad is in the slot as it is made.
         joined: bool,
     },
 }
@@ -119,7 +124,7 @@ impl Received {
     }
 }
 
-/// A button of the controller, or a capacitive touch reported with them,
+/// A button of the pad, or a capacitive touch reported with them,
 /// by its place among the 32 bits of buttons in a state report. A
 /// trackpad's touch is its [`Trackpad`]'s.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -233,26 +238,28 @@ const LEFT_PAD_TOUCH: u32 = 1 << 25;
 pub struct Trackpad {
     /// Whether a thumb is on it: a bit among the buttons.
     pub touched: bool,
-    /// Where across, as the controller reports it.
+    /// Where across, as the pad reports it.
     pub x: i16,
-    /// Where up or down, as the controller reports it.
+    /// Where up or down, as the pad reports it.
     pub y: i16,
     /// How hard it is pressed.
     pub pressure: u16,
 }
 
-/// Which of the controller's state reports a state is sent as.
+/// Which of the pad's state reports a state is sent as.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum StateReport {
     /// `0x42`, 54 bytes: everything, the orientation too.
     Full,
-    /// `0x45`, 46 bytes: everything but the orientation, as the kernel's
-    /// driver names the report it reads over Bluetooth.
+    /// `0x45`, 46 bytes: everything but the orientation. The kernel's
+    /// driver calls it `REPORT_ID_INPUT2`; SDL's names it for Bluetooth
+    /// LE (`ID_TRITON_CONTROLLER_STATE_BLE`).
     WithoutOrientation,
     /// `0x47`, 46 bytes: a newer report SDL reads and the kernel's driver
-    /// doesn't, with the trackpads' clock and a 16-bit sensors' clock. A
-    /// fake declares it only when [made to](SteamControllerBuilder::declaring_report_47).
+    /// doesn't, with the trackpads' clock, and the sensors' clock in 16
+    /// bits of 32 µs ticks. A fake declares it only when
+    /// [made to](SteamControllerBuilder::declaring_report_47).
     WithShortClocks,
 }
 
@@ -277,7 +284,7 @@ impl StateReport {
     }
 }
 
-/// What a state report says, each value as the controller reports it:
+/// What a state report says, each value as the pad reports it:
 /// no axis inverted, no unit converted.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct SteamState {
@@ -297,7 +304,8 @@ pub struct SteamState {
     /// The right trackpad.
     pub right_pad: Trackpad,
     /// The sensors' clock, in microseconds. A [`StateReport::WithShortClocks`]
-    /// carries its low 16 bits.
+    /// carries it in ticks of 32 µs, wrapping at 16 bits, as SDL reads
+    /// that report.
     pub sensor_clock: u32,
     /// The trackpads' clock, which only a [`StateReport::WithShortClocks`]
     /// carries.
@@ -306,7 +314,7 @@ pub struct SteamState {
     pub accel: [i16; 3],
     /// The gyroscope's three axes, in the report's order.
     pub gyro: [i16; 3],
-    /// The controller's orientation as a quaternion, W, X, Y and Z, which
+    /// The pad's orientation as a quaternion, W, X, Y and Z, which
     /// only a [`StateReport::Full`] carries.
     pub orientation: [i16; 4],
 }
@@ -323,6 +331,43 @@ impl SteamState {
     #[must_use]
     pub const fn holds(&self, button: SteamButton) -> bool {
         self.buttons & button.bit() != 0
+    }
+
+    /// A state with something in every control the kernel's driver
+    /// presents, each far enough from rest that the driver's fuzz passes
+    /// it whole: south and two back buttons (upper right, lower left)
+    /// held, the triggers at 1000 and 2000, the left stick at (-20000,
+    /// 12000) and the right at (3000, -3000), the left trackpad touched at
+    /// (1234, -2345) and the right untouched, the accelerometer at (1000,
+    /// -2000, 16384) and the gyroscope at (16, -32, 48).
+    #[must_use]
+    pub const fn busy() -> Self {
+        Self {
+            buttons: SteamButton::South.bit()
+                | SteamButton::UpperRightBack.bit()
+                | SteamButton::LowerLeftBack.bit(),
+            left_trigger: 1000,
+            right_trigger: 2000,
+            left_stick: [-20000, 12000],
+            right_stick: [3000, -3000],
+            left_pad: Trackpad {
+                touched: true,
+                x: 1234,
+                y: -2345,
+                pressure: 500,
+            },
+            right_pad: Trackpad {
+                touched: false,
+                x: 3456,
+                y: -4567,
+                pressure: 0,
+            },
+            sensor_clock: 4000,
+            trackpad_clock: 0,
+            accel: [1000, -2000, 16384],
+            gyro: [16, -32, 48],
+            orientation: [0; 4],
+        }
     }
 
     /// The state as report `kind`, numbered `sequence`.
@@ -358,7 +403,7 @@ impl SteamState {
             put(&pad.pressure.to_le_bytes());
         }
         if kind == StateReport::WithShortClocks {
-            let [low, high, ..] = self.sensor_clock.to_le_bytes();
+            let [low, high, ..] = (self.sensor_clock / NARROW_TICK_US).to_le_bytes();
             put(&[low, high]);
         } else {
             put(&self.sensor_clock.to_le_bytes());
@@ -406,7 +451,7 @@ pub struct SteamBattery {
     pub level: u8,
     /// The battery's voltage, in millivolts.
     pub battery_millivolts: u16,
-    /// The controller's own voltage, in millivolts.
+    /// The pad's own voltage, in millivolts.
     pub system_millivolts: u16,
     /// The charger's voltage, in millivolts.
     pub input_millivolts: u16,
@@ -414,7 +459,7 @@ pub struct SteamBattery {
     pub battery_milliamps: u16,
     /// The charger's current, in milliamperes.
     pub input_milliamps: u16,
-    /// The temperature, as the controller reports it.
+    /// The temperature, as the pad reports it.
     pub temperature: u16,
 }
 
@@ -437,19 +482,27 @@ impl SteamBattery {
     }
 }
 
-/// A short item of a report descriptor: its prefix and its data.
-fn item(prefix: u8, data: &[u8]) -> impl Iterator<Item = u8> {
-    std::iter::once(prefix | data.len() as u8).chain(data.iter().copied())
+/// A short item of a report descriptor with one byte of data.
+const fn item1(prefix: u8, data: u8) -> [u8; 2] {
+    [prefix | 1, data]
+}
+
+/// A short item of a report descriptor with two bytes of data,
+/// little-endian. The fake has no item of four bytes, whose size code
+/// would be 3, not 4.
+const fn item2(prefix: u8, data: u16) -> [u8; 3] {
+    let [low, high] = data.to_le_bytes();
+    [prefix | 2, low, high]
 }
 
 /// One report of Valve's collection: its number, its length after the
 /// number in bytes, and the main item it is (input, output or feature).
 fn declared(id: u8, length: u8, main: u8) -> Vec<u8> {
     [
-        item(0x84, &[id]).collect::<Vec<_>>(), // Report ID.
-        item(0x94, &[length]).collect(),       // Report count.
-        item(0x08, &[id]).collect(),           // Usage.
-        item(main, &[0x02]).collect(),         // Data, variable, absolute.
+        item1(0x84, id),     // Report ID.
+        item1(0x94, length), // Report count.
+        item1(0x08, id),     // Usage.
+        item1(main, 0x02),   // Data, variable, absolute.
     ]
     .concat()
 }
@@ -458,19 +511,19 @@ const INPUT: u8 = 0x80;
 const OUTPUT: u8 = 0x90;
 const FEATURE: u8 = 0xb0;
 
-/// Valve's vendor collection, as the fake declares it: each report it
-/// sends at the length it sends it, the output reports the kernel's
-/// driver writes, and the two feature reports commands go through, each
-/// byte a value of 0 to 255. With `report_47`, the newer state report
-/// too.
+/// Valve's vendor collection, as the fake declares it: the input reports
+/// it can send, each at the length it sends it, the output reports the
+/// kernel's driver writes, and the two feature reports commands go
+/// through, each byte a value of 0 to 255. With `report_47`, the newer
+/// state report too.
 fn valve_collection(report_47: bool) -> Vec<u8> {
     let mut collection: Vec<u8> = [
-        item(0x04, &[0x00, 0xff]).collect::<Vec<_>>(), // Usage page: vendor 0xff00.
-        item(0x08, &[0x01]).collect(),                 // Usage 1.
-        item(0xa0, &[0x01]).collect(),                 // Collection: application.
-        item(0x14, &[0x00]).collect(),                 // Logical minimum 0.
-        item(0x24, &[0xff, 0x00]).collect(),           // Logical maximum 255.
-        item(0x74, &[0x08]).collect(),                 // Report size: 8 bits.
+        &item2(0x04, 0xff00)[..], // Usage page: vendor 0xff00.
+        &item1(0x08, 0x01),       // Usage 1.
+        &item1(0xa0, 0x01),       // Collection: application.
+        &item1(0x14, 0x00),       // Logical minimum 0.
+        &item2(0x24, 0x00ff),     // Logical maximum 255.
+        &item1(0x74, 0x08),       // Report size: 8 bits.
     ]
     .concat();
     let mut inputs = vec![
@@ -564,16 +617,39 @@ pub struct InVirtualMachineCheck(());
 pub const VM_CHECK_MARKER: &str = "/etc/ctrlassist-vm-check";
 
 impl InVirtualMachineCheck {
-    /// The proof, if this is a virtual machine check: the processor says
-    /// it runs under a hypervisor, and [`VM_CHECK_MARKER`] is there.
+    /// The proof, if this is a virtual machine check: the machine says it
+    /// is a virtual one, and [`VM_CHECK_MARKER`] is there and root's, so
+    /// that no user could have put it there for a fake on their desktop.
+    ///
+    /// A machine says it is virtual by any of: an x86 processor's
+    /// `hypervisor` flag, a hypervisor the kernel names in
+    /// `/sys/hypervisor/type`, firmware that names QEMU or KVM as the
+    /// machine's maker or product, or, on ARM, the device tree of QEMU's
+    /// `virt` machine, which the checks run on there.
     #[must_use]
     pub fn confirm() -> Option<Self> {
-        let virtual_machine = std::fs::read_to_string("/proc/cpuinfo").is_ok_and(|info| {
-            info.lines()
-                .filter(|line| line.starts_with("flags"))
-                .any(|line| line.split_whitespace().any(|flag| flag == "hypervisor"))
+        use std::os::unix::fs::MetadataExt as _;
+        let read = |path: &str| std::fs::read_to_string(path).unwrap_or_default();
+        let flagged = read("/proc/cpuinfo")
+            .lines()
+            .filter(|line| line.starts_with("flags"))
+            .any(|line| line.split_whitespace().any(|flag| flag == "hypervisor"));
+        let named = !read("/sys/hypervisor/type").trim().is_empty();
+        let firmware = [
+            "/sys/class/dmi/id/sys_vendor",
+            "/sys/class/dmi/id/product_name",
+        ]
+        .iter()
+        .any(|path| {
+            let text = read(path);
+            text.contains("QEMU") || text.contains("KVM")
         });
-        (virtual_machine && Path::new(VM_CHECK_MARKER).exists()).then_some(Self(()))
+        let device_tree = read("/proc/device-tree/compatible")
+            .split('\0')
+            .any(|compatible| compatible == "linux,dummy-virt");
+        let virtual_machine = flagged || named || firmware || device_tree;
+        let marked = std::fs::metadata(VM_CHECK_MARKER).is_ok_and(|marker| marker.uid() == 0);
+        (virtual_machine && marked).then_some(Self(()))
     }
 }
 
@@ -594,7 +670,7 @@ impl SteamControllerBuilder {
         self
     }
 
-    /// Declaring the newer state report, `0x47`, too, as a controller's
+    /// Declaring the newer state report, `0x47`, too, as a pad's
     /// firmware may.
     pub const fn declaring_report_47(mut self) -> Self {
         self.report_47 = true;
@@ -602,7 +678,7 @@ impl SteamControllerBuilder {
     }
 
     /// With lizard mode's mouse and keyboard in its HID device beside
-    /// Valve's collection, as a real controller's descriptor has them.
+    /// Valve's collection, as a real Steam Controller's descriptor has them.
     /// Only in a virtual machine check: such a fake can type and point
     /// wherever the driver lets it.
     pub const fn with_lizard_mouse_and_keyboard(mut self, _check: InVirtualMachineCheck) -> Self {
@@ -634,9 +710,9 @@ impl SteamControllerBuilder {
 /// it removes it.
 pub struct FakeSteamController {
     uhid: Arc<File>,
-    received: Arc<Mutex<Vec<Received>>>,
+    received: Arc<Log>,
     joined: Arc<AtomicBool>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<OwnedFd>,
     serving: Option<std::thread::JoinHandle<()>>,
     sequence: AtomicU8,
     report_47: bool,
@@ -661,16 +737,77 @@ fn field(event: &mut Vec<u8>, text: &str, width: usize) {
     event.extend_from_slice(&bytes);
 }
 
-/// Waits for `found` to find something, looking every 10 ms for four
-/// seconds at most, so that a test whose wait fails ends.
+/// How long a wait for the driver or the fake gives up after: only so
+/// that a test whose wait fails ends, never so that one passes.
+const GIVE_UP: Duration = Duration::from_secs(10);
+
+/// A socket the kernel sends its uevents to, unread ones kept; none
+/// where netlink can't be used.
+fn kernel_uevents() -> Option<OwnedFd> {
+    use rustix::net::{AddressFamily, SocketFlags, SocketType, bind, netlink, socket_with};
+    let events = socket_with(
+        AddressFamily::NETLINK,
+        SocketType::DGRAM,
+        SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+        Some(netlink::KOBJECT_UEVENT),
+    )
+    .ok()?;
+    // The kernel's group of uevents, 1.
+    bind(&events, &netlink::SocketAddrNetlink::new(0, 1)).ok()?;
+    Some(events)
+}
+
+/// Whether `message`, a kernel uevent, says `hid-steam` has bound the
+/// HID device that says it is plugged at `phys`, and not the client
+/// device the driver makes beside it, in its own group, `0103`.
+fn says_bound(message: &[u8], phys: &str) -> bool {
+    let mut fields = message.split(|byte| *byte == 0);
+    let bind = fields
+        .next()
+        .is_some_and(|header| header.starts_with(b"bind@"));
+    let (mut driver, mut plugged, mut client) = (false, false, false);
+    for field in fields {
+        driver |= field == b"DRIVER=hid-steam";
+        plugged |= field.strip_prefix(b"HID_PHYS=") == Some(phys.as_bytes());
+        client |= field.starts_with(b"MODALIAS=") && field.windows(5).any(|part| part == b"g0103");
+    }
+    bind && driver && plugged && !client
+}
+
+/// Waits for `found` to find something, looking again each time the
+/// kernel says a device came, went or changed, until [`GIVE_UP`]. The
+/// kernel's own uevents are listened to, not udev's, so that this needs
+/// no udev and wakes as soon as sysfs has changed. Where they can't be
+/// listened to, it looks once more at the end.
 fn eventually<T>(mut found: impl FnMut() -> Option<T>) -> Option<T> {
-    for _ in 0..400 {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    use rustix::net::{RecvFlags, recv};
+    // Listening first, so that nothing that happens between the look and
+    // the wait is missed.
+    let events = kernel_uevents();
+    let deadline = Instant::now() + GIVE_UP;
+    let mut buffer = [0u8; 8192];
+    loop {
         if let Some(found) = found() {
             return Some(found);
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        let wait = Timespec::try_from(left).expect("ten seconds fit in a timespec");
+        match &events {
+            Some(events) => {
+                let mut fds = [PollFd::new(events, PollFlags::IN)];
+                let _ = poll(&mut fds, Some(&wait));
+                // What the events say isn't read: the look after them is.
+                while recv(events, &mut buffer, RecvFlags::DONTWAIT).is_ok() {}
+            }
+            None => {
+                let _ = poll(&mut [], Some(&wait));
+            }
+        }
     }
-    None
 }
 
 /// An input device the kernel's driver made for a fake.
@@ -678,16 +815,16 @@ fn eventually<T>(mut found: impl FnMut() -> Option<T>) -> Option<T> {
 pub struct SteamInput {
     /// Its name, which the driver gives it.
     pub name: String,
-    /// Its `uniq`, which the driver gives the controller's serial.
+    /// Its `uniq`, which the driver gives the pad's serial.
     pub uniq: String,
     /// Its event node.
     pub event: PathBuf,
 }
 
-/// The name the driver gives the gamepad of a controller on a cable or
+/// The name the driver gives the gamepad of a pad on a cable or
 /// Bluetooth.
 pub const GAMEPAD: &str = "Steam Controller";
-/// The name the driver gives the gamepad of a controller behind a Puck.
+/// The name the driver gives the gamepad of a pad behind a Puck.
 pub const WIRELESS_GAMEPAD: &str = "Wireless Steam Controller";
 /// The name the driver gives the motion sensors' input device.
 pub const MOTION: &str = "Steam Controller Motion Sensors";
@@ -734,13 +871,17 @@ impl FakeSteamController {
         let number = NEXT.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
         let phys = format!("{}steam/{pid}/{number}", ctrlassist_device::TEST_MARKER);
-        // At most 20 characters, which is what the driver keeps.
-        let serial = format!("CATEST{pid:08X}{number:04X}");
+        // At most 13 characters, so that the battery the driver names
+        // `steam-<serial>` has a thermal zone, whose name is at most 19.
+        let serial = format!("CATEST{}{}", base36(pid, 5), base36(number, 2));
         let joined = match builder.transport {
             SteamTransport::Puck { joined } => joined,
             SteamTransport::Cable | SteamTransport::Bluetooth => true,
         };
         let descriptor = Self::descriptor(builder);
+        // Listening before the device is made, so that the driver's
+        // binding it is heard.
+        let uevents = kernel_uevents();
 
         let mut uhid = OpenOptions::new()
             .read(true)
@@ -769,9 +910,13 @@ impl FakeSteamController {
         uhid.write_all(&event)?;
 
         let uhid = Arc::new(uhid);
-        let received = Arc::new(Mutex::new(Vec::new()));
+        let received = Arc::new(Log::default());
+        received.heard.store(uevents.is_some(), Ordering::Release);
         let joined = Arc::new(AtomicBool::new(joined));
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(rustix::event::eventfd(
+            0,
+            rustix::event::EventfdFlags::CLOEXEC,
+        )?);
         let answers = Answers {
             serial: serial.clone(),
             product: builder.transport.product(),
@@ -780,9 +925,13 @@ impl FakeSteamController {
         let serving = {
             let (uhid, received, stop) =
                 (Arc::clone(&uhid), Arc::clone(&received), Arc::clone(&stop));
+            let phys = phys.clone();
             std::thread::Builder::new()
                 .name("fake-steam".into())
-                .spawn(move || serve(&uhid, &received, &stop, &answers))?
+                .spawn(move || {
+                    let heard = uevents.as_ref().map(|events| (events, phys.as_str()));
+                    serve(&uhid, &received, &stop, heard, &answers);
+                })?
         };
         Ok(Self {
             uhid,
@@ -817,15 +966,40 @@ impl FakeSteamController {
     #[must_use]
     pub fn received(&self) -> Vec<Received> {
         self.received
+            .entries
             .lock()
             .expect("nothing panics while the log is held")
             .clone()
     }
 
-    /// Waits until what it was sent satisfies `wanted`, for four seconds
-    /// at most; whether it did.
+    /// Waits until what it was sent satisfies `wanted`, woken as each
+    /// thing arrives, for ten seconds at most; whether it did.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the serving thread panicked while noting something.
     pub fn wait_for(&self, wanted: impl Fn(&[Received]) -> bool) -> bool {
-        eventually(|| wanted(&self.received()).then_some(())).is_some()
+        let deadline = Instant::now() + GIVE_UP;
+        let mut entries = self
+            .received
+            .entries
+            .lock()
+            .expect("nothing panics while the log is held");
+        loop {
+            if wanted(&entries) {
+                return true;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            entries = self
+                .received
+                .arrived
+                .wait_timeout(entries, left)
+                .expect("nothing panics while the log is held")
+                .0;
+        }
     }
 
     /// Sends `report` as it is: its number, then its bytes.
@@ -836,12 +1010,15 @@ impl FakeSteamController {
     pub fn send(&self, report: &[u8]) -> io::Result<()> {
         // UHID_INPUT2: type u32, size u16, then the report.
         let mut event = UHID_INPUT2.to_ne_bytes().to_vec();
-        let size = u16::try_from(report.len()).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "a report is at most 4096 bytes",
-            )
-        })?;
+        let size = u16::try_from(report.len())
+            .ok()
+            .filter(|size| usize::from(*size) <= UHID_DATA)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "uhid takes a report of at most 4096 bytes",
+                )
+            })?;
         event.extend_from_slice(&size.to_ne_bytes());
         event.extend_from_slice(report);
         (&*self.uhid).write_all(&event)
@@ -874,7 +1051,7 @@ impl FakeSteamController {
         self.send(&battery.report())
     }
 
-    /// Says a controller joined the slot, or left it, as a Puck's slot
+    /// Says a pad joined the slot, or left it, as a Puck's slot
     /// does with report `0x79`; the slot's wireless state is answered so
     /// from then on.
     ///
@@ -883,7 +1060,7 @@ impl FakeSteamController {
     /// Fails if the kernel refuses the write.
     pub fn send_wireless(&self, joined: bool) -> io::Result<()> {
         self.joined.store(joined, Ordering::Release);
-        self.send(&[WIRELESS, if joined { 2 } else { 1 }])
+        self.send(&wireless_report(joined))
     }
 
     /// The input devices the kernel's driver has made for it now.
@@ -919,10 +1096,17 @@ impl FakeSteamController {
         found
     }
 
-    /// The driver's gamepad, once it has made it; nothing if it doesn't
-    /// within four seconds.
+    /// The driver's gamepad, once it has made it and has bound the fake;
+    /// nothing if it doesn't within ten seconds.
+    ///
+    /// The driver makes its devices while it binds the fake, and the HID
+    /// core drops every report the fake sends until binding is done; so
+    /// this, [`motion`](Self::motion), [`raw_node`](Self::raw_node) and
+    /// [`battery`](Self::battery) each wait for that too, and a report
+    /// sent after any of them returns is taken.
     #[must_use]
     pub fn gamepad(&self) -> Option<SteamInput> {
+        self.wait_bound()?;
         eventually(|| {
             self.inputs()
                 .into_iter()
@@ -930,16 +1114,17 @@ impl FakeSteamController {
         })
     }
 
-    /// The driver's motion sensors, once it has made them; nothing if it
-    /// doesn't within four seconds.
+    /// The driver's motion sensors, once it has made them and has bound
+    /// the fake; nothing if it doesn't within ten seconds.
     #[must_use]
     pub fn motion(&self) -> Option<SteamInput> {
+        self.wait_bound()?;
         eventually(|| self.inputs().into_iter().find(|input| input.name == MOTION))
     }
 
     /// Waits until the driver has taken its gamepad and motion sensors
     /// away, as it does while its raw node is open; whether it did within
-    /// four seconds.
+    /// ten seconds.
     #[must_use]
     pub fn inputs_gone(&self) -> bool {
         eventually(|| {
@@ -953,12 +1138,14 @@ impl FakeSteamController {
         .is_some()
     }
 
-    /// Its raw node, once the driver has made it; nothing if it doesn't
-    /// within four seconds. It is the node of the client HID device the
-    /// driver makes beside the fake's own, which has none: the one raw
-    /// node whose HID device says it is plugged where the fake does.
+    /// Its raw node, once the driver has made it and has bound the fake;
+    /// nothing if it doesn't within ten seconds. It is the node of the
+    /// client HID device the driver makes beside the fake's own, which has
+    /// none: the one raw node whose HID device says it is plugged where
+    /// the fake does.
     #[must_use]
     pub fn raw_node(&self) -> Option<PathBuf> {
+        self.wait_bound()?;
         eventually(|| {
             std::fs::read_dir("/sys/class/hidraw")
                 .ok()?
@@ -971,17 +1158,128 @@ impl FakeSteamController {
                 .map(|entry| Path::new("/dev").join(entry.file_name()))
         })
     }
+
+    /// The driver bound to the fake's own HID device, if any: `hid-steam`,
+    /// or `hid-generic` where `hid-steam` is blacklisted. It is the HID
+    /// device that says it is plugged where the fake does and isn't the
+    /// client device `hid-steam` makes beside it, which is in the
+    /// driver's own group, `0103`. The device's link to its driver is
+    /// made as the driver's probe begins, not once it is done.
+    fn driver_linked(&self) -> Option<String> {
+        let device = std::fs::read_dir("/sys/bus/hid/devices")
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|device| {
+                let uevent = trimmed(&device.join("uevent"));
+                let says = |key: &str| {
+                    uevent
+                        .lines()
+                        .find_map(|line| line.strip_prefix(key))
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                says("HID_PHYS=") == self.phys && !says("MODALIAS=").contains("g0103")
+            })?;
+        let driver = std::fs::read_link(device.join("driver")).ok()?;
+        Some(driver.file_name()?.to_string_lossy().into_owned())
+    }
+
+    /// Waits until `hid-steam` has bound the fake, for ten seconds at
+    /// most; something if it did. The kernel says so with a `bind` uevent,
+    /// sent once the driver's probe has returned, which the serving thread
+    /// listens for. Where uevents can't be listened to, the driver's link
+    /// is taken instead, which comes as the probe begins: a report sent
+    /// at once may then still be dropped.
+    fn wait_bound(&self) -> Option<()> {
+        if !self.received.heard.load(Ordering::Acquire) {
+            return eventually(|| (self.driver_linked()? == "hid-steam").then_some(()));
+        }
+        let deadline = Instant::now() + GIVE_UP;
+        let mut entries = self
+            .received
+            .entries
+            .lock()
+            .expect("nothing panics while the log is held");
+        loop {
+            if self.received.bound.load(Ordering::Acquire) {
+                return Some(());
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            entries = self
+                .received
+                .arrived
+                .wait_timeout(entries, left)
+                .expect("nothing panics while the log is held")
+                .0;
+        }
+    }
+
+    /// Whether the kernel's `hid-steam` binds the fake, within ten
+    /// seconds. Another driver may hold it for a while first: where the
+    /// module loads only for the fake, `hid-generic` takes it until
+    /// `hid-steam` is registered and claims it.
+    #[must_use]
+    pub fn bound_by_hid_steam(&self) -> bool {
+        self.wait_bound().is_some()
+    }
+
+    /// The battery the driver makes for the fake, a power supply named
+    /// `steam-<serial>`, once it has made it and has bound the fake;
+    /// nothing if it doesn't within ten seconds.
+    #[must_use]
+    pub fn battery(&self) -> Option<PathBuf> {
+        self.wait_bound()?;
+        let battery = Path::new("/sys/class/power_supply").join(format!("steam-{}", self.serial));
+        eventually(|| battery.exists().then(|| battery.clone()))
+    }
+}
+
+/// The wireless event a Puck's slot sends, report `0x79`: a pad joined
+/// the slot (2), or left it (1).
+#[must_use]
+pub const fn wireless_report(joined: bool) -> [u8; 2] {
+    [WIRELESS, if joined { 2 } else { 1 }]
+}
+
+/// `number` in base 36, upper case, in exactly `width` digits, wrapping.
+fn base36(mut number: u32, width: usize) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut digits = vec![b'0'; width];
+    for digit in digits.iter_mut().rev() {
+        *digit = DIGITS[(number % 36) as usize];
+        number /= 36;
+    }
+    String::from_utf8(digits).expect("base-36 digits are ASCII")
 }
 
 impl Drop for FakeSteamController {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        // Wakes the serving thread to stop.
+        let _ = rustix::io::write(&*self.stop, &1u64.to_ne_bytes());
         if let Some(serving) = self.serving.take() {
             let _ = serving.join();
         }
         // Closing uhid, with the serving thread's handle gone, removes
         // the device.
     }
+}
+
+/// What the fake was sent, whether `hid-steam` has bound it, and a way to
+/// wait for either.
+#[derive(Default)]
+struct Log {
+    entries: Mutex<Vec<Received>>,
+    /// Set when the kernel says `hid-steam` has bound the fake: its probe
+    /// has returned, and the HID core passes it the fake's reports.
+    bound: AtomicBool,
+    /// Whether the kernel's uevents could be listened to, without which
+    /// `bound` is never set.
+    heard: AtomicBool,
+    arrived: Condvar,
 }
 
 /// What the fake answers the driver's questions with.
@@ -1013,7 +1311,7 @@ impl Answers {
             (CONTROLLER_COMMANDS, GET_ATTRIBUTES) => {
                 // Each attribute a tag and a 32-bit value: the product,
                 // capabilities, the firmware's build time and the board,
-                // none of them a real controller's, and the connection's
+                // none of them a real pad's, and the connection's
                 // interval, 4000 µs, which the driver reads.
                 let attributes: [(u8, u32); 5] = [
                     (1, u32::from(self.product)),
@@ -1048,16 +1346,25 @@ impl Answers {
     }
 }
 
-/// Answers the kernel through uhid, `handle`, until told to stop, noting what it
-/// was sent.
-fn serve(mut handle: &File, received: &Mutex<Vec<Received>>, stop: &AtomicBool, answers: &Answers) {
-    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+/// Answers the kernel through uhid, `handle`, until `stop` is written,
+/// noting what it was sent in `log`, and, by the kernel's uevents on
+/// `heard`, when `hid-steam` has bound the fake plugged at its `phys`.
+fn serve(
+    mut handle: &File,
+    log: &Log,
+    stop: &OwnedFd,
+    heard: Option<(&OwnedFd, &str)>,
+    answers: &Answers,
+) {
+    use rustix::event::{PollFd, PollFlags, poll};
+    use rustix::net::{RecvFlags, recv};
 
     let note = |what: Received| {
-        received
+        log.entries
             .lock()
             .expect("nothing panics while the log is held")
             .push(what);
+        log.arrived.notify_all();
     };
     let word = |event: &[u8], at: usize| {
         u32::from_ne_bytes([event[at], event[at + 1], event[at + 2], event[at + 3]])
@@ -1066,14 +1373,37 @@ fn serve(mut handle: &File, received: &Mutex<Vec<Received>>, stop: &AtomicBool, 
     // The last command SET on each feature report, by its number.
     let mut last: Vec<Option<Vec<u8>>> = vec![None; 256];
     let mut event = vec![0u8; UHID_EVENT];
-    while !stop.load(Ordering::Acquire) {
-        // Nothing says the fake is dropped, so look often.
-        let mut fds = [PollFd::new(&handle, PollFlags::IN)];
-        let wait = Timespec {
-            tv_sec: 0,
-            tv_nsec: 5_000_000,
-        };
-        let _ = poll(&mut fds, Some(&wait));
+    let mut message = vec![0u8; 8192];
+    loop {
+        let mut fds = vec![
+            PollFd::new(&handle, PollFlags::IN),
+            PollFd::new(stop, PollFlags::IN),
+        ];
+        if let Some((events, _)) = heard {
+            fds.push(PollFd::new(events, PollFlags::IN));
+        }
+        match poll(&mut fds, None) {
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(_) => return,
+        }
+        if !fds[1].revents().is_empty() {
+            return;
+        }
+        if let Some((events, phys)) = heard {
+            while let Ok((size, _)) = recv(events, &mut message, RecvFlags::DONTWAIT) {
+                if says_bound(&message[..size.min(message.len())], phys) {
+                    // Set under the log's lock, so that a waiter between
+                    // its look and its wait isn't missed.
+                    let _held = log
+                        .entries
+                        .lock()
+                        .expect("nothing panics while the log is held");
+                    log.bound.store(true, Ordering::Release);
+                    log.arrived.notify_all();
+                }
+            }
+        }
         loop {
             match handle.read(&mut event) {
                 Ok(0) | Err(_) => break,
@@ -1126,22 +1456,22 @@ fn serve(mut handle: &File, received: &Mutex<Vec<Received>>, stop: &AtomicBool, 
 }
 
 /// The line the running kernel's module aliases have for `hid-steam`
-/// taking the 2026 controller on a cable.
+/// taking the 2026 Steam Controller on a cable.
 const CABLE_ALIAS: &str = "alias hid:b0003g*v000028DEp00001302 hid_steam";
 
-/// Whether the running kernel's `hid-steam` knows the 2026 controller,
+/// Whether the running kernel's `hid-steam` knows the 2026 Steam Controller,
 /// and if not, why not.
 ///
 /// The module's own table isn't in sysfs, loaded or not, so this reads
 /// the module aliases `depmod` wrote for the running kernel, where any
 /// distribution keeps them (`/lib/modules`, `/usr/lib/modules`, and on
 /// NixOS the booted system's), the built-in modules' aliases too. Where
-/// none can be read, it goes by the kernel's release: the controller came
+/// none can be read, it goes by the kernel's release: the Steam Controller came
 /// with Linux 7.3.
 ///
 /// # Errors
 ///
-/// Says why the kernel doesn't know the controller.
+/// Says why the kernel doesn't know the Steam Controller.
 pub fn kernel_knows_steam_controller() -> Result<(), String> {
     let release = trimmed(Path::new("/proc/sys/kernel/osrelease"));
     let mut read_any = false;
@@ -1330,14 +1660,15 @@ mod tests {
         assert_eq!(short[1..], full[1..46]);
 
         // The newer report: the trackpads' clock before them, and the
-        // sensors' clock in 16 bits.
+        // sensors' clock in ticks of 32 µs, wrapping at 16 bits:
+        // 0x1718191a µs is 0x00b8c0c8 ticks.
         let newer = state.report(StateReport::WithShortClocks, 9);
         assert_eq!(newer.len(), 46);
         assert_eq!(newer[0], 0x47);
         assert_eq!(newer[1..18], full[1..18]);
         assert_eq!(newer[18..20], [0x1c, 0x1b]);
         assert_eq!(newer[20..32], full[18..30]);
-        assert_eq!(newer[32..34], [0x1a, 0x19]);
+        assert_eq!(newer[32..34], [0xc8, 0xc0]);
         assert_eq!(newer[34..46], full[34..46]);
     }
 
@@ -1443,7 +1774,7 @@ mod tests {
     }
 
     #[test]
-    fn a_puck_s_slot_answers_whether_a_controller_is_in_it() {
+    fn a_puck_s_slot_answers_whether_a_pad_is_in_it() {
         let asked = [2, 0xb4];
         assert_eq!(
             answers(0x1304, true).reply(2, Some(&asked)).unwrap()[..4],
@@ -1489,5 +1820,68 @@ mod tests {
             let ended = items.iter().filter(|(tag, _)| *tag == 0xc0).count();
             assert_eq!(opened, ended);
         }
+    }
+
+    /// The serial is 13 characters for any process and fake, so that the
+    /// battery's name, `steam-<serial>`, leaves its thermal zone a name
+    /// of at most 19; and a number reads back from its digits.
+    #[test]
+    fn a_serial_is_short_enough_for_the_battery_s_name() {
+        assert_eq!(base36(0, 2), "00");
+        assert_eq!(base36(35, 2), "0Z");
+        assert_eq!(base36(36, 2), "10");
+        // The most a process number can be, 2^22.
+        let pid = base36(1 << 22, 5);
+        assert_eq!(u32::from_str_radix(&pid, 36), Ok(1 << 22));
+        let serial = format!("CATEST{pid}{}", base36(1295, 2));
+        assert_eq!(serial.len(), 13);
+        assert!(format!("steam-{serial}").len() <= 19);
+    }
+
+    /// Only the kernel's word that `hid-steam` bound the fake's own HID
+    /// device is taken for its binding: not another device's, not the
+    /// driver's client device, not another driver's, not another action.
+    #[test]
+    fn binding_is_heard_only_from_the_fake_s_own_device() {
+        let phys = "ctrlassist/test/steam/1/0";
+        let message = |action: &str, driver: &str, phys: &str, group: &str| {
+            format!(
+                "{action}@/devices/virtual/misc/uhid/0003:28DE:1302.0001\0ACTION={action}\0DRIVER={driver}\0HID_PHYS={phys}\0MODALIAS=hid:b0003g{group}v000028DEp00001302\0"
+            )
+            .into_bytes()
+        };
+        assert!(says_bound(
+            &message("bind", "hid-steam", phys, "0001"),
+            phys
+        ));
+        assert!(!says_bound(
+            &message("add", "hid-steam", phys, "0001"),
+            phys
+        ));
+        assert!(!says_bound(
+            &message("bind", "hid-generic", phys, "0001"),
+            phys
+        ));
+        assert!(!says_bound(
+            &message("bind", "hid-steam", "elsewhere", "0001"),
+            phys
+        ));
+        assert!(!says_bound(
+            &message("bind", "hid-steam", phys, "0103"),
+            phys
+        ));
+        // A prefix of the fake's place isn't its place.
+        assert!(!says_bound(
+            &message("bind", "hid-steam", "ctrlassist/test/steam/1/01", "0001"),
+            phys
+        ));
+    }
+
+    /// A descriptor item's size code is its data's length, for the one
+    /// and two bytes the fake's items have.
+    #[test]
+    fn an_item_s_size_code_is_its_length() {
+        assert_eq!(item1(0x84, 0x42), [0x85, 0x42]);
+        assert_eq!(item2(0x04, 0xff00), [0x06, 0x00, 0xff]);
     }
 }

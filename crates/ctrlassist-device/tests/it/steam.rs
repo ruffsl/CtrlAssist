@@ -1,10 +1,12 @@
 //! The fake Steam Controller against the kernel's own `hid-steam`: what
 //! the driver makes of it, and its raw node.
 //!
-//! Only Linux 7.3 and later know the controller, so each test skips on an
-//! older kernel, CI's runner among them, and runs in the `device` virtual
-//! machine check's kernel instead. None changes the driver's
-//! `lizard_mode`, which is machine-wide and its owner's.
+//! Only Linux 7.3 and later know the Steam Controller, so each test skips
+//! on an older kernel, CI's runner among them: these run only on a
+//! developer's machine. The `device` virtual machine check drives the same
+//! fake through the fixture on 7.3, and checks there what the driver makes
+//! of it under both values of `lizard_mode`. None of these changes the
+//! driver's `lizard_mode`, which is machine-wide and its owner's.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Write as _};
@@ -14,8 +16,7 @@ use std::path::Path;
 
 use ctrlassist_test::{
     ChargeState, FakeSteamController, GAMEPAD, MOTION, Received, StateReport, SteamBattery,
-    SteamButton, SteamState, SteamTransport, Trackpad, WIRELESS_GAMEPAD, can_make_steam_pads,
-    can_open,
+    SteamButton, SteamState, SteamTransport, WIRELESS_GAMEPAD, can_make_steam_pads, can_open,
 };
 use evdev::{AbsoluteAxisCode, KeyCode};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -53,38 +54,7 @@ fn lizard_mode() -> bool {
         .is_ok_and(|value| value.trim() == "Y")
 }
 
-/// A state with something in every control the driver presents, and the
-/// trackpad it doesn't touched only on the left.
-fn busy_state() -> SteamState {
-    SteamState {
-        left_trigger: 1000,
-        right_trigger: 2000,
-        left_stick: [-20000, 12000],
-        right_stick: [3000, -3000],
-        left_pad: Trackpad {
-            touched: true,
-            x: 1234,
-            y: -2345,
-            pressure: 500,
-        },
-        right_pad: Trackpad {
-            touched: false,
-            x: 3456,
-            y: -4567,
-            pressure: 0,
-        },
-        sensor_clock: 4000,
-        // Far enough from rest that the driver's fuzz passes each whole.
-        accel: [1000, -2000, 16384],
-        gyro: [16, -32, 48],
-        ..SteamState::default()
-    }
-    .with(SteamButton::South)
-    .with(SteamButton::UpperRightBack)
-    .with(SteamButton::LowerLeftBack)
-}
-
-/// The driver binds the fake as it binds a controller: it asks the
+/// The driver binds the fake as it binds a pad: it asks the
 /// serial and the attributes, which the fake answers so nothing waits,
 /// and makes a gamepad and a motion device that carry the fake's serial
 /// and its `phys`. The daemon's own reading of what is connected takes
@@ -137,17 +107,51 @@ fn a_fake_steam_controller_is_bound_by_the_kernel_s_driver() {
         (3, 0x28de, 0x1302)
     );
 
+    // Closing uhid removes the device before the close returns.
     let phys = fake.phys().to_string();
     drop(fake);
-    let mut gone = false;
-    for _ in 0..400 {
-        if !ctrlassist_test::phys_connected(&phys) {
-            gone = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+    assert!(
+        !ctrlassist_test::phys_connected(&phys),
+        "the fake's gamepad went with it"
+    );
+}
+
+/// The driver makes the fake a battery, named by its serial, which
+/// follows the fake's battery reports, in lizard mode too. A desktop's
+/// battery applet may show it while the test runs.
+#[test]
+fn the_fake_s_battery_follows_its_battery_reports() {
+    const TEST: &str = "the_fake_s_battery_follows_its_battery_reports";
+    if !can_make_steam_pads(TEST) {
+        return;
     }
-    assert!(gone, "the fake's gamepad went with it");
+    let fake = FakeSteamController::new().unwrap();
+    let battery = fake.battery().expect("the driver makes the battery");
+    let read = |name: &str| {
+        std::fs::read_to_string(battery.join(name))
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+    for (charge, level, status) in [
+        (ChargeState::Charging, 42, "Charging"),
+        (ChargeState::Discharging, 77, "Discharging"),
+        (ChargeState::Charged, 100, "Full"),
+    ] {
+        fake.send_battery(&SteamBattery {
+            charge,
+            level,
+            battery_millivolts: 3900,
+            system_millivolts: 3300,
+            input_millivolts: 5000,
+            battery_milliamps: 300,
+            input_milliamps: 500,
+            temperature: 28,
+        })
+        .unwrap();
+        assert_eq!(read("capacity"), level.to_string());
+        assert_eq!(read("status"), status);
+    }
 }
 
 /// What the driver makes of the fake's state report, control by control,
@@ -185,7 +189,7 @@ fn the_driver_reads_the_fake_s_state_as_its_layout_says() {
     // Lizard mode off, without the watchdog Steam keeps, as the driver
     // writes it.
     let gamepad_mode: &[u8] = &[0x87, 0x06, 0x09, 0x00, 0x00, 0x47, 0x00, 0x00];
-    let state = busy_state();
+    let state = SteamState::busy();
     if lizard_mode() {
         assert!(
             set_in_order(&fake.received(), &[&[0x85], &[0x8e]]),
@@ -271,15 +275,15 @@ fn read_reports(raw: &mut File, count: usize) -> Vec<Vec<u8>> {
 }
 
 /// Opening the raw node, as Steam and SDL do, takes the driver's input
-/// devices away; every report the fake declares is read from it byte for
-/// byte, the newer state report among them when declared; and an output
-/// report and a feature report written to it reach the fake as they were
-/// written. Closed, the driver makes its devices anew and asks the serial
-/// again.
+/// devices away; the three state reports and the battery report the fake
+/// sends, the newer state report declared for it, are read from it byte
+/// for byte; and an output report and a feature report written to it
+/// reach the fake as they were written. Closed, the driver makes its
+/// devices anew and asks the serial again.
 ///
 /// The node is root's on a machine with no rule like Steam's to give it
 /// to the seat, so this skips there; the `device` virtual machine check
-/// opens it as root.
+/// opens it as root through the fixture.
 #[test]
 fn the_raw_node_takes_the_input_devices_and_passes_reports_both_ways() {
     const TEST: &str = "the_raw_node_takes_the_input_devices_and_passes_reports_both_ways";
@@ -313,7 +317,7 @@ fn the_raw_node_takes_the_input_devices_and_passes_reports_both_ways() {
     };
     let asked_before = serials_asked(&fake.received());
 
-    let state = busy_state();
+    let state = SteamState::busy();
     let battery = SteamBattery {
         charge: ChargeState::Charging,
         level: 42,
@@ -363,12 +367,12 @@ fn the_raw_node_takes_the_input_devices_and_passes_reports_both_ways() {
     );
 }
 
-/// A Puck's slot binds with no controller in it, and has a gamepad only
+/// A Puck's slot binds with no pad in it, and has a gamepad only
 /// while one is: the driver asks the receiver's wireless state as it
-/// binds, and follows the slot's word that a controller joined or left.
+/// binds, and follows the slot's word that a pad joined or left.
 #[test]
-fn a_puck_s_slot_has_a_gamepad_only_while_a_controller_is_in_it() {
-    const TEST: &str = "a_puck_s_slot_has_a_gamepad_only_while_a_controller_is_in_it";
+fn a_puck_s_slot_has_a_gamepad_only_while_a_pad_is_in_it() {
+    const TEST: &str = "a_puck_s_slot_has_a_gamepad_only_while_a_pad_is_in_it";
     if !can_make_steam_pads(TEST) {
         return;
     }
@@ -386,20 +390,18 @@ fn a_puck_s_slot_has_a_gamepad_only_while_a_controller_is_in_it() {
     assert!(fake.inputs().is_empty(), "{:?}", fake.inputs());
 
     fake.send_wireless(true).unwrap();
-    let gamepad = fake
-        .gamepad()
-        .expect("a controller joining makes the gamepad");
+    let gamepad = fake.gamepad().expect("a pad joining makes the gamepad");
     assert_eq!(gamepad.name, WIRELESS_GAMEPAD);
     assert_eq!(gamepad.uniq, fake.serial());
     fake.send_wireless(false).unwrap();
     assert!(fake.inputs_gone(), "{:?}", fake.inputs());
 }
 
-/// Over Bluetooth the fake is on that bus with the controller's number
-/// there, and bound as the controller.
+/// Over Bluetooth the fake is on that bus with the Steam Controller's number
+/// there, and bound as one.
 #[test]
-fn a_fake_on_bluetooth_is_bound_as_the_controller() {
-    const TEST: &str = "a_fake_on_bluetooth_is_bound_as_the_controller";
+fn a_fake_on_bluetooth_is_bound_as_a_steam_controller() {
+    const TEST: &str = "a_fake_on_bluetooth_is_bound_as_a_steam_controller";
     if !can_make_steam_pads(TEST) {
         return;
     }
