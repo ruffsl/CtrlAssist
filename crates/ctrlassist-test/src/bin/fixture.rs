@@ -130,6 +130,9 @@ enum Command {
     VirtualSteam {
         #[arg(long, default_value_t = 0)]
         pulse: u64,
+        /// The serial it says it has.
+        #[arg(long, default_value = "FAFIXTURE0001")]
+        serial: String,
     },
     /// Create a fake Steam Controller on a cable and hold it, saying its
     /// `serial`, its `phys`, the driver's `gamepad` and `motion` event
@@ -565,12 +568,10 @@ fn run(command: Command) -> Result<()> {
             say("created")?;
             hold(pulse, |pressed| pad.report(u8::from(pressed), 0, 0))
         }
-        Command::VirtualSteam { pulse } => {
-            let mut pad = VirtualPad::steam_controller(
-                "CAFIXTURE0001",
-                ctrlassist_device::STEAM_CONTROLLER_FIRMWARE,
-            )
-            .context("creating the virtual Steam Controller")?;
+        Command::VirtualSteam { pulse, serial } => {
+            let mut pad =
+                VirtualPad::steam_controller(&serial, ctrlassist_device::STEAM_CONTROLLER_FIRMWARE)
+                    .context("creating the virtual Steam Controller")?;
             say(format_args!("node {}", pad.event_node().display()))?;
             let mut pressed = false;
             loop {

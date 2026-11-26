@@ -13,8 +13,8 @@
 //! sends and takes, each at its length, and none of the keyboard and
 //! pointer a real pad has beside them, which a virtual one would add to
 //! the desktop and never use. SDL 3.4 makes the same of a stand-in
-//! under this and under a real pad's descriptor; what Steam makes of it
-//! nobody has seen.
+//! under this and under a real pad's descriptor, and Steam takes a pad
+//! under it for a Steam Controller on its cable.
 //!
 //! What a reader sets is kept here and goes no further: the settings
 //! Steam and SDL write, lizard mode and the motion sensors' mode among
@@ -23,8 +23,13 @@
 //!
 //! A report is sent as the pad's state changes and not otherwise: a
 //! real pad reports every 4 ms, changed or not, and neither the
-//! kernel's driver nor SDL takes a quiet pad for one that has gone.
-//! Whether Steam does is to be seen.
+//! kernel's driver nor SDL takes a quiet pad for one that has gone, and
+//! Steam was seen to keep one that sat for seven minutes.
+//!
+//! Three things it says of itself are as Steam asks, each found by
+//! trying one with Steam: a unit serial that starts with a capital `F`,
+//! a board serial that starts [`BOARD_PREFIX`], and the build time of
+//! the firmware Steam itself has for the pad ([`KNOWN_FIRMWARE`]).
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -71,6 +76,26 @@ const SERIAL_FIELD: u8 = 0x15;
 /// The most a serial is: the battery the driver names `steam-<serial>`
 /// has a thermal zone, whose name is at most 19 characters.
 pub(crate) const SERIAL_MOST: usize = 13;
+/// Which string a reader asks for: the board's serial, or the unit's
+/// (the byte after the field's length in `ID_GET_STRING_ATTRIBUTE`).
+const BOARD_SERIAL: u8 = 0;
+/// What a board's serial starts with for Steam to take it for one. Seen
+/// with Steam, by trial: it says "PCB Serial# invalid", nine times over,
+/// of one that starts otherwise, an empty one and the unit's own among
+/// them, and nothing of one that starts `MEDA` or `MEDB`.
+const BOARD_PREFIX: &str = "MEDB";
+
+/// The board's serial a pad of unit serial `serial` says: Steam's prefix
+/// for one, then as much of the unit's, past its first character, as the
+/// field holds, so that two pads' differ as their units' do.
+fn board_serial(serial: &str) -> String {
+    let rest: String = serial.chars().skip(1).collect();
+    BOARD_PREFIX
+        .chars()
+        .chain(rest.chars())
+        .take(SERIAL_MOST)
+        .collect()
+}
 
 // Event types from linux/uhid.h.
 const UHID_STOP: u32 = 3;
@@ -213,9 +238,14 @@ fn answer(serial: &str, firmware: u32, last: &[u8; FEATURE_SIZE]) -> [u8; FEATUR
         GET_STRING_ATTRIBUTE => {
             reply = [0; FEATURE_SIZE];
             // The field's length, which string, then the string: the
-            // serial for the unit's and the board's alike.
+            // unit's serial, or the board's.
             let head = [FEATURE_PAD, command, SERIAL_FIELD, which];
-            let text = serial.as_bytes();
+            let board = board_serial(serial);
+            let text = if which == BOARD_SERIAL {
+                board.as_bytes()
+            } else {
+                serial.as_bytes()
+            };
             let text = text.get(..text.len().min(SERIAL_MOST)).unwrap_or(text);
             for (place, byte) in reply.iter_mut().zip(head.iter().chain(text)) {
                 *place = *byte;
@@ -579,13 +609,23 @@ mod tests {
     #[test]
     fn the_driver_s_questions_are_answered_and_the_rest_acknowledged() {
         let serial = answer(
-            "CAVIRTUAL0001",
+            "FAVIRTUAL0001",
             KNOWN_FIRMWARE,
             &command(&[1, 0xae, 0x16, 0x01]),
         );
         assert_eq!(serial[..4], [1, 0xae, 0x15, 0x01]);
-        assert_eq!(&serial[4..17], b"CAVIRTUAL0001");
+        assert_eq!(&serial[4..17], b"FAVIRTUAL0001");
         assert_eq!(serial[17], 0);
+        // The board's serial is its own, as Steam takes one, and follows
+        // the unit's.
+        let board = answer(
+            "FAVIRTUAL0001",
+            KNOWN_FIRMWARE,
+            &command(&[1, 0xae, 0x16, 0x00]),
+        );
+        assert_eq!(board[..4], [1, 0xae, 0x15, 0x00]);
+        assert_eq!(&board[4..17], b"MEDBAVIRTUAL0");
+        assert_eq!(board[17], 0);
         // A serial too long for the driver's battery is cut.
         let long = answer(
             "0123456789ABCDEFGH",

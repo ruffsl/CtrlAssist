@@ -785,12 +785,12 @@ async fn a_steam_controller_behind_a_virtual_one_is_read_whole_at_its_raw_node()
     let raw = std::path::PathBuf::from(setup.sinks[0].node.clone().unwrap());
     assert!(raw.to_string_lossy().starts_with("/dev/hidraw"), "{raw:?}");
     // The daemon lists the pad behind it and not its own virtual one,
-    // whose serial is `CA` and eleven hex digits, as no fake's is.
+    // whose serial is `F` and twelve hex digits, as no fake's is.
     let pads = client.list_pads().unwrap();
     assert!(pads.iter().any(|pad| pad.id == id_of(&fake)), "{pads:?}");
     let own = |id: &str| {
-        id.strip_prefix("address:CA").is_some_and(|rest| {
-            rest.len() == 11 && rest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        id.strip_prefix("address:F").is_some_and(|rest| {
+            rest.len() == 12 && rest.bytes().all(|byte| byte.is_ascii_hexdigit())
         })
     };
     let listed: Vec<&str> = pads

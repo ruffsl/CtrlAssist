@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** drafted with the maintainer on 2026-11-25, who then stepped away for the night with the coordinator left to build through the stops. The research is in, and the design it left to decide is under For review. Building.
-- **Next action:** the maintainer's trial of the identity with Steam: whether Steam lists it, keeps it while it is idle, and leaves its firmware alone ([The identity's stages](#the-identitys-stages), all five built). Then a real pad, for everything under `docs/concerns/steam-controller-*.md`. Left besides: step 7 (the Puck and Bluetooth beyond what works already, and a controller Steam holds, now [an idea](../ideas/steam-controller-held-by-steam.md)). A draft pull request, #64, is open onto the guide's branch. The plan stays until a pad has been tried, the maintainer's choice.
+- **Next action:** a real pad, for everything under `docs/concerns/steam-controller-*.md`, and a game played through the identity. Steam takes the virtual pad ([The trial with Steam](#the-trial-with-steam)); all five of the identity's stages are built. Left besides: step 7 (the Puck and Bluetooth beyond what works already, and a controller Steam holds, now [an idea](../ideas/steam-controller-held-by-steam.md)). Pull request #64 is open onto `main`, stacked on the guide's, #63. The plan stays until a pad has been tried, the maintainer's choice.
 - **Branch:** `feat/steam-controller`, from `docs/user-guide` at `383c798`, so the new user guide is there for the agents to read. Pushed on 2026-11-26 at the maintainer's word, with no pull request, and pushed freely since, by the same. When the guide's pull request (#63) has merged, this branch's own goes to `main`.
 
 ## Goal
@@ -266,19 +266,31 @@ Decided with the maintainer on 2026-11-26, after the second spike:
 
 - **Its descriptor is written here,** Valve's collection alone, with the retail one the fallback if Steam doesn't take it.
 - **Its serial is the same each time a profile's output is made,** as a virtual DualSense's address is, so that Steam keeps one configuration for it.
-- **Everything a reader sets is absorbed:** settings acknowledged and kept in the stand-in, a firmware no reader has newer, and nothing but rumble and haptics passed to a pad behind it.
+- **Everything a reader sets is absorbed:** settings acknowledged and kept in the stand-in, a firmware no reader has newer (changed after the trial, below), and nothing but rumble and haptics passed to a pad behind it.
 - **It is the "Steam Controller" identity,** `steam-controller` in a profile.
 - **It is for Steam and games on SDL.** The kernel's driver keeps every Steam Controller's gamepad silent until a player holds its menu button, a virtual one's too, and nothing is done about that: the guide and the choice's help say to choose another identity for other games.
-- **It reports as its state changes,** and not on a beat, as a real one does every 4 ms: neither the kernel's driver nor SDL takes a quiet pad for one gone. Whether Steam does is for the maintainer's trial; a beat is added only if it does.
+- **It reports as its state changes,** and not on a beat, as a real one does every 4 ms: neither the kernel's driver nor SDL takes a quiet pad for one gone. Whether Steam does is for the maintainer's trial; a beat is added only if it does. It doesn't: Steam kept one for seven minutes untouched.
 - **The node shown for it is its raw node,** which is what reads it and stays; its gamepad's event node goes whenever anything opens that.
 
 The stages, each gated and pushed:
 
 1. **The emulator,** in the device crate: the descriptor, the driver's questions answered, pad state as the state report, rumble read back. Done: the kernel's driver binds it on 7.3, and what is written is read at its raw node.
-2. **A profile that asks for it:** the identity in the profile's schema, the daemon making one with its serial, the clients' choice and its help. Done: `identity = "steam-controller"` makes one, its serial `CA` and eleven hex digits from the daemon's home, the setup and the output; a fake Steam Controller behind it is read whole at its raw node; the packages load `hid-steam` beside `hid-playstation`; and the guide says what it is for.
+2. **A profile that asks for it:** the identity in the profile's schema, the daemon making one with its serial, the clients' choice and its help. Done: `identity = "steam-controller"` makes one, its serial from the daemon's home, the setup and the output (`CA` and eleven hex digits at first, `F` and twelve since the trial); a fake Steam Controller behind it is read whole at its raw node; the packages load `hid-steam` beside `hid-playstation`; and the guide says what it is for.
 3. **The merge rules for what is new:** the stick and grip touches following whichever pad gives the motion, a touch nameable as the Gyro button and not withheld. Done: in the mux, for every identity; `left-stick-touch`, `right-stick-touch`, `left-grip-touch` and `right-grip-touch` are names `assist-gyro` takes and a switch doesn't.
 4. **Haptics** passed to a real Steam Controller behind it, by the Rumble choice. Done, after more research at the maintainer's word: the haptic output reports are `0x81` to `0x85`, each a struct in SDL's headers, and `0x86` to `0x89` carry sound, by others' captures, the last by its shape alone; the coordinator had taken them for the feature commands of the same numbers, and said nobody knew them. Every one is passed, the maintainer's choice, whole and with the side it names, as events through a queue the input thread never waits on, the oldest let go where a writer is held up. What they feel like is [a concern](../concerns/steam-controller-haptics.md); a Haptics choice of its own is [an idea](../ideas/steam-controller-haptics.md).
 5. **The checks and the guide:** a virtual machine check with SDL's probe against the daemon's own virtual pad, the guide's page and the architecture, and the spike deleted. Done: the probe is `ctrlassist-sdl-probe`, a binary of the test crate behind its `sdl-probe` feature, on `sdl3-sys` and the system's SDL3, which the dev shell and CI's image have; the `device` check runs it against a virtual Steam Controller the fixture makes. The maintainer chose Rust over the spike's C, and pointed out that CI's image is Ubuntu 26.04, which has SDL3, where the coordinator had taken it for 24.04.
+
+## The trial with Steam
+
+The maintainer's, on 2026-11-26, with the dev stack and Steam on the development host; the coordinator read Steam's logs (`controller.txt`, `controller_ui.txt`, `steamui_system.txt`), ran its hardware updater's check by hand (`hardwareupdater.x86_64 --check-for-updates`, from its own directory, which changes nothing), and, with leave, made short-lived virtual pads of other serials beside it.
+
+- **Steam takes the virtual pad for a Steam Controller on its cable,** under the descriptor written here: "Controller uses V1 HID protocol via USB", a slot and a configuration of its own. The retail descriptor is not needed.
+- **It keeps one that is quiet:** opened at 09:40:28 and closed only as the daemon was restarted, seven minutes later. No beat is needed.
+- **It offers firmware whenever the pad's build time differs from its own,** a later one as a downgrade. The pad said the latest time 32 bits hold, and was offered one; the update, once begun, failed five times over for want of a pad in its bootloader, and harmed nothing. Steam's time is in its updater's configuration (`TRITON_FW_TS` in `bin/hardwareupdater/hardwareupdater.cfg`), which the daemon now reads as it makes the pad, falling back to the time current on this day. With that, the updater's check says there is nothing to offer.
+- **It takes a unit serial only if it starts with a capital `F`.** Of any other it says "Invalid or missing unit serial number" and gives the pad `28de-1302-5087675`, the same for every such pad, so that two would be one to it. The daemon's serial is now `F` and twelve hex digits, which Steam shows as the pad's own.
+- **It takes a board serial that starts `MEDA` or `MEDB`,** and says "PCB Serial# invalid", nine times, of any other tried: empty, the unit's own, `M` or `ME` or `MED` followed by other characters, digits. The pad's is now `MEDB` and the unit's serial from its second character.
+
+Not seen: a game played through it; a real Steam Controller behind it; what Steam writes to it beyond what the two other projects captured (`0xC1`, `0xDC`, `0xE2`, `0xF2` and `0xED`, each acknowledged here as it was set, which Steam has not complained of).
 
 ## Deviations
 

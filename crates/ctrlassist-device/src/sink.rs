@@ -479,7 +479,10 @@ impl VirtualPad {
     /// Creates a virtual Steam Controller through uhid, answers the
     /// kernel's driver as it binds, and waits for the pad's raw node.
     /// `serial` is the pad's own, which a reader keeps what it knows of
-    /// the pad by: at most 13 characters of it are used. `firmware` is
+    /// the pad by: at most 13 characters of it are used. Steam takes a
+    /// serial for a pad's only if it starts with a capital `F`, and gives
+    /// every pad whose serial doesn't the same one of its own making, so
+    /// that two such pads are one to it. `firmware` is
     /// the build time it says its firmware has, which Steam offers to
     /// change unless it is the time of the firmware Steam has itself:
     /// [`STEAM_CONTROLLER_FIRMWARE`](crate::STEAM_CONTROLLER_FIRMWARE)

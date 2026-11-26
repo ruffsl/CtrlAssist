@@ -1171,11 +1171,14 @@ fn address_of(home: &Path, setup: &str, sink: &str) -> [u8; 6] {
 /// `setup`: the same each time that setup runs, since Steam keeps what it
 /// knows of a pad by its serial, and another for every other sink and
 /// every other daemon, as [`address_of`] is. Thirteen characters, the
-/// most the kernel's driver can name the pad's battery by.
+/// most the kernel's driver can name the pad's battery by: a capital `F`,
+/// which Steam asks a pad's serial to start with, giving every pad whose
+/// serial doesn't one serial of its own making between them, and twelve
+/// hex digits.
 fn serial_of(home: &Path, setup: &str, sink: &str) -> String {
     let hash = keys::pad_id(&format!("{}/{setup}/{sink}", home.display()));
-    let tail: String = hash.chars().take(11).collect();
-    format!("CA{}", tail.to_uppercase())
+    let tail: String = hash.chars().take(12).collect();
+    format!("F{}", tail.to_uppercase())
 }
 
 /// Makes one virtual pad of a setup.
