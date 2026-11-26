@@ -293,6 +293,7 @@ jobs:
           tool: |
             lychee@0.24.2
             mdbook@0.5.4
+            mdbook-mermaid@0.17.1
             just
 
       - name: Cache

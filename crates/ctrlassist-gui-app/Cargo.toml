@@ -17,6 +17,21 @@ path = "src/lib.rs"
 name = "ctrlassist-gui"
 path = "src/main.rs"
 
+# Makes the user guide's screenshots (`just docs-screenshots`). Built only
+# with its feature, so the shipped window has no software renderer.
+[[bin]]
+name = "ctrlassist-screenshots"
+path = "src/bin/screenshots.rs"
+required-features = ["screenshots"]
+
+[features]
+screenshots = [
+    "dep:i-slint-core",
+    "dep:png",
+    "slint/renderer-software",
+    "slint/software-renderer-systemfonts",
+]
+
 [dependencies]
 anyhow = { workspace = true }
 ashpd = { workspace = true }
@@ -28,6 +43,8 @@ ctrlassist-icons = { workspace = true }
 ctrlassist-protocol = { workspace = true }
 fontique = { workspace = true }
 futures-util = { workspace = true }
+i-slint-core = { workspace = true, optional = true }
+png = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 slint = { workspace = true }

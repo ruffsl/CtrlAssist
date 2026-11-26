@@ -217,8 +217,11 @@
             # commit history.
             release-plz
             # The user guide (`just docs-*`): mdBook builds it, and lychee
-            # checks its local links and anchors.
+            # checks its local links and anchors. mdbook-mermaid renders
+            # ```mermaid blocks; its JS assets are gitignored and made again
+            # by `mdbook-mermaid install` at each build.
             mdbook
+            mdbook-mermaid
             lychee
             just
             just-lsp

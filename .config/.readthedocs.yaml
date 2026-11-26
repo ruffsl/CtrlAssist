@@ -9,28 +9,45 @@
 # The generated pages under docs/book/src/generated/ are committed and
 # refreshed by `just docs-gen`; this build is a plain `mdbook build` and
 # never runs cargo. mdbook is pinned to the version the Nix dev shell
-# ships, so local and Read the Docs builds match. The book includes no
-# Git LFS file, so nothing is pulled.
+# ships, so local and Read the Docs builds match.
 version: 2
 
 build:
   os: ubuntu-lts-latest
-  # build.jobs requires a tool. Nothing here compiles: mdbook comes as a
-  # release binary (see `install`).
+  # build.jobs requires a tool. Nothing here compiles: mdbook and
+  # mdbook-mermaid come as release binaries (see `install`).
   tools:
     rust: latest
+  # The book's pages show screenshots, which are Git LFS files. Read the
+  # Docs checks out without LFS, so they would ship as pointer stubs;
+  # git-lfs from Ubuntu fixes that.
+  apt_packages:
+    - git-lfs
   # Neither `sphinx` nor `mkdocs` is set, so Read the Docs runs only the
   # jobs listed here. Each command runs in a new shell.
   jobs:
-    # The official musl release binary, checked against the SHA-256 that
-    # GitHub publishes for the release asset. Bump the version and its
+    # apt packages install after `post_checkout`, so the pull runs here.
+    post_system_dependencies:
+      - git lfs install --local
+      - git lfs pull --include "docs/screenshots/*,docs/artwork/*"
+      # Fail if any image is still an LFS pointer stub.
+      - "! grep -rl 'git-lfs.github.com/spec/v1' docs/screenshots docs/artwork"
+    # The official musl release binaries, checked against the SHA-256 that
+    # GitHub publishes for each release asset. Bump a version and its
     # digest together: `gh release view <tag> -R rust-lang/mdBook --json
-    # assets` lists the digests.
+    # assets` (badboy/mdbook-mermaid for mermaid) lists the digests.
     install:
       - mkdir -p $HOME/bin
       - wget -q -O /tmp/mdbook.tar.gz https://github.com/rust-lang/mdBook/releases/download/v0.5.4/mdbook-v0.5.4-x86_64-unknown-linux-musl.tar.gz
       - echo "5222beabd3e37dc5be0d18ff99b79058469354db5c220153a1b92db5ba12be89  /tmp/mdbook.tar.gz" | sha256sum -c -
       - tar -xzf /tmp/mdbook.tar.gz -C $HOME/bin
+      - wget -q -O /tmp/mdbook-mermaid.tar.gz https://github.com/badboy/mdbook-mermaid/releases/download/v0.17.1/mdbook-mermaid-v0.17.1-x86_64-unknown-linux-musl.tar.gz
+      - echo "42aca57eea8521971cc595fe4bb853c5b8b7d9f7138a2ec9f14a0a72c210922d  /tmp/mdbook-mermaid.tar.gz" | sha256sum -c -
+      - tar -xzf /tmp/mdbook-mermaid.tar.gz -C $HOME/bin
+    # $HOME/bin goes on PATH per command: mdbook finds the mermaid
+    # preprocessor by name.
     build:
       html:
-        - $HOME/bin/mdbook build docs/book --dest-dir $READTHEDOCS_OUTPUT/html
+        # Make the gitignored mermaid JS assets again (the same each time).
+        - PATH=$HOME/bin:$PATH mdbook-mermaid install docs/book
+        - PATH=$HOME/bin:$PATH mdbook build docs/book --dest-dir $READTHEDOCS_OUTPUT/html

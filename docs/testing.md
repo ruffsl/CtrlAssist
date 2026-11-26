@@ -86,7 +86,7 @@ The testing backend has no event loop and no key helper, but `slint::Window::dis
 
 ### Not done on purpose
 
-- **No pixel snapshots.** Slint ships none in its testing backend, and pixel comparisons are the most flake-prone kind of test; the alternative (the software renderer, bundled fonts and a tolerance) is heavy upkeep for little signal.
+- **No pixel snapshots.** Slint ships none in its testing backend, and pixel comparisons are the most flake-prone kind of test; the alternative (the software renderer, bundled fonts and a tolerance) is heavy upkeep for little signal. The user guide's screenshots are drawn that way (`just docs-screenshots`), for people to look at: they are not compared with anything.
 - **No tests through Slint's MCP server.** It is for looking at the window while developing (`.claude/slint.md` has its quirks); tests use the in-process testing backend only.
 
 ### Pin

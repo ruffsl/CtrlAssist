@@ -7,6 +7,7 @@ Deferred work and designs set aside, one file each. An entry says what the idea 
 
 - [`gui.md`](gui.md) — a settings window.
 - [`tui.md`](tui.md) — a terminal interface.
+- [`cookbook.md`](cookbook.md) — 0.4.0's recipes, untried on the rewrite, as a page of the user guide.
 - [`cli-watch.md`](cli-watch.md) — a verb that stays running and prints each change.
 - [`graph-editor.md`](graph-editor.md) — editing a graph visually.
 - [`switch-chords.md`](switch-chords.md) — a button chord as the switch.

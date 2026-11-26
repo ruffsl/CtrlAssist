@@ -25,6 +25,7 @@ Working space for in-progress plan docs. Which changes need one, and the steps f
 - [`tisvlay-template-overhaul.md`](tisvlay-template-overhaul.md) — the clean-slate rewrite on the TisVlay template: decisions, spikes and their exit criteria, then the build.
 - [`gui.md`](gui.md) — the settings window, on TisVlay's GUI: what is copied, the panes, and the build steps.
 - [`bluetooth-output.md`](bluetooth-output.md) — whole output reports for a DualSense on Bluetooth: lights and trigger effects, not rumble alone.
+- [`user-guide.md`](user-guide.md) — the user guide reshaped after TisVlay's now that there is a settings window, with screenshots a command makes from made-up state.
 - [`review.md`](review.md) — a workspace review before 0.5.0: every finding triaged by area, the hiding service without root, and the fix batches.
 
 Remove the entry when the plan retires and its file deletes (per Convention above). Git history is the archive, so there is no retired-plans list here.
