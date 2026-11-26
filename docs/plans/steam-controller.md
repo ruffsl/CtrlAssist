@@ -174,7 +174,17 @@ Decisions made and findings written while the maintainer was away, each for them
 - **The raw node read is closed before the writer's** as a pad is dropped, so that a writer said to be done has closed the node for good, for every pad given its raw node, and a Steam Controller is given back to its driver after its last rumble report.
 - **Not carried,** and said where the next person will look (`steam.rs`, `output.rs`'s `SteamNode`, the architecture): a trackpad's pressure, the pad's orientation, the battery, and its haptics beyond plain rumble.
 
-Only hardware can settle: whether lizard mode off alone stops the pad typing and pointing; how long its watchdog is, and so whether three seconds is soon enough; whether a real pad sends motion before the sensors are asked for; and what a real trackpad's place is while untouched, which nothing here reads.
+After its review, mended the same day:
+
+- **The raw node must be the pad's own:** `set_raw` reads its report descriptor and refuses, with `InvalidInput`, one that declares neither state report (`0x42`, `0x45`). The driver starts a Valve HID device's other interfaces, a Puck's charging pins' among them, with the same numbers and raw nodes of their own on which the pad says nothing; given one, the pad would have read as at rest for ever.
+- **A failed `set_raw` on a Steam Controller means the pad is dropped and found again,** since the caller's opening the raw node had the driver take the event node away, or will; the one exception is that refusal, whose node took nothing away. Run all the same, such a pad is reported gone as its event node says so, which is safe. The API is otherwise as it was: `Identifiers::is_steam_controller`, `Pad::set_raw`, the reports.
+- **A report whose sensor clock hasn't moved is no new motion reading,** as SDL reads it: the motion and its count stay as they were, and the other controls are the report's. Counted, its interval of nothing would have been counted again on top of the next by a virtual DualSense, and a game's integration overshot.
+- **The raw node is read away again the first time the input thread listens to it,** with the same bounded read that never waits: what the pad sent between being given its node and its setup starting, up to a quarter of a second of a real pad's reports, was played before.
+- **What is due goes before the next level:** after each write the writer makes what has fallen due, so levels told faster than writes complete can't hold lizard mode off back for ever, and the pad's watchdog turn lizard mode on in the middle of a rumble.
+- **The watchdog matters for a daemon that hangs, not one that crashes:** a crash closes the raw node and the driver sets the pad up again itself (`hid-steam.c:1406`). For review 3's reason for keeping it on is that, read so.
+- **Lizard mode off gets one try,** and the next an interval later, as SDL tries; the kernel tries a feature report again on `EPIPE` up to 50 times, because "the wireless controller fails with EPIPE". Whether a pad behind a Puck or over Bluetooth needs that is for hardware; nothing is retried or delayed now. Said at the write, in `output.rs`.
+
+Only hardware can settle: whether lizard mode off alone stops the pad typing and pointing; how long its watchdog is, and so whether three seconds is soon enough; whether a pad behind a Puck or over Bluetooth needs a feature report tried again; whether a real pad sends motion before the sensors are asked for; and what a real trackpad's place is while untouched, which nothing here reads.
 
 ## Deviations
 
