@@ -6,16 +6,16 @@
 KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
 KERNEL=="uhid", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uhid"
 
-# A Steam Controller (2026) is read through a raw node: the one of the
-# client HID device its kernel driver, hid-steam, makes beside the
-# controller's own, and puts in a group of its own (0103). That is the
+# A Steam Controller (2026) pad is read through a raw node: the one of
+# the client HID device its kernel driver, hid-steam, makes beside the
+# pad's own, and puts in a group of its own (0103). That is the
 # only way to have all it reports, and while the node is open the driver
-# takes the controller's joystick away from games. A stock machine gives
+# takes the pad's joystick away from games. A stock machine gives
 # the node to root alone; this gives it to the user at the seat, for the
-# controller's four product numbers and that client device only: on USB,
+# pad's four product numbers and that client device only: on USB,
 # 1302 on a cable, 1304 in a Puck and 1305 in a Steam Machine's
 # receiver, and 1303 over Bluetooth. Any program of that user's can then
-# read the controller raw and write to it, which Steam's own rules allow
+# read the pad raw and write to it, which Steam's own rules allow
 # already wherever Steam is installed.
 SUBSYSTEM=="hidraw", DRIVERS=="hid-steam", ATTRS{modalias}=="hid:b0003g0103v000028DEp0000130[245]", TAG+="uaccess"
 SUBSYSTEM=="hidraw", DRIVERS=="hid-steam", ATTRS{modalias}=="hid:b0005g0103v000028DEp00001303", TAG+="uaccess"
