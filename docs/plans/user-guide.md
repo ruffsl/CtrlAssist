@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** approved by the maintainer on 2026-11-25, after the capture was spiked (see Spike: drawing the window off screen). Steps 1 to 6 are done; the maintainer passed step 2's stop on the capture seen, and asked for steps 4 to 7 to be run through without a stop between.
-- **Next action:** step 7, the README.
+- **Status:** approved by the maintainer on 2026-11-25, after the capture was spiked (see Spike: drawing the window off screen). Steps 1 to 7 are done; the maintainer passed step 2's stop on the capture seen, and asked for steps 4 to 7 to be run through without a stop between.
+- **Next action:** the maintainer's read of the guide and the README as they now stand; then step 8, the tray's shots, and step 9.
 - **Branch:** `docs/user-guide`, from `main` at `39c1b4c`.
 
 ## Goal
@@ -204,4 +204,6 @@ For the maintainer:
 - **The tool is kept out of the coverage figure,** as the tray's desktop files are: it is run and looked at, and its lines would otherwise count as untested against a floor half a point below the figure.
 - **The accents are not Plasma's swatches but what Plasma reports for them under a dark scheme,** which is darker: the window is told the reported color, and TisVlay's screenshots, taken on such a desktop, show it. The values were read off those screenshots; the swatches are in Plasma's `AccentColorUI.qml`.
 - **What the pictures showed that the plan didn't expect,** left for the steps that write the pages: a profile's form fields (Identity, Rumble, Gyro, Visibility) are below the fold at the size the window opens at, so `profiles_pane.png` shows a profile's status, inputs and the top of its outputs; and the window says "Games see a Xbox pad", an article to mend in the window.
+- **The README's note that 0.5.0 isn't released sits below the overview,** not at the top: the guide's introduction includes the overview, and the note is about a branch, which a reader of the guide isn't on.
+- **No link to the guide inside the README's Features,** as the plan's first list had for the modes: the overview is included into the guide, where a link written for the repository's root doesn't resolve. The Documentation stanza has the links.
 - **The license bundle names the software renderer,** a crate the packages don't hold: the bundle is made with every feature on, the tool's among them. Its license is Slint's, as the rest of Slint's crates are.

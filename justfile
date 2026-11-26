@@ -328,9 +328,12 @@ licenses-html:
 
 generated_docs := "docs/book/src/generated"
 
+# The mdbook-mermaid JS assets are gitignored and made again each build.
+#
 # Build the user guide into docs/book/book/
 [group('docs')]
 docs-build:
+    mdbook-mermaid install docs/book
     mdbook build docs/book
 
 # External links are skipped, so the check needs no network and gives the
@@ -355,6 +358,7 @@ docs-screenshots:
 # Serve the user guide with live reload at http://localhost:3000
 [group('docs')]
 docs-serve:
+    mdbook-mermaid install docs/book
     mdbook serve docs/book --open
 
 # Rewrite the guide's generated pages from the code they document
