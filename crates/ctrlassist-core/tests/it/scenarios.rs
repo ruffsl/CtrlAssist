@@ -1203,14 +1203,85 @@ fn a_thumb_resting_on_a_stick_does_not_own_it() {
         step(&mut graph, ASSIST, resting);
         let sink = *graph.sink(SinkId(0));
         assert_eq!(sink.get(LEFT_X), 0.75, "{mode:?}: still the primary's");
-        for touch in TOUCHES {
-            assert_eq!(sink.get(touch), 1.0, "{mode:?}: {touch:?} is the game's");
-        }
         // Moving it is what takes it, or a share of it.
         step(&mut graph, ASSIST, resting.with(LEFT_X, -0.25));
         let expected = if mode == Mode::Priority { -0.25 } else { 0.25 };
         assert_eq!(graph.sink(SinkId(0)).get(LEFT_X), expected, "{mode:?}");
     }
+}
+
+/// The touches go with the motion: the game is shown the thumbs and
+/// hands of the pad whose sensors it reads, and nobody else's, so that
+/// aiming switched on by a thumb on a stick is switched on by the thumb
+/// of whoever it is turned by.
+#[test]
+fn the_touches_are_the_motion_s_pad_s() {
+    let resting = TOUCHES
+        .iter()
+        .fold(pad(), |state, touch| state.with(*touch, 1.0));
+    for mode in [Mode::Priority, Mode::Average] {
+        let mut config = MuxConfig::new(mode, &Layout::gamepad());
+        config.gyro = Some(Switch {
+            input: Some(1),
+            button: LEFT_BUMPER,
+        });
+        let mut graph = mux_graph(config);
+        // The assist's resting hands are nothing to the game while the
+        // motion is the primary's.
+        step(&mut graph, ASSIST, resting);
+        for touch in TOUCHES {
+            assert_eq!(graph.sink(SinkId(0)).get(touch), 0.0, "{mode:?}: {touch:?}");
+        }
+        // The primary's are.
+        step(&mut graph, PRIMARY, pad().with(RIGHT_STICK_TOUCH, 1.0));
+        let sink = *graph.sink(SinkId(0));
+        assert_eq!(sink.get(RIGHT_STICK_TOUCH), 1.0, "{mode:?}");
+        assert_eq!(sink.get(LEFT_STICK_TOUCH), 0.0, "{mode:?}");
+        // While the assist holds the button that hands the motion over,
+        // theirs are, and the primary's are not.
+        step(&mut graph, PRIMARY, pad());
+        step(&mut graph, ASSIST, resting.with(LEFT_BUMPER, 1.0));
+        for touch in TOUCHES {
+            assert_eq!(graph.sink(SinkId(0)).get(touch), 1.0, "{mode:?}: {touch:?}");
+        }
+    }
+    // In a toggle, whoever has control's.
+    let mut graph = mux(Mode::Toggle);
+    step(&mut graph, ASSIST, resting);
+    assert_eq!(graph.sink(SinkId(0)).get(LEFT_GRIP_TOUCH), 0.0);
+    step(&mut graph, PRIMARY, pad().with(LEFT_GRIP_TOUCH, 1.0));
+    assert_eq!(graph.sink(SinkId(0)).get(LEFT_GRIP_TOUCH), 1.0);
+    assert_eq!(graph.sink(SinkId(0)).get(RIGHT_GRIP_TOUCH), 0.0);
+}
+
+/// A touch can be what hands the motion over, and is then not taken out
+/// as a button is: the game is shown it with the motion, which is what a
+/// game that aims while a thumb rests on a stick waits for.
+#[test]
+fn a_touch_that_hands_the_motion_over_goes_out_with_it() {
+    let mut config = MuxConfig::new(Mode::Priority, &Layout::gamepad());
+    config.gyro = Some(Switch {
+        input: Some(1),
+        button: RIGHT_STICK_TOUCH,
+    });
+    let mut graph = mux_graph(config);
+    let primary = pad().with_motion(turning(30.0, 1));
+    let assist = pad().with_motion(turning(-200.0, 9));
+    step(&mut graph, PRIMARY, primary);
+    step(&mut graph, ASSIST, assist);
+    assert_eq!(graph.sink(SinkId(0)).motion(), primary.motion());
+    step(&mut graph, ASSIST, assist.with(RIGHT_STICK_TOUCH, 1.0));
+    let sink = *graph.sink(SinkId(0));
+    assert_eq!(
+        sink.motion(),
+        assist.motion(),
+        "the assist's while they touch"
+    );
+    assert_eq!(sink.get(RIGHT_STICK_TOUCH), 1.0, "and the touch with it");
+    step(&mut graph, ASSIST, assist);
+    let sink = *graph.sink(SinkId(0));
+    assert_eq!(sink.motion(), primary.motion(), "the primary's again");
+    assert_eq!(sink.get(RIGHT_STICK_TOUCH), 0.0);
 }
 
 #[test]

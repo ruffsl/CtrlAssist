@@ -571,7 +571,8 @@ pub struct Plan {
 
 /// Button names, as profiles write them. The back buttons are in SDL's
 /// order: upper right, upper left, lower right, lower left. Capacitive
-/// touch has no name: a hand resting on a pad is no button to press.
+/// touch is none of them: a hand resting on a pad is no button to press,
+/// and is named only for what hands the motion over ([`TOUCHES`]).
 const BUTTONS: [(&str, Control); 20] = [
     ("south", gamepad::SOUTH),
     ("east", gamepad::EAST),
@@ -595,12 +596,46 @@ const BUTTONS: [(&str, Control); 20] = [
     ("paddle-4", gamepad::PADDLE_4),
 ];
 
+/// The capacitive touches' names, which only `assist-gyro` and a mux's
+/// `gyro` take: a thumb resting on a stick or a hand on a grip, as a
+/// Steam Controller senses them, hands the motion over while it rests
+/// there, and goes out with it.
+const TOUCHES: [(&str, Control); 4] = [
+    ("left-stick-touch", gamepad::LEFT_STICK_TOUCH),
+    ("right-stick-touch", gamepad::RIGHT_STICK_TOUCH),
+    ("left-grip-touch", gamepad::LEFT_GRIP_TOUCH),
+    ("right-grip-touch", gamepad::RIGHT_GRIP_TOUCH),
+];
+
 /// What `assist-gyro` says for no button, as leaving it out does.
 pub const NO_BUTTON: &str = "none";
 
 /// The buttons' names, as profiles write them.
 pub fn button_names() -> impl Iterator<Item = &'static str> {
     BUTTONS.iter().map(|(name, _)| *name)
+}
+
+/// The names of what can hand the motion over: every button, then the
+/// capacitive touches.
+pub fn gyro_button_names() -> impl Iterator<Item = &'static str> {
+    BUTTONS.iter().chain(&TOUCHES).map(|(name, _)| *name)
+}
+
+/// The button or touch `name` that hands the motion over.
+fn gyro_button(at: &str, name: &str) -> Result<Control, ProfileError> {
+    match TOUCHES.iter().find(|(known, _)| *known == name) {
+        Some((_, control)) => Ok(*control),
+        None => button(at, name).or_else(|_| {
+            let known: Vec<&str> = gyro_button_names().collect();
+            error(
+                at,
+                format!(
+                    "no button named `{name}`; the buttons are {}",
+                    known.join(", ")
+                ),
+            )
+        }),
+    }
 }
 
 fn button(at: &str, name: &str) -> Result<Control, ProfileError> {
@@ -994,7 +1029,7 @@ impl Profile {
                         }
                         // Where the profile wrote it, before the node it
                         // becomes says where it never was.
-                        button("assist-gyro", &name)?;
+                        gyro_button("assist-gyro", &name)?;
                         Some(GyroSpec {
                             button: name,
                             input: "assist".to_string(),
@@ -1195,7 +1230,7 @@ fn mux(
         }
         let handed = Switch {
             input: Some(position("gyro.input", &gyro.input)?),
-            button: button(&format!("{at}.gyro.button"), &gyro.button)?,
+            button: gyro_button(&format!("{at}.gyro.button"), &gyro.button)?,
         };
         config.gyro = Some(handed);
     }

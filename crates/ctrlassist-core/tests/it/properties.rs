@@ -35,6 +35,14 @@ const BUTTONS: [Control; 21] = [
     RIGHT_GRIP_TOUCH,
     MODE,
 ];
+
+/// The capacitive touches among them, which go with the motion.
+const TOUCH: [Control; 4] = [
+    LEFT_STICK_TOUCH,
+    RIGHT_STICK_TOUCH,
+    LEFT_GRIP_TOUCH,
+    RIGHT_GRIP_TOUCH,
+];
 const DPAD: [Control; 4] = [DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT];
 const STICKS: [[Control; 2]; 2] = [[LEFT_X, LEFT_Y], [RIGHT_X, RIGHT_Y]];
 const TRIGGERS: [Control; 2] = [LEFT_TRIGGER, RIGHT_TRIGGER];
@@ -191,7 +199,9 @@ proptest! {
             prop_assert_eq!(rebuilt, sink, "the reported changes rebuild the virtual pad's controls");
 
             for button in BUTTONS {
-                let expected = primary.get(button) != 0.0 || assist.get(button) != 0.0;
+                // A touch is the motion's pad's, here the primary's.
+                let expected = primary.get(button) != 0.0
+                    || (assist.get(button) != 0.0 && !TOUCH.contains(&button));
                 prop_assert_eq!(sink.get(button) != 0.0, expected, "{:?}", button);
             }
             let dpad_owner = if any_held(&assist, &DPAD) { assist } else { primary };
@@ -251,7 +261,9 @@ proptest! {
                 prop_assert!((low..=high).contains(&sink.get(*axis)), "{:?}", axis);
             }
             for button in BUTTONS.iter().chain(&DPAD) {
-                let expected = primary.get(*button) != 0.0 || assist.get(*button) != 0.0;
+                // A touch is the motion's pad's, here the primary's.
+                let expected = primary.get(*button) != 0.0
+                    || (assist.get(*button) != 0.0 && !TOUCH.contains(button));
                 prop_assert_eq!(sink.get(*button) != 0.0, expected);
             }
         }
@@ -260,7 +272,8 @@ proptest! {
     /// A button of the assist's that hands motion over, a back button or
     /// any other in no group or a group of one: the motion is the assist's
     /// exactly while the assist holds it, and the primary's otherwise, and
-    /// the game sees only the primary's same button.
+    /// the game sees only the primary's same button, but for a capacitive
+    /// touch, which the game sees of whoever the motion is.
     #[test]
     fn an_engaging_button_hands_motion_over_while_held_and_is_never_the_games(
         mode in prop::sample::select(vec![Mode::Priority, Mode::Average]),
@@ -279,7 +292,9 @@ proptest! {
             let held = assist.get(button) != 0.0;
             let carrier = if held { assist } else { primary };
             prop_assert_eq!(sink.motion(), carrier.motion(), "{:?} held: {}", button, held);
-            prop_assert_eq!(sink.get(button), primary.get(button), "{:?}", button);
+            // A touch that hands the motion over goes out with it.
+            let shown = if TOUCH.contains(&button) { carrier } else { primary };
+            prop_assert_eq!(sink.get(button), shown.get(button), "{:?}", button);
         }
     }
 

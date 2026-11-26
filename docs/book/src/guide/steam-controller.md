@@ -27,7 +27,7 @@ The lights and trigger effects a game sends a virtual DualSense don't reach it, 
 
 ## As an identity
 
-A profile's **Identity** can be **Steam Controller**: the virtual controller then says it is one, on a cable, and carries what only this controller has. Both trackpads, the four back buttons, the quick access button and the touch of a thumb on a stick or a hand on a grip reach the game as a real one's do. A controller that isn't a Steam Controller can be behind it too: a DualSense's touchpad is its right trackpad, and what the controller lacks stays at rest.
+A profile's **Identity** can be **Steam Controller**: the virtual controller then says it is one, on a cable, and carries what only this controller has. Both trackpads, the four back buttons, the quick access button and the touch of a thumb on a stick or a hand on a grip reach the game as a real one's do. A controller that isn't a Steam Controller can be behind it too: a DualSense's touchpad is its right trackpad, and what the controller lacks stays at rest. With two controllers, each trackpad is one player's at a time, as a DualSense's touchpad is, and the touches of thumbs and hands come from whoever's motion the game is getting ([Gyro](./profiles.md#gyro)).
 
 It is for Steam, and for games that read a Steam Controller as Steam does, which those built on a recent SDL do. **Any other game gets nothing from it.** The system keeps every Steam Controller silent to such games until the player holds its Menu button for half a second, a virtual one included, and CtrlAssist leaves that as it is. For those games choose **Xbox** or **DualSense**.
 

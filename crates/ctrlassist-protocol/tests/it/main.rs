@@ -1113,9 +1113,10 @@ mod form {
     }
 
     /// The Gyro field offers every button a profile can name, the back
-    /// buttons among them, each read under "Assist holds".
+    /// buttons among them, and then the capacitive touches, each read
+    /// under "Assist holds".
     #[test]
-    fn the_gyro_field_offers_the_back_buttons() {
+    fn the_gyro_field_offers_the_back_buttons_and_the_touches() {
         let fields = form::fields();
         let gyro = fields
             .iter()
@@ -1135,18 +1136,52 @@ mod form {
                 )
             })
             .collect();
-        // After no button and the sixteen there were before them, last.
-        assert_eq!(read.len(), 21, "{read:?}");
+        // After no button and the sixteen there were before them, and
+        // the touches last.
+        assert_eq!(read.len(), 25, "{read:?}");
         assert_eq!(read[0].0, "none");
         assert_eq!(read[16].0, "touchpad");
         assert_eq!(
-            read[17..],
+            read[17..21],
             [
                 ("paddle-1", "Assist · Paddle 1", "Assist holds", "Paddle 1"),
                 ("paddle-2", "Assist · Paddle 2", "Assist holds", "Paddle 2"),
                 ("paddle-3", "Assist · Paddle 3", "Assist holds", "Paddle 3"),
                 ("paddle-4", "Assist · Paddle 4", "Assist holds", "Paddle 4"),
             ]
+        );
+        let touches: Vec<&str> = read[21..].iter().map(|choice| choice.0).collect();
+        assert_eq!(
+            touches,
+            [
+                "left-stick-touch",
+                "right-stick-touch",
+                "left-grip-touch",
+                "right-grip-touch"
+            ]
+        );
+        assert_eq!(read[21].3, "Left stick touch");
+        assert!(choices[21].description.contains("with the motion"));
+    }
+
+    /// A touch hands the motion over and is no switch: `assist-gyro`
+    /// takes its name, and a toggle's switch doesn't.
+    #[test]
+    fn a_touch_is_named_for_the_gyro_and_not_for_a_switch() {
+        let gyro = "mode = \"priority\"\nprimary = \"model:0001:0002\"\nassist = \"model:0003:0004\"\nassist-gyro = \"right-stick-touch\"\n";
+        let planned = super::plan(gyro).unwrap();
+        let ctrlassist_core::NodeSpec::Mux { config, .. } = &planned.graph.nodes[0] else {
+            panic!("{planned:?}");
+        };
+        assert_eq!(
+            config.gyro.map(|gyro| gyro.button),
+            Some(ctrlassist_core::gamepad::RIGHT_STICK_TOUCH)
+        );
+        let switch = "[source.a]\npad = \"model:0001:0002\"\n[source.b]\npad = \"model:0003:0004\"\n[node.m]\nmux = \"toggle\"\ninputs = [\"a\", \"b\"]\nswitch = \"right-stick-touch\"\n[sink.out]\ninput = \"m\"\n";
+        let refused = super::plan(switch).unwrap_err().to_string();
+        assert!(
+            refused.contains("no button named `right-stick-touch`"),
+            "{refused}"
         );
     }
 

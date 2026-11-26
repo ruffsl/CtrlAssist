@@ -276,7 +276,7 @@ The stages, each gated and pushed:
 
 1. **The emulator,** in the device crate: the descriptor, the driver's questions answered, pad state as the state report, rumble read back. Done: the kernel's driver binds it on 7.3, and what is written is read at its raw node.
 2. **A profile that asks for it:** the identity in the profile's schema, the daemon making one with its serial, the clients' choice and its help. Done: `identity = "steam-controller"` makes one, its serial `CA` and eleven hex digits from the daemon's home, the setup and the output; a fake Steam Controller behind it is read whole at its raw node; the packages load `hid-steam` beside `hid-playstation`; and the guide says what it is for.
-3. **The merge rules for what is new:** the stick and grip touches following whichever pad gives the motion, a touch nameable as the Gyro button and not withheld.
+3. **The merge rules for what is new:** the stick and grip touches following whichever pad gives the motion, a touch nameable as the Gyro button and not withheld. Done: in the mux, for every identity; `left-stick-touch`, `right-stick-touch`, `left-grip-touch` and `right-grip-touch` are names `assist-gyro` takes and a switch doesn't.
 4. **Haptics** passed to a real Steam Controller behind it, by the Rumble choice.
 5. **The checks and the guide:** a virtual machine check with SDL's probe against the daemon's own virtual pad, the guide's page and the architecture, and the spike deleted.
 

@@ -171,6 +171,21 @@ impl MuxConfig {
     }
 }
 
+/// The capacitive touches, as bits of the button word: a thumb on either
+/// stick and a hand on either grip. They go with the motion.
+const TOUCHES: ButtonBits = bit_of(gamepad::LEFT_STICK_TOUCH)
+    | bit_of(gamepad::RIGHT_STICK_TOUCH)
+    | bit_of(gamepad::LEFT_GRIP_TOUCH)
+    | bit_of(gamepad::RIGHT_GRIP_TOUCH);
+
+/// A button's bit of the button word; nothing for an axis.
+const fn bit_of(control: Control) -> ButtonBits {
+    match control {
+        Control::Button(button) => (1 as ButtonBits) << button,
+        Control::Axis(_) => 0,
+    }
+}
+
 pub(crate) struct Mux {
     config: MuxConfig,
     inputs: usize,
@@ -392,7 +407,8 @@ impl Mux {
         // one pad's two sensors, which agree. The input that holds the
         // button that hands it over has it while it does, and the button
         // is removed before any button is put out, so that one in no
-        // group is consumed as one in a group is.
+        // group is consumed as one in a group is. A capacitive touch that
+        // hands it over is not removed: it goes out with the motion.
         let mut carrier = self.carrier();
         if let Some(Switch {
             input: Some(input),
@@ -404,17 +420,22 @@ impl Mux {
             if state.buttons() & bit != 0 {
                 carrier = input;
             }
-            *state.buttons_mut() &= !bit;
+            *state.buttons_mut() &= !(bit & !TOUCHES);
         }
         *out = PadState::NEUTRAL;
         out.set_motion(inputs[carrier].motion());
 
-        // Buttons in no group, all at once.
+        // Buttons in no group, all at once. The capacitive touches are
+        // the motion's input's alone, whatever the rule: a game that
+        // aims by the gyroscope while a thumb rests on a stick, as Steam
+        // has a Steam Controller do, is then switched on by the thumb of
+        // whoever it is turned by, and by no one else's.
         let loose = if self.config.ungrouped_buttons == Rule::Switched {
             inputs[self.selected].buttons()
         } else {
             inputs.iter().fold(0, |held, state| held | state.buttons())
         };
+        let loose = (loose & !TOUCHES) | (inputs[carrier].buttons() & TOUCHES);
         *out.buttons_mut() = loose & self.loose_buttons;
 
         // Each touchpad, whole from one input too, and each by itself.

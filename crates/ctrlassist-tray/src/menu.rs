@@ -1055,6 +1055,10 @@ default ✓ (Not set up) >
     ( ) Paddle 2
     ( ) Paddle 3
     ( ) Paddle 4
+    ( ) Left stick touch
+    ( ) Right stick touch
+    ( ) Left grip touch
+    ( ) Right grip touch
   Visibility: Hidden >
     (o) Hidden
     ( ) Grabbed

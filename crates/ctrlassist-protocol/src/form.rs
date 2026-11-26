@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::profile::{Hide, Identity, NO_BUTTON, Preset, Rumble, SCHEMA, button_names};
+use crate::profile::{Hide, Identity, NO_BUTTON, Preset, Rumble, SCHEMA, gyro_button_names};
 
 /// One choice of a field that offers some.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -143,14 +143,27 @@ fn button_label(name: &str) -> String {
     label
 }
 
-/// Where a back button is, for a paddle's name, as SDL numbers them;
-/// nothing for any other button, whose name says where it is.
+/// Where a back button is, for a paddle's name, as SDL numbers them, and
+/// what a capacitive touch is; nothing for any other button, whose name
+/// says where it is.
 fn paddle_place(name: &str) -> &'static str {
     match name {
         "paddle-1" => "The upper right back button, as on a Steam Controller.",
         "paddle-2" => "The upper left back button, as on a Steam Controller.",
         "paddle-3" => "The lower right back button, as on a Steam Controller.",
         "paddle-4" => "The lower left back button, as on a Steam Controller.",
+        "left-stick-touch" => {
+            "A thumb resting on the left stick, as a Steam Controller senses it. The game is shown it with the motion."
+        }
+        "right-stick-touch" => {
+            "A thumb resting on the right stick, as a Steam Controller senses it. The game is shown it with the motion."
+        }
+        "left-grip-touch" => {
+            "A hand on the left grip, as a Steam Controller senses it. The game is shown it with the motion."
+        }
+        "right-grip-touch" => {
+            "A hand on the right grip, as a Steam Controller senses it. The game is shown it with the motion."
+        }
         _ => "",
     }
 }
@@ -282,13 +295,13 @@ fn described() -> Vec<Field> {
         Field {
             key: "assist-gyro".to_string(),
             label: "Gyro".to_string(),
-            help: "Whose motion sensors the virtual pad carries: the primary's, or the assist's while the assist holds a button of their pad, which the game then doesn't see. Only a DualSense identity carries motion."
+            help: "Whose motion sensors the virtual pad carries: the primary's, or the assist's while the assist holds a button of their pad, which the game then doesn't see. Only a DualSense or a Steam Controller identity carries motion."
                 .to_string(),
             kind: Kind::Choice {
                 // Each says whose motion the game gets, so a line that shows
                 // the choice alone still reads.
                 choices: std::iter::once(choice(NO_BUTTON, "Primary only", ""))
-                    .chain(button_names().map(|name| {
+                    .chain(gyro_button_names().map(|name| {
                         let button = button_label(name);
                         Choice {
                             caption: "Assist holds".to_string(),

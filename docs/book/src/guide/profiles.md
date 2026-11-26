@@ -59,9 +59,11 @@ Who feels what a game rumbles, in the modes of two controllers: **Both pads**, t
 Whose motion sensors a game gets, in Priority and Average. A game reads one controller's gyroscope and accelerometer, never a blend, so that the two agree.
 
 - **Primary only**, the default: always the primary's.
-- **Assist**, with a button: the assist's while the assist holds that button of their own controller, and the primary's again when they let go. The game doesn't see that button of the assist's; the primary's same button is untouched. A [Steam Controller](./steam-controller.md)'s back buttons can be that button, as **Paddle 1** to **Paddle 4**.
+- **Assist**, with a button: the assist's while the assist holds that button of their own controller, and the primary's again when they let go. The game doesn't see that button of the assist's; the primary's same button is untouched. A [Steam Controller](./steam-controller.md)'s back buttons can be that button, as **Paddle 1** to **Paddle 4**, and so can a thumb resting on one of its sticks or a hand on one of its grips, which the game does see, with the motion.
 
-In Toggle the sensors follow whoever has control, and there is no such choice. Only a virtual controller with the DualSense identity carries motion.
+In Toggle the sensors follow whoever has control, and there is no such choice. Only a virtual controller with the DualSense or the Steam Controller identity carries motion.
+
+A Steam Controller senses a thumb on each stick and a hand on each grip, and a game may wait for one before it aims by the gyroscope. Those touches always come from the controller whose motion the game is getting, so the aiming is switched on by whoever is turning it.
 
 ## Visibility
 
