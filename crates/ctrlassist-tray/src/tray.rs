@@ -675,12 +675,14 @@ mod tests {
             let flat = matches!(variant, Variant::Symbolic);
             (tray.title(), (name[0], flat), tray.tool_tip().description)
         };
+        // `desk` names its pad by an address that is no MAC address, which
+        // a profile takes, and that pad is free: it could start.
         assert_eq!(
             said(None),
             (
                 "CtrlAssist".to_string(),
                 ("input-gaming", false),
-                "Nothing is running\n3 of 3 pads connected".to_string()
+                "Nothing is running\n3 of 3 pads connected\n► desk: Ready".to_string()
             )
         );
         assert_eq!(said(Some(Phase::Running)).1, ("input-gaming", false));
@@ -689,7 +691,7 @@ mod tests {
         assert_eq!(said(Some(Phase::Failed)).1, ("dialog-error", false));
         assert_eq!(
             said(Some(Phase::Failed)).2,
-            "► couch: Failed · Toggle\n    a virtual pad refused a write"
+            "► couch: Failed · Toggle\n    a virtual pad refused a write\n  desk: Ready"
         );
 
         let (mut down, _clicked) = tray(Some(Phase::Running));

@@ -255,6 +255,12 @@ fn a_pad_is_an_address_a_known_name_or_a_model() {
         PadRef::parse("model:054C:09CC"),
         Some(PadRef::Model(0x054c, 0x09cc))
     );
+    // An address that is no MAC address, as a Steam Controller's serial
+    // number is, is kept as written.
+    assert_eq!(
+        PadRef::parse("address:FX12AB34CD"),
+        exact("address:FX12AB34CD")
+    );
     let written = PadRef::parse("serial:054C:09CC:abc").unwrap();
     assert!(written.matches("serial:054c:09cc:abc", 0x054c, 0x09cc));
     assert!(!written.matches("serial:054c:09cc:ABC", 0x054c, 0x09cc));
@@ -265,7 +271,8 @@ fn a_pad_is_an_address_a_known_name_or_a_model() {
         "dualshock4",
         "model:dualshock4",
         "model:54c:9cc",
-        "address:nope",
+        "address:no/pe",
+        "address:0a:1b:2c",
         "serial:045e:02dd:",
         "serial:045e",
         "port:",

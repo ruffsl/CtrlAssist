@@ -416,6 +416,11 @@ impl PadRef {
                     }
                 })
         };
+        // What a pad's driver gives as its own address and is no MAC
+        // address: a Steam Controller's is its serial number, the same on
+        // every transport. Letters and digits, kept as written.
+        let is_serial =
+            |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_alphanumeric());
         if is_address(text) {
             return Some(Self::Exact(format!(
                 "address:{}",
@@ -427,7 +432,8 @@ impl PadRef {
             return None;
         }
         match kind {
-            "address" => is_address(rest).then(|| Self::Exact(text.to_ascii_lowercase())),
+            "address" if is_address(rest) => Some(Self::Exact(text.to_ascii_lowercase())),
+            "address" => is_serial(rest).then(|| Self::Exact(text.to_string())),
             "model" | "serial" | "port" => {
                 let mut parts = rest.splitn(3, ':');
                 let vendor = hex(parts.next()?)?;
