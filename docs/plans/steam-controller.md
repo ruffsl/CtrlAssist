@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** drafted with the maintainer on 2026-11-25, who then stepped away for the night with the coordinator left to build through the stops. The research is in, and the design it left to decide is under For review. Building.
-- **Next action:** step 5's reading by a second agent, then step 6. Both halves are built: the device crate's (For review 10) and the daemon's (For review 11), which finds the raw node, gives it to the seat by the packaged rule, and holds the pad through its joystick's going; what the clients show of it is step 8's, the window's "Grabbed" being true of it already. Steps 1 to 4 are merged: 2 and 3 each read by a second agent before their merge, whose findings were mended; the fake of step 4 merged before its reading, so that step 5 could begin on it, and its reader's findings are mended after.
+- **Next action:** steps 6, 8 and 10 together, by one agent: the controller behind each identity, the window, the tray and the guide, and the concerns for hardware. Steps 1 to 5 are merged, each read by a second agent and its findings mended, with every gate passing on the merged branch. Steps 7 (the Puck and Bluetooth beyond what works already, and a controller Steam holds) and 9 (the identity) are left for the maintainer: the first rests on guesses without hardware, the second on a decision that is theirs.
 - **Branch:** `feat/steam-controller`, from `docs/user-guide` at `383c798`, so the new user guide is there for the agents to read. Nothing is pushed until the maintainer has looked. When the guide's pull request (#63) has merged, this branch's own goes to `main`.
 
 ## Goal
