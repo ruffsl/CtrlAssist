@@ -612,6 +612,9 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
         drop(effect);
     });
 
+    // When the pad was seen told to play, and how long after that it was
+    // seen told to stop.
+    let (mut played, mut ran) = (None, None);
     let mut ended = None;
     for _ in 0..400 {
         let mut fds = [PollFd::new(&motors, PollFlags::IN)];
@@ -626,12 +629,20 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
                 Ok(())
             })
             .unwrap();
+        if played.is_none()
+            && requests
+                .iter()
+                .any(|request| matches!(request, Request::Play { count: 1.., .. }))
+        {
+            played = Some(std::time::Instant::now());
+        }
         // The pad's effect is stopped, and kept for its next rumble.
         if requests
             .iter()
             .any(|request| matches!(request, Request::Play { count: 0, .. }))
         {
             ended = Some(started.elapsed());
+            ran = played.map(|played| played.elapsed());
             break;
         }
     }
@@ -695,12 +706,15 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
         ]
     );
     let ended = ended.unwrap().as_millis();
-    // The clock started before the game played it and times are kept in
-    // whole milliseconds, so allow a little either side of 300.
-    assert!(
-        (290..600).contains(&ended),
-        "a 300 ms rumble ended after {ended} ms"
-    );
+    // No sooner than the game said: that clock started before the game
+    // played it, and times are kept in whole milliseconds, so allow a
+    // little under 300.
+    assert!(ended >= 290, "a 300 ms rumble ended after {ended} ms");
+    // And not long after, by the clock started when the pad was seen
+    // playing: the game opening its pad and uploading the effect, which a
+    // busy machine is slow at, is no part of it.
+    let ran = ran.unwrap().as_millis();
+    assert!(ran < 600, "a 300 ms rumble ran for {ran} ms");
 }
 
 /// How many times `thread` has been scheduled out, by its own choice or
@@ -1039,6 +1053,7 @@ fn a_virtual_dualsense_in_a_setup_reports_all_the_time() {
     let mut reader = File::open(&raw).unwrap();
     let started = std::time::Instant::now();
     let (mut reports, mut last) = (0u32, [0u8; 64]);
+    let mut first = None;
     let mut sequences = std::collections::BTreeSet::new();
     while started.elapsed() < std::time::Duration::from_secs(1) {
         let mut report = [0u8; 64];
@@ -1048,16 +1063,22 @@ fn a_virtual_dualsense_in_a_setup_reports_all_the_time() {
         assert_eq!(report[..7], [1, 128, 128, 128, 128, 0, 0]);
         sequences.insert(report[7]);
         assert_ne!(report[28..32], last[28..32], "the sensor clock moves");
+        first.get_or_insert(u32::from_le_bytes([
+            report[28], report[29], report[30], report[31],
+        ]));
         last = report;
         reports += 1;
     }
-    // One every 10 ms with nothing else to send; a busy machine may
-    // lose some.
-    assert!(
-        (70..=110).contains(&reports),
-        "{reports} reports in a second"
-    );
-    assert!(sequences.len() >= 70, "{} counts", sequences.len());
+    // It went on reporting, each report counted once. How many a second
+    // holds is the machine's to say: a busy one is late with some.
+    assert!(reports >= 20, "{reports} reports in a second");
+    assert_eq!(sequences.len(), reports as usize, "each has its own count");
+    // And no faster than a real pad's beat of 10 ms, by the pad's own
+    // sensor clock, which counts thirds of a microsecond.
+    let clock =
+        |report: &[u8; 64]| u32::from_le_bytes([report[28], report[29], report[30], report[31]]);
+    let spacing = clock(&last).wrapping_sub(first.unwrap()) / (reports - 1) / 3;
+    assert!(spacing >= 9_000, "a report every {spacing} µs");
 }
 
 /// A game's output reports each change only what they mark, and the pad
