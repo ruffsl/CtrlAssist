@@ -186,6 +186,9 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"udevadm info {gamepad} | grep -x 'E: ID_INPUT_JOYSTICK=1'")
         machine.succeed(f"udevadm info {motion} | grep -x 'E: ID_INPUT_ACCELEROMETER=1'")
         machine.succeed(f"ctrlassist-fixture pads | grep 'name=\"Steam Controller\" uniq=\"{serial}\" id=28de:1302'")
+        # Its battery, named by the serial, which is short enough to name
+        # the battery's thermal zone too.
+        machine.succeed(f"test -d /sys/class/power_supply/steam-{serial}")
         # It asked the serial and the attributes, each a SET then a GET,
         # which the fake answered at once.
         log = steam_log()
@@ -205,11 +208,14 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_fails(f"ctrlassist-fixture pads | grep 'uniq=\"{serial}\"'")
         machine.fail(f"grep -lx '{phys}' /sys/class/input/input*/phys")
         out = machine.succeed("journalctl -u steam-raw -o cat")
-        # Every report read is one the fake sent, byte for byte.
-        sent = set(re.findall(r"^sent (\S+)$", steam_log(), re.M))
+        # Every report read is one the fake sent, byte for byte. The fake
+        # says what it sent once the send has returned, which can be after
+        # the reader has said it read it: each is waited for.
         reads = re.findall(r"^read (\S+)$", out, re.M)
-        assert len(reads) >= 6 and all(read in sent for read in reads), (reads, sorted(sent)[:4])
+        assert len(reads) >= 6, out
         assert all(read.startswith("42") and len(read) == 108 for read in reads), reads
+        for read in reads:
+            machine.wait_until_succeeds(f"journalctl -u steam -o cat | grep -qx 'sent {read}'")
         # What was written reached the fake as it was written: the output
         # report as it is, the feature report padded to 64 bytes, and the
         # fake's echo of it came back.
@@ -225,6 +231,52 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds(f"test $(journalctl -u steam -o cat | grep -c '^received set-feature 01ae') -gt {asked}")
         machine.succeed("systemctl stop steam")
         machine.wait_until_fails(f"grep -lx '{phys}' /sys/class/input/input*/phys")
+
+    with subtest("hid-steam reads a fake Steam Controller's state as the fake lays it out, with lizard_mode off and on"):
+        # `SteamState::busy`, as the driver presents it: south and two back
+        # buttons held; the sticks' Y the report's inverted; the left
+        # trackpad where the report says, touched, the right at 0,
+        # untouched; the triggers on HAT2Y and HAT2X as they are; and the
+        # accelerometer's and gyroscope's second axis as Z, inverted, and
+        # their third as Y.
+        BTN_SOUTH, BTN_GRIPR, BTN_GRIPL2 = 0x130, 0x225, 0x226
+        gamepad_axes = {0: -20000, 1: -12000, 3: 3000, 4: 3000, 16: 1234, 17: -2345, 18: 0, 19: 0, 20: 2000, 21: 1000}
+        motion_axes = {0: 1000, 1: 16384, 2: 2000, 3: 16, 4: 48, 5: 32}
+        def evdev_state(node):
+            keys, axes = set(), {}
+            for line in machine.succeed(f"ctrlassist-fixture evdev-state {node}").splitlines():
+                kind, code, *value = line.split()
+                if kind == "key":
+                    keys.add(int(code))
+                else:
+                    axes[int(code)] = int(value[0])
+            return keys, axes
+
+        # The machine's lizard_mode is written here, which no test on a
+        # desktop may do: off, the driver turns lizard mode off as it binds
+        # and the gamepad speaks at once; on, its default, the gamepad is
+        # silent until the menu button is held.
+        for lizard in ["N", "Y"]:
+            unit = f"busy-{lizard}"
+            machine.succeed(f"echo {lizard} > /sys/module/hid_steam/parameters/lizard_mode")
+            menu = " --menu-first" if lizard == "Y" else ""
+            machine.succeed(f"systemd-run --unit {unit} ctrlassist-fixture fake-steam --busy --pulse 20{menu}")
+            machine.wait_until_succeeds(f"journalctl -u {unit} -o cat | grep -c '^sent ' | grep -qv '^0$'")
+            log = steam_log(unit)
+            if lizard == "N":
+                assert re.search(r"^received set-feature 0181", log, re.M), log
+                assert re.search(r"^received set-feature 0187060900004700", log, re.M), log
+            else:
+                assert re.search(r"^received set-feature 0185", log, re.M), log
+                assert "silent true" in log.splitlines(), log
+                assert "gamepad-mode" in log.splitlines(), log
+            keys, axes = evdev_state(said("gamepad", unit))
+            assert keys == {BTN_SOUTH, BTN_GRIPR, BTN_GRIPL2}, (lizard, keys)
+            assert all(axes[code] == value for code, value in gamepad_axes.items()), (lizard, axes)
+            _, axes = evdev_state(said("motion", unit))
+            assert all(axes[code] == value for code, value in motion_axes.items()), (lizard, axes)
+            machine.succeed(f"systemctl stop {unit}")
+        machine.succeed("cat /sys/module/hid_steam/parameters/lizard_mode | grep -x Y")
 
     with subtest("a fake Steam Controller with lizard mode's mouse and keyboard has them in the gamepad's HID device"):
         machine.succeed("systemd-run --unit lizard ctrlassist-fixture fake-steam --lizard-mouse-and-keyboard")
