@@ -164,14 +164,25 @@ jobs:
             --skip actionlint
             --skip zizmor
 
-      # A runner is nobody's seat, so nothing gives its user uinput or the
-      # event nodes. Open them on this throwaway machine, and make a test
-      # that still can't make a fake pad fail instead of skipping.
+      # A runner is nobody's seat, so nothing gives its user uinput, uhid,
+      # the event nodes or a pad's raw node. Open them on this throwaway
+      # machine, and make a test that still can't make a fake pad fail
+      # instead of skipping. The PlayStation driver, which a fake DualSense
+      # is bound by, is in the kernel's extra modules where the runner's
+      # image leaves them out.
       - name: Let the tests make fake pads
         run: |
           sudo modprobe uinput
+          sudo modprobe uhid
+          sudo modprobe hid-playstation || {
+            sudo apt-get update
+            sudo apt-get install --yes "linux-modules-extra-$(uname -r)"
+            sudo modprobe hid-playstation
+          }
           echo 'KERNEL=="uinput", MODE="0666"' | sudo tee /etc/udev/rules.d/99-ctrlassist-ci.rules
+          echo 'KERNEL=="uhid", MODE="0666"' | sudo tee --append /etc/udev/rules.d/99-ctrlassist-ci.rules
           echo 'SUBSYSTEM=="input", MODE="0666"' | sudo tee --append /etc/udev/rules.d/99-ctrlassist-ci.rules
+          echo 'SUBSYSTEM=="hidraw", MODE="0666"' | sudo tee --append /etc/udev/rules.d/99-ctrlassist-ci.rules
           sudo udevadm control --reload
           sudo udevadm trigger --settle
 

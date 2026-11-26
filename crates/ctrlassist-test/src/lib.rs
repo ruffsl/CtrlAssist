@@ -101,9 +101,12 @@ pub fn phys_connected(phys: &str) -> bool {
 
 /// Whether `test` can make a virtual DualSense here: uhid and uinput are
 /// writable and the kernel's PlayStation driver is loaded. Where it
-/// can't, this says so on standard error and the test should return.
-/// Nothing requires it of a machine, CI's runners included: the virtual
-/// machine checks are where a virtual DualSense is always made.
+/// can't, this says so on standard error and the test should return,
+/// unless fake pads are required here.
+///
+/// # Panics
+///
+/// Panics if fake pads are required and can't be made.
 #[must_use]
 pub fn can_make_hid_pads(test: &str) -> bool {
     use std::io::Write as _;
@@ -111,6 +114,10 @@ pub fn can_make_hid_pads(test: &str) -> bool {
     if uhid_available() && uinput_available() && driver {
         return true;
     }
+    assert!(
+        !fake_pads_required(),
+        "{test}: /dev/uhid isn't writable or the kernel's PlayStation driver isn't loaded, and fake pads are required here"
+    );
     let _ = writeln!(
         std::io::stderr(),
         "SKIPPED {test}: /dev/uhid isn't writable here, or the kernel's PlayStation driver isn't loaded"
