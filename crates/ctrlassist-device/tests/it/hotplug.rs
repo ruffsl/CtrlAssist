@@ -250,7 +250,7 @@ fn a_steam_controller_is_found_with_its_raw_node() {
     };
     assert!(found.identifiers.is_steam_controller(), "{found:?}");
     assert_eq!(found.identifiers.address.as_deref(), Some(fake.serial()));
-    if !crate::openable(&gamepad.event, false) {
+    if !ctrlassist_test::may_open_once_udev_is_done(&gamepad.event, false) {
         let _ = writeln!(
             std::io::stderr(),
             "SKIPPED {TEST}: the fake's event node isn't this user's to open here"
@@ -261,4 +261,36 @@ fn a_steam_controller_is_found_with_its_raw_node() {
     let steam = ctrlassist_device::steam_raw_node(std::os::fd::AsFd::as_fd(&event)).unwrap();
     assert_eq!(steam.node, raw);
     assert_eq!(steam.syspath, found.syspath);
+
+    // An event node open before the raw node is held has hung up once
+    // the driver took it away, and stays so after; one opened on the node
+    // made anew hasn't.
+    assert!(!ctrlassist_device::event_node_gone(
+        std::os::fd::AsFd::as_fd(&event)
+    ));
+    if !ctrlassist_test::may_open_once_udev_is_done(&raw, true) {
+        return;
+    }
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&raw)
+        .unwrap();
+    assert!(fake.inputs_gone());
+    assert!(ctrlassist_device::event_node_gone(
+        std::os::fd::AsFd::as_fd(&event)
+    ));
+    drop(held);
+    let again = fake.gamepad().expect("the driver makes the gamepad again");
+    assert!(ctrlassist_device::event_node_gone(
+        std::os::fd::AsFd::as_fd(&event)
+    ));
+    assert!(ctrlassist_test::may_open_once_udev_is_done(
+        &again.event,
+        false
+    ));
+    let anew = std::fs::File::open(&again.event).unwrap();
+    assert!(!ctrlassist_device::event_node_gone(
+        std::os::fd::AsFd::as_fd(&anew)
+    ));
 }

@@ -90,12 +90,22 @@ const BUS_BLUETOOTH: u16 = 5;
 /// product with its bus (`hid-steam.c:2751-2770`). A slot is the pad that
 /// joined it; it carries the receiver's number, not the pad's.
 pub(crate) fn is_pad(bus: u16, vendor: u16, product: u16) -> bool {
-    vendor == VENDOR
+    is_model(vendor, product)
         && match product {
             PRODUCT_CABLE | PRODUCT_PUCK | PRODUCT_RECEIVER => bus == BUS_USB,
-            PRODUCT_BLUETOOTH => bus == BUS_BLUETOOTH,
-            _ => false,
+            _ => bus == BUS_BLUETOOTH,
         }
+}
+
+/// Whether `vendor` and `product` are one of the Steam Controller's, on
+/// whichever bus: for a pad remembered, whose bus isn't known.
+#[must_use]
+pub fn is_model(vendor: u16, product: u16) -> bool {
+    vendor == VENDOR
+        && matches!(
+            product,
+            PRODUCT_CABLE | PRODUCT_PUCK | PRODUCT_RECEIVER | PRODUCT_BLUETOOTH
+        )
 }
 
 /// The state report, with the pad's orientation at its end

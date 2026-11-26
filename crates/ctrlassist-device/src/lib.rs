@@ -36,7 +36,8 @@ pub use anchor::Anchor;
 pub use database::Database;
 pub use dualsense::DualSenseData;
 pub use hotplug::{
-    Change, Found, Monitor, SteamRaw, anchors, connected, open_node, steam_raw_node,
+    Change, Found, Monitor, SteamRaw, SteamRawError, anchors, connected, event_node_gone,
+    open_node, steam_raw_node,
 };
 pub use layout::{AxisRange, Mapping};
 pub use output::{Rested, Writes};
@@ -44,4 +45,5 @@ pub use pad::{Identifiers, Pad, PadError, PadId};
 pub use sink::{
     Identity, OWN_ADDRESS, OWN_MARKER, Request, TEST_ADDRESS, TEST_MARKER, VirtualPad, own_address,
 };
+pub use steam::is_model as is_steam_controller_model;
 pub use thread::{Command, InputThread, NewGraph, Place, Report, SendError, Setup, SetupId, Tap};

@@ -267,6 +267,11 @@ fn said(change: Change) -> String {
             )
         }
         Change::Overran => "overran".to_string(),
+        Change::RawNodeChanged(found) => format!(
+            "raw-node-changed {} {}",
+            found.node.display(),
+            found.syspath.display()
+        ),
         other => format!("other {other:?}"),
     }
 }

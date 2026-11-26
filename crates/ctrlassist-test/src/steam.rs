@@ -661,12 +661,26 @@ pub struct SteamControllerBuilder {
     transport: SteamTransport,
     report_47: bool,
     lizard: bool,
+    serial: Option<String>,
 }
 
 impl SteamControllerBuilder {
     /// Connected by `transport`, not a cable.
     pub const fn transport(mut self, transport: SteamTransport) -> Self {
         self.transport = transport;
+        self
+    }
+
+    /// With the serial of another fake, as the same pad plugged in again:
+    /// a fake made earlier by this process, whose serial starts `CATEST`
+    /// as each fake's does.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `serial` isn't a fake's.
+    pub fn same_pad_as(mut self, serial: &str) -> Self {
+        assert!(serial.starts_with("CATEST"), "{serial} isn't a fake's");
+        self.serial = Some(serial.to_string());
         self
     }
 
@@ -852,6 +866,7 @@ impl FakeSteamController {
             transport: SteamTransport::Cable,
             report_47: false,
             lizard: false,
+            serial: None,
         }
     }
 
@@ -873,7 +888,10 @@ impl FakeSteamController {
         let phys = format!("{}steam/{pid}/{number}", ctrlassist_device::TEST_MARKER);
         // At most 13 characters, so that the battery the driver names
         // `steam-<serial>` has a thermal zone, whose name is at most 19.
-        let serial = format!("CATEST{}{}", base36(pid, 5), base36(number, 2));
+        let serial = builder
+            .serial
+            .clone()
+            .unwrap_or_else(|| format!("CATEST{}{}", base36(pid, 5), base36(number, 2)));
         let joined = match builder.transport {
             SteamTransport::Puck { joined } => joined,
             SteamTransport::Cable | SteamTransport::Bluetooth => true,
