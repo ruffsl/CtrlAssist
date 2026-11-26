@@ -1337,6 +1337,17 @@ impl State {
         for slot in 0..SETUPS {
             self.retire(slot, Report::Stopped);
         }
+        // A start still waiting was sent before the stop and never run:
+        // its setup goes back the same way, where there is room for it.
+        // Whatever else waited has nothing left to act on.
+        let held = self.held.take();
+        for command in held.into_iter().chain(self.inbox.try_iter()) {
+            if let Command::Start(id, setup) = command
+                && self.fits(1)
+            {
+                self.report(Report::Stopped(id, setup));
+            }
+        }
     }
 
     /// Sends a report that hands something back. Never waits, and always
@@ -1965,6 +1976,23 @@ mod tests {
 
     /// With nothing read, commands wait for room rather than have their
     /// reports dropped, and are taken in order once there is some.
+    #[test]
+    fn a_start_still_waiting_when_the_thread_is_stopped_is_handed_back() {
+        let mut rig = rig();
+        rig.send(Command::Start(FIRST, setup()));
+        // Sent, and the thread stopped before it took the command.
+        rig.commands
+            .try_send(Command::Start(SECOND, setup()))
+            .unwrap();
+        rig.state.stop.store(true, Ordering::SeqCst);
+        rig.state.run();
+        let read = rig.read();
+        assert!(matches!(
+            read.as_slice(),
+            [.., Report::Stopped(FIRST, _), Report::Stopped(SECOND, _)]
+        ));
+    }
+
     #[test]
     fn commands_wait_for_room_and_none_of_their_reports_is_lost() {
         let mut rig = rig();
