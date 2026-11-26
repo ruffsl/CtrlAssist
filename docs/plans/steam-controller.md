@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** drafted with the maintainer on 2026-11-25, who then stepped away for the night with the coordinator left to build through the stops. The research is in, and the design it left to decide is under For review. Building.
-- **Next action:** steps 2 and 3. Step 1's spike is done: its finding is under "Spike: the kernel's driver and a uhid stand-in" and For review 8, and the steps from 4 on rest on it.
+- **Next action:** the pad state's review and merge (step 2), and the fake (step 4), which is being built. Steps 1 and 3 are merged, step 3 read by a second agent who found no byte, bit, scale or axis wrong.
 - **Branch:** `feat/steam-controller`, from `docs/user-guide` at `383c798`, so the new user guide is there for the agents to read. Nothing is pushed until the maintainer has looked. When the guide's pull request (#63) has merged, this branch's own goes to `main`.
 
 ## Goal
@@ -149,7 +149,7 @@ Decisions made and findings written while the maintainer was away, each for them
 
 **2. What that costs, and is not built yet.** Opening the raw node makes the kernel remove the controller's joystick node, which is what CtrlAssist finds, names and hides a pad by. The controller is still found by that node while nothing holds it. Holding it through its going, and finding one that Steam already holds, need the daemon to know a pad by its HID device as well. That is for after the spike below has shown the kernel doing what the research read.
 
-**3. Two things the controller's protocol asks for at intervals:** rumble again every 40 ms while it is nonzero, and lizard mode off every few seconds. They are the controller's own, as a virtual DualSense's report every 10 ms is a real one's, and they go on the input thread's timer as that does. They are put here because a rule says to ask before a new duration: neither is CtrlAssist's to choose, but the maintainer hasn't been asked.
+**3. Two things the controller's protocol asks for at intervals:** rumble again every 40 ms while it is nonzero, and lizard mode off every few seconds. They are the controller's own, as a virtual DualSense's report every 10 ms is a real one's, and they go on the input thread's timer as that does. They are put here because a rule says to ask before a new duration: neither is CtrlAssist's to choose, but the maintainer hasn't been asked. Of the two ways to keep lizard mode off, SDL's is taken, not the kernel's: the controller's own watchdog is left on and lizard mode off is sent again every three seconds, so that a daemon that crashes leaves the controller to fall back to typing and pointing by itself. Rumble's two gains are SDL's too, both 0, its driver being the one written for this controller; the kernel sends 2 and 0, from code it shares with the Deck.
 
 **4. Hiding is left as it is, and so the controller is not hidden.** The hiding service refuses a device that could type or point, and this controller's one HID device has a keyboard and a mouse. Making an exception for it loosens a rule the service's safety rests on, which is the maintainer's to decide, not the coordinator's. Until then: holding the raw node takes the joystick away from games that read event nodes, and Steam and games through SDL's own driver, which read the raw node, still see the real controller. That is the largest gap this plan leaves, and it is in the guide when the guide is written.
 
