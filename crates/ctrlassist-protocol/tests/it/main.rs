@@ -261,6 +261,23 @@ fn a_pad_is_an_address_a_known_name_or_a_model() {
         PadRef::parse("address:FX12AB34CD"),
         exact("address:FX12AB34CD")
     );
+    // Typed in other capitals, it is the same pad; another serial isn't.
+    let typed = PadRef::parse("address:fx12ab34cd").unwrap();
+    assert!(typed.matches("address:FX12AB34CD", 0x28de, 0x1302));
+    assert!(!typed.matches("address:FX12AB34CE", 0x28de, 0x1302));
+    assert!(PadRef::names(
+        "address:0a:1b:2c:3d:4e:14",
+        "address:0a:1b:2c:3d:4e:14"
+    ));
+    assert!(!PadRef::names(
+        "serial:054c:09cc:abc",
+        "serial:054c:09cc:ABC"
+    ));
+    // Twelve hex digits are a MAC address without its colons, refused
+    // with how to write it.
+    assert_eq!(PadRef::parse("address:0a1b2c3d4e14"), None);
+    let bare = Profile::check("mode = \"unicast\"\npad = \"address:0A1B2C3D4E14\"\n").unwrap_err();
+    assert!(bare.problem.contains("without its colons"), "{bare:?}");
     let written = PadRef::parse("serial:054C:09CC:abc").unwrap();
     assert!(written.matches("serial:054c:09cc:abc", 0x054c, 0x09cc));
     assert!(!written.matches("serial:054c:09cc:ABC", 0x054c, 0x09cc));

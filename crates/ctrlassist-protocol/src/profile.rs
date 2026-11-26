@@ -394,10 +394,21 @@ pub enum PadRef {
     Model(u16, u16),
 }
 
+/// Whether `text` is twelve hex digits and nothing else: a MAC address
+/// written without its colons, almost always, which no pad's driver gives
+/// as its address.
+#[must_use]
+pub fn is_bare_mac(text: &str) -> bool {
+    text.len() == 12 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 impl PadRef {
     /// Reads a pad reference: a bare address, one of the `address:`,
     /// `serial:`, `port:` or `model:` names a pad is known by, or
-    /// `model:<vendor>:<product>` for any pad of that model.
+    /// `model:<vendor>:<product>` for any pad of that model. An address
+    /// is a MAC address, taken in either case, or else what a pad's driver
+    /// gives as its own address, letters and digits kept as written, but
+    /// for [twelve hex digits](is_bare_mac), which are refused.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         // Four hex digits; `from_str_radix` alone would take a sign.
@@ -419,8 +430,11 @@ impl PadRef {
         // What a pad's driver gives as its own address and is no MAC
         // address: a Steam Controller's is its serial number, the same on
         // every transport. Letters and digits, kept as written.
-        let is_serial =
-            |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_alphanumeric());
+        let is_serial = |text: &str| {
+            !text.is_empty()
+                && !is_bare_mac(text)
+                && text.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        };
         if is_address(text) {
             return Some(Self::Exact(format!(
                 "address:{}",
@@ -455,12 +469,25 @@ impl PadRef {
         }
     }
 
+    /// Whether `exact`, a pad's name as [`parse`](Self::parse) gives it,
+    /// is the pad known as `id`: the same, or for an address the same in
+    /// either case, so that a serial typed in other capitals than its
+    /// pad's driver gives it is that pad's.
+    #[must_use]
+    pub fn names(exact: &str, id: &str) -> bool {
+        exact == id
+            || matches!(
+                (exact.strip_prefix("address:"), id.strip_prefix("address:")),
+                (Some(written), Some(known)) if written.eq_ignore_ascii_case(known)
+            )
+    }
+
     /// Whether a connected pad is the one meant, given the name it is
     /// known by and its vendor and product.
     #[must_use]
     pub fn matches(&self, id: &str, vendor: u16, product: u16) -> bool {
         match self {
-            Self::Exact(exact) => exact == id,
+            Self::Exact(exact) => Self::names(exact, id),
             Self::Model(want_vendor, want_product) => {
                 (*want_vendor, *want_product) == (vendor, product)
             }
@@ -726,6 +753,16 @@ impl Profile {
             let at = format!("source.{name}");
             check_name(&at, name)?;
             let Some(pad) = PadRef::parse(&source.pad) else {
+                let bare = source.pad.strip_prefix("address:").unwrap_or(&source.pad);
+                if is_bare_mac(bare) {
+                    return error(
+                        format!("{at}.pad"),
+                        format!(
+                            "`{}` looks like a MAC address without its colons: write it as 0a:1b:2c:3d:4e:5f",
+                            source.pad
+                        ),
+                    );
+                }
                 return error(
                     format!("{at}.pad"),
                     format!(
@@ -740,7 +777,10 @@ impl Profile {
                 .then(|| {
                     sources
                         .iter()
-                        .find(|other: &&PlannedSource| other.pad == pad)
+                        .find(|other: &&PlannedSource| match (&other.pad, &pad) {
+                            (PadRef::Exact(one), PadRef::Exact(two)) => PadRef::names(one, two),
+                            (one, two) => one == two,
+                        })
                 })
                 .flatten();
             if let Some(other) = twice {
