@@ -26,3 +26,4 @@
 - [How It Works](./reference/how-it-works.md)
 - [Requirements](./reference/requirements.md)
 - [Security & Supply Chain](./reference/security-supply-chain.md)
+- [FAQ](./reference/faq.md)

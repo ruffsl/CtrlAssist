@@ -36,25 +36,23 @@ managed = true       # optional
 
 | Mode | Takes | Does |
 |---|---|---|
-| `priority` | `primary`, `assist` | Two pads as one. The assist takes over whatever it touches. |
-| `average` | `primary`, `assist` | Two pads as one. Sticks and triggers blend. |
-| `toggle` | `primary`, `assist` | Two pads as one, one at a time. The Mode button hands over. |
-| `unicast` | `pad`, `outputs` | One pad as several virtual pads, one at a time. |
-| `multicast` | `pad`, `outputs` | One pad as several virtual pads, all at once. |
+| `priority` | `primary`, `assist` | Two controllers as one. The assist takes over whatever it touches. |
+| `average` | `primary`, `assist` | Two controllers as one. Sticks and triggers blend. |
+| `toggle` | `primary`, `assist` | Two controllers as one, one at a time. The Mode button hands over. |
+| `unicast` | `pad`, `outputs` | One controller as several virtual ones, one at a time. |
+| `multicast` | `pad`, `outputs` | One controller as several virtual ones, all at once. |
 
-`outputs` is how many virtual pads to make; 2 if left out.
+`outputs` is how many virtual controllers to make; 2 if left out. What each mode does is on [Profiles](./profiles.md#mode).
 
-`rumble` is who feels what a game rumbles, for the three presets of two controllers: `both` (the default), `primary`, `assist` or `none`. A helper who only steps in now and then may not want the rumble; a player who can't feel it may want the helper to.
+`rumble` is who feels what a game rumbles, for the three presets of two controllers: `both` (the default), `primary`, `assist` or `none`. See [Rumble](./profiles.md#rumble).
 
-`assist-gyro` is a button on the assist's controller that gives its motion sensors to the virtual controller while it is held, for the `priority` and `average` presets: a button's name (`south`, `east`, `north`, `west`, `left-bumper`, `right-bumper`, `select`, `start`, `mode`, `left-thumb`, `right-thumb`, `dpad-up`, `dpad-down`, `dpad-left`, `dpad-right` or `touchpad`), or `none`, the default. Without it the motion sensors a game reads are always the primary's, so that it sees one controller's gyroscope and accelerometer, which agree. While the assist holds the button, both sensors are the assist's, at once; let go, they are the primary's again. The game doesn't see that button of the assist's, and the primary's same button is untouched. In `toggle` the sensors follow whoever has control, and there is no such button. Only a virtual DualSense carries motion.
+`assist-gyro` is the assist's button that gives a game the assist's motion sensors while it is held, for the `priority` and `average` presets: a button's name (`south`, `east`, `north`, `west`, `left-bumper`, `right-bumper`, `select`, `start`, `mode`, `left-thumb`, `right-thumb`, `dpad-up`, `dpad-down`, `dpad-left`, `dpad-right` or `touchpad`), or `none`, the default. See [Gyro](./profiles.md#gyro).
 
-`hide` is how the real controllers are kept from games while the arrangement runs, in any profile, a preset or not:
+`hide` is how the real controllers are kept from games while the arrangement runs, in any profile, a preset or not: `full` (the default), `grab` or `none`, which the window calls Hidden, Grabbed and Visible. See [Visibility](./profiles.md#visibility).
 
-| `hide` | Games see the real controllers? |
-|---|---|
-| `full` (the default) | No. The hiding service takes them away; where it isn't installed they are grabbed, and Steam is told to leave them alone. |
-| `grab` | Most don't. A program that reads controllers another way, as Steam does, still sees them. |
-| `none` | Yes, beside the virtual one. Use it when a game should read a real controller directly, and expect a game that reads both to take a press twice. |
+`identity` is what the virtual controller presents itself as: `generic` (the default), `xbox` or `dualsense`; `ctrlassist identities` lists them and whether each can be made on this machine. See [Identity](./profiles.md#identity).
+
+`managed = true` has the daemon start the profile whenever its controllers are connected. See [Managed](./profiles.md#managed).
 
 ## Naming a controller
 

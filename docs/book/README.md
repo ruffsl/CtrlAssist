@@ -28,13 +28,16 @@ The rules below were each learned by getting it wrong first. The reasons are her
 
 | Fact | Page |
 |---|---|
-| The presets, naming a controller, identities, managed profiles, the full form, updating a running setup, hand edits and `reload` | Profiles |
-| The tray's menu, its notifications and their switches | The Tray |
+| The window's pages, driving it by keys or a gamepad, couch mode | GUI & Tray |
+| The tray's menu, its notifications and their switches | GUI & Tray |
+| What each choice of a profile means: modes, inputs, identities, rumble, gyro, visibility, managed, the default profile, changing a running one | Profiles |
+| A profile file's keys, naming a controller, the full form, the commands that keep and update profiles, hand edits and `reload`, where profiles live | Configuration Files |
 | What each command does from a terminal | Command Line |
 | What the packages and the NixOS module install, and removing them | Installation |
 | The pieces, hiding, latency, layouts, and where things are kept | How It Works |
 | What it runs on, what has been tried, and compatibility between releases | Requirements |
 | What runs with privilege, and checking a release (signatures, checksums, SBOMs) | Security & Supply Chain |
+| Who it is for, why it was made, and the consoles' own features | FAQ |
 
 ## Tooling
 
