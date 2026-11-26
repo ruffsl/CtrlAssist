@@ -2,6 +2,10 @@
 
 ## Where to look first
 
+The window's **About** page says which parts of CtrlAssist are running and the release each runs, and its **Diagnostics** button copies a report to paste into a bug report. The dots at the foot of the window's sidebar say the same at a glance.
+
+From a terminal, which is where the logs are:
+
 ```sh
 ctrlassist status          # is the daemon there, and which release
 ctrlassist pads            # which controllers it sees

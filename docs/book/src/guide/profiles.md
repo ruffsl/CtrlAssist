@@ -86,9 +86,9 @@ A profile whose controllers aren't chosen yet is kept and shown as **Not set up*
 
 ## Changing a running profile
 
-What you pick in the window or the tray is kept at once, and a running profile can take the change up.
+What you pick in the window or the tray is kept at once, and a running profile can take the change up: at once from the tray, and from the window when you press **Update…** on the profile's page.
 
 - **As it runs,** where the virtual controllers stay as many and of the same identities: other controllers, another mode, who feels rumble, the Gyro button. A game notices nothing. A controller that is swapped out is given back to the system and the new one hidden, and a Toggle goes on with whoever had control.
 - **By a restart,** where a virtual controller has to be made anew: another identity, another number of outputs, or another Visibility. A game sees its controller disconnect and another connect.
 
-The window says which it will be before it does it, and the tray says afterwards. From a terminal, `ctrlassist update` does the same; see [Configuration Files](./configuration.md#changing-a-running-setup).
+The window's **Update…** says which it will be before it does it, and the tray tells you afterwards when it was a restart. From a terminal, `ctrlassist update` does the same; see [Configuration Files](./configuration.md#changing-a-running-setup).

@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** approved by the maintainer on 2026-11-25, after the capture was spiked (see Spike: drawing the window off screen). Steps 1 to 7 are done; the maintainer passed step 2's stop on the capture seen, and asked for steps 4 to 7 to be run through without a stop between.
-- **Next action:** step 9, the read of every page against the code, while the maintainer reads the guide and the README on the draft pull request (#63); step 8, the tray's shots, is theirs.
+- **Next action:** the maintainer's read of the guide and the README on the draft pull request (#63), and step 8, the tray's shots, which are theirs to take. Step 9's check of the pages against the code is done but for what the tray's pictures add; the plan is retired once they are in.
 - **Branch:** `docs/user-guide`, from `main` at `39c1b4c`.
 
 ## Goal
@@ -199,6 +199,9 @@ For the maintainer:
 1. **The capture tool for TisVlay** (after step 3). It would replace fourteen screenshots taken by hand there. Carried back as an idea, or as code?
 
 ## Deviations
+
+- **Step 9 found, and mended:** the window doesn't ask before a pick on a running profile, as GUI & Tray first said: the pick is kept, the running profile goes on as it was, and its page offers **Update…**, which says the cost first. Checked and found to hold: every label the guide puts in bold is in the window's or the tray's source; every command it names is in the generated reference; a left click on the tray's icon opens the window; a toggle's button is the assist's; a unicast's is the Mode button. Installation's check and Troubleshooting's first look now lead with the window, the commands after.
+- **Not checked by step 9:** anything against a running window, tray or game; the Installation page's package commands, which need a release to exist.
 
 - **`just docs-screenshots` arrived with the tool,** at step 2 and not step 3: a recipe is added in the commit that first gives it something to do, and the tool is run through it.
 - **The tool is kept out of the coverage figure,** as the tray's desktop files are: it is run and looked at, and its lines would otherwise count as untested against a floor half a point below the figure.

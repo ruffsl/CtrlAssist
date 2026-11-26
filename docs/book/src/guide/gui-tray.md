@@ -38,7 +38,7 @@ Profiles are listed with the running ones first. The **+** at the top makes a ne
 - **OUTPUTS** is the virtual controller, and what it presents itself as to games.
 - **PRESET** is how the controllers are combined: the mode, who feels rumble, whose motion a game gets, and how the real controllers are kept from games.
 
-What you pick is kept at once. If the profile is running, the window asks first, and says whether the change is taken up as it runs, which a game doesn't notice, or needs a restart, which a game sees as its controller disconnecting and another connecting. [Profiles](./profiles.md) says what each choice means.
+What you pick is kept at once. A profile that is running goes on as it was, and its page says the profile has changed since it started: **Update…** then says what taking the change up costs, nothing a game notices or a restart that a game sees as its controller disconnecting and another connecting, and takes it up when you agree. [Profiles](./profiles.md) says what each choice means.
 
 ![A running profile in Toggle mode](../docs/screenshots/profiles_pane_running.png)
 

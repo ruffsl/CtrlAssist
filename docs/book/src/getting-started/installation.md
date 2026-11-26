@@ -145,11 +145,17 @@ The packages need glibc 2.34 or newer: Debian 12, Ubuntu 22.04, and any current 
 
 ## Check that it works
 
+Open **CtrlAssist** from your application menu. At the foot of its sidebar, **Daemon** and **Tray** should each have a green dot, and **Hiding** too where the hiding service is installed, and the **Pads** page should list your controllers. The **About** page says which release each part runs. If something is missing, see [Troubleshooting](../operations/troubleshooting.md).
+
+<details><summary id="check-from-a-terminal">From a terminal</summary>
+
 ```sh
 ctrlassist status
 ```
 
-It should say the daemon is alive and which release it runs. Then `ctrlassist pads` lists the controllers it sees. If either disagrees, see [Troubleshooting](../operations/troubleshooting.md).
+It should say the daemon is alive and which release it runs. Then `ctrlassist pads` lists the controllers it sees.
+
+</details>
 
 ## Removing it
 
