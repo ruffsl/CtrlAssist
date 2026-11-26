@@ -639,8 +639,9 @@ impl Reader {
 /// Reads away the reports a raw node kept while nobody read it: they are
 /// from when it was opened, not from now, and a game would be handed them
 /// all at once. No more reads than the node keeps reports, so a pad that
-/// reports as fast as it is read can't hold this up.
-fn forget(raw: BorrowedFd<'_>) {
+/// reports as fast as it is read can't hold this up. The descriptor is
+/// one whose reads don't wait.
+pub(crate) fn forget(raw: BorrowedFd<'_>) {
     let mut report = [0; BUFFER];
     for _ in 0..KEPT {
         if rustix::io::read(raw, &mut report).is_err() {

@@ -7,6 +7,7 @@
 
 mod hotplug;
 mod steam;
+mod steam_pad;
 mod thread;
 mod virtual_pad;
 
@@ -50,8 +51,27 @@ fn fake(test: &str) -> Option<FakePad> {
 }
 
 fn open(fake: &FakePad) -> Pad {
+    openable(fake.event_node(), false);
     let node: OwnedFd = File::open(fake.event_node()).unwrap().into();
     Pad::from_fd(node).unwrap()
+}
+
+/// Whether this process can open `node`, for reading or for writing too,
+/// waiting four seconds at most for it to be able to. udev gives a node
+/// just made to the seat's user only after the node is made, and
+/// `udevadm settle` can return before udev has heard of it, which a busy
+/// machine shows.
+pub(crate) fn openable(node: &std::path::Path, write: bool) -> bool {
+    let started = std::time::Instant::now();
+    loop {
+        if ctrlassist_test::can_open(node, write) {
+            return true;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(4) {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 /// Reads until `enough` says the frames so far are what was waited for,

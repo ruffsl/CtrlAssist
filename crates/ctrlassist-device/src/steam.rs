@@ -1,11 +1,27 @@
 //! A Steam Controller's reports, read and written as plain code that
-//! opens nothing: bytes in, values out, and values in, bytes out.
+//! opens nothing: bytes in, values out, and values in, bytes out; and
+//! what they say made the pad's state, by a [`Reader`] of its raw node.
 //!
 //! The pad is Valve's 2026 Steam Controller, which SDL calls Triton and
 //! the kernel Ibex. It is read from its raw HID node, as SDL reads it,
 //! and not from the input devices the kernel's driver makes of it, which
 //! leave out much of what it reports. Its reports are the same on every
 //! transport: a cable, the Puck, and Bluetooth.
+//!
+//! The pad is read from its raw node and nothing else. While anything
+//! holds that node open the kernel's driver removes the pad's gamepad and
+//! motion devices, whose readers get `ENODEV`, and sends the pad nothing
+//! itself (`steam_client_ll_open` and `steam_work_connect_cb`,
+//! `hid-steam.c:1460-1484, 1651-1660`): so whoever holds it keeps lizard
+//! mode off, by [`LIZARD_MODE_AGAIN`], and sends the rumble again, by
+//! [`RUMBLE_AGAIN`]. The pad's writer does both (`output.rs`).
+//!
+//! What the pad state has no place for is not carried: a trackpad's
+//! pressure, the pad's own reckoning of its orientation, the battery, and
+//! every haptic command beyond plain rumble (the pulse of output report
+//! `0x81` and the reports after it, which SDL's driver sends for Steam
+//! Input's own effects). A virtual pad's rumble reaches the pad as a
+//! level, as it reaches every other pad.
 //!
 //! Two sources say what the bytes are, and this file is meant to be read
 //! against them:
@@ -32,17 +48,16 @@
     clippy::string_slice,
     clippy::cast_possible_truncation
 )]
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "read and written by the setup that holds a Steam Controller, which is built on this"
-    )
-)]
 
+use std::io;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::time::Duration;
 
-use ctrlassist_core::Level;
+use ctrlassist_core::{Contact, Control, Level, Motion, PadState, Touchpad, gamepad};
+use rustix::fs::OFlags;
+use rustix::io::Errno;
+
+use crate::PadError;
 
 /// Valve's vendor number (`USB_VENDOR_ID_VALVE`, `hid-ids.h:1392`).
 pub(crate) const VENDOR: u16 = 0x28de;
@@ -64,6 +79,24 @@ pub(crate) const PRODUCT_PUCK: u16 = 0x1304;
 /// `hid-steam.c:2766-2770`). SDL treats it as it does the Puck
 /// (`IsProteusDongle`, `SDL_hidapi_steam_triton.c:124-128`).
 pub(crate) const PRODUCT_RECEIVER: u16 = 0x1305;
+
+/// The buses, as the kernel numbers them (`linux/input.h`).
+const BUS_USB: u16 = 3;
+const BUS_BLUETOOTH: u16 = 5;
+
+/// Whether a HID device with these numbers is a Steam Controller this
+/// reads: the pad on a cable or over Bluetooth, or a slot of a Puck or of
+/// a Steam Machine's receiver, as the kernel's device table pairs each
+/// product with its bus (`hid-steam.c:2751-2770`). A slot is the pad that
+/// joined it; it carries the receiver's number, not the pad's.
+pub(crate) fn is_pad(bus: u16, vendor: u16, product: u16) -> bool {
+    vendor == VENDOR
+        && match product {
+            PRODUCT_CABLE | PRODUCT_PUCK | PRODUCT_RECEIVER => bus == BUS_USB,
+            PRODUCT_BLUETOOTH => bus == BUS_BLUETOOTH,
+            _ => false,
+        }
+}
 
 /// The state report, with the pad's orientation at its end
 /// (`REPORT_ID_INPUT`, `hid-steam.c:323`; `ID_TRITON_CONTROLLER_STATE`;
@@ -119,6 +152,13 @@ pub(crate) const RUMBLE_SIZE: usize = 10;
 pub(crate) const FEATURE_PAD: u8 = 1;
 /// The feature report commands go to a receiver by
 /// (`REPORT_ID_FEATURES_DONGLE`, `hid-steam.c:320`).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "a receiver's own commands, its wireless state among them, are for when a Puck is read whole"
+    )
+)]
 pub(crate) const FEATURE_RECEIVER: u8 = 2;
 /// A feature report's size, its number included: 64 bytes, the kernel
 /// refusing to send one declared shorter (`hid-steam.c:532-534`) and
@@ -394,6 +434,13 @@ impl Buttons {
     }
 
     /// The whole word, the bits no source names among it.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the tests read the word whole; the pad state takes it bit by bit"
+        )
+    )]
     pub(crate) const fn bits(self) -> u32 {
         self.0
     }
@@ -802,6 +849,247 @@ impl Wireless {
     }
 }
 
+/// The quick access button's place: the controller database's `misc1`,
+/// where SDL's mapping for this pad puts it (`misc1:b11`,
+/// `SDL_gamepad.c:1263-1265`, b11 being its `TRITON_QAM`,
+/// `SDL_hidapi_steam_triton.c:49`). No profile names it.
+pub(crate) const QUICK_ACCESS: Control = Control::Button(15);
+/// The left trigger's click and the right's: the controller database's
+/// `misc3` and `misc4`, where SDL's mapping for this pad puts them
+/// (`misc3:b18,misc4:b19`, `SDL_gamepad.c:1265`; its
+/// `TRITON_LEFT_TRIGGER_CLICK` and `TRITON_RIGHT_TRIGGER_CLICK`,
+/// `SDL_hidapi_steam_triton.c:56-57`). No profile names them and no
+/// virtual pad shows them.
+pub(crate) const LEFT_TRIGGER_CLICK: Control = Control::Button(22);
+pub(crate) const RIGHT_TRIGGER_CLICK: Control = Control::Button(23);
+
+/// Where a bit of the button word goes in the pad state, if anywhere.
+///
+/// The face buttons go by where they are, as every pad's do. The back
+/// buttons are the paddles in SDL's order, R4, L4, R5 and L5. The right
+/// trackpad is the first touchpad, as a DualSense's touchpad is, and its
+/// click the first touchpad's click; the left is the second. SDL numbers
+/// them the other way, its first touchpad the left and its `touchpad`
+/// button the left's click (`SDL_hidapi_steam_triton.c:262-285`,
+/// `SDL_gamepad.c:1265`): the right one here is what a virtual DualSense
+/// shows as its touchpad, as the plan decided.
+///
+/// A trackpad's touch is no button: it is whether its contact is down. A
+/// trigger's click is kept apart from its axis, which carries the pull:
+/// the click is that pull pressed home, which the pad senses for itself,
+/// and is kept where SDL keeps it rather than dropped, as the kernel's
+/// gamepad layout drops a click beside an analog trigger, so that a
+/// later identity that shows it has it to show.
+const fn place(button: Button) -> Option<Control> {
+    Some(match button {
+        Button::South => gamepad::SOUTH,
+        Button::East => gamepad::EAST,
+        Button::West => gamepad::WEST,
+        Button::North => gamepad::NORTH,
+        Button::QuickAccess => QUICK_ACCESS,
+        Button::RightStickClick => gamepad::RIGHT_THUMB,
+        Button::Start => gamepad::START,
+        Button::R4 => gamepad::PADDLE_1,
+        Button::R5 => gamepad::PADDLE_3,
+        Button::RightBumper => gamepad::RIGHT_BUMPER,
+        Button::DpadDown => gamepad::DPAD_DOWN,
+        Button::DpadRight => gamepad::DPAD_RIGHT,
+        Button::DpadLeft => gamepad::DPAD_LEFT,
+        Button::DpadUp => gamepad::DPAD_UP,
+        Button::Select => gamepad::SELECT,
+        Button::LeftStickClick => gamepad::LEFT_THUMB,
+        Button::Steam => gamepad::MODE,
+        Button::L4 => gamepad::PADDLE_2,
+        Button::L5 => gamepad::PADDLE_4,
+        Button::LeftBumper => gamepad::LEFT_BUMPER,
+        Button::RightStickTouch => gamepad::RIGHT_STICK_TOUCH,
+        Button::RightTrackpadClick => gamepad::TOUCHPAD,
+        Button::LeftStickTouch => gamepad::LEFT_STICK_TOUCH,
+        Button::LeftTrackpadClick => gamepad::SECOND_TOUCHPAD,
+        Button::RightGripTouch => gamepad::RIGHT_GRIP_TOUCH,
+        Button::LeftGripTouch => gamepad::LEFT_GRIP_TOUCH,
+        Button::LeftTriggerClick => LEFT_TRIGGER_CLICK,
+        Button::RightTriggerClick => RIGHT_TRIGGER_CLICK,
+        Button::RightTrackpadTouch | Button::LeftTrackpadTouch => return None,
+    })
+}
+
+/// A trackpad as one of the pad state's touchpads: one contact, down
+/// where the finger is, or lifted where the finger last was. The report's
+/// place while no finger is on the trackpad is not used: what a real pad
+/// sends there no source says (see [`Trackpad::x`]), and a lifted
+/// contact keeps the place its finger left (`Contact::new`). The second
+/// contact is never down: the pad reports one finger a trackpad.
+fn touchpad(was: Touchpad, now: Trackpad) -> Touchpad {
+    let [last, _] = was.contacts();
+    let contact = if now.touched {
+        Contact::new(true, now.x, now.y)
+    } else {
+        Contact::new(false, last.x(), last.y())
+    };
+    Touchpad::new([contact, Contact::UP])
+}
+
+/// What a Steam Controller's state reports have said so far, as the pad
+/// state: each report's sample taken in turn, whole.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Reading {
+    state: PadState,
+    /// When the sensors were last read, by the pad's clock: none before
+    /// the first report.
+    last: Option<SensorTime>,
+    /// How many readings the pad has given, wrapping.
+    readings: u32,
+}
+
+impl Reading {
+    /// Nothing reported yet: the pad at rest.
+    pub(crate) const NEW: Self = Self {
+        state: PadState::NEUTRAL,
+        last: None,
+        readings: 0,
+    };
+
+    /// The pad's state as `sample` leaves it. Every control is the
+    /// sample's, but for a trackpad's place while it is lifted.
+    ///
+    /// The motion is one reading more, spaced from the one before by the
+    /// pad's own clock. The first has no interval, as every pad's first
+    /// reading has none, and so has one whose clock is the other width
+    /// from the reading before's, a pad that sent `0x45` and then `0x47`:
+    /// neither clock says anything of the other, and the new one is
+    /// counted from there.
+    pub(crate) fn take(&mut self, sample: &Sample) -> &PadState {
+        let state = &mut self.state;
+        for button in Button::ALL {
+            if let Some(control) = place(button) {
+                state.set(control, f32::from(u8::from(sample.buttons.has(button))));
+            }
+        }
+        let [left_x, left_y] = sample.left_stick;
+        let [right_x, right_y] = sample.right_stick;
+        let [left_trigger, right_trigger] = sample.triggers;
+        for (control, value) in [
+            (gamepad::LEFT_X, left_x),
+            (gamepad::LEFT_Y, left_y),
+            (gamepad::RIGHT_X, right_x),
+            (gamepad::RIGHT_Y, right_y),
+            (gamepad::LEFT_TRIGGER, left_trigger),
+            (gamepad::RIGHT_TRIGGER, right_trigger),
+        ] {
+            state.set(control, value);
+        }
+        state.set_touchpad(touchpad(state.touchpad(), sample.right_trackpad));
+        state.set_second_touchpad(touchpad(state.second_touchpad(), sample.left_trackpad));
+        let interval_us = self
+            .last
+            .and_then(|last| sample.time.since(last))
+            .unwrap_or(0);
+        self.last = Some(sample.time);
+        self.readings = self.readings.wrapping_add(1);
+        state.set_motion(Motion::new(
+            sample.gyro,
+            sample.accel,
+            self.readings,
+            interval_us,
+        ));
+        &self.state
+    }
+}
+
+/// Room for one report: more than any this pad sends, so that one is
+/// never cut short.
+const BUFFER: usize = 128;
+const _: () = assert!(BUFFER > STATE_SIZE && BUFFER > FEATURE_SIZE);
+
+/// A Steam Controller's raw node, read for the pad's whole state.
+///
+/// It is a duplicate of the descriptor the pad's writer writes on, made
+/// non-blocking: the two share what the kernel keeps of the open node,
+/// its flag among it, which the raw node's writes and requests don't look
+/// at (`hidraw_write` and `hidraw_ioctl` in `drivers/hid/hidraw.c`); only
+/// its reads do.
+pub(crate) struct Reader {
+    raw: OwnedFd,
+    /// Where each report is read to: the pad's own, so reading allocates
+    /// nothing.
+    buffer: [u8; BUFFER],
+    reading: Reading,
+}
+
+impl std::fmt::Debug for Reader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reader")
+            .field("readings", &self.reading.readings)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Reader {
+    /// Reads a pad's raw node as well as writing it: a duplicate of
+    /// `raw`, made non-blocking, with the reports it kept while nobody
+    /// read it read away, being from before now. The pad starts at rest,
+    /// and is what its next state report says.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the descriptor can't be duplicated or made non-blocking.
+    pub(crate) fn new(raw: BorrowedFd<'_>) -> io::Result<Self> {
+        let raw = raw.try_clone_to_owned()?;
+        let flags = rustix::fs::fcntl_getfl(&raw)?;
+        rustix::fs::fcntl_setfl(&raw, flags | OFlags::NONBLOCK)?;
+        crate::motion::forget(raw.as_fd());
+        Ok(Self::with(raw))
+    }
+
+    fn with(raw: OwnedFd) -> Self {
+        Self {
+            raw,
+            buffer: [0; BUFFER],
+            reading: Reading::NEW,
+        }
+    }
+
+    /// Reads every report waiting, without waiting for more, and calls
+    /// `step` with the pad's whole state after each state report. A
+    /// battery report changes nothing in the pad state; a report this
+    /// doesn't read, or one too short to, is passed over. Allocates
+    /// nothing, and nothing a report says can make it panic.
+    ///
+    /// # Errors
+    ///
+    /// [`PadError::Gone`] when the pad has gone: the node unplugged from
+    /// under it, which answers `ENODEV`, or `EIO` once nothing is left to
+    /// read (`hidraw_read`); a receiver's slot saying its pad left it; or
+    /// any other error of a read, or a read of nothing, the node being
+    /// all there is of the pad, so one that can't be read is a pad that
+    /// can't be.
+    pub(crate) fn read(&mut self, mut step: impl FnMut(&PadState)) -> Result<(), PadError> {
+        loop {
+            match rustix::io::read(&self.raw, &mut self.buffer) {
+                // No report is empty: a read of nothing is a node at its
+                // end, which would be ready, and read as nothing, for ever.
+                Ok(0) => return Err(PadError::Gone),
+                Ok(length) => match parse(self.buffer.get(..length).unwrap_or_default()) {
+                    Some(Input::State(sample)) => step(self.reading.take(&sample)),
+                    Some(Input::Wireless(Wireless::Disconnected)) => return Err(PadError::Gone),
+                    Some(Input::Battery(_) | Input::Wireless(_)) | None => {}
+                },
+                // A signal can't cut short a read that never waits; were
+                // one to, the node stays ready and is read again.
+                Err(Errno::AGAIN | Errno::INTR) => return Ok(()),
+                Err(_) => return Err(PadError::Gone),
+            }
+        }
+    }
+}
+
+impl AsFd for Reader {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.raw.as_fd()
+    }
+}
+
 /// The left motor's gain, and the right's, as SDL sends them: both 0
 /// (`SDL_hidapi_steam_triton.c:616, 618`). SDL's driver was written for
 /// this pad, and its field is a signed gain, by Valve's header in
@@ -843,6 +1131,13 @@ pub(crate) fn rumble(level: Level) -> [u8; RUMBLE_SIZE] {
 /// its number, the command, and nothing after, as the kernel sends one
 /// (`steam_send_report_byte`, `hid-steam.c:588-591`, through
 /// `steam_send_report_id`, 517-571, whose buffer `hid_alloc_report_buf` zeroes).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "built for the kernel's commands below, which this sends none of"
+    )
+)]
 fn command(id: u8) -> [u8; FEATURE_SIZE] {
     let mut frame = [0; FEATURE_SIZE];
     if let Some(head) = frame.first_chunk_mut::<2>() {
@@ -878,6 +1173,13 @@ fn settings<const N: usize>(writes: [(u8, u16); N]) -> [u8; FEATURE_SIZE] {
 /// Lizard mode off, as SDL keeps it off every [`LIZARD_MODE_AGAIN`] while
 /// it doesn't want the motion sensors (`MaintainTritonState`,
 /// `SDL_hidapi_steam_triton.c:130-155`).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pad is always asked for its motion too, by `lizard_mode_off_motion_on`"
+    )
+)]
 pub(crate) fn lizard_mode_off() -> [u8; FEATURE_SIZE] {
     settings([(SETTING_LIZARD_MODE, LIZARD_MODE_OFF)])
 }
@@ -897,6 +1199,13 @@ pub(crate) fn lizard_mode_off_motion_on() -> [u8; FEATURE_SIZE] {
 /// kernel writes it when its motion device is opened and closed
 /// (`steam_sensor_open` and `steam_sensor_close`, `hid-steam.c:948-975`)
 /// and SDL when a game asks (`SDL_hidapi_steam_triton.c:676-700`).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the motion sensors are asked for with lizard mode off, and never turned off"
+    )
+)]
 pub(crate) fn motion_sensors(on: bool) -> [u8; FEATURE_SIZE] {
     settings([(
         SETTING_IMU_MODE,
@@ -907,9 +1216,16 @@ pub(crate) fn motion_sensors(on: bool) -> [u8; FEATURE_SIZE] {
 /// The pad's own keys and pointer turned off: the kernel sends it before
 /// it writes lizard mode off (`ID_CLEAR_DIGITAL_MAPPINGS`,
 /// `steam_set_lizard_mode`, `hid-steam.c:891-892`), and SDL never sends
-/// it, relying on lizard mode off alone. Whether it is sent is for
-/// whatever opens the pad to choose; what it adds over lizard mode off
-/// only a real pad can show.
+/// it, relying on lizard mode off alone. It isn't sent: lizard mode is
+/// kept off SDL's way (`output.rs`'s `SteamNode`). What it adds over
+/// lizard mode off only a real pad can show.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "not sent: lizard mode is kept off SDL's way, which doesn't send it"
+    )
+)]
 pub(crate) fn clear_digital_mappings() -> [u8; FEATURE_SIZE] {
     command(CLEAR_DIGITAL_MAPPINGS)
 }
@@ -918,6 +1234,13 @@ pub(crate) fn clear_digital_mappings() -> [u8; FEATURE_SIZE] {
 /// pointer to their defaults, then its settings to theirs, in that order
 /// (`ID_SET_DEFAULT_DIGITAL_MAPPINGS` then `ID_LOAD_DEFAULT_SETTINGS`,
 /// `steam_set_lizard_mode`, `hid-steam.c:885-889`).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "not sent: the kernel's driver sends it itself as the raw node closes"
+    )
+)]
 pub(crate) fn lizard_mode_on() -> [[u8; FEATURE_SIZE]; 2] {
     [
         command(SET_DEFAULT_DIGITAL_MAPPINGS),
@@ -1454,6 +1777,263 @@ mod tests {
         );
         assert_eq!(RUMBLE_AGAIN, Duration::from_millis(40));
         assert_eq!(LIZARD_MODE_AGAIN, Duration::from_secs(3));
+    }
+
+    /// The pad state after `raw`, sent as `id`, taken by a reading that
+    /// has had nothing before.
+    fn first(id: u8, raw: Raw) -> PadState {
+        let mut reading = Reading::NEW;
+        *reading.take(&state(&report(id, raw)))
+    }
+
+    #[test]
+    fn every_button_goes_to_its_place_and_nowhere_else() {
+        // Written out here, not taken from the code under test.
+        let table: [(Button, Option<Control>); 30] = [
+            (Button::South, Some(gamepad::SOUTH)),
+            (Button::East, Some(gamepad::EAST)),
+            (Button::West, Some(gamepad::WEST)),
+            (Button::North, Some(gamepad::NORTH)),
+            (Button::QuickAccess, Some(Control::Button(15))),
+            (Button::RightStickClick, Some(gamepad::RIGHT_THUMB)),
+            (Button::Start, Some(gamepad::START)),
+            (Button::R4, Some(gamepad::PADDLE_1)),
+            (Button::R5, Some(gamepad::PADDLE_3)),
+            (Button::RightBumper, Some(gamepad::RIGHT_BUMPER)),
+            (Button::DpadDown, Some(gamepad::DPAD_DOWN)),
+            (Button::DpadRight, Some(gamepad::DPAD_RIGHT)),
+            (Button::DpadLeft, Some(gamepad::DPAD_LEFT)),
+            (Button::DpadUp, Some(gamepad::DPAD_UP)),
+            (Button::Select, Some(gamepad::SELECT)),
+            (Button::LeftStickClick, Some(gamepad::LEFT_THUMB)),
+            (Button::Steam, Some(gamepad::MODE)),
+            (Button::L4, Some(gamepad::PADDLE_2)),
+            (Button::L5, Some(gamepad::PADDLE_4)),
+            (Button::LeftBumper, Some(gamepad::LEFT_BUMPER)),
+            (Button::RightStickTouch, Some(gamepad::RIGHT_STICK_TOUCH)),
+            (Button::RightTrackpadTouch, None),
+            (Button::RightTrackpadClick, Some(gamepad::TOUCHPAD)),
+            (Button::RightTriggerClick, Some(Control::Button(23))),
+            (Button::LeftStickTouch, Some(gamepad::LEFT_STICK_TOUCH)),
+            (Button::LeftTrackpadTouch, None),
+            (Button::LeftTrackpadClick, Some(gamepad::SECOND_TOUCHPAD)),
+            (Button::LeftTriggerClick, Some(Control::Button(22))),
+            (Button::RightGripTouch, Some(gamepad::RIGHT_GRIP_TOUCH)),
+            (Button::LeftGripTouch, Some(gamepad::LEFT_GRIP_TOUCH)),
+        ];
+        assert_eq!(table.map(|(button, _)| button), Button::ALL);
+        // Every axis at rest, so that only the button can show.
+        let rest = Raw {
+            buttons: 0,
+            triggers: [0; 2],
+            sticks: [0; 4],
+            ..RAW
+        };
+        let unpressed = first(0x45, rest);
+        for (button, place) in table {
+            let held = first(
+                0x45,
+                Raw {
+                    buttons: button.mask(),
+                    ..rest
+                },
+            );
+            for index in 0..64 {
+                let control = Control::Button(index);
+                let wanted = if place == Some(control) { 1.0 } else { 0.0 };
+                assert_eq!(held.get(control), wanted, "{button:?} at {control:?}");
+            }
+            // A trackpad's touch is its contact down, and nothing else.
+            let right = button == Button::RightTrackpadTouch;
+            let left = button == Button::LeftTrackpadTouch;
+            assert_eq!(held.touchpad().contacts()[0].down(), right, "{button:?}");
+            assert_eq!(
+                held.second_touchpad().contacts()[0].down(),
+                left,
+                "{button:?}"
+            );
+            if !right && !left {
+                assert_eq!(held.touchpad(), unpressed.touchpad(), "{button:?}");
+                assert_eq!(held.second_touchpad(), unpressed.second_touchpad());
+            }
+        }
+        // The two bits no source names go nowhere.
+        let unnamed = first(
+            0x45,
+            Raw {
+                buttons: 0xc000_0000,
+                ..rest
+            },
+        );
+        assert_eq!(unnamed, unpressed);
+    }
+
+    #[test]
+    fn sticks_and_triggers_keep_the_signs_the_rest_of_the_crate_uses() {
+        // The report's y grows upward: up on the left stick is its y's
+        // negative, and full down on the right its positive.
+        let state = first(
+            0x42,
+            Raw {
+                sticks: [32767, 32767, -16384, -32768],
+                triggers: [32767, 8192],
+                ..RAW
+            },
+        );
+        assert_eq!(state.get(gamepad::LEFT_X), 1.0);
+        assert_eq!(state.get(gamepad::LEFT_Y), -1.0, "up is negative");
+        assert_eq!(state.get(gamepad::RIGHT_X), -16384.0 / 32767.0);
+        assert_eq!(state.get(gamepad::RIGHT_Y), 1.0, "down is positive");
+        assert_eq!(state.get(gamepad::LEFT_TRIGGER), 1.0);
+        assert_eq!(state.get(gamepad::RIGHT_TRIGGER), 8192.0 / 32767.0);
+    }
+
+    /// One trackpad touched at a place, or lifted with whatever the report
+    /// puts in its fields.
+    fn on_trackpads(left: Option<[i16; 2]>, right: Option<[i16; 2]>, lifted: [i16; 2]) -> Raw {
+        let mut buttons = 0;
+        let pad = |at: Option<[i16; 2]>, touch: Button, buttons: &mut u32| {
+            let [x, y] = at.unwrap_or(lifted);
+            if at.is_some() {
+                *buttons |= touch.mask();
+            }
+            [x as u16, y as u16, 0]
+        };
+        Raw {
+            left: pad(left, Button::LeftTrackpadTouch, &mut buttons),
+            right: pad(right, Button::RightTrackpadTouch, &mut buttons),
+            buttons,
+            ..RAW
+        }
+    }
+
+    #[test]
+    fn a_lifted_trackpad_keeps_the_place_its_finger_left() {
+        let mut reading = Reading::NEW;
+        let mut take = |raw: Raw| *reading.take(&state(&report(0x45, raw)));
+        // Never touched: no finger, and no place.
+        let untouched = take(on_trackpads(None, None, [1234, -4321]));
+        assert_eq!(untouched.touchpad(), Touchpad::UNTOUCHED);
+        assert_eq!(untouched.second_touchpad(), Touchpad::UNTOUCHED);
+
+        // The right trackpad is the first touchpad, the left the second;
+        // each one contact.
+        let touched = take(on_trackpads(
+            Some([-32767, 32767]),
+            Some([32767, 0]),
+            [0; 2],
+        ));
+        let [right, other] = touched.touchpad().contacts();
+        assert!(right.down() && !other.down());
+        assert_eq!((right.x(), right.y()), (1.0, 0.5));
+        let [left, other] = touched.second_touchpad().contacts();
+        assert!(left.down() && !other.down());
+        assert_eq!((left.x(), left.y()), (0.0, 0.0), "the top left corner");
+
+        // Lifted, whatever the fields say then: where the finger was.
+        for lifted in [[0, 0], [-32767, -32767], [5000, 6000]] {
+            let state = take(on_trackpads(None, None, lifted));
+            let right = state.touchpad().contacts()[0];
+            let left = state.second_touchpad().contacts()[0];
+            assert!(!right.down() && !left.down());
+            assert_eq!((right.x(), right.y()), (1.0, 0.5), "{lifted:?}");
+            assert_eq!((left.x(), left.y()), (0.0, 0.0), "{lifted:?}");
+        }
+        // Touched again, the finger is where it is now.
+        let again = take(on_trackpads(None, Some([0, 0]), [0; 2]));
+        let right = again.touchpad().contacts()[0];
+        assert!(right.down());
+        assert_eq!((right.x(), right.y()), (0.5, 0.5));
+    }
+
+    #[test]
+    fn readings_are_counted_and_spaced_by_the_pad_s_clock_from_the_first() {
+        let mut reading = Reading::NEW;
+        let mut take = |id: u8, sensor_time: u32, narrow_time: u16| {
+            let raw = Raw {
+                sensor_time,
+                narrow_time,
+                ..RAW
+            };
+            let motion = reading.take(&state(&report(id, raw))).motion();
+            (motion.readings(), motion.interval_us())
+        };
+        // The first has no interval; then the pad's own, across its wrap.
+        assert_eq!(take(0x42, u32::MAX - 999, 0), (1, 0));
+        assert_eq!(take(0x45, 3000, 0), (2, 4000));
+        assert_eq!(take(0x42, 7032, 0), (3, 4032));
+        // The other clock says nothing of this one: no interval, and it
+        // is counted from there.
+        assert_eq!(take(0x47, 0, 65_500), (4, 0));
+        assert_eq!(take(0x47, 0, 89), (5, 125 * 32));
+        assert_eq!(take(0x45, 50, 0), (6, 0));
+        assert_eq!(take(0x45, 4050, 0), (7, 4000));
+        // The motion is the sample's.
+        let state = first(0x45, RAW);
+        assert_eq!(state.motion().gyro(), state_of(0x45).gyro);
+        assert_eq!(state.motion().accel(), state_of(0x45).accel);
+    }
+
+    fn state_of(id: u8) -> Sample {
+        state(&report(id, RAW))
+    }
+
+    /// The pad's reports, through a stand-in for its raw node, each
+    /// datagram a report: a state report is a step, a battery report and
+    /// anything not read are nothing, and a receiver's slot saying its pad
+    /// left is the pad gone, with what came after it unread.
+    #[test]
+    fn a_raw_node_s_reports_are_steps_and_a_slot_left_is_the_pad_gone() {
+        use std::os::unix::net::UnixDatagram;
+        let (pad, node) = UnixDatagram::pair().unwrap();
+        node.set_nonblocking(true).unwrap();
+        let mut reader = Reader::with(node.into());
+        let south = Raw {
+            buttons: Button::South.mask(),
+            ..RAW
+        };
+        let battery = [
+            0x43, 0x02, 87, 0x10, 0x0f, 0x20, 0x0e, 0x30, 0x13, 0x40, 0x01, 0x50, 0x02, 0x60, 0x6d,
+        ];
+        pad.send(&report(0x45, south)).unwrap();
+        pad.send(&battery).unwrap();
+        pad.send(&[0x44; 46]).unwrap();
+        pad.send(&[0x79, 2]).unwrap();
+        pad.send(&report(0x42, Raw { buttons: 0, ..RAW })).unwrap();
+        let mut steps = Vec::new();
+        reader.read(|state| steps.push(*state)).unwrap();
+        assert_eq!(steps.len(), 2, "{steps:?}");
+        assert_eq!(steps[0].get(gamepad::SOUTH), 1.0);
+        assert_eq!(steps[1].get(gamepad::SOUTH), 0.0);
+        assert_eq!(steps[1].motion().readings(), 2);
+
+        pad.send(&[0x79, 1]).unwrap();
+        pad.send(&report(0x45, south)).unwrap();
+        let mut after = Vec::new();
+        let gone = reader.read(|state| after.push(*state)).unwrap_err();
+        assert!(matches!(gone, PadError::Gone), "{gone:?}");
+        assert!(after.is_empty());
+        // What came after is still there, for whoever reads next.
+        let mut last = Vec::new();
+        reader.read(|state| last.push(*state)).unwrap();
+        assert_eq!(last.len(), 1);
+    }
+
+    #[test]
+    fn only_a_steam_controller_s_numbers_on_its_buses_are_one() {
+        for (bus, product, is) in [
+            (3, 0x1302, true),
+            (5, 0x1303, true),
+            (3, 0x1304, true),
+            (3, 0x1305, true),
+            (5, 0x1302, false),
+            (3, 0x1303, false),
+            (3, 0x1102, false),
+            (3, 0x1205, false),
+        ] {
+            assert_eq!(is_pad(bus, 0x28de, product), is, "{bus} {product:#x}");
+        }
+        assert!(!is_pad(3, 0x054c, 0x1302));
     }
 
     proptest! {
