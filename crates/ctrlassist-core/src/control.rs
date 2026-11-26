@@ -55,10 +55,36 @@ pub mod gamepad {
     pub const DPAD_DOWN: Control = Control::Button(12);
     pub const DPAD_LEFT: Control = Control::Button(13);
     pub const DPAD_RIGHT: Control = Control::Button(14);
-    /// The touchpad's click, a button like any other, at the place the
-    /// controller database gives `touchpad`. Where the finger is on the
-    /// touchpad is no control: see [`Touchpad`](super::Touchpad).
+    // The back buttons, at the places the controller database gives
+    // `paddle1` to `paddle4`, in SDL's order. Like every button past the
+    // D-pad they are in no group of the gamepad layout.
+    /// The upper right back button: a Steam Controller's R4.
+    pub const PADDLE_1: Control = Control::Button(16);
+    /// The upper left back button: a Steam Controller's L4.
+    pub const PADDLE_2: Control = Control::Button(17);
+    /// The lower right back button: a Steam Controller's R5.
+    pub const PADDLE_3: Control = Control::Button(18);
+    /// The lower left back button: a Steam Controller's L5.
+    pub const PADDLE_4: Control = Control::Button(19);
+    /// The first touchpad's click, a button like any other, at the place
+    /// the controller database gives `touchpad`. Where the finger is on
+    /// the touchpad is no control: see [`Touchpad`](super::Touchpad).
     pub const TOUCHPAD: Control = Control::Button(20);
+    // Capacitive touch: a hand resting on a stick or a grip without
+    // moving or pressing it, as a Steam Controller senses it. Past the
+    // controller database's last place, `misc6`'s, and in no group of the
+    // gamepad layout, so a thumb resting on a stick never owns it.
+    /// A thumb on the left stick.
+    pub const LEFT_STICK_TOUCH: Control = Control::Button(26);
+    /// A thumb on the right stick.
+    pub const RIGHT_STICK_TOUCH: Control = Control::Button(27);
+    /// A hand on the left grip.
+    pub const LEFT_GRIP_TOUCH: Control = Control::Button(28);
+    /// A hand on the right grip.
+    pub const RIGHT_GRIP_TOUCH: Control = Control::Button(29);
+    /// The second touchpad's click, as [`TOUCHPAD`] is the first's: a
+    /// Steam Controller's left trackpad's.
+    pub const SECOND_TOUCHPAD: Control = Control::Button(30);
 
     pub const LEFT_X: Control = Control::Axis(0);
     pub const LEFT_Y: Control = Control::Axis(1);
@@ -217,8 +243,9 @@ impl Contact {
     }
 }
 
-/// Where fingers are on a pad's touchpad: two contacts, in the order the
-/// pad numbers them. Its click is a button, [`gamepad::TOUCHPAD`].
+/// Where fingers are on one of a pad's touchpads: two contacts, in the
+/// order the pad numbers them. The first touchpad's click is a button,
+/// [`gamepad::TOUCHPAD`], and the second's [`gamepad::SECOND_TOUCHPAD`].
 ///
 /// It is not a control. No group holds it and no rule blends it: a node
 /// takes it whole from one input, two fingers' places not averaging into
@@ -248,28 +275,41 @@ impl Touchpad {
     pub fn contacts(&self) -> [Contact; Self::CONTACTS] {
         self.contacts
     }
+
+    /// Whether a finger is on it.
+    pub(crate) fn touched(&self) -> bool {
+        self.contacts.iter().any(Contact::down)
+    }
 }
 
+/// How many touchpads a pad state holds: a DualSense's one and a Steam
+/// Controller's two.
+pub(crate) const TOUCHPADS: usize = 2;
+
 /// Everything a pad holds at one instant: its controls, and beside them
-/// its motion sensors' last reading and its touchpad's contacts, which
-/// are not controls. A pad without sensors or a touchpad holds them at
-/// rest.
+/// its motion sensors' last reading and its two touchpads' contacts,
+/// which are not controls. A pad without sensors or touchpads holds them
+/// at rest.
+///
+/// The first touchpad is a DualSense's or a DualShock 4's, and a Steam
+/// Controller's right trackpad; the second is a Steam Controller's left.
+/// A pad with one touchpad leaves the second untouched.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct PadState {
     buttons: ButtonBits,
     axes: [f32; AXES],
     motion: Motion,
-    touchpad: Touchpad,
+    touchpads: [Touchpad; TOUCHPADS],
 }
 
 impl PadState {
     /// A pad at rest: nothing pressed, every axis at zero, lying flat and
-    /// still, and no finger on its touchpad.
+    /// still, and no finger on either touchpad.
     pub const NEUTRAL: Self = Self {
         buttons: 0,
         axes: [0.0; AXES],
         motion: Motion::STILL,
-        touchpad: Touchpad::UNTOUCHED,
+        touchpads: [Touchpad::UNTOUCHED; TOUCHPADS],
     };
 
     /// Sets one control. A button is pressed by any value above zero. An
@@ -342,23 +382,53 @@ impl PadState {
         self
     }
 
-    /// Where fingers are on the touchpad.
+    /// Where fingers are on the first touchpad: a DualSense's, or a Steam
+    /// Controller's right.
     #[must_use]
     pub fn touchpad(&self) -> Touchpad {
-        self.touchpad
+        self.touchpads[0]
     }
 
-    /// Sets where fingers are on the touchpad, checked as each contact
-    /// was made.
+    /// Sets where fingers are on the first touchpad, checked as each
+    /// contact was made.
     pub fn set_touchpad(&mut self, touchpad: Touchpad) {
-        self.touchpad = touchpad;
+        self.touchpads[0] = touchpad;
     }
 
     /// Builder form of [`set_touchpad`](Self::set_touchpad).
     #[must_use]
     pub fn with_touchpad(mut self, touchpad: Touchpad) -> Self {
-        self.touchpad = touchpad;
+        self.set_touchpad(touchpad);
         self
+    }
+
+    /// Where fingers are on the second touchpad: a Steam Controller's
+    /// left.
+    #[must_use]
+    pub fn second_touchpad(&self) -> Touchpad {
+        self.touchpads[1]
+    }
+
+    /// Sets where fingers are on the second touchpad, checked as each
+    /// contact was made.
+    pub fn set_second_touchpad(&mut self, touchpad: Touchpad) {
+        self.touchpads[1] = touchpad;
+    }
+
+    /// Builder form of [`set_second_touchpad`](Self::set_second_touchpad).
+    #[must_use]
+    pub fn with_second_touchpad(mut self, touchpad: Touchpad) -> Self {
+        self.set_second_touchpad(touchpad);
+        self
+    }
+
+    /// Both touchpads, the first then the second.
+    pub(crate) fn touchpads(&self) -> &[Touchpad; TOUCHPADS] {
+        &self.touchpads
+    }
+
+    pub(crate) fn touchpads_mut(&mut self) -> &mut [Touchpad; TOUCHPADS] {
+        &mut self.touchpads
     }
 
     pub(crate) fn buttons(&self) -> ButtonBits {
@@ -465,7 +535,9 @@ impl Layout {
     }
 
     /// The standard gamepad: two sticks, two triggers, a d-pad, and each
-    /// remaining button alone.
+    /// face button, bumper, Select, Start, Mode and stick click alone. The
+    /// touchpads' clicks, the back buttons and capacitive touch are in no
+    /// group.
     #[must_use]
     pub fn gamepad() -> Self {
         use gamepad::*;

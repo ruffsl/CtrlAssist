@@ -89,6 +89,8 @@ fn stepping_a_graph_allocates_nothing() {
             .with(SOUTH, (step % 2) as f32)
             .with(MODE, ((step / 100) % 2) as f32)
             .with(TOUCHPAD, ((step / 10) % 2) as f32)
+            .with(PADDLE_1, ((step / 7) % 2) as f32)
+            .with(LEFT_STICK_TOUCH, ((step / 3) % 2) as f32)
             .with_motion(Motion::new(
                 [value * 500.0, -value, 0.0],
                 [value, 1.0, -value],
@@ -98,6 +100,10 @@ fn stepping_a_graph_allocates_nothing() {
             .with_touchpad(Touchpad::new([
                 Contact::new(step % 3 == 0, value.abs(), 0.5),
                 Contact::UP,
+            ]))
+            .with_second_touchpad(Touchpad::new([
+                Contact::UP,
+                Contact::new(step % 5 == 0, 0.5, value.abs()),
             ]));
         graph.update(SourceId(step % 3), state, &mut |_| changes += 1);
         if step % 1000 == 0 {

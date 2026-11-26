@@ -10,7 +10,9 @@ use ctrlassist_core::{
 };
 use proptest::prelude::*;
 
-const BUTTONS: [Control; 12] = [
+/// Every button but the D-pad's, the back buttons, the touchpads' clicks
+/// and capacitive touch among them, which are in no group.
+const BUTTONS: [Control; 21] = [
     SOUTH,
     EAST,
     NORTH,
@@ -22,6 +24,15 @@ const BUTTONS: [Control; 12] = [
     LEFT_THUMB,
     RIGHT_THUMB,
     TOUCHPAD,
+    SECOND_TOUCHPAD,
+    PADDLE_1,
+    PADDLE_2,
+    PADDLE_3,
+    PADDLE_4,
+    LEFT_STICK_TOUCH,
+    RIGHT_STICK_TOUCH,
+    LEFT_GRIP_TOUCH,
+    RIGHT_GRIP_TOUCH,
     MODE,
 ];
 const DPAD: [Control; 4] = [DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT];
@@ -41,15 +52,27 @@ fn motion() -> impl Strategy<Value = Motion> {
         .prop_map(|(gyro, accel, readings, interval)| Motion::new(gyro, accel, readings, interval))
 }
 
-/// Whether a pad has a finger on its touchpad.
-fn touching(pad: &PadState) -> bool {
-    pad.touchpad().contacts().iter().any(Contact::down)
+/// A pad's touchpads, the first then the second.
+fn touchpads(pad: &PadState) -> [Touchpad; 2] {
+    [pad.touchpad(), pad.second_touchpad()]
 }
 
-/// Whether a virtual pad's contacts are `owner`'s, or lifted, as they are
-/// for the step in which one pad's fingers give way to another's.
-fn shows(sink: &PadState, owner: &PadState) -> bool {
-    sink.touchpad() == owner.touchpad() || !touching(sink)
+/// Whether a pad has a finger on its touchpad `which`.
+fn touching(pad: &PadState, which: usize) -> bool {
+    touchpads(pad)[which].contacts().iter().any(Contact::down)
+}
+
+/// Whether a virtual pad's contacts on its touchpad `which` are `owner`'s,
+/// or lifted, as they are for the step in which one pad's fingers give way
+/// to another's.
+fn shows(sink: &PadState, owner: &PadState, which: usize) -> bool {
+    touchpads(sink)[which] == touchpads(owner)[which] || !touching(sink, which)
+}
+
+/// A pad state with neither touchpad touched, to compare the rest.
+fn untouched(pad: PadState) -> PadState {
+    pad.with_touchpad(Touchpad::UNTOUCHED)
+        .with_second_touchpad(Touchpad::UNTOUCHED)
 }
 
 /// Fingers on a touchpad, or none.
@@ -66,13 +89,14 @@ fn pad_state(with_mode: bool) -> impl Strategy<Value = PadState> {
     let stick = prop::sample::select(vec![-1.0f32, -0.5, 0.0, 0.5, 1.0]);
     let trigger = prop::sample::select(vec![0.0f32, 0.3, 0.7, 1.0]);
     (
-        prop::collection::vec(any::<bool>(), 16),
+        prop::collection::vec(any::<bool>(), BUTTONS.len() + DPAD.len()),
         prop::collection::vec(stick, 4),
         prop::collection::vec(trigger, 2),
         motion(),
         touchpad(),
+        touchpad(),
     )
-        .prop_map(move |(buttons, sticks, triggers, motion, touchpad)| {
+        .prop_map(move |(buttons, sticks, triggers, motion, first, second)| {
             let mut state = PadState::NEUTRAL;
             for (control, pressed) in BUTTONS.iter().chain(&DPAD).zip(buttons) {
                 if *control != MODE || with_mode {
@@ -85,7 +109,10 @@ fn pad_state(with_mode: bool) -> impl Strategy<Value = PadState> {
             for (control, value) in TRIGGERS.iter().zip(triggers) {
                 state.set(*control, value);
             }
-            state.with_motion(motion).with_touchpad(touchpad)
+            state
+                .with_motion(motion)
+                .with_touchpad(first)
+                .with_second_touchpad(second)
         })
 }
 
@@ -112,8 +139,9 @@ fn any_held(state: &PadState, controls: &[Control]) -> bool {
 proptest! {
     /// Priority: the assist owns what it touches and nothing else, the
     /// changes reported always add up to the controls the virtual pad
-    /// holds, and its motion is the primary's and its contacts the assist's while they
-    /// touch, and the primary's otherwise.
+    /// holds, and its motion is the primary's and each touchpad's contacts
+    /// the assist's while they touch that touchpad, and the primary's
+    /// otherwise. A capacitive touch, a loose button, owns no stick.
     #[test]
     fn priority_gives_the_assist_exactly_what_it_touches(
         steps in prop::collection::vec((0usize..2, pad_state(true)), 1..60)
@@ -127,11 +155,21 @@ proptest! {
             let [primary, assist] = pads;
             let sink = *graph.sink(SinkId(0));
             prop_assert_eq!(sink.motion(), primary.motion());
-            let owner = if touching(&assist) { assist } else { primary };
-            prop_assert!(shows(&sink, &owner), "the assist's touchpad while they touch it: {:?}", sink.touchpad());
+            for which in 0..2 {
+                let owner = if touching(&assist, which) { assist } else { primary };
+                prop_assert!(
+                    shows(&sink, &owner, which),
+                    "the assist's touchpad {} while they touch it: {:?}",
+                    which,
+                    touchpads(&sink)
+                );
+            }
             // No change reports motion or the contacts: they are written
             // whole.
-            let rebuilt = shadow.with_motion(sink.motion()).with_touchpad(sink.touchpad());
+            let rebuilt = shadow
+                .with_motion(sink.motion())
+                .with_touchpad(sink.touchpad())
+                .with_second_touchpad(sink.second_touchpad());
             prop_assert_eq!(rebuilt, sink, "the reported changes rebuild the virtual pad's controls");
 
             for button in BUTTONS {
@@ -156,25 +194,34 @@ proptest! {
 
     /// Average: every output axis lies between the two inputs, a button
     /// is down exactly when someone holds it, and nothing of motion or the
-    /// contacts is blended: motion is the primary's, and the contacts one
-    /// pad's, whole.
+    /// contacts is blended: motion is the primary's, and each touchpad's
+    /// contacts one pad's, whole: whoever touched it first, until they
+    /// lift, whoever has the other.
     #[test]
     fn average_stays_between_its_inputs(
         steps in prop::collection::vec((0usize..2, pad_state(true)), 1..60)
     ) {
         let mut graph = mux(Mode::Average);
         let mut pads = [PadState::NEUTRAL; 2];
+        // Whose each touchpad is, kept the obvious way.
+        let mut holders = [0usize; 2];
         for (source, state) in steps {
             pads[source] = state;
             graph.update(SourceId(source), state, &mut |_| {});
             let [primary, assist] = pads;
             let sink = *graph.sink(SinkId(0));
             prop_assert_eq!(sink.motion(), primary.motion());
-            prop_assert!(
-                shows(&sink, &primary) || shows(&sink, &assist),
-                "one pad's touchpad, whole: {:?}",
-                sink.touchpad()
-            );
+            for (which, holder) in holders.iter_mut().enumerate() {
+                if !touching(&pads[*holder], which) {
+                    *holder = (0..2).find(|pad| touching(&pads[*pad], which)).unwrap_or(*holder);
+                }
+                prop_assert!(
+                    shows(&sink, &pads[*holder], which),
+                    "touchpad {} is whoever touched it first, whole: {:?}",
+                    which,
+                    touchpads(&sink)
+                );
+            }
             for axis in STICKS.iter().flatten().chain(&TRIGGERS) {
                 let (low, high) = (
                     primary.get(*axis).min(assist.get(*axis)),
@@ -218,8 +265,10 @@ proptest! {
                 }
             }
             let sink = *graph.sink(SinkId(0));
-            prop_assert_eq!(sink.with_touchpad(Touchpad::UNTOUCHED), pads[selected].with_touchpad(Touchpad::UNTOUCHED));
-            prop_assert!(shows(&sink, &pads[selected]), "{:?}", sink.touchpad());
+            prop_assert_eq!(untouched(sink), untouched(pads[selected]));
+            for which in 0..2 {
+                prop_assert!(shows(&sink, &pads[selected], which), "{}: {:?}", which, touchpads(&sink));
+            }
             prop_assert_eq!(graph.feedback_targets(SinkId(0)), SourceSet::from(SourceId(selected)));
         }
     }
@@ -578,17 +627,20 @@ fn any_state() -> impl Strategy<Value = PadState> {
         prop::array::uniform3(any_value()),
         any::<u32>(),
         any::<u32>(),
-        prop::array::uniform2(contact),
+        prop::array::uniform2(prop::array::uniform2(contact)),
     )
-        .prop_map(|(controls, gyro, accel, readings, interval, contacts)| {
-            let mut state = PadState::NEUTRAL;
-            for (control, value) in controls {
-                state.set(control, value);
-            }
-            state
-                .with_motion(Motion::new(gyro, accel, readings, interval))
-                .with_touchpad(Touchpad::new(contacts))
-        })
+        .prop_map(
+            |(controls, gyro, accel, readings, interval, [first, second])| {
+                let mut state = PadState::NEUTRAL;
+                for (control, value) in controls {
+                    state.set(control, value);
+                }
+                state
+                    .with_motion(Motion::new(gyro, accel, readings, interval))
+                    .with_touchpad(Touchpad::new(first))
+                    .with_second_touchpad(Touchpad::new(second))
+            },
+        )
 }
 
 #[derive(Clone, Debug)]
@@ -611,7 +663,7 @@ fn any_poke() -> impl Strategy<Value = Poke> {
 /// Whatever a profile says, building it either refuses or yields a graph
 /// that no pad state, dropout or request can make panic, and whose virtual
 /// pads only ever hold values in range: every motion value a finite
-/// number, and every place on the touchpad.
+/// number, and every place on its touchpad.
 #[test]
 fn nothing_a_profile_or_a_pad_says_can_panic_a_step() {
     use proptest::test_runner::{Config, TestRunner};
@@ -661,7 +713,7 @@ fn nothing_a_profile_or_a_pad_says_can_panic_a_step() {
                 for value in motion.gyro().iter().chain(&motion.accel()) {
                     prop_assert!(value.is_finite(), "sink {sink}'s motion is {motion:?}");
                 }
-                for contact in state.touchpad().contacts() {
+                for contact in touchpads(state).iter().flat_map(Touchpad::contacts) {
                     let on = |place: f32| (0.0..=1.0).contains(&place);
                     prop_assert!(
                         on(contact.x()) && on(contact.y()),
