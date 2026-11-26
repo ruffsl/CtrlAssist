@@ -1,0 +1,17 @@
+// Clipboard interop. Slint's `Platform` trait has clipboard methods
+// for backend implementers but doesn't surface them to app Slint
+// code, so we route through Rust via this global.
+//
+// `copy-icon` is set from Rust at startup (resolved against the
+// freedesktop `edit-copy` name like the sidebar glyphs) — empty
+// image when unavailable, in which case `CopyBtn` simply doesn't
+// render the icon.
+
+// `label` is the noun the success toast surfaces ("Copied {label}.")
+// — already translated at the call site, typically forwarded from
+// the surrounding `LabeledRow` whose `label` is wrapped with
+// `@tr()`. Empty string → generic "Copied to clipboard." fallback.
+export global Clipboard {
+    in property <image> copy-icon;
+    callback copy(value: string, label: string);
+}

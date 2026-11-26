@@ -1,0 +1,14 @@
+[book]
+title = "CtrlAssist"
+authors = ["CtrlAssist contributors"]
+description = "User guide for CtrlAssist: controller assist for gaming on Linux."
+src = "src"
+language = "en"
+
+[output.html]
+default-theme = "navy"
+git-repository-url = "https://github.com/CtrlAssist/CtrlAssist"
+edit-url-template = "https://github.com/CtrlAssist/CtrlAssist/edit/main/docs/book/{path}"
+
+[output.html.search]
+enable = true

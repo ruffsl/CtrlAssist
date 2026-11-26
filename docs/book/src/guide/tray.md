@@ -1,0 +1,67 @@
+# The Tray
+
+The tray is the everyday way to use CtrlAssist. Its icon shows trouble at a glance: a warning when an arrangement is waiting for a controller, an error when one has failed. Hovering over it lists what runs: each arrangement with its mode, its controllers, a ● beside the one that has control, and its virtual controller. After them come the profiles that are ready to start, and when nothing runs, how many controllers are connected.
+
+A **middle click** on the icon starts or stops one profile without opening the menu: the one marked ► in that list. That is the profile you last started or stopped, and scrolling the **mouse wheel** over the icon moves the mark to another. The icon and the menu's icons come from your desktop's icon theme, in its flat single-color style where the theme has one, so they follow a light or dark panel.
+
+## The menu
+
+**Profiles** come first: each one you have kept, and anything running. **default ✓** is first: CtrlAssist always keeps it, so there is always a profile to fill in, and it can't be deleted or renamed.
+
+- A profile that isn't running offers **Start**. One whose controllers aren't chosen yet says so instead.
+- A running one shows its state in brackets and offers **Stop**, and for a toggle, **Has control**: who plays now, and a click to hand over. A controller that isn't connected can't be handed to.
+- One that has failed says why. **Stop** clears it.
+- Under those are the profile's settings, the same as the window's profile page: its controllers, what its virtual controller presents itself as, its mode, who feels rumble, how the real controllers are hidden, and whether it is managed. A profile written by hand in the full form has no settings here; while it runs its menu lists its controllers.
+
+What you pick is kept at once. While the profile runs it also takes effect at once, without the game noticing: other controllers, a new mode, who feels rumble. A controller you swap out is given back to the system, and the new one is hidden. Picking another identity takes effect at once too, but needs a new virtual controller, which a game sees as its controller disconnecting and another connecting. A controller that is unplugged or busy in another arrangement can't be picked. Picking the one the other part has swaps the two, so the player and the helper change places in one click. The [Quick Start](../getting-started/quick-start.md) walks through it.
+
+**Pads** lists every controller CtrlAssist knows, connected or remembered, and after them the virtual controllers that exist now.
+
+- **Identify** buzzes a connected controller for a moment, so you can tell two apart. If a game is rumbling it, the buzz takes over briefly.
+- **Identify** on a virtual controller rumbles it as a game would, so the controllers behind it buzz the way its profile passes rumble on: a quick check of who is mapped to it and who feels rumble.
+- **Forget** drops a controller that isn't connected from the list.
+
+The line after it, just above **Settings**, says how controllers are being hidden (`service` or `grab`, or `looking for the service…` for a moment after the daemon starts, while it hasn't yet heard from the hiding service) and whether the daemon got real-time scheduling. [How It Works](../reference/how-it-works.md) explains both.
+
+**Settings** opens the CtrlAssist window, or brings it to the front if it is open. A left click on the tray's icon does the same.
+
+## Notifications
+
+CtrlAssist tells you when:
+
+- an arrangement **started** or **stopped** without your asking for it from the tray: a managed one starting by itself, or one started or stopped from the window or the command line. What you start or stop from the tray you can already see there;
+- an arrangement **restarted** with a new virtual controller: because a change you picked needed one, or because it was restarted from the window or the command line;
+- an arrangement is **held** because a controller disconnected, and when it is **running again**;
+- an arrangement **failed**;
+- the **daemon stopped**, which removes every virtual controller, or came back;
+- an arrangement started with controllers that are **only grabbed, not hidden**, or with one that **can't rumble**;
+- a controller that no arrangement uses **connected** or **disconnected**;
+- something you asked for from the menu **couldn't be done**, with the reason.
+
+Each kind can be turned off in the CtrlAssist window. The switches are kept in `tray.toml`, in `~/.config/ctrlassist` beside your profiles, and everything is on until you turn it off:
+
+```toml
+schema = 1
+target = "default"
+setup_started = true
+setup_trouble = true
+pad_connection = true
+refused = true
+```
+
+- `setup_started`: an arrangement started or stopped.
+- `setup_trouble`: held, failed, only grabbed, no rumble, the daemon stopped.
+- `pad_connection`: a controller connected or disconnected.
+- `refused`: something asked from the menu couldn't be done.
+- `target`: the profile a middle click acts on, which the tray keeps there itself as the mark moves, so it is where it was after the tray restarts.
+
+The tray reads the file when it starts, and again whenever the daemon comes back. After editing it by hand, **Reload** in the window takes the edit up, or says what is wrong with the file; until then the tray leaves a file it can't read as it is. The tray writes the file plain, so comments in it don't last.
+
+## Starting and stopping the tray
+
+The tray starts with your graphical session. **Quit tray** in the menu closes it for this session; the daemon and anything running carry on.
+
+```sh
+systemctl --user status ctrlassist-tray
+systemctl --user restart ctrlassist-tray
+```

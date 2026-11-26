@@ -1,26 +1,82 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug with cargo run",
+            "cwd": "${workspaceFolder}",
+            "name": "Debug: daemon",
             "cargo": {
                 "args": [
-                    "run",
-                    "--",
-                    "mux",
-                    "--mode",
-                    "toggle"
+                    "build",
+                    "--profile",
+                    "test",
+                    "--bin",
+                    "ctrlassist"
                 ]
             },
-            "cwd": "${workspaceFolder}",
+            "args": [
+                "service",
+                "daemon",
+                "--socket",
+                "${env:XDG_RUNTIME_DIR}/ctrlassist/zenoh.sock",
+                "--state-dir",
+                "${workspaceFolder}/target/dev-state",
+                "--config-dir",
+                "${workspaceFolder}/target/dev-config",
+                "--hider-socket",
+                "/run/ctrlassist-dev.sock"
+            ],
             "env": {
-                "RUST_LOG": "ctrlassist=debug"
+                "RUST_LOG": "info,ctrlassist_daemon=debug,ctrlassist_protocol=debug,zenoh=warn"
             }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "name": "Debug: tray",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--profile",
+                    "test",
+                    "--bin",
+                    "ctrlassist"
+                ]
+            },
+            "args": [
+                "service",
+                "tray",
+                "--socket",
+                "${env:XDG_RUNTIME_DIR}/ctrlassist/zenoh.sock"
+            ],
+            "env": {
+                "RUST_LOG": "info,ctrlassist_tray=debug,zbus=warn,ksni=warn"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "name": "Debug: tests of one crate",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--package",
+                    "${input:crate}"
+                ]
+            },
+            "args": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "crate",
+            "type": "promptString",
+            "description": "The crate whose tests to debug, such as ctrlassist-daemon",
+            "default": "ctrlassist-daemon"
         }
     ]
 }

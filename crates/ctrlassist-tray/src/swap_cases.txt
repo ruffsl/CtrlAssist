@@ -1,0 +1,98 @@
+# How a pick of a pad for one part of a profile moves the profile's other
+# parts. The tray's menu (menu.rs) and the window's form (profiles.rs) each
+# run every case here against their own implementation of the one rule, so
+# that the two can't come to differ.
+#
+# Every case is the profile `couch`, a toggle, with its pad fields as
+# `before`, given the known pads in the order the daemon publishes them;
+# `pick` sets one part, and `after` is what each pad field then holds, `-`
+# for none. A pad is `id=vendor:product`, followed by `~` when it isn't
+# connected and `@setup` when a setup has it. `running` gives the pads the
+# setup running `couch` has, by part.
+#
+# The rule: a part that names the picked pad by its id takes the pad the
+# picked part had, or is left to choose when it had none. A part named by
+# model whose pad (the one its setup has, or the one a start would take)
+# is the picked pad keeps its model when a start would then give it
+# another pad of the model; otherwise it takes the pad the picked part
+# had, and with none it keeps its model: a part named by model is never
+# left to choose by a pick. A start takes pads as the daemon does, in two
+# passes: first each part named by id takes that pad; then each part named
+# by model, in the order of the parts' names, takes the first pad of the
+# model that is connected, in no other setup, named by id by no part, and
+# not taken by a part before it. A running setup's part named by model
+# never keeps a pad another part names by id.
+
+case: two pads named by id change places
+pads: address:aa=054c:0ce6 address:bb=054c:0ce6
+before: primary=address:aa assist=address:bb
+pick: primary=address:bb
+after: primary=address:bb assist=address:aa
+
+case: a part named by id with nothing to take is left to choose
+pads: address:aa=054c:0ce6
+before: assist=address:aa
+pick: primary=address:aa
+after: primary=address:aa assist=-
+
+case: a part named by model keeps it when a start gives it another pad of the model
+pads: address:aa=054c:0ce6 address:bb=054c:0ce6 address:cc=2dc8:6003
+before: primary=model:054c:0ce6 assist=address:cc
+pick: assist=address:aa
+after: primary=model:054c:0ce6 assist=address:aa
+
+case: a part named by model takes the picked part's pad when no other of the model is free
+pads: address:aa=054c:0ce6 address:cc=2dc8:6003
+before: primary=model:054c:0ce6 assist=address:cc
+pick: assist=address:aa
+after: primary=address:cc assist=address:aa
+
+case: a part named by model keeps it when the picked part had no pad
+pads: address:aa=054c:0ce6 address:cc=2dc8:6003
+before: primary=model:054c:0ce6
+pick: assist=address:aa
+after: primary=model:054c:0ce6 assist=address:aa
+
+case: a pad another setup has is no pad a start would take
+pads: address:aa=054c:0ce6@desk address:bb=054c:0ce6 address:cc=2dc8:6003
+before: primary=model:054c:0ce6 assist=address:cc
+pick: assist=address:bb
+after: primary=address:cc assist=address:bb
+
+case: a pad that isn't connected is no pad a start would take
+pads: address:aa=054c:0ce6~ address:bb=054c:0ce6 address:cc=2dc8:6003
+before: primary=model:054c:0ce6 assist=address:cc
+pick: assist=address:bb
+after: primary=address:cc assist=address:bb
+
+case: a model part before the picked one in order takes no pad a part names by id, so keeps its model
+pads: address:aa=054c:0ce6 address:bb=054c:0ce6 address:cc=2dc8:6003
+before: primary=address:cc assist=model:054c:0ce6
+pick: primary=address:aa
+after: primary=address:aa assist=model:054c:0ce6
+
+case: a model part before the picked one in order takes the picked part's pad when the picked pad was the only one of the model
+pads: address:aa=054c:0ce6 address:cc=2dc8:6003
+before: primary=address:cc assist=model:054c:0ce6
+pick: primary=address:aa
+after: primary=address:aa assist=address:cc
+
+case: a model part that the picked pad isn't meant by stays as it is
+pads: address:aa=054c:0ce6 address:bb=054c:0ce6 address:cc=2dc8:6003
+before: primary=address:cc assist=model:054c:0ce6
+pick: primary=address:bb
+after: primary=address:bb assist=model:054c:0ce6
+
+case: running, a part named by model has its setup's pad, and a restart frees the setup's own pads
+pads: address:aa=054c:0ce6@couch address:bb=054c:0ce6@couch
+running: assist=address:aa primary=address:bb
+before: assist=address:aa primary=model:054c:0ce6
+pick: assist=address:bb
+after: assist=address:bb primary=model:054c:0ce6
+
+case: running, a part named by model gives up its setup's pad to a part that names it by id
+pads: address:aa=054c:0ce6@couch address:bb=054c:0ce6@couch
+running: assist=address:aa primary=address:bb
+before: assist=model:054c:0ce6 primary=address:bb
+pick: primary=address:aa
+after: assist=model:054c:0ce6 primary=address:aa

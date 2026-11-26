@@ -1,0 +1,34 @@
+# typos-cli config (`just typos`). American English is the project rule;
+# `locale = "en-us"` makes British spellings errors rather than accepted
+# variants.
+#
+# The allow-lists below hold names this repo can't rename. A word we own is
+# fixed, never added here.
+[default]
+locale = "en-us"
+
+[default.extend-words]
+# The `refactor-claud-opus-4.5` branch, an earlier refactor the docs cite.
+claud = "claud"
+# The terminal UI crate.
+ratatui = "ratatui"
+# The kernel's name for the inheritable capability set in
+# /proc/<pid>/status, CapInh, which the hider check reads.
+Inh = "Inh"
+# NixOS's option for a configuration within a configuration, and the
+# directory a switch to one is made from, which the daemon check uses.
+specialisation = "specialisation"
+
+[files]
+# Scan the dotted directories too: .claude/ holds the project instructions.
+ignore-hidden = false
+extend-exclude = [
+    "Cargo.lock",
+    "target/",
+    ".git/",
+    ".direnv/",
+    # Carried as upstream wrote them; see vendor/README.md.
+    "vendor/",
+    # Pad names as their makers and the community spelled them.
+    "crates/ctrlassist-device/data/",
+]

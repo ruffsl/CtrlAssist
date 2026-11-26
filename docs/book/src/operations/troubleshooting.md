@@ -1,0 +1,80 @@
+# Troubleshooting
+
+## Where to look first
+
+```sh
+ctrlassist status          # is the daemon there, and which release
+ctrlassist pads            # which controllers it sees
+ctrlassist setups          # what is running, and what each is waiting for
+journalctl --user -u ctrlassist-daemon -e
+journalctl --user -u ctrlassist-tray -e
+journalctl -u ctrlassist-hider -e
+```
+
+## "no daemon is running"
+
+The daemon is a service of your user, started at login.
+
+```sh
+systemctl --user status ctrlassist-daemon
+systemctl --user enable --now ctrlassist-daemon
+```
+
+Right after installing, log out and back in once.
+
+## A controller isn't listed
+
+`ctrlassist pads` lists what the system reports as a gamepad. If yours is missing, check that the system sees it at all (`ls /dev/input/js*`). A controller hidden by another running arrangement is still listed, with that arrangement's name.
+
+## The game sees the real controllers as well as the virtual one
+
+Look at the tray menu's **Hiding:** line, just above **Settings**, or the daemon's log from when it started.
+
+- **Hiding: service** means controllers are truly hidden while an arrangement runs. If the game still shows one, it was probably started before the arrangement; restart the game.
+- **Hiding: grab** means the hiding service hasn't been reachable, so controllers are only grabbed. Most games then see just the virtual controller, but a program that reads controllers its own way still sees the real ones. Steam does this for PlayStation controllers. Check `systemctl status ctrlassist-hider.socket`. The daemon looks for the service again each time an arrangement starts, so once the service is there, stop and start the arrangement. While controllers are only grabbed, CtrlAssist also asks Steam to leave their models alone, by adding them to Steam's controller blacklist for as long as the arrangement runs; Steam takes that up only when it next starts, so restart Steam after starting the arrangement.
+- **Hiding: looking for the service…** means the daemon has only just started and hasn't heard from the hiding service yet. It changes to `service` or `grab` as soon as it has; an arrangement started meanwhile waits for that answer.
+
+## "no virtual pad can be made"
+
+Virtual controllers are made through `/dev/uinput`, which the packaged udev rule gives to whoever is at the machine.
+
+```sh
+ls -l /dev/uinput
+ctrlassist identities      # the AVAILABLE column
+```
+
+If it isn't writable for you: log out and back in, and check the `uinput` module is loaded (`lsmod | grep uinput`). Over SSH you are not "at the machine", and the rule doesn't apply.
+
+## An arrangement is "held"
+
+A controller it needs isn't connected. `ctrlassist setups` says which. Reconnect it and the arrangement resumes; nothing needs restarting.
+
+## The tray icon is missing
+
+On GNOME, install and enable the AppIndicator extension. The tray is still running without it, for notifications: `systemctl --user status ctrlassist-tray`.
+
+## The settings window doesn't open
+
+It needs a Wayland session, and doesn't open in an X11 one. Started from a terminal, `ctrlassist-gui` says why it couldn't open.
+
+## Input feels delayed when the machine is busy
+
+The daemon asks for real-time scheduling for the one thread that carries input, and runs without it if refused. The tray menu's **Real-time:** line and the daemon's log say which.
+
+```sh
+journalctl --user -u ctrlassist-daemon | grep -i real-time
+```
+
+If it was refused, the limit that allows it hasn't reached your session: log out and back in after installing. On NixOS, check `services.ctrlassist.realtime` is on.
+
+## "runs release …, which this command can't talk to"
+
+The daemon and the command (or the tray) are from different releases, usually just after an upgrade while the old daemon is still running. Restart it:
+
+```sh
+systemctl --user restart ctrlassist-daemon ctrlassist-tray
+```
+
+## After the daemon stops
+
+Stopping the daemon, or it crashing, removes every virtual controller and gives the real ones back, hidden or not. A game will see its controller disconnect. Arrangements with `managed` come back when the daemon does.

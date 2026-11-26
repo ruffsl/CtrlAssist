@@ -1,65 +1,188 @@
-[package]
-name = "ctrlassist"
-version = "0.4.0"
-authors = ["ruffsl <roxfoxpox@gmail.com>"]
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# The shipping binaries. A bare `cargo build` (without `--workspace`)
+# scopes to these and what they depend on, so the Nix package reads one
+# list instead of repeating it. `just` recipes pass `--workspace`.
+default-members = [
+    "crates/ctrlassist-cli",
+    "crates/ctrlassist-gui-app",
+    "crates/ctrlassist-hider",
+]
+# The spikes are throwaway workspaces of their own, deleted as the crates
+# that replace them land.
+exclude = ["spikes", "vendor"]
+
+[workspace.package]
+version = "0.5.0"
 edition = "2024"
-rust-version = "1.91.1"
-description = "Controller Assist for gaming on Linux"
-documentation = "https://docs.rs/ctrlassist/"
-readme = "README.md"
-homepage = "https://github.com/ruffsl/CtrlAssist"
-repository = "https://github.com/ruffsl/CtrlAssist"
+# The oldest compiler the workspace supports. Never above the rustc that
+# nixpkgs ships: the Nix package builds with the consumer's compiler. The
+# pinned toolchain in rust-toolchain.toml may run ahead of it.
+rust-version = "1.95"
+authors = ["ruffsl <roxfoxpox@gmail.com>"]
 license = "Apache-2.0"
-keywords = [
-    "gamepad",
-    "input",
-    "joystick",
-]
-categories = ["game-engines"]
-exclude = [
-    ".envrc",
-    ".github/",
-    ".vscode/",
-    "docs/",
-    "flake.*",
-    "flatpak/",
-    "rust-toolchain.toml",
-]
+repository = "https://github.com/CtrlAssist/CtrlAssist"
+publish = false
 
-[badges]
-github = { repository = "ruffsl/CtrlAssist" }
+# Every dependency is declared once here and inherited by the crates.
+[workspace.dependencies]
+# Internal crates. Unpublished ones are path-only.
+ctrlassist = { path = "crates/ctrlassist" }
+ctrlassist-cli = { path = "crates/ctrlassist-cli" }
+ctrlassist-gui = { path = "crates/ctrlassist-gui" }
+ctrlassist-icons = { path = "crates/ctrlassist-icons" }
+ctrlassist-core = { path = "crates/ctrlassist-core" }
+ctrlassist-daemon = { path = "crates/ctrlassist-daemon" }
+ctrlassist-device = { path = "crates/ctrlassist-device" }
+ctrlassist-hider = { path = "crates/ctrlassist-hider" }
+ctrlassist-protocol = { path = "crates/ctrlassist-protocol" }
+ctrlassist-test = { path = "crates/ctrlassist-test" }
+ctrlassist-tray = { path = "crates/ctrlassist-tray" }
 
-[dependencies]
-clap = { version = "^4.5", features = ["derive"] }
-dirs = "6"
-env_logger = "0.11"
-evdev = "0.13"
-fs2 = "0.4"
-gilrs = "^0.11.1"
-libc = "0.2"
-log = "0.4"
-signal-hook = "0.4"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
-udev = "0.9"
-uuid = "1"
+# Profiles on disk and payloads on the wire
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
 
+# The control plane. Every link is a Unix socket, so zenoh's default
+# transports are switched off, as in TisVlay, whose pin this is.
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+zenoh = { version = "1.10", default-features = false, features = ["transport_unixsock-stream"] }
+# Tilde, not caret: `unstable` switches on zenoh's unstable and internal
+# APIs (the cached publishers and history subscribers state rides on),
+# which may break within 1.x. Bumped deliberately, with TisVlay's.
+zenoh-ext = { version = "~1.10", default-features = false, features = ["unstable"] }
 
-# New dependencies for tray
-ashpd = "0.12"
-futures = "0.3"
+# Logging
+tracing = "0.1"
+tracing-journald = "0.3"
+# Carries the `log` records of dependencies that don't use tracing over
+# to it; TisVlay's.
+tracing-log = "0.2"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "fmt", "registry"] }
+
+# The tray: a StatusNotifierItem, and desktop notifications (z-with-tokio
+# keeps zbus on tokio and drops the default async-io stack). TisVlay's pins.
+ksni = "0.3"
+# Held below 4.19, which moved to zbus 6 while ksni is on zbus 5: one
+# zbus in the tree, as in TisVlay, until ksni moves too.
+notify-rust = { version = ">=4.18, <4.19", default-features = false, features = ["z-with-tokio"] }
+
+# The settings window's toolkit, shared by ctrlassist-gui (the compiled
+# UI) and ctrlassist-gui-app (the code driving it). Wayland only, which
+# keeps the X11 crates out of the build. `unstable-winit-030` has no
+# stability promise, so slint is pinned exactly: bump it together with
+# slint-build and i-slint-backend-testing. TisVlay's pin and features.
+slint = { version = "=1.19.0", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
+
+# The system's monospace family for the window (the font library Slint
+# uses; kept on the version Slint pins so the graph holds one copy).
+# TisVlay's pin.
+fontique = "0.12"
+
+# Freedesktop icon-theme lookup, a name to a file's path, through
+# ctrlassist-icons. TisVlay's pin.
+freedesktop-icons = "0.4"
+
+# The window's calls on the desktop: the file manager over D-Bus, on
+# tokio as the tray's crates are, and the user's browser for a link.
+# TisVlay's pins.
+webbrowser = "1"
+# The desktop's accent color, through the settings portal. On zbus 5, as the rest.
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "settings"] }
 futures-util = "0.3"
-ksni = "^0.3.3"
-notify-rust = "4.11"
-parking_lot = "0.12"
-serde = "1"
-toml = "0.9"
+# The Wayland clipboard, for the window's Copy buttons.
+wl-clipboard-rs = "0.9"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
-[package.metadata.deb]
-depends = "libudev1"
-section = "utils"
+# Tests
+tempfile = "3"
 
-# [profile.release]
-# codegen-units = 1
-# lto = true
-# opt-level = "z"
-# strip = true
+# Errors
+anyhow = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+# The book's CLI reference, written from the clap tree.
+clap-markdown = "0.1"
+# unstable-dynamic: completions that ask the running program, so a pad's
+# id or a profile's name completes from the daemon. As in TisVlay.
+clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
+
+# Raw FFI types, where a C library is called directly
+libc = { version = "0.2", default-features = false }
+
+# The kernel's input interfaces
+evdev = "0.13"
+# libudev: device properties and the device tree
+udev = "0.9"
+# Safe wrappers over the syscalls the standard library doesn't cover
+rustix = "1.1"
+
+# Tests
+proptest = "1"
+
+# The lint policy and its reasons are in docs/build.md. Everything is at
+# `warn`; the gate recipes turn warnings into errors.
+[workspace.lints.rust]
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+# deny, not forbid: a file opts out with a reasoned #![expect(unsafe_code)].
+unsafe_code = "deny"
+unused_qualifications = "warn"
+non_ascii_idents = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+allow_attributes_without_reason = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+exit = "warn"
+get_unwrap = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+unwrap_used = "warn"
+panic = "warn"
+cast_lossless = "warn"
+borrow_as_ptr = "warn"
+ignored_unit_patterns = "warn"
+manual_let_else = "warn"
+ptr_as_ptr = "warn"
+redundant_clone = "warn"
+redundant_closure_for_method_calls = "warn"
+return_self_not_must_use = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+use_self = "warn"
+
+[profile.dev]
+split-debuginfo = "unpacked"
+
+# Build and clippy use the test profile so `cargo test` reuses their work.
+[profile.test]
+split-debuginfo = "unpacked"
+debug = "line-tables-only"
+
+# No LTO or single codegen unit: this is the profile people compile locally.
+[profile.release]
+strip = "symbols"
+
+# What the packages are built with. Unlike TisVlay's, it unwinds on panic:
+# the input thread catches a panic in one setup's step and tears down that
+# setup alone, and under `panic = "abort"` the same panic would end the
+# daemon and every virtual pad with it. The hiding service likewise ends a
+# connection alone on a panic serving it, where abort would end the service
+# for every user. TisVlay measured abort as 14% smaller
+# binaries; that size is the price of the isolation.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+opt-level = "s"
+
+# Crates carried with a fix upstream doesn't have yet; see vendor/README.md.
+[patch.crates-io]
+evdev = { path = "vendor/evdev" }

@@ -1,0 +1,9 @@
+# A failed look after an overrun waits for udev's next event
+
+The daemon hears pads come and go on a udev monitor, a netlink socket the kernel drops events from when its buffer is full. When that happens the watch says so once the socket has been read to its end, and the daemon looks at what is connected again: every pad, and every device a pad can be anchored to, read from udev, and its book put right from that. If the look itself fails, as when udev's records can't be read or the daemon is out of descriptors or memory, the watch logs it ("udev's events overran the hotplug watch, and what is connected couldn't be looked at again") and tries again only when udev next sends it anything, applying what that says first, as it came after the loss.
+
+**Risk.** Low. It takes an overrun, a burst of events past the socket's buffer, and the look failing just then. Until the next event, the pads may be published wrong: a pad that left during the loss still published as connected; one that arrived not published, so that a profile that would start with it doesn't; and a pad's re-bind whose request was among what was lost may be published as the pad leaving and connecting again. A running setup's own pads are read by the input thread, which finds a pad gone by its descriptor whatever the watch heard. Anything that plugs in, unplugs or changes on the machine is a next event, so on a machine in use it is usually short.
+
+**Mitigation.** The look is tried again at every event after, with nothing lost in between: the events that come are applied before the look. Nothing in the daemon is held up meanwhile.
+
+**Closes when.** The look is tried again at a moment that says it can succeed now. None is known: what makes it fail, descriptors or memory, comes back without an event the watch hears, and a timer to try again would be a duration that is neither the user's nor a game's, which the project avoids.

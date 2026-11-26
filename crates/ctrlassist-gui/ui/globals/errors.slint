@@ -1,0 +1,45 @@
+// Per-pane inline-error slots. Modeled on KDE Kirigami's
+// inline-message convention (sticky, four tones, optional close
+// + action). Rust pushes failed user-initiated daemon callbacks
+// into the relevant slot via `app.global::<Errors>().set_X(...)`;
+// each pane embeds an `InlineError` near the top, bound to its
+// slot, that disappears when the user dismisses or the slot
+// clears.
+//
+// Per-pane (instead of one global slot) so one pane's error
+// doesn't leak into another; matches Kirigami inline-message
+// placement (within a pane, near its header).
+//
+// `kind` is a stable machine-readable identifier so the action
+// button can pick the right recovery path when one applies (a
+// `kind` the pane knows how to act on). Empty `kind` =
+// generic message, no contextual action.
+
+export struct ErrorState {
+    kind: string,
+    tone: string,
+    title: string,
+    message: string,
+    action-label: string,
+}
+
+export global Errors {
+    /// The Pads pane: an Identify or a Forget the daemon refused.
+    in-out property <ErrorState> pads;
+    /// A running profile, shown in the Profiles pane: a stop, an update
+    /// or a selection the daemon refused.
+    in-out property <ErrorState> setups;
+    /// The Profiles pane: a put, a start, a delete the daemon refused.
+    in-out property <ErrorState> profiles;
+    /// App-level reload banner — the sidebar's Reload belongs to no
+    /// pane, so a file it couldn't apply shows above every pane, until
+    /// dismissed or a later Reload succeeds.
+    /// The message is a compiler-style report, so it renders in the
+    /// monospace face.
+    in-out property <ErrorState> reload;
+    /// App-level version banner — a service runs a release this GUI
+    /// can't talk to (a different `major.minor`), so every call to it
+    /// fails. Above every pane until the
+    /// service restarts on a matching release.
+    in-out property <ErrorState> version;
+}

@@ -1,0 +1,15 @@
+[Unit]
+Description=CtrlAssist system tray
+Documentation=https://github.com/CtrlAssist/CtrlAssist
+After=graphical-session.target ctrlassist-daemon.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ctrlassist service tray
+SyslogIdentifier=ctrlassist-tray
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,64 @@
+// Top-center ephemeral toast for short "action succeeded" feedback.
+// Distinct from `Errors` (sticky, in-pane Kirigami inline-message)
+// — toast is a window-overlay, auto-clears after a short timeout
+// driven by Rust (no Slint-side timer).
+//
+// Convention here: success-only. Clipboard failures and similar
+// errors stay silent (matching KDE/Plasma's "no toast for failures"
+// default); use `Errors` for surfaces that need user attention.
+//
+// Raised from Rust with `toast::show_toast(app_weak, message)`, e.g.
+// at the `Clipboard.on_copy` chokepoint where every CopyBtn press and
+// the diagnostic-copy button converge.
+
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+
+export global Toast {
+    in-out property <string> message;
+}
+
+export component ToastView inherits Rectangle {
+    visible: Toast.message != "";
+
+    // Toasts surface short success messages dynamically; a polite live
+    // region has AT announce the text when it appears without
+    // interrupting.
+    accessible-role: text;
+    accessible-label: Toast.message;
+    accessible-live-region: polite;
+
+    // Window-level children inherit the Window's full size unless
+    // bound explicitly, so size to the inner Text's preferred
+    // dimensions plus padding rather than relying on
+    // horizontal-stretch (which only applies inside a layout).
+    width: msg.preferred-width + 32px;
+    height: msg.preferred-height + 16px;
+
+    // Solid surface base so the toast doesn't reveal whatever the
+    // panes below are showing through. `accent-soft` (the same
+    // low-alpha tint used for selection backgrounds) is layered on
+    // top via the inner Rectangle, picking up the user's DE accent
+    // color without bleeding the pane through. Border and drop
+    // shadow live on the outer so they render over the tint.
+    background: Theme.surface;
+    border-color: Theme.accent;
+    border-width: 1.5px;
+    border-radius: Design.radius-pill;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: Theme.drop-shadow;
+    drop-shadow-offset-y: 6px;
+
+    Rectangle {
+        background: Theme.accent-soft;
+        border-radius: Design.radius-pill;
+    }
+
+    msg := Text {
+        x: 16px;
+        y: 8px;
+        text: Toast.message;
+        color: Theme.text;
+        font-size: Design.font-body;
+    }
+}

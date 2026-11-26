@@ -1,0 +1,42 @@
+# `prek install` wires both the pre-commit and commit-msg git hooks; the
+# commit-msg stage runs the Conventional Commits check (last repo below).
+# Local hook ids match the `just` recipe they run, in priority order: file
+# checks, then fmt, build, clippy and doc, test. Build and clippy use the
+# test profile, so the tests reuse what they compiled.
+default_install_hook_types = ["pre-commit", "commit-msg"]
+
+[[repos]]
+repo = "builtin"
+# docs/artwork/ holds LFS-tracked exports; the text fixers would rewrite their bytes.
+hooks = [
+    { id = "check-added-large-files", priority = 0 },
+    { id = "check-merge-conflict", priority = 0 },
+    { id = "check-toml", priority = 0 },
+    { id = "check-yaml", priority = 0 },
+    { id = "end-of-file-fixer", exclude = "^(docs/artwork|vendor|crates/ctrlassist-device/data)/", priority = 0 },
+    { id = "trailing-whitespace", exclude = "^(docs/artwork|vendor|crates/ctrlassist-device/data)/", priority = 0 },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+    { id = "deny", name = "deny", language = "system", entry = "just deny", files = '(Cargo\.toml|Cargo\.lock|packaging/licensing/deny\.toml)$', pass_filenames = false, priority = 0 },
+    { id = "licenses-html", name = "licenses-html", language = "system", entry = "just licenses-html", files = '(Cargo\.toml|Cargo\.lock|packaging/licensing/about\.(toml|html\.hbs))$', pass_filenames = false, priority = 0 },
+    { id = "shear", name = "shear", language = "system", entry = "just shear", files = '(\.rs|Cargo\.toml)$', pass_filenames = false, priority = 0 },
+    { id = "typos", name = "typos", language = "system", entry = "just typos", always_run = true, pass_filenames = false, priority = 0 },
+    { id = "actionlint", name = "actionlint", language = "system", entry = "just actionlint", files = '^(\.github/workflows/|\.config/actionlint\.yaml$)', pass_filenames = false, priority = 0 },
+    { id = "zizmor", name = "zizmor", language = "system", entry = "just zizmor", files = '^\.github/', pass_filenames = false, priority = 0 },
+    { id = "fmt", name = "fmt", language = "system", entry = "just fmt", files = '\.(rs|toml)$', pass_filenames = false, priority = 1 },
+    { id = "build", name = "build", language = "system", entry = "just build", always_run = true, pass_filenames = false, priority = 2 },
+    { id = "clippy", name = "clippy", language = "system", entry = "just clippy", always_run = true, pass_filenames = false, priority = 3 },
+    { id = "doc", name = "doc", language = "system", entry = "just doc", files = '(\.rs|Cargo\.toml)$', pass_filenames = false, priority = 3 },
+    { id = "test", name = "test", language = "system", entry = "just test", always_run = true, pass_filenames = false, priority = 4 },
+]
+
+# Conventional Commits subject check (commit-msg stage).
+[[repos]]
+repo = "https://github.com/compilerla/conventional-pre-commit"
+rev = "v4.4.0"
+hooks = [
+    { id = "conventional-pre-commit", stages = ["commit-msg"] },
+]

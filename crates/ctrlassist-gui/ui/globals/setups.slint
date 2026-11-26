@@ -1,0 +1,40 @@
+// The running profiles: what of each setup the Profiles pane's STATUS
+// group shows, and what that group asks. Rust pushes `rows` from the
+// daemon's mirror on every change and binds the callbacks. The pads and
+// virtual pads a setup has are the profile's rows' own.
+
+// A node of a setup that selects one of its choices.
+export struct SetupNodeRow {
+    name: string,
+    choices: [string],
+    selected: int,
+}
+
+export struct SetupRow {
+    // The setup's name: the profile it runs.
+    name: string,
+    // The profile as kept is another than it runs, or gone.
+    stale: bool,
+    // Whether a profile of its name is kept at all.
+    profile-kept: bool,
+    nodes: [SetupNodeRow],
+}
+
+export global Setups {
+    in property <[SetupRow]> rows;
+    // The worst of what the setups are in, for the sidebar's badge:
+    // "" for none, "warn" while one is held, "danger" while one failed.
+    in property <string> trouble;
+    // An update waiting on its dialog: the setup, and what Rust found
+    // it would cost ("seamless" or "restart"). Rust sets them once it
+    // has asked the daemon; the dialog clears them.
+    in-out property <string> pending-update;
+    in-out property <string> pending-update-cost;
+
+    callback stop(string);
+    // Ask what an update would cost, then open its dialog.
+    callback ask-update(string);
+    callback update(string);
+    // Have a node select a choice: setup, node, choice.
+    callback select(string, string, string);
+}

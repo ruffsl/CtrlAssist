@@ -1,0 +1,88 @@
+[Unit]
+Description=CtrlAssist hiding service
+Documentation=https://github.com/CtrlAssist/CtrlAssist
+Requires=ctrlassist-hider.socket
+# Started by its socket's first client, it stays until stopped, so how
+# often it starts isn't its clients' doing, and systemd's limit on starts
+# is left as it is: a start that keeps failing (no such user, no binary)
+# fails the socket after five in ten seconds, by default, and the client
+# waiting is let go, rather than started again for as long as anything
+# is queued on the socket. The limit counts starts, however each run
+# ended, so no setting here tells a start that fails from a service a
+# client ended: nothing a client does may end it, and a panic serving one
+# ends that connection alone.
+
+[Service]
+ExecStart=/usr/bin/ctrlassist-hider
+# Whatever is still hidden when the service stops, for any reason, is put
+# back.
+ExecStopPost=/usr/bin/ctrlassist-hider reconcile
+
+# A user of its own, with no capabilities. Its power is what the shipped
+# udev rule (72-ctrlassist-hide.rules) gives its group: the nodes of pads
+# it has hidden, PlayStation pads' raw nodes, and the uevent files of
+# pads' devices, through which it asks udev to re-bind a driver.
+User=ctrlassist-hider
+Group=ctrlassist-hider
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+
+# Anyone may connect, and each connection is a descriptor and a thread.
+# The service caps them: 40 for a user logged in at a seat, whose daemon
+# holds two for each pad it is hiding; and eight for any other user, with
+# 32 between all of them. A connection's thread holds at most six
+# descriptors at once, and one more for each pad it shows again as it
+# closes; the sweep holds none. So this is room for some thirty users at
+# seats, each with their cap full.
+LimitNOFILE=8192
+
+# The markers the rule hides pads by. Kept when the service stops, so
+# that what a service that died left hidden is still named when
+# ExecStopPost puts it back; /run is emptied at boot.
+RuntimeDirectory=ctrlassist/hide
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+UMask=0077
+
+# Everything else is closed off, as defense in depth: the user's own
+# permissions are the boundary. /run and /sys are named read-only as well
+# as protected, since on systemd 262 the protections below leave both
+# writable under ProtectSystem=strict; under /sys only the devices, whose
+# uevent files the rule gives the group, are writable. The network
+# namespace is left shared: udev's events arrive over netlink in the
+# host's.
+ProtectSystem=strict
+ReadOnlyPaths=/run
+BindReadOnlyPaths=/sys
+ReadWritePaths=/sys/devices
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectHome=yes
+PrivateTmp=yes
+PrivateIPC=yes
+RemoveIPC=yes
+DevicePolicy=closed
+DeviceAllow=char-input rw
+DeviceAllow=char-hidraw rw
+# Its listener comes from systemd and its connections from accept: the
+# one socket it makes is udev's monitor.
+RestrictAddressFamilies=AF_NETLINK
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# A call outside the filter fails, rather than ending the service with
+# SIGSYS: on a path no check takes, such as a library's fallback, ending
+# it would show every pad it hides, for every user, and count as a start.
+SystemCallErrorNumber=EPERM

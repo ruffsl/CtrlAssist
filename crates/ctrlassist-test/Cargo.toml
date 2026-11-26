@@ -1,0 +1,31 @@
+[package]
+name = "ctrlassist-test"
+description = "Test support for the CtrlAssist workspace: fake pads made through uinput and uhid, and a fixture binary for the virtual machine checks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ctrlassist-fixture"
+path = "src/bin/fixture.rs"
+
+[[bin]]
+name = "ctrlassist-bench"
+path = "src/bin/bench.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+ctrlassist-core = { workspace = true }
+ctrlassist-device = { workspace = true }
+ctrlassist-hider = { workspace = true }
+evdev = { workspace = true }
+rustix = { workspace = true, features = ["event", "fs", "net", "param"] }
+udev = { workspace = true }
+
+[lints]
+workspace = true

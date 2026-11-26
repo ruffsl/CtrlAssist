@@ -1,0 +1,744 @@
+// The Pads pane: every pad the daemon knows, the connected ones and
+// then the remembered ones, then the virtual pads the running profiles
+// make; and for the one selected what it is, which profiles name it,
+// and the two things to do with a real one: Identify and Forget.
+//
+// The list and the detail are TisVlay's TVs pane with a pad in a TV's
+// place, component for component: the row and its tile, the header with
+// its two chips, the groups and their rows. They take part in key
+// navigation the same way: the list answers column requests and steps
+// its own rows, the detail's rows carry row ids.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+import { ListRow, Group, Chip, ThemedButton, DangerBtn, CopyBtn, IconBtn, ConfirmDialog, InlineError, Focusable, PadTile, FormRow, ListCaption, ToneText } from "../widgets.slint";
+import { Icons } from "../globals/icons.slint";
+import { HelpScrollView } from "../globals/help.slint";
+import { Health, ServiceHealth } from "../globals/health.slint";
+import { Errors } from "../globals/errors.slint";
+import { Nav } from "../globals/nav.slint";
+import { Pads, PadRow } from "../globals/pads.slint";
+
+component PadListRow inherits ListRow {
+    in property <PadRow> pad;
+
+    accessible-label: root.pad.name;
+    accessible-id: "pads-row-" + root.pad.key;
+    height: 64px;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        alignment: start;
+        // A remembered pad is dimmed as a whole.
+        VerticalLayout {
+            width: Design.size-tile-sm;
+            alignment: center;
+            PadTile {
+                maker: root.pad.maker;
+                outlined: root.pad.is-virtual;
+                tile-size: Design.size-tile-sm;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.pad.name;
+                color: root.title-color;
+                font-size: Design.font-body;
+                font-weight: root.title-weight;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                spacing: Design.gap-tight;
+                alignment: start;
+
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: Design.size-status-dot;
+                    height: Design.size-status-dot;
+                    border-radius: 3px;
+                    background: root.pad.connected ? Theme.success : Theme.text-faint;
+                }
+
+                ToneText {
+                    text: root.pad.word;
+                    tone: root.pad.tone;
+                }
+
+                if root.pad.tag != "": Text {
+                    text: root.pad.tag;
+                    color: Theme.text-faint;
+                    font-size: Design.font-mini;
+                    font-family: Theme.mono-font;
+                }
+            }
+        }
+    }
+}
+
+component PadList inherits Rectangle {
+    in property <bool> daemon-available;
+    in property <bool> daemon-loading;
+    in property <ServiceHealth> daemon-health;
+    /// A row was activated (clicked, or Return on it) after selecting
+    /// its pad: the pane moves focus into the detail.
+    callback activated();
+
+    // A column request for the list: the selected row, else the first.
+    // A list with no rows sends the request back to the sidebar. The
+    // rows are focused by id, since a row made by the same change as
+    // the request can't be reached by index yet.
+    property <string> focus-row-id;
+    property <int> focus-row-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        root.serve-column-request();
+    }
+    property <bool> has-selection: Pads.selected-index >= 0 && Pads.selected-index < Pads.rows.length;
+
+    function focus-slot(slot: int) {
+        if (slot >= 0 && slot < Pads.rows.length) {
+            root.focus-row-id = Pads.rows[slot].id;
+            root.focus-row-tick += 1;
+        }
+    }
+    // A request made before this list existed is answered a tick after
+    // it is created, once its rows are.
+    init => {
+        if (Nav.column-tick != Nav.column-served) {
+            serve-later.running = true;
+        }
+    }
+    serve-later := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.serve-column-request();
+        }
+    }
+    function serve-column-request() {
+        if (Nav.column-target == 1 || (Nav.column-target == 2 && !root.has-selection)) {
+            Nav.column-served = Nav.column-tick;
+            if (Pads.rows.length > 0) {
+                root.focus-row-id = Pads.rows[root.has-selection ? Pads.selected-index : 0].id;
+                root.focus-row-tick += 1;
+            } else {
+                Nav.request-column(0);
+            }
+        }
+    }
+
+    width: Design.width-master + 60px;
+    background: Theme.surface-alt;
+
+    Rectangle {
+        x: parent.width - 1px;
+        width: Design.border-thin;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        Rectangle {
+            height: 40px;
+            background: Theme.surface;
+            Rectangle {
+                x: parent.width - 1px;
+                width: Design.border-thin;
+                background: Theme.border;
+            }
+            HorizontalLayout {
+                width: 100%;
+                height: 100%;
+                padding-left: 12px;
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: @tr("{}/{} CONNECTED", Pads.connected-count, Pads.real-count);
+                        color: Theme.text-dim;
+                        font-size: Design.font-mini;
+                        font-weight: 600;
+                        letter-spacing: 0.6px;
+                    }
+                }
+            }
+        }
+
+        // One line says why the list is empty, when it is.
+        if Pads.rows.length == 0: Rectangle {
+            VerticalLayout {
+                width: 100%;
+                alignment: center;
+                padding: Design.gap-pane;
+                Text {
+                    text: !root.daemon-available ? @tr("Daemon offline")
+                        : root.daemon-health == ServiceHealth.incompatible ? @tr("Pads hidden: version mismatch")
+                        : root.daemon-loading ? @tr("Loading")
+                        : @tr("No pads known. Plug one in.");
+                    color: !root.daemon-available || root.daemon-health == ServiceHealth.incompatible
+                        ? Theme.danger-text : Theme.text-faint;
+                    font-size: Design.font-body;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    accessible-id: "pads-empty";
+                }
+            }
+        }
+
+        ScrollView {
+            content-width: self.visible-width;
+            VerticalLayout {
+                alignment: start;
+                // The real pads come first, the connected ones and then
+                // the remembered, so the virtual pads start at the
+                // count of those.
+                for pad[i] in Pads.rows: VerticalLayout {
+                    if i == Pads.real-count: ListCaption {
+                        title: @tr("VIRTUAL");
+                    }
+                    PadListRow {
+                        pad: pad;
+                        selected: i == Pads.selected-index;
+                        // The selected row is the list's one Tab stop; the
+                        // first, with nothing selected.
+                        tab-stop: root.has-selection ? i == Pads.selected-index : i == 0;
+                        focus-tick: root.focus-row-tick;
+                        focus-wanted: pad.id == root.focus-row-id;
+                        // Focusing a row selects it, however focus got there.
+                        focus-in => {
+                            Pads.selected-index = i;
+                        }
+                        clicked => {
+                            Pads.selected-index = i;
+                            root.activated();
+                        }
+                        step(forward) => {
+                            Nav.list-step-served = Nav.list-step-tick;
+                            root.focus-slot(forward ? i + 1 : i - 1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A label, a value, and a Copy button when asked for: one row for the
+// arrows.
+component LabeledRow {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> mono: false;
+    in property <bool> copyable: false;
+    property <int> row-id;
+    init => {
+        root.row-id = Nav.next-row-id();
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        spacing: Design.gap-stack;
+        padding-top: Design.gap-form;
+        padding-bottom: Design.gap-form;
+
+        VerticalLayout {
+            width: Design.width-label-col + 20px;
+            alignment: center;
+            Text {
+                text: root.label;
+                color: Theme.text-dim;
+                font-size: Design.font-meta;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            Text {
+                text: root.value == "" ? "—" : root.value;
+                color: Theme.text;
+                font-size: Design.font-meta;
+                font-family: root.mono ? Theme.mono-font : "";
+                overflow: elide;
+            }
+        }
+
+        if root.copyable && root.value != "": VerticalLayout {
+            alignment: center;
+            CopyBtn {
+                value: root.value;
+                label: root.label;
+                nav-row: root.row-id;
+            }
+        }
+    }
+}
+
+// The detail's header, as a TV's is in TisVlay: the tile, the name, a
+// quiet line of what it is, and two chips stacked at the right, whether
+// it is connected and what it is doing.
+component PadDetailHeader inherits Rectangle {
+    in property <PadRow> pad;
+
+    height: header-layout.preferred-height;
+    background: Theme.surface;
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: Design.border-thin;
+        background: Theme.border;
+    }
+
+    header-layout := HorizontalLayout {
+        width: 100%;
+        padding-left: Design.pad-pane;
+        padding-right: Design.pad-pane;
+        padding-top: Design.pad-header-top;
+        padding-bottom: Design.gap-row;
+        spacing: Design.gap-row;
+
+        VerticalLayout {
+            width: Design.size-tile-md;
+            alignment: center;
+            PadTile {
+                maker: root.pad.maker;
+                outlined: root.pad.is-virtual;
+                tile-size: Design.size-tile-md;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: Design.gap-form;
+            Text {
+                text: root.pad.name;
+                color: Theme.text;
+                font-size: Design.font-title-3;
+                font-weight: 700;
+                overflow: elide;
+            }
+            HorizontalLayout {
+                spacing: Design.gap-meta;
+                alignment: start;
+                Text {
+                    text: root.pad.model;
+                    color: Theme.text-dim;
+                    font-size: Design.font-helper;
+                    font-family: Theme.mono-font;
+                }
+                Text {
+                    text: "·";
+                    color: Theme.text-dim;
+                    font-size: Design.font-helper;
+                }
+                Text {
+                    text: root.pad.connection == "" ? "—" : root.pad.connection;
+                    color: Theme.text-dim;
+                    font-size: Design.font-helper;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: Design.gap-tight;
+            HorizontalLayout {
+                alignment: end;
+                Chip {
+                    label: root.pad.connected ? @tr("Connected") : @tr("Disconnected");
+                    tone: root.pad.connected ? "success" : "neutral";
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                Chip {
+                    label: root.pad.is-virtual ? @tr("Virtual") : root.pad.word;
+                    tone: root.pad.is-virtual ? "info" : root.pad.tone;
+                }
+            }
+        }
+    }
+}
+
+component PadDetail inherits Rectangle {
+    in property <PadRow> pad;
+    // Each pad has a detail and one shows: the hidden ones' controls go
+    // by other ids, so a control is found once.
+    property <string> id-prefix: root.visible ? "" : "hidden-";
+    in property <bool> daemon-available;
+    callback request-forget();
+
+    // A column request for the detail lands on its first stop.
+    in property <int> focus-tick;
+    changed focus-tick => {
+        if (root.visible) {
+            if (!identify.enabled && !root.pad.connected && !root.pad.is-virtual) {
+                root.forget-focus-tick += 1;
+            } else {
+                // Refused by an Identify that can't buzz (a pad with no
+                // rumble, a virtual pad not made yet), focus walks on to
+                // the detail's next stop.
+                identify.focus();
+            }
+        }
+    }
+
+    // Forget is only there for a pad that isn't connected, so it takes
+    // focus by a tick of its own.
+    property <int> forget-focus-tick;
+    property <int> status-row;
+    property <int> danger-row;
+    init => {
+        root.status-row = Nav.next-row-id();
+        root.danger-row = Nav.next-row-id();
+    }
+
+    background: Theme.surface-alt;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        PadDetailHeader {
+            pad: root.pad;
+        }
+
+        HelpScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+            VerticalLayout {
+                width: 100%;
+                padding-left: Design.pad-pane;
+                padding-right: Design.pad-pane;
+                padding-top: Design.pad-body-top;
+                padding-bottom: Design.pad-pane;
+                spacing: Design.gap-pane;
+                alignment: start;
+
+                // -- STATUS --
+                //
+                // The one thing to do with a pad leads, as Power off
+                // leads a TV's, with a line of state beside it.
+                Group {
+                    title: @tr("STATUS");
+                    help: @tr("What the chips above say. Connected or Disconnected: whether it is plugged in or paired now. In couch, or In with another profile's name: that running profile is using it. Free: connected, and no running profile is using it. Remembered: seen before and away now; a profile can still name it. Virtual: made by a running profile for games to read. Identify buzzes the pad, to tell which one it is.");
+                    help-id: root.id-prefix + "pads-help-status";
+
+                    HorizontalLayout {
+                        spacing: Design.gap-row;
+                        identify := ThemedButton {
+                            nav-row: root.status-row;
+                            text: @tr("Identify");
+                            icon: Icons.identify;
+                            enabled: root.daemon-available && root.pad.connected && !root.pad.without-rumble;
+                            accessible-id: root.id-prefix + "pads-identify";
+                            clicked => { Pads.identify(root.pad.id); }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Text {
+                                text: root.pad.is-virtual ? @tr("Rumbles this pad as a game would, so the pads behind it buzz as {} sends it on.", root.pad.setup)
+                                    : !root.pad.connected ? @tr("Remembered from when it was last connected.")
+                                    : root.pad.without-rumble ? @tr("This pad has no rumble to buzz with.")
+                                    : @tr("Buzzes this pad, so you can tell which it is.");
+                                color: Theme.text-dim;
+                                font-size: Design.font-helper;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    if root.pad.is-virtual: Text {
+                        text: @tr("Made by {} while it runs. Games read this pad in place of the pads behind it.", root.pad.setup);
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                    }
+                    if root.pad.connected && !root.pad.is-virtual: FormRow {
+                        id-prefix: root.id-prefix;
+                        label: @tr("Games");
+                        key: "games";
+                        help: @tr("Whether games can see this pad beside a virtual one. The profile that is running with it decides, by its Real pads choice.");
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Text {
+                                text: root.pad.games;
+                                color: Theme.text;
+                                font-size: Design.font-body;
+                                accessible-id: root.id-prefix + "pads-games";
+                            }
+                        }
+                    }
+                }
+
+                // -- PROFILES --
+                //
+                // Every profile that names this pad. A row reads and
+                // opens; starting, stopping and changing a part are the
+                // profile's.
+                Group {
+                    title: @tr("PROFILES");
+                    help: @tr("Every profile that names this pad, the part it plays there, and how the profile is. The pencil opens the profile, where it is started, stopped and changed.");
+                    help-id: root.id-prefix + "pads-help-profiles";
+
+                    if root.pad.profiles.length == 0: Text {
+                        text: @tr("No profile names this pad. Pick it in a profile to use it.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                        accessible-id: root.id-prefix + "pads-no-profiles";
+                    }
+                    for profile in root.pad.profiles: profile-row := FormRow {
+                        id-prefix: root.id-prefix;
+                        label: profile.name;
+                        key: "profile-" + profile.name;
+                        HorizontalLayout {
+                            horizontal-stretch: 1;
+                            spacing: Design.gap-row;
+                            VerticalLayout {
+                                width: 56px;
+                                alignment: center;
+                                Text {
+                                    text: profile.part;
+                                    color: Theme.text-dim;
+                                    font-size: Design.font-helper;
+                                }
+                            }
+                            HorizontalLayout {
+                                horizontal-stretch: 1;
+                                spacing: Design.gap-tight;
+                                alignment: start;
+                                Rectangle {
+                                    y: (parent.height - self.height) / 2;
+                                    width: Design.size-status-dot;
+                                    height: Design.size-status-dot;
+                                    border-radius: 3px;
+                                    background: profile.tone == "success" ? Theme.success
+                                        : profile.tone == "warn" ? Theme.warn
+                                        : profile.tone == "danger" ? Theme.danger
+                                        : profile.tone == "info" ? Theme.info
+                                        : Theme.text-faint;
+                                }
+                                ToneText {
+                                    text: profile.word;
+                                    tone: profile.tone;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                width: 24px;
+                                IconBtn {
+                                    nav-row: profile-row.row-id;
+                                    source: Icons.edit;
+                                    accessible-label: @tr("Open {}", profile.name);
+                                    tip: @tr("Open {}", profile.name);
+                                    accessible-id: root.id-prefix + "pads-profile-" + profile.name;
+                                    clicked => { Pads.open-profile(profile.name); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // -- INFO --
+                Group {
+                    title: @tr("INFO");
+                    help: @tr("What tells this pad from others. A profile names a pad by its ID, for this pad and no other, or by its model, for any pad of that kind.");
+                    help-id: root.id-prefix + "pads-help-info";
+                    if !root.pad.is-virtual: LabeledRow {
+                        label: @tr("Pad ID");
+                        value: root.pad.id;
+                        mono: true;
+                        copyable: true;
+                    }
+                    if root.pad.is-virtual: LabeledRow {
+                        label: @tr("Identity");
+                        value: root.pad.identity;
+                    }
+                    LabeledRow {
+                        label: @tr("Model");
+                        value: root.pad.model;
+                        mono: true;
+                        copyable: true;
+                    }
+                    if !root.pad.is-virtual: LabeledRow {
+                        label: @tr("Connection");
+                        value: root.pad.connection;
+                    }
+                    if !root.pad.is-virtual: LabeledRow {
+                        label: @tr("Rumble");
+                        value: root.pad.rumble;
+                    }
+                    if root.pad.is-virtual: LabeledRow {
+                        label: @tr("Node");
+                        value: root.pad.node;
+                        mono: true;
+                        copyable: true;
+                    }
+                    if root.pad.address != "": LabeledRow {
+                        label: @tr("Address");
+                        value: root.pad.address;
+                        mono: true;
+                        copyable: true;
+                    }
+                }
+
+                // -- DANGER ZONE --
+                //
+                // Only a pad that isn't connected can be forgotten.
+                if !root.pad.connected && !root.pad.is-virtual: Group {
+                    title: @tr("DANGER ZONE");
+                    HorizontalLayout {
+                        spacing: Design.gap-row;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Text {
+                                text: @tr("Drops this pad from the list. It is known again the next time it connects.");
+                                color: Theme.text-dim;
+                                font-size: Design.font-helper;
+                                wrap: word-wrap;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            forget := DangerBtn {
+                                property <int> focus-mirror: root.forget-focus-tick;
+                                changed focus-mirror => {
+                                    self.focus();
+                                }
+                                nav-row: root.danger-row;
+                                text: @tr("Forget pad");
+                                enabled: root.daemon-available;
+                                accessible-id: root.id-prefix + "pads-forget";
+                                clicked => { root.request-forget(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component PadsPane {
+    in property <bool> daemon-available;
+    in property <bool> daemon-loading;
+    in property <ServiceHealth> daemon-health;
+
+    // The pad a Forget is waiting on the dialog for.
+    property <string> pending-forget-id: "";
+    property <string> pending-forget-name: "";
+
+    // A column request for the detail lands on its first stop; with
+    // nothing selected the list answers instead.
+    property <int> focus-detail-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 2 && root.has-selection) {
+            Nav.column-served = Nav.column-tick;
+            root.focus-detail-tick += 1;
+        }
+    }
+    property <bool> has-selection: Pads.selected-index >= 0 && Pads.selected-index < Pads.rows.length;
+    // The selected pad went (forgotten) while focus was in its detail:
+    // back to the list.
+    changed has-selection => {
+        if (!root.has-selection && Nav.column == 2) {
+            Nav.request-column(1);
+        }
+    }
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        if Errors.pads.title != "" || Errors.pads.message != "": Rectangle {
+            background: Theme.surface-alt;
+            HorizontalLayout {
+                width: 100%;
+                padding: 12px;
+                padding-bottom: 0;
+                InlineError {
+                    tone: Errors.pads.tone == "" ? "error" : Errors.pads.tone;
+                    title: Errors.pads.title;
+                    message: Errors.pads.message;
+                    dismissed => {
+                        Errors.pads = { kind: "", tone: "", title: "", message: "", action-label: "" };
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            width: 100%;
+            vertical-stretch: 1;
+
+            PadList {
+                daemon-available: root.daemon-available;
+                daemon-loading: root.daemon-loading;
+                daemon-health: root.daemon-health;
+                activated => { root.focus-detail-tick += 1; }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Theme.surface-alt;
+
+                if !root.has-selection: VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: Pads.rows.length == 0 ? "" : @tr("Pick a pad to see what it is and what has it.");
+                        color: Theme.text-faint;
+                        font-size: Design.font-body;
+                        horizontal-alignment: center;
+                    }
+                }
+
+                for pad[i] in Pads.rows: PadDetail {
+                    width: parent.width;
+                    height: parent.height;
+                    visible: i == Pads.selected-index;
+                    pad: pad;
+                    daemon-available: root.daemon-available;
+                    focus-tick: root.focus-detail-tick;
+                    request-forget => {
+                        root.pending-forget-id = pad.id;
+                        root.pending-forget-name = pad.name;
+                    }
+                }
+            }
+        }
+    }
+
+    ConfirmDialog {
+        open: root.pending-forget-id != "";
+        title: @tr("Forget pad");
+        message: @tr("Stop remembering '{}'? A profile that names it will wait for a pad that never comes, until the pad is plugged in again.", root.pending-forget-name);
+        confirm-label: @tr("Forget");
+        confirmed => {
+            Pads.forget(root.pending-forget-id);
+            root.pending-forget-id = "";
+            root.pending-forget-name = "";
+        }
+        cancelled => {
+            root.pending-forget-id = "";
+            root.pending-forget-name = "";
+        }
+    }
+}

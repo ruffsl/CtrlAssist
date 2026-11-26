@@ -1,0 +1,26 @@
+// Shared primitives for the in-window overlays (Help toggletip, Select
+// dropdown, and any future overlay control). Both draw a floating surface
+// at the AppWindow root — anchored to a control whose window-space
+// geometry the trigger pushes to a global — rather than a Slint
+// `PopupWindow` (see help.slint / select.slint for the rationale).
+
+// Absolute (window-space) geometry of the control an overlay anchors to.
+export struct OverlayAnchor {
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
+// Monotonic id source so each overlay trigger/button gets a stable id and
+// its owning global can route a request back to the instance that made it.
+// One shared counter keeps ids unique across every overlay; each global
+// still tracks its own `owner` separately.
+export global OverlayIds {
+    in-out property <int> next: 1;
+
+    public function claim() -> int {
+        root.next += 1;
+        return root.next - 1;
+    }
+}

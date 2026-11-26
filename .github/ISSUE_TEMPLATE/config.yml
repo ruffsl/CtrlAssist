@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question
+    url: https://github.com/CtrlAssist/CtrlAssist/discussions
+    about: Ask how to do something.
+  - name: User guide
+    url: https://ctrlassist.readthedocs.io/
+    about: Installation, profiles and troubleshooting.

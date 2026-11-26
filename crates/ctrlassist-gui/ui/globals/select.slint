@@ -1,0 +1,430 @@
+// Flip-aware dropdown select, rendered as an in-window overlay (NOT a
+// Slint PopupWindow). Same rationale as the Help overlay (help.slint):
+// a PopupWindow is drawn inside its own window and clips at the window
+// edge — Slint can't paint a popup past the window, and the #6434
+// placement clamp doesn't reposition it on the winit-Wayland path
+// (docs/concerns/slint-combobox-popup-clipped.md). Native Qt/KDE combos
+// keep the dropdown on-screen by flipping it upward near the bottom; a
+// root overlay lets us do the same: it escapes the detail's clipping
+// ScrollView, sees the window size for edge-aware placement, and never
+// grabs a modal focus.
+//
+// A `ThemedSelect` button pushes its options + absolute anchor geometry
+// to the `Select` global and opens; the single `SelectOverlay` at the
+// AppWindow root reads it and draws the list — below the anchor, flipped
+// above when there's no room, clamped into the window. Picking routes
+// back to the owning button by its key, which a button made again in its
+// place has too (a pane rebuilt while the list is open), with the value
+// of the row picked as the list was when it opened: the button's own
+// model may have changed order since (a pad list sorts connected pads
+// first), and an index into it would name another option.
+//
+// Drop-in for `ComboBox` on the `model` / `current-value` / `selected`
+// subset the panes use, with `values` beside `model` for options whose
+// value isn't their label.
+
+import { ScrollView } from "std-widgets.slint";
+import { OverlayAnchor, OverlayIds } from "overlay.slint";
+import { Nav } from "nav.slint";
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+import { FocusRing } from "../widgets.slint";
+
+export global Select {
+    // Open state + the active request's data.
+    in-out property <bool> open;
+    in-out property <[string]> options;
+    // What each of `options` stands for, place for place, copied with
+    // them as the list opens.
+    in-out property <[string]> values;
+    in-out property <string> current-value;
+    in-out property <OverlayAnchor> anchor;
+    // Which button owns the open list, by its key (routes the pick back
+    // to it, or to the button made again in its place).
+    in-out property <string> owner;
+    // Keyboard cursor within the open list.
+    in-out property <int> highlight;
+    // Bumped on a pick; the owning button reads `picked-value` in its
+    // change handler and re-emits it as `selected`.
+    in-out property <int> pick-tick;
+    in-out property <string> picked-value;
+
+    public function open-for(id: string, opts: [string], vals: [string], current: string, a: OverlayAnchor) {
+        root.owner = id;
+        root.options = opts;
+        root.values = vals;
+        root.current-value = current;
+        root.anchor = a;
+        root.highlight = 0;
+        root.open = true;
+    }
+
+    public function move(delta: int) {
+        if (root.open && root.options.length > 0) {
+            root.highlight = (root.highlight + delta).clamp(0, root.options.length - 1);
+        }
+    }
+
+    public function pick(index: int) {
+        if (root.open && index >= 0 && index < root.values.length) {
+            root.picked-value = root.values[index];
+            root.pick-tick += 1;
+        }
+        root.close();
+    }
+
+    public function pick-highlighted() {
+        root.pick(root.highlight);
+    }
+
+    public function close() {
+        root.open = false;
+    }
+}
+
+// One option row inside the open list.
+component SelectRow inherits Rectangle {
+    in property <string> label;
+    in property <int> index;
+    in property <bool> is-current;
+    in property <bool> is-cursor;
+
+    height: Design.size-input;
+    // Single highlight source: the keyboard/hover cursor (`is-cursor`,
+    // driven by `Select.highlight`). A translucent veil of the foreground
+    // color, like the native ListItem's subtle highlight — visible over the
+    // elevated menu regardless of scheme. On open, the current row claims
+    // the cursor so keyboard nav and Enter start on the current selection.
+    background: root.is-cursor ? Theme.text.with-alpha(0.09) : transparent;
+    border-radius: Design.radius-control;
+
+    init => {
+        if (root.is-current) {
+            Select.highlight = root.index;
+        }
+    }
+    // A keyboard step keeps the cursor in view, including after a wheel
+    // scroll in the flyout, which replaces the list's `content-y`
+    // binding (the position on open) with the scrolled value.
+    changed is-cursor => {
+        if (self.is-cursor) {
+            self.ensure-visible(ScrollBehavior.instant);
+        }
+    }
+
+    callback clicked();
+
+    // Accent bar marks the current selection — the native ComboBox's
+    // ListItem uses a left bar, not a check glyph.
+    Rectangle {
+        x: 4px;
+        y: (parent.height - self.height) / 2;
+        width: 3px;
+        height: 16px;
+        background: Theme.accent;
+        border-radius: 1.5px;
+        visible: root.is-current;
+    }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 12px;
+        Text {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            text: root.label;
+            color: Theme.text;
+            font-size: Design.font-meta;
+            overflow: elide;
+        }
+    }
+
+    touch := TouchArea {
+        changed has-hover => {
+            if (self.has-hover) {
+                Select.highlight = root.index;
+            }
+        }
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Rendered once at the AppWindow root. Fills the window so it can read
+// the window size and place the list edge-aware.
+export component SelectOverlay inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    visible: Select.open;
+
+    property <length> margin: 6px;
+    property <length> pad: 4px;
+    property <length> row-h: Design.size-input;
+    property <int> max-visible: 6;
+    property <int> count: Select.options.length;
+    property <int> vis: min(root.count, root.max-visible);
+    property <length> list-w: Select.anchor.width;
+    // Cap the flyout at `max-visible` rows AND at the window (minus margins)
+    // so it never exceeds the window even in a short/resized window; the
+    // inner ScrollView scrolls the rest.
+    property <length> full-h: root.vis * root.row-h + 2 * root.pad + 2 * Design.border-thin;
+    property <length> list-h: min(root.full-h, root.height - 2 * root.margin);
+
+    // X: aligned under the anchor, clamped into the window.
+    property <length> place-x: clamp(
+        Select.anchor.x,
+        root.margin,
+        max(root.margin, root.width - root.list-w - root.margin));
+    // Y: below the anchor if it fits, else flip above; then clamp so a
+    // list taller than expected still stays fully in the window.
+    property <bool> room-below:
+        Select.anchor.y + Select.anchor.height + root.list-h + root.margin <= root.height;
+    property <length> raw-y: root.room-below
+        ? Select.anchor.y + Select.anchor.height
+        : Select.anchor.y - root.list-h;
+    property <length> place-y: clamp(
+        root.raw-y,
+        root.margin,
+        max(root.margin, root.height - root.list-h - root.margin));
+
+    // Scrim: dismiss on click outside, and swallow wheel scroll so the
+    // list stays anchored (the background can't scroll out from under it).
+    if Select.open: TouchArea {
+        clicked => {
+            Select.close();
+        }
+        scroll-event(e) => {
+            return accept;
+        }
+    }
+
+    // The list surface. An elevated `surface2` background + `border-strong`
+    // edge + deeper offset-8 shadow read as distinct from the control
+    // surface the flyout floats over, like a native ComboBox menu.
+    if Select.open: flyout := Rectangle {
+        x: root.place-x;
+        y: root.place-y;
+        width: root.list-w;
+        height: root.list-h;
+        background: Theme.surface2;
+        border-color: Theme.border-strong;
+        border-width: Design.border-thin;
+        border-radius: Design.radius-card;
+        clip: true;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: Theme.drop-shadow;
+        drop-shadow-offset-y: 8px;
+
+        // No FocusScope here: focus stays on the owning ThemedSelect's
+        // button (see its `fs`), which handles the open-state keys. Keeping
+        // focus put means Tab traversal survives the popup and needs no
+        // focus hand-back. The ScrollView keeps a list longer than
+        // `max-visible` inside the flyout; this binding shows the current
+        // value when the list opens (the rows are created and the cursor
+        // set in that same pass), and the cursor row keeps itself in
+        // view as it moves.
+        ScrollView {
+            content-width: self.visible-width;
+            content-y: -max(0px, (Select.highlight - root.vis + 1) * root.row-h);
+            VerticalLayout {
+                padding: root.pad;
+                for opt[i] in Select.options: SelectRow {
+                    label: opt;
+                    index: i;
+                    is-current: opt == Select.current-value;
+                    is-cursor: i == Select.highlight;
+                    clicked => {
+                        Select.pick(i);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The visible select button — a drop-in for `ComboBox` on the subset the
+// panes use (`model` / `current-value` / `selected`).
+export component ThemedSelect inherits Rectangle {
+    /// The detail row the select sits in (`Nav.next-row-id`); 0 for none.
+    in property <int> nav-row: 0;
+    in property <[string]> model;
+    // What each option of `model` stands for, place for place; empty for
+    // options that stand for their labels.
+    in property <[string]> values;
+    in property <string> current-value;
+    // Emitted on pick with the chosen option's value: from `values`, or
+    // its label where there are none. Never an index: the model may have
+    // changed order while the list was open.
+    callback selected(value: string);
+    in property <bool> enabled: true;
+
+    // What a pick is routed back by: the same for a button made again in
+    // this one's place, as a pane does when its rows are made anew while
+    // the list is open, so the pick lands on it; another button's never.
+    // A pane names it where its accessible id alone could be another's;
+    // by default the accessible id, and with none the id claimed here.
+    in property <string> key: root.accessible-id != "" ? root.accessible-id : "#" + root.id;
+    property <int> id;
+    init => {
+        self.id = OverlayIds.claim();
+    }
+
+    min-width: Design.width-input-min;
+    height: Design.size-input;
+    horizontal-stretch: 1;
+    // Dimmed + inert when disabled (empty model, etc.), like a disabled
+    // native ComboBox.
+    opacity: root.enabled ? 1.0 : 0.45;
+    background: Theme.surface2;
+    // Accent border while open; keyboard focus draws the shared ring
+    // outside instead, so the two states read differently.
+    border-color: root.is-open ? Theme.accent : Theme.border;
+    border-width: root.is-open ? 2px : Design.border-thin;
+    border-radius: Design.radius-control;
+    forward-focus: fs;
+
+    ring := FocusRing {
+        shown: fs.has-focus && Nav.focus-visible && !root.is-open;
+        host-width: root.width;
+        host-height: root.height;
+        host-radius: root.border-radius;
+    }
+
+    accessible-role: combobox;
+    accessible-expandable: true;
+    accessible-expanded: root.is-open;
+    accessible-value: root.current-value;
+    accessible-action-expand => {
+        root.open-list();
+    }
+
+    property <bool> is-open: Select.open && Select.owner == root.key;
+
+    // Read absolute-position only inside event handlers (post-layout) —
+    // an eager binding trips Slint's layout-cache reentrancy panic (same
+    // rule the Help overlay follows).
+    function open-list() {
+        if (!root.enabled || root.model.length == 0) {
+            return;
+        }
+        Select.open-for(
+            root.key,
+            root.model,
+            root.values.length == root.model.length ? root.values : root.model,
+            root.current-value,
+            { x: root.absolute-position.x, y: root.absolute-position.y, width: root.width, height: root.height });
+    }
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 8px;
+        Text {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            text: root.current-value;
+            color: Theme.text;
+            font-size: Design.font-meta;
+            overflow: elide;
+        }
+        // Thin stroked chevron (a "v", not a filled triangle), dimmed.
+        VerticalLayout {
+            alignment: center;
+            Path {
+                width: 11px;
+                height: 6px;
+                stroke: Theme.text-dim;
+                stroke-width: 1.25px;
+                viewbox-width: 12;
+                viewbox-height: 7;
+                commands: "M 1 1 L 6 6 L 11 1";
+            }
+        }
+    }
+
+    // Focus lives here the whole time — closed or open — so Tab traversal
+    // is never disturbed. When open, this handles list navigation; when
+    // closed, it opens the list.
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (root.is-open) {
+                if (event.text == Key.UpArrow) {
+                    Select.move(-1);
+                } else if (event.text == Key.DownArrow) {
+                    Select.move(1);
+                } else if (event.text == Key.Return) {
+                    Select.pick-highlighted();
+                } else if (event.text == Key.Escape) {
+                    Select.close();
+                }
+                // While open the menu is modal: accept every key (Tab
+                // included) so Slint's fall-through focus traversal / popup
+                // handling never runs and focus stays put. Only Enter/Escape
+                // above dismiss it.
+                return accept;
+            }
+            // Return or Space opens; Down doesn't, it steps focus.
+            if (event.text == Key.Return || event.text == " ") {
+                root.open-list();
+                return accept;
+            }
+            return reject;
+        }
+        focus-gained(reason) => {
+            Nav.stop-focused-at(2, root.nav-row, root.accessible-id, root.absolute-position.x, root.absolute-position.y, root.height);
+            root.anchor = Nav.focus-seq;
+        }
+    }
+
+    // The select's focus anchor, so a dialog opened from it (Escape in
+    // a dirty config edit) comes back to it; a focusable keeps its own.
+    property <int> anchor: -1;
+    property <int> anchor-mirror: Nav.anchor-tick;
+    changed anchor-mirror => {
+        if (root.enabled && Nav.anchor-matches(root.anchor, root.accessible-id)) {
+            Nav.anchor-served = Nav.anchor-tick;
+            fs.focus();
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                Nav.focus-visible = false;
+            }
+        }
+        clicked => {
+            root.focus();
+            root.open-list();
+        }
+    }
+
+    // A pick from the overlay routes back here by its key.
+    property <int> pick-mirror: Select.pick-tick;
+    changed pick-mirror => {
+        if (Select.owner == root.key) {
+            root.selected(Select.picked-value);
+        }
+    }
+
+    // Keep focus on this button while its menu is open, however it was
+    // opened — a mouse press clears focus before `open-list` runs, which
+    // would otherwise leave the modal key handling above with no keys and
+    // break Escape.
+    changed is-open => {
+        if (root.is-open) {
+            fs.focus();
+        }
+    }
+
+    // If this button is disabled while its menu is open (e.g. its model
+    // empties on a state refresh), close the orphaned overlay.
+    changed enabled => {
+        if (!root.enabled && root.is-open) {
+            Select.close();
+        }
+    }
+}

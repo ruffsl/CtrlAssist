@@ -1,0 +1,1245 @@
+// The Profiles pane: the profiles the daemon keeps, and for the one
+// selected a form over its preset, rendered from the fields the daemon
+// serves. Each change applies at once. A profile written by hand (the
+// full form) shows what it names and none of its text.
+//
+// The list and the detail are the shapes of the Pads pane, and so of
+// TisVlay's; the list's "+" and the name dialogs are its profile
+// list's.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+import { ListRow, Group, Chip, ThemedButton, IconBtn, ContextualHelpButton, ConfirmDialog, NameInputDialog, InlineError, ThemedSwitch, ThemedSpinBox, Focusable, ProfileTile, FormRow, ListCaption, ToneText, ToneDot } from "../widgets.slint";
+import { Icons } from "../globals/icons.slint";
+import { Setups, SetupRow } from "../globals/setups.slint";
+import { ThemedSelect } from "../globals/select.slint";
+import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
+import { ServiceHealth } from "../globals/health.slint";
+import { Errors } from "../globals/errors.slint";
+import { Nav } from "../globals/nav.slint";
+import { Profiles, ProfileRow, ProfileFieldRow } from "../globals/profiles.slint";
+
+component ProfileListRow inherits ListRow {
+    in property <ProfileRow> profile;
+
+    accessible-label: root.profile.is-default ? @tr("{}, default profile", root.profile.name) : root.profile.name;
+    accessible-id: "profiles-row-" + root.profile.name;
+    height: 64px;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        alignment: start;
+
+        VerticalLayout {
+            width: Design.size-tile-sm;
+            alignment: center;
+            ProfileTile {
+                shape: root.profile.shape;
+                tile-size: Design.size-tile-sm;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                // The default profile carries a check mark, as TisVlay's.
+                text: root.profile.is-default ? root.profile.name + "\u{00A0}\u{2713}" : root.profile.name;
+                color: root.title-color;
+                font-size: Design.font-body;
+                font-weight: root.title-weight;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                spacing: Design.gap-tight;
+                alignment: start;
+
+                ToneDot {
+                    y: (parent.height - self.height) / 2;
+                    tone: root.profile.word-tone;
+                }
+                ToneText {
+                    text: root.profile.word;
+                    tone: root.profile.word-tone;
+                }
+            }
+        }
+    }
+}
+
+component ProfileList inherits Rectangle {
+    in property <bool> daemon-available;
+    in property <bool> daemon-loading;
+    in property <ServiceHealth> daemon-health;
+    callback activated();
+    callback request-new();
+
+    // As the other panes' lists, with the "+" before the first row: a
+    // column request lands on the selected row, else the first, else
+    // the "+".
+    property <string> focus-row-name;
+    property <int> focus-row-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        root.serve-column-request();
+    }
+    property <bool> has-selection: Profiles.selected-index >= 0 && Profiles.selected-index < Profiles.rows.length;
+
+    // The list's stops, top to bottom: the "+" (slot -1), then the rows.
+    function focus-slot(slot: int) {
+        if (slot < 0) {
+            add.focus();
+        } else if (slot < Profiles.rows.length) {
+            root.focus-row-name = Profiles.rows[slot].name;
+            root.focus-row-tick += 1;
+        }
+    }
+    property <int> step-mirror: Nav.list-step-tick;
+    changed step-mirror => {
+        if (add.focused) {
+            Nav.list-step-served = Nav.list-step-tick;
+            if (Nav.list-step-forward) {
+                root.focus-slot(0);
+            }
+        }
+    }
+    init => {
+        if (Nav.column-tick != Nav.column-served) {
+            serve-later.running = true;
+        }
+    }
+    serve-later := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.serve-column-request();
+        }
+    }
+    function serve-column-request() {
+        if (Nav.column-target == 1 || (Nav.column-target == 2 && !root.has-selection)) {
+            Nav.column-served = Nav.column-tick;
+            if (Profiles.rows.length > 0) {
+                root.focus-row-name = Profiles.rows[root.has-selection ? Profiles.selected-index : 0].name;
+                root.focus-row-tick += 1;
+            } else if (add.enabled) {
+                add.focus();
+            } else {
+                Nav.request-column(0);
+            }
+        }
+    }
+
+    width: Design.width-master + 60px;
+    background: Theme.surface-alt;
+
+    Rectangle {
+        x: parent.width - 1px;
+        width: Design.border-thin;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        Rectangle {
+            height: 40px;
+            background: Theme.surface;
+            Rectangle {
+                x: parent.width - 1px;
+                width: Design.border-thin;
+                background: Theme.border;
+            }
+            HorizontalLayout {
+                width: 100%;
+                height: 100%;
+                padding-left: 12px;
+                padding-right: Design.gap-stack;
+                spacing: Design.gap-stack;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: @tr("{}/{} RUNNING", Profiles.running-count, Profiles.rows.length);
+                        color: Theme.text-dim;
+                        font-size: Design.font-mini;
+                        font-weight: 600;
+                        letter-spacing: 0.6px;
+                    }
+                }
+                add := Focusable {
+                    width: 24px;
+                    height: 24px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 12px;
+                    column: 1;
+                    enabled: root.daemon-available;
+                    background: !root.daemon-available ? Theme.text-faint
+                        : (add.hovered ? Theme.accent-pressed : Theme.accent);
+                    animate background { duration: 150ms; }
+                    accessible-label: @tr("New profile");
+                    accessible-id: "profiles-new";
+                    activated => {
+                        root.request-new();
+                        add-help.hover-leave();
+                    }
+                    hover-changed(hovering) => {
+                        add-help.set-hover(hovering);
+                    }
+                    Text {
+                        text: "+";
+                        color: white;
+                        font-size: 16px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                    add-help := HelpTrigger {
+                        width: 100%;
+                        height: 100%;
+                        text: @tr("New profile");
+                    }
+                }
+            }
+        }
+
+        if Profiles.rows.length == 0: Rectangle {
+            VerticalLayout {
+                width: 100%;
+                alignment: center;
+                padding: Design.gap-pane;
+                Text {
+                    text: !root.daemon-available ? @tr("Daemon offline")
+                        : root.daemon-health == ServiceHealth.incompatible ? @tr("Profiles hidden: version mismatch")
+                        : root.daemon-loading ? @tr("Loading")
+                        : @tr("No profiles yet. Make one with +.");
+                    color: !root.daemon-available || root.daemon-health == ServiceHealth.incompatible
+                        ? Theme.danger-text : Theme.text-faint;
+                    font-size: Design.font-body;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    accessible-id: "profiles-empty";
+                }
+            }
+        }
+
+        ScrollView {
+            content-width: self.visible-width;
+            VerticalLayout {
+                alignment: start;
+                // The rows come running first, so the rest start at the
+                // count of those.
+                for profile[i] in Profiles.rows: VerticalLayout {
+                    if i == Profiles.running-count && i > 0: ListCaption {
+                        title: @tr("NOT RUNNING");
+                    }
+                    ProfileListRow {
+                        profile: profile;
+                        selected: i == Profiles.selected-index;
+                        // The selected row is the list's one Tab stop; the
+                        // first, with nothing selected.
+                        tab-stop: root.has-selection ? i == Profiles.selected-index : i == 0;
+                        focus-tick: root.focus-row-tick;
+                        focus-wanted: profile.name == root.focus-row-name;
+                        // Focusing a row selects it, however focus got there.
+                        focus-in => {
+                            Profiles.selected-index = i;
+                        }
+                        clicked => {
+                            Profiles.selected-index = i;
+                            root.activated();
+                        }
+                        step(forward) => {
+                            Nav.list-step-served = Nav.list-step-tick;
+                            root.focus-slot(forward ? i + 1 : i - 1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// One field of a preset: its label, its control by its kind, and a slot
+// at the row's end. For a pad that slot opens the pad, and its
+// connection is said under the control; for a field with a default it
+// is the reset, lit where the field isn't at its default, with a mark
+// in the gutter. TisVlay's profile field row.
+component FieldRow inherits Rectangle {
+    in property <string> profile;
+    in property <ProfileFieldRow> field;
+    in property <bool> enabled;
+    in property <string> id-prefix;
+    // Narrower than TisVlay's profile rows: these end in up to two
+    // slots, and the labels are short.
+    property <length> label-col: Design.width-label-col-profile - 30px;
+
+    property <string> control-id: root.id-prefix + "profiles-field-" + root.field.key;
+    // Set to something other than what leaving it out means.
+    property <bool> set-here: root.field.default-value != "" && !root.field.at-default;
+
+    height: column.preferred-height;
+
+    // The gutter mark of a field set here.
+    Rectangle {
+        x: -Design.gap-stack;
+        width: 2px;
+        background: root.set-here ? Theme.accent : transparent;
+    }
+
+    column := VerticalLayout {
+        width: 100%;
+        spacing: Design.gap-form;
+
+        row := FormRow {
+            id-prefix: root.id-prefix + "profiles-";
+            label: root.field.label;
+            key: root.field.key;
+            label-width: root.label-col;
+            // A pad's connection, under its label.
+            status-word: root.field.status-word;
+            status-tone: root.field.status-tone;
+
+            // The control takes the row's width, whichever kind it is.
+            HorizontalLayout {
+                horizontal-stretch: 1;
+                if (root.field.kind == "choice" || root.field.kind == "pad") && !root.field.read-only: ThemedSelect {
+                    horizontal-stretch: 1;
+                    accessible-label: root.field.label;
+                    accessible-id: root.control-id;
+                    key: root.profile + "/" + root.control-id;
+                    nav-row: row.row-id;
+                    enabled: root.enabled;
+                    model: root.field.options;
+                    values: root.field.option-values;
+                    current-value: root.field.value-label;
+                    selected(value) => {
+                        Profiles.set-field(root.profile, root.field.key, value);
+                    }
+                }
+                // A kind of field this window doesn't know: shown as
+                // the file has it, and changed there.
+                if root.field.read-only: VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: root.field.value;
+                        color: Theme.text-dim;
+                        font-size: Design.font-body;
+                        font-family: Theme.mono-font;
+                        overflow: elide;
+                        accessible-id: root.control-id;
+                    }
+                }
+                if root.field.kind == "number" && !root.field.read-only: ThemedSpinBox {
+                    horizontal-stretch: 1;
+                    accessible-label: root.field.label;
+                    accessible-id: root.control-id;
+                    nav-row: row.row-id;
+                    enabled: root.enabled;
+                    value: root.field.number;
+                    minimum: root.field.min;
+                    maximum: root.field.max;
+                    committed(v) => { Profiles.set-number(root.profile, root.field.key, v); }
+                }
+                // A switch the daemon serves other than Managed, which
+                // the STATUS group shows.
+                if root.field.kind == "switch" && !root.field.read-only: HorizontalLayout {
+                    horizontal-stretch: 1;
+                    alignment: start;
+                    VerticalLayout {
+                        alignment: center;
+                        ThemedSwitch {
+                            accessible-label: root.field.label;
+                            accessible-id: root.control-id;
+                            nav-row: row.row-id;
+                            enabled: root.enabled;
+                            checked: root.field.checked;
+                            toggled(on) => {
+                                Profiles.set-field(root.profile, root.field.key, on ? "true" : "false");
+                            }
+                        }
+                    }
+                }
+            }
+            // The slot at the row's end is there on every row, so the
+            // controls end at one edge.
+            VerticalLayout {
+                alignment: center;
+                width: 24px;
+                if root.field.kind == "pad" && root.field.pad != "": IconBtn {
+                    nav-row: row.row-id;
+                    source: Icons.edit;
+                    accessible-label: @tr("Show {}", root.field.value-label);
+                    tip: @tr("Show this pad");
+                    accessible-id: root.id-prefix + "profiles-pad-" + root.field.key;
+                    clicked => { Profiles.open-pad(root.field.pad); }
+                }
+                if root.field.default-value != "" && !root.field.read-only: IconBtn {
+                    nav-row: row.row-id;
+                    source: Icons.reset;
+                    active: root.set-here;
+                    enabled: root.enabled && root.set-here;
+                    accessible-label: @tr("Reset {} to its default", root.field.label);
+                    tip: @tr("Reset to the default");
+                    accessible-id: root.id-prefix + "profiles-reset-" + root.field.key;
+                    clicked => { Profiles.reset-field(root.profile, root.field.key); }
+                }
+            }
+        }
+
+    }
+}
+
+// A card of a profile's detail: a small capital caption, an "i" where
+// the card has help, and its rows.
+component Card inherits VerticalLayout {
+    in property <string> title;
+    in property <string> help;
+    in property <string> id-prefix;
+    in property <string> key;
+    in property <int> nav-row;
+
+    spacing: Design.gap-stack;
+
+    HorizontalLayout {
+        height: Design.size-card-header;
+        padding-left: 2px;
+        spacing: Design.gap-form;
+        alignment: start;
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.title;
+                color: Theme.text-dim;
+                font-size: Design.font-mini;
+                font-weight: 600;
+                letter-spacing: 0.6px;
+            }
+        }
+        if root.help != "": VerticalLayout {
+            alignment: center;
+            ContextualHelpButton {
+                nav-row: root.nav-row;
+                text: root.help;
+                accessible-id: root.id-prefix + "profiles-help-" + root.key;
+            }
+        }
+    }
+    Rectangle {
+        background: Theme.surface;
+        border-color: Theme.border;
+        border-width: Design.border-thin;
+        border-radius: Design.radius-card;
+        height: body.preferred-height;
+        body := VerticalLayout {
+            width: 100%;
+            padding: Design.pad-card;
+            spacing: Design.gap-block;
+            @children
+        }
+    }
+}
+
+// The detail's header, as a profile's is in TisVlay: the tile, the name
+// with what is done to a whole profile beside it, its mode, and two
+// chips stacked at the right, whether it is managed and how it is.
+component ProfileDetailHeader inherits Rectangle {
+    in property <ProfileRow> profile;
+    in property <bool> daemon-available;
+    in property <string> id-prefix;
+    in property <int> nav-row;
+    callback request-rename();
+    callback request-duplicate();
+    callback request-delete();
+
+    height: header-layout.preferred-height;
+    background: Theme.surface;
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: Design.border-thin;
+        background: Theme.border;
+    }
+
+    header-layout := HorizontalLayout {
+        width: 100%;
+        padding-left: Design.pad-pane;
+        padding-right: Design.pad-pane;
+        padding-top: Design.pad-header-top;
+        padding-bottom: Design.gap-row;
+        spacing: Design.gap-row;
+
+        VerticalLayout {
+            width: Design.size-tile-md;
+            alignment: center;
+            ProfileTile {
+                shape: root.profile.shape;
+                tile-size: Design.size-tile-md;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: Design.gap-form;
+            HorizontalLayout {
+                spacing: Design.gap-form;
+                alignment: start;
+                // The name alone: the default profile's mark is its
+                // row's in the list, and here it left the name cut short.
+                // A long one wraps at the window's smallest, so the whole
+                // name is there to read without a pointer, by keys and
+                // across the room as well.
+                Text {
+                    min-width: Design.font-title-3;
+                    text: root.profile.name;
+                    color: Theme.text;
+                    font-size: Design.font-title-3;
+                    font-weight: 700;
+                    wrap: char-wrap;
+                    vertical-alignment: center;
+                    accessible-id: root.id-prefix + "profiles-name";
+                }
+                if root.profile.kept: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        nav-row: root.nav-row;
+                        source: Icons.edit;
+                        // The default profile keeps its name.
+                        enabled: root.daemon-available && root.profile.setup-index < 0 && !root.profile.is-default;
+                        accessible-label: @tr("Rename profile");
+                        tip: root.profile.is-default ? @tr("The default profile keeps its name")
+                            : root.profile.setup-index < 0 ? @tr("Rename profile") : @tr("Stop it to rename it");
+                        accessible-id: root.id-prefix + "profiles-rename";
+                        clicked => { root.request-rename(); }
+                    }
+                }
+                if root.profile.kept: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        nav-row: root.nav-row;
+                        source: Icons.copy;
+                        enabled: root.daemon-available;
+                        accessible-label: @tr("Duplicate profile");
+                        tip: @tr("Duplicate profile");
+                        accessible-id: root.id-prefix + "profiles-duplicate";
+                        clicked => { root.request-duplicate(); }
+                    }
+                }
+                if root.profile.kept: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        nav-row: root.nav-row;
+                        source: Icons.folder_open;
+                        accessible-label: @tr("Show its file");
+                        tip: @tr("Show its file");
+                        accessible-id: root.id-prefix + "profiles-reveal";
+                        clicked => { Profiles.reveal(root.profile.name); }
+                    }
+                }
+                if root.profile.kept: VerticalLayout {
+                    alignment: center;
+                    IconBtn {
+                        nav-row: root.nav-row;
+                        source: Icons.delete;
+                        // The daemon always keeps the default profile.
+                        enabled: root.daemon-available && !root.profile.is-default;
+                        accessible-label: @tr("Delete profile");
+                        tip: root.profile.is-default ? @tr("The default profile is always kept") : @tr("Delete profile");
+                        accessible-id: root.id-prefix + "profiles-delete";
+                        clicked => { root.request-delete(); }
+                    }
+                }
+            }
+            // What it is, in a word or two: its mode, or that it is
+            // written by hand. The pads it uses are its INPUTS card's.
+            HorizontalLayout {
+                spacing: Design.gap-meta;
+                alignment: start;
+                Text {
+                    text: @tr("Mode:");
+                    color: Theme.text-dim;
+                    font-size: Design.font-helper;
+                }
+                Text {
+                    text: root.profile.mode-label == "" ? "—" : root.profile.mode-label;
+                    color: Theme.text-dim;
+                    font-size: Design.font-helper;
+                    overflow: elide;
+                    accessible-id: root.id-prefix + "profiles-mode";
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: Design.gap-tight;
+            // A profile that is gone says nothing of how it starts.
+            if root.profile.kind != "gone": HorizontalLayout {
+                alignment: end;
+                Chip {
+                    label: root.profile.managed ? @tr("Managed") : @tr("Unmanaged");
+                    tone: root.profile.managed ? "info" : "neutral";
+                    accessible-id: root.id-prefix + "profiles-managed-chip";
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                Chip {
+                    label: root.profile.word;
+                    tone: root.profile.word-tone;
+                    accessible-id: root.id-prefix + "profiles-word";
+                }
+            }
+        }
+    }
+}
+
+component ProfileDetail inherits Rectangle {
+    in property <ProfileRow> profile;
+    in property <bool> daemon-available;
+    // The label column of the cards' rows, as a field row's.
+    property <length> label-col: Design.width-label-col-profile - 30px;
+    callback request-delete();
+    callback request-duplicate();
+    callback request-rename();
+    callback request-stop();
+
+    // Each profile has a detail and one shows: the hidden ones'
+    // controls go by other ids, so a control is found once.
+    property <string> id-prefix: root.visible ? "" : "hidden-";
+    // Its setup, while it has one.
+    property <bool> live: root.profile.setup-index >= 0 && root.profile.setup-index < Setups.rows.length;
+    property <SetupRow> setup: root.live ? Setups.rows[root.profile.setup-index] : {};
+
+    in property <int> focus-tick;
+    changed focus-tick => {
+        if (root.visible) {
+            action.focus();
+        }
+    }
+
+    property <int> header-row;
+    property <int> action-row;
+    property <int> update-row;
+    property <int> caption-row;
+    init => {
+        root.header-row = Nav.next-row-id();
+        root.action-row = Nav.next-row-id();
+        root.update-row = Nav.next-row-id();
+        root.caption-row = Nav.next-row-id();
+    }
+
+    background: Theme.surface-alt;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        ProfileDetailHeader {
+            profile: root.profile;
+            daemon-available: root.daemon-available;
+            id-prefix: root.id-prefix;
+            nav-row: root.header-row;
+            request-rename => { root.request-rename(); }
+            request-duplicate => { root.request-duplicate(); }
+            request-delete => { root.request-delete(); }
+        }
+
+        HelpScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+            VerticalLayout {
+                width: 100%;
+                padding-left: Design.pad-pane;
+                padding-right: Design.pad-pane;
+                padding-top: Design.pad-body-top;
+                padding-bottom: Design.pad-pane;
+                spacing: Design.gap-pane;
+                alignment: start;
+
+                // -- STATUS --
+                //
+                // Start or Stop leads, as Power does a TV's, with a line
+                // of how it is; then, while it runs, what a setup has:
+                // an update to take, its pads, who has control.
+                Group {
+                    title: @tr("STATUS");
+                    help: @tr("How the profile is, as its header says. Starting: on its way to running. Running: started, with its virtual pad there. Held: a pad it uses has left, and it waits for it. Failed: it stopped working, and Stop clears it. Ready: its pads are connected and free. Waiting: a pad it names is away or in use. Not set up: its pads are still to choose. Unfinished: a change made here isn't a profile yet, so it isn't kept. Wrong: the daemon can't run it as it is written.");
+                    help-id: root.id-prefix + "profiles-help-status";
+
+                    HorizontalLayout {
+                        spacing: Design.gap-row;
+                        action := ThemedButton {
+                            nav-row: root.action-row;
+                            text: root.live ? @tr("Stop") : @tr("Start");
+                            icon: root.live ? Icons.stop : Icons.start;
+                            primary: !root.live;
+                            enabled: root.daemon-available && (root.live || root.profile.can-start);
+                            accessible-id: root.id-prefix + (root.live ? "profiles-stop" : "profiles-start");
+                            clicked => {
+                                if (root.live) {
+                                    root.request-stop();
+                                } else {
+                                    Profiles.start(root.profile.name);
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            ToneText {
+                                text: root.profile.note;
+                                // The note is dim unless it is trouble.
+                                tone: root.profile.word-tone == "warn" || root.profile.word-tone == "danger"
+                                    ? root.profile.word-tone : "";
+                                color: root.profile.word-tone == "warn" ? Theme.warn-text
+                                    : root.profile.word-tone == "danger" ? Theme.danger-text
+                                    : Theme.text-dim;
+                                font-size: Design.font-helper;
+                                wrap: word-wrap;
+                                accessible-id: root.id-prefix + "profiles-note";
+                            }
+                        }
+                    }
+
+                    // Whether the daemon starts it by itself, as a
+                    // TV's Managed is in TisVlay. A profile written by
+                    // hand says it in its file; one that is gone has
+                    // nothing to say it.
+                    if root.profile.kind != "gone": managed-row := FormRow {
+                        id-prefix: root.id-prefix;
+                        label: @tr("Managed");
+                        key: "managed";
+                        help: @tr("The daemon starts a managed profile whenever every pad it names is connected. Unmanaged, it is started by hand.");
+                        HorizontalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 10px;
+                            alignment: start;
+                            VerticalLayout {
+                                alignment: center;
+                                ThemedSwitch {
+                                    accessible-label: managed-row.label;
+                                    nav-row: managed-row.row-id;
+                                    accessible-id: root.id-prefix + "profiles-managed";
+                                    checked: root.profile.managed;
+                                    enabled: root.daemon-available && root.profile.kind == "preset";
+                                    toggled(on) => {
+                                        Profiles.set-field(root.profile.name, "managed", on ? "true" : "false");
+                                    }
+                                }
+                            }
+                            if root.profile.kind != "preset": VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: @tr("Set in its file.");
+                                    color: Theme.text-faint;
+                                    font-size: Design.font-mini;
+                                }
+                            }
+                        }
+                    }
+
+                    if root.profile.unfinished: HorizontalLayout {
+                        spacing: Design.gap-row;
+                        ThemedButton {
+                            nav-row: root.update-row;
+                            text: root.profile.kept ? @tr("Discard change") : @tr("Discard");
+                            accessible-id: root.id-prefix + "profiles-discard";
+                            clicked => { Profiles.discard(root.profile.name); }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Text {
+                                text: root.profile.unfinished-why;
+                                color: Theme.warn-text;
+                                font-size: Design.font-helper;
+                                wrap: word-wrap;
+                                accessible-id: root.id-prefix + "profiles-unfinished-why";
+                            }
+                        }
+                    }
+
+                    if root.live && root.setup.stale: HorizontalLayout {
+                        spacing: Design.gap-row;
+                        // With its profile gone there is nothing to
+                        // update to.
+                        if root.setup.profile-kept: ThemedButton {
+                            nav-row: root.update-row;
+                            text: @tr("Update…");
+                            primary: true;
+                            enabled: root.daemon-available;
+                            accessible-id: root.id-prefix + "profiles-update";
+                            clicked => { Setups.ask-update(root.profile.name); }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            Text {
+                                text: root.setup.profile-kept
+                                    ? @tr("The profile has changed since it started. Update says what taking it up costs.")
+                                    : @tr("Its profile is no longer kept. It runs as it was until it is stopped.");
+                                color: Theme.warn-text;
+                                font-size: Design.font-helper;
+                                wrap: word-wrap;
+                                accessible-id: root.id-prefix + "profiles-stale";
+                            }
+                        }
+                    }
+
+                    if root.live: VerticalLayout {
+                        spacing: Design.gap-block;
+                        for node in root.setup.nodes: node-row := FormRow {
+                            id-prefix: root.id-prefix;
+                            label: root.setup.nodes.length == 1 ? @tr("Has control") : node.name;
+                            key: "node-" + node.name;
+                            label-width: Design.width-label-col;
+                            help: @tr("Who is playing now. The switch button on a pad hands over too.");
+                            ThemedSelect {
+                                horizontal-stretch: 1;
+                                accessible-label: node-row.label;
+                                accessible-id: root.id-prefix + "profiles-select-" + node.name;
+                                key: root.setup.name + "/" + root.id-prefix + "profiles-select-" + node.name;
+                                nav-row: node-row.row-id;
+                                enabled: root.daemon-available;
+                                model: node.choices;
+                                current-value: node.selected >= 0 && node.selected < node.choices.length
+                                    ? node.choices[node.selected] : "";
+                                selected(choice) => {
+                                    Setups.select(root.profile.name, node.name, choice);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // -- INPUTS --
+                //
+                // The pads it takes. A preset's are chosen here, each
+                // with its connection under it and a pencil that opens
+                // the pad; a profile written by hand lists the pads it
+                // names.
+                Card {
+                    title: @tr("INPUTS");
+                    help: @tr("The pads this profile takes, each with whether it is connected. Picking the pad another part has swaps the two. The pencil opens the pad.");
+                    id-prefix: root.id-prefix;
+                    key: "inputs";
+                    nav-row: root.caption-row;
+
+                    for field in root.profile.input-fields: FieldRow {
+                        profile: root.profile.name;
+                        field: field;
+                        enabled: root.daemon-available;
+                        id-prefix: root.id-prefix;
+                    }
+                    if root.profile.kind != "preset" && root.profile.uses.length == 0: Text {
+                        text: @tr("The pads it names can't be told while something is wrong with it.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                    }
+                    if root.profile.kind != "preset": VerticalLayout {
+                        spacing: Design.gap-block;
+                        for use in root.profile.uses: VerticalLayout {
+                            spacing: Design.gap-form;
+                            use-row := FormRow {
+                                id-prefix: root.id-prefix + "profiles-";
+                                label: use.part;
+                                key: "use-" + use.part;
+                                label-width: root.label-col;
+                                status-word: use.word;
+                                status-tone: use.tone;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    Text {
+                                        text: use.name;
+                                        color: Theme.text;
+                                        font-size: Design.font-body;
+                                        font-family: use.pad == "" ? Theme.mono-font : "";
+                                        overflow: elide;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    width: 24px;
+                                    if use.pad != "": IconBtn {
+                                        nav-row: use-row.row-id;
+                                        source: Icons.edit;
+                                        accessible-label: @tr("Show {}", use.name);
+                                        tip: @tr("Show this pad");
+                                        accessible-id: root.id-prefix + "profiles-input-" + use.part;
+                                        clicked => { Profiles.open-pad(use.pad); }
+                                    }
+                                }
+                            }
+
+                        }
+                    }
+                }
+
+                // -- OUTPUTS --
+                //
+                // The virtual pads, a row each as the inputs have: its
+                // name with whether it exists under it, what it
+                // presents itself as, and a pencil that opens it while
+                // it does. A preset's are all of one identity, chosen
+                // on the first.
+                Card {
+                    title: @tr("OUTPUTS");
+                    help: @tr("The virtual pad games read in place of the real ones, and what it presents itself as: some games show its buttons by that, and a DualSense passes on lights and trigger effects. Changing it replaces the virtual pad, which a game sees as its controller reconnecting.");
+                    id-prefix: root.id-prefix;
+                    key: "outputs";
+                    nav-row: root.caption-row;
+
+                    for field in root.profile.output-fields: FieldRow {
+                        profile: root.profile.name;
+                        field: field;
+                        enabled: root.daemon-available;
+                        id-prefix: root.id-prefix;
+                    }
+                    if root.profile.outputs.length == 0 && root.profile.kind != "preset": Text {
+                        text: @tr("Its virtual pads can't be told while something is wrong with it.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                    }
+                    for output[i] in root.profile.outputs: output-row := FormRow {
+                        property <bool> chooses: i == 0 && root.profile.identity-field.key != "";
+
+                        id-prefix: root.id-prefix + "profiles-";
+                        label: output.name;
+                        key: "output-" + output.name;
+                        label-width: root.label-col;
+                        status-word: output.word;
+                        status-tone: output.tone;
+
+                        HorizontalLayout {
+                            horizontal-stretch: 1;
+                            if output-row.chooses: ThemedSelect {
+                                horizontal-stretch: 1;
+                                accessible-label: root.profile.identity-field.label;
+                                accessible-id: root.id-prefix + "profiles-field-identity";
+                                key: root.profile.name + "/" + root.id-prefix + "profiles-field-identity";
+                                nav-row: output-row.row-id;
+                                enabled: root.daemon-available;
+                                model: root.profile.identity-field.options;
+                                values: root.profile.identity-field.option-values;
+                                current-value: root.profile.identity-field.value-label;
+                                selected(value) => {
+                                    Profiles.set-field(root.profile.name, "identity", value);
+                                }
+                            }
+                            if !output-row.chooses: VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                Text {
+                                    text: output.identity;
+                                    color: Theme.text;
+                                    font-size: Design.font-body;
+                                    overflow: elide;
+                                    accessible-id: root.id-prefix + "profiles-output-" + output.name;
+                                }
+                            }
+                        }
+                        // One slot at the row's end, as an input's row
+                        // has, so the two cards' controls line up: the
+                        // pencil. The identity has no reset here.
+                        VerticalLayout {
+                            alignment: center;
+                            width: 24px;
+                            if output.pad != "": IconBtn {
+                                nav-row: output-row.row-id;
+                                source: Icons.edit;
+                                accessible-label: @tr("Show {}", output.name);
+                                tip: @tr("Show this pad");
+                                accessible-id: root.id-prefix + "profiles-virtual-" + output.name;
+                                clicked => { Profiles.open-pad(output.pad); }
+                            }
+                        }
+                    }
+                }
+
+                // -- PRESET --
+                //
+                // How the two are arranged, for a profile that is a
+                // preset; one written by hand says so instead.
+                Card {
+                    title: root.profile.kind == "preset" ? @tr("PRESET") : @tr("PROFILE");
+                    help: root.profile.kind != "preset" ? ""
+                        : @tr("How the pads and the virtual pads are arranged. A change to any card applies at once, and to the profile as it runs; one that changes its virtual pad, or how its pads are hidden, restarts it. The tray's menu for this profile changes the same things.");
+                    id-prefix: root.id-prefix;
+                    key: "preset";
+                    nav-row: root.caption-row;
+
+                    if root.profile.problem != "": Text {
+                        text: root.profile.problem;
+                        color: Theme.danger-text;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                        accessible-id: root.id-prefix + "profiles-problem";
+                    }
+                    for field in root.profile.preset-fields: FieldRow {
+                        profile: root.profile.name;
+                        field: field;
+                        enabled: root.daemon-available;
+                        id-prefix: root.id-prefix;
+                    }
+                    // Written by hand: the window shows what it names
+                    // and none of its text, and says where it is.
+                    if root.profile.kind == "full": Text {
+                        text: @tr("This profile is written by hand, with its own sources, nodes and sinks. Change it in its file, then Reload.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                        accessible-id: root.id-prefix + "profiles-by-hand";
+                    }
+                    // Only its setup is left: what it shows is the
+                    // setup's.
+                    if root.profile.kind == "gone": Text {
+                        text: @tr("This profile was deleted, or its file removed, while it ran. What runs is what it said when it started, until it is stopped; its pads and virtual pads above are the setup's.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                        wrap: word-wrap;
+                        accessible-id: root.id-prefix + "profiles-gone";
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component ProfilesPane {
+    in property <bool> daemon-available;
+    in property <bool> daemon-loading;
+    in property <ServiceHealth> daemon-health;
+
+    property <string> pending-delete: "";
+
+    // The name dialog: "new", "duplicate" or "rename", and what of.
+    property <string> naming: "";
+    property <string> naming-source: "";
+    property <string> naming-name: "";
+    property <string> naming-error: "";
+    function close-naming() {
+        root.naming = "";
+        root.naming-source = "";
+        root.naming-name = "";
+        root.naming-error = "";
+    }
+
+    property <int> focus-detail-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 2 && root.has-selection) {
+            Nav.column-served = Nav.column-tick;
+            root.focus-detail-tick += 1;
+        }
+    }
+    property <bool> has-selection: Profiles.selected-index >= 0 && Profiles.selected-index < Profiles.rows.length;
+    changed has-selection => {
+        if (!root.has-selection && Nav.column == 2) {
+            Nav.request-column(1);
+        }
+    }
+
+    // A profile left with a change the window holds and the daemon
+    // doesn't: ask before it is dropped. `shown` is the row the detail
+    // was on; when the selection moves off one that is unfinished now,
+    // the dialog offers to drop it or go back to it. Asked as the
+    // selection moves, not remembered from before, so a draft just
+    // discarded (which moves the selection too) isn't asked about.
+    property <string> shown: root.has-selection ? Profiles.rows[Profiles.selected-index].name : "";
+    property <string> was-shown;
+    property <string> pending-leave: "";
+    changed shown => {
+        if (root.was-shown != "" && root.was-shown != root.shown && root.pending-leave == ""
+                && Profiles.unfinished(root.was-shown)) {
+            root.pending-leave = root.was-shown;
+        }
+        root.was-shown = root.shown;
+    }
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        if Errors.profiles.title != "" || Errors.profiles.message != "": Rectangle {
+            background: Theme.surface-alt;
+            HorizontalLayout {
+                width: 100%;
+                padding: 12px;
+                padding-bottom: 0;
+                InlineError {
+                    tone: Errors.profiles.tone == "" ? "error" : Errors.profiles.tone;
+                    title: Errors.profiles.title;
+                    message: Errors.profiles.message;
+                    dismissed => {
+                        Errors.profiles = { kind: "", tone: "", title: "", message: "", action-label: "" };
+                    }
+                }
+            }
+        }
+        // What stopping, updating or handing over a running profile
+        // came to, when it didn't.
+        if Errors.setups.title != "" || Errors.setups.message != "": Rectangle {
+            background: Theme.surface-alt;
+            HorizontalLayout {
+                width: 100%;
+                padding: 12px;
+                padding-bottom: 0;
+                InlineError {
+                    tone: Errors.setups.tone == "" ? "error" : Errors.setups.tone;
+                    title: Errors.setups.title;
+                    message: Errors.setups.message;
+                    dismissed => {
+                        Errors.setups = { kind: "", tone: "", title: "", message: "", action-label: "" };
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            width: 100%;
+            vertical-stretch: 1;
+
+            ProfileList {
+                daemon-available: root.daemon-available;
+                daemon-loading: root.daemon-loading;
+                daemon-health: root.daemon-health;
+                activated => { root.focus-detail-tick += 1; }
+                request-new => { root.naming = "new"; }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Theme.surface-alt;
+
+                if !root.has-selection: VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: Profiles.rows.length == 0
+                            ? @tr("A profile says which pads become which virtual pads, and how.")
+                            : @tr("Pick a profile to change it or start it.");
+                        color: Theme.text-faint;
+                        font-size: Design.font-body;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+
+                for profile[i] in Profiles.rows: ProfileDetail {
+                    width: parent.width;
+                    height: parent.height;
+                    visible: i == Profiles.selected-index;
+                    profile: profile;
+                    daemon-available: root.daemon-available;
+                    focus-tick: root.focus-detail-tick;
+                    request-delete => { root.pending-delete = profile.name; }
+                    // Done as pressed: Start beside it undoes it.
+                    request-stop => { Setups.stop(profile.name); }
+                    request-duplicate => {
+                        root.naming-source = profile.name;
+                        root.naming-name = profile.name + "-copy";
+                        root.naming-error = Profiles.name-problem(root.naming-name);
+                        root.naming = "duplicate";
+                    }
+                    request-rename => {
+                        root.naming-source = profile.name;
+                        root.naming-name = profile.name;
+                        root.naming-error = Profiles.name-problem(root.naming-name);
+                        root.naming = "rename";
+                    }
+                }
+            }
+        }
+    }
+
+
+    // What an update costs is asked of the daemon as the button is
+    // pressed, and said here before it is done.
+    ConfirmDialog {
+        open: Setups.pending-update != "";
+        title: @tr("Update profile");
+        message: Setups.pending-update-cost == "restart"
+            ? @tr("Taking up the change to '{}' restarts it: a game sees its virtual pad disconnect and another connect.", Setups.pending-update)
+            : @tr("Taking up the change to '{}' is applied as it runs: a game notices nothing.", Setups.pending-update);
+        confirm-label: Setups.pending-update-cost == "restart" ? @tr("Restart") : @tr("Update");
+        confirmed => {
+            Setups.update(Setups.pending-update);
+            Setups.pending-update = "";
+        }
+        cancelled => {
+            Setups.pending-update = "";
+        }
+    }
+
+    ConfirmDialog {
+        open: root.pending-delete != "";
+        title: @tr("Delete profile");
+        message: @tr("Delete '{}'? A setup running it carries on as it is until it is stopped.", root.pending-delete);
+        confirm-label: @tr("Delete");
+        confirmed => {
+            Profiles.delete(root.pending-delete);
+            root.pending-delete = "";
+        }
+        cancelled => {
+            root.pending-delete = "";
+        }
+    }
+
+    ConfirmDialog {
+        open: root.pending-leave != "";
+        title: @tr("Unfinished profile");
+        message: @tr("'{}' has a change that isn't a profile yet, so it hasn't been kept. Drop it?", root.pending-leave);
+        confirm-label: @tr("Drop it");
+        confirmed => {
+            Profiles.discard(root.pending-leave);
+            root.pending-leave = "";
+        }
+        // Back to it, to finish it.
+        cancelled => {
+            Profiles.select(root.pending-leave);
+            root.pending-leave = "";
+        }
+    }
+
+    NameInputDialog {
+        open: root.naming != "";
+        title: root.naming == "duplicate" ? @tr("Duplicate profile")
+            : root.naming == "rename" ? @tr("Rename profile")
+            : @tr("New profile");
+        prompt: @tr("A name of lowercase letters, digits and hyphens.");
+        placeholder: @tr("couch");
+        confirm-label: root.naming == "duplicate" ? @tr("Duplicate")
+            : root.naming == "rename" ? @tr("Rename")
+            : @tr("Create");
+        name <=> root.naming-name;
+        error-message: root.naming-error;
+        name-changed(v) => {
+            root.naming-error = Profiles.name-problem(v);
+        }
+        confirmed => {
+            if (root.naming == "duplicate") {
+                Profiles.duplicate(root.naming-source, root.naming-name);
+            } else if (root.naming == "rename") {
+                Profiles.rename(root.naming-source, root.naming-name);
+            } else {
+                Profiles.create(root.naming-name);
+            }
+            root.close-naming();
+        }
+        cancelled => { root.close-naming(); }
+    }
+}

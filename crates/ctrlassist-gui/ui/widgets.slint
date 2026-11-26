@@ -1,0 +1,2341 @@
+// Shared UI primitives used across multiple panes / components.
+//
+// Tokens come from `theme.slint` — these widgets only know about
+// themed colors, not raw hex values. Add a primitive here when it's
+// needed by ≥ 2 panes; pane-specific helpers stay in their pane.
+
+import { Theme } from "theme.slint";
+import { Design } from "design.slint";
+import { Clipboard } from "globals/clipboard.slint";
+import { Icons } from "globals/icons.slint";
+import { Help, HelpTrigger } from "globals/help.slint";
+import { Nav } from "globals/nav.slint";
+import { Couch } from "globals/couch.slint";
+
+// =============================================================================
+// FocusRing — the keyboard-focus ring every focusable control draws.
+// =============================================================================
+//
+// An accent outline just outside its host. The host places it as a
+// child and hands it its size and corner radius; `shown` combines the
+// host's focus with `Nav.focus-visible`, so the ring appears only for
+// focus that came from a key. Opacity rather than `visible`, so a test
+// can read `computed_opacity()` to find the focused control.
+
+export component FocusRing inherits Rectangle {
+    in property <bool> shown;
+    in property <length> host-width;
+    in property <length> host-height;
+    /// The host's corner radius; the ring's follows it at the offset.
+    in property <length> host-radius;
+    /// Draw the ring just inside the host instead of outside it: for a
+    /// host that fills a clipped column, like a list row, an outside
+    /// ring would be cut to its one unclipped edge.
+    in property <bool> inside: false;
+
+    x: root.inside ? 1px : -Design.ring-offset;
+    y: root.inside ? 1px : -Design.ring-offset;
+    width: root.host-width + (root.inside ? -2px : 2 * Design.ring-offset);
+    height: root.host-height + (root.inside ? -2px : 2 * Design.ring-offset);
+    border-width: Design.ring-width;
+    border-color: Theme.focus-ring;
+    border-radius: root.inside ? root.host-radius : root.host-radius + Design.ring-offset;
+    opacity: root.shown ? 1.0 : 0.0;
+}
+
+// =============================================================================
+// Focusable — the base of every custom control a remote can reach.
+// =============================================================================
+//
+// A Rectangle, so a control keeps its background and border on its
+// root, with a FocusScope behind its hit area and a FocusRing around
+// it. It owns the one activation path: a click, Return, Space and the
+// accessibility default action all call `activated`, gated on
+// `enabled`. Controls built on it inherit it, read `hovered` /
+// `pressed` for their looks, and forward `hover-changed` to a
+// HelpTrigger when they show a tip. `focusable: false` keeps a control
+// hoverable and clickable but out of the Tab order (a decorative chip
+// with a tip).
+//
+// The FocusScope sits behind the TouchArea with `focus-on-click: false`
+// so the first click isn't spent on taking focus; the click handler
+// focuses explicitly, so a pointer user's next keys continue from the
+// control they clicked. A pointer press also clears `Nav.focus-visible`,
+// hiding rings until the next navigation key.
+
+export component Focusable inherits Rectangle {
+    in property <bool> enabled: true;
+    in property <bool> focusable: true;
+    /// Draw the ring inside the control (a row that fills a clipped
+    /// column) rather than around it.
+    in property <bool> ring-inside: false;
+    /// Cursor over the hit area; `pointer` is reserved for URL opens.
+    in property <MouseCursor> mouse-cursor: default;
+    /// The column the control reports to `Nav` on focus-in: 0 the
+    /// sidebar, 1 a list, 2 the detail or a single-column pane.
+    in property <int> column: 2;
+    /// Whether Tab traversal visits the control. A region with one
+    /// roving stop (the sidebar, a list) keeps only its active item in
+    /// the Tab order and steps the rest itself.
+    in property <bool> tab-stop: true;
+    /// The detail row the control sits in (`Nav.next-row-id`); 0 for
+    /// none.
+    in property <int> nav-row: 0;
+    /// A click, Return, Space, or the accessibility default action.
+    callback activated();
+    /// The control took keyboard focus, however it came (a key, a
+    /// click, a landing placed by the shell).
+    callback focus-in();
+    /// The pointer entered (true) or left (false) the control.
+    callback hover-changed(bool);
+    /// A key other than Return and Space while focused; a control that
+    /// uses one (a row opening its detail on Right) accepts it here.
+    callback key(KeyEvent) -> EventResult;
+    key(event) => { reject }
+    out property <bool> hovered: touch.has-hover;
+    out property <bool> pressed: touch.pressed;
+    out property <bool> focused: fs.has-focus;
+
+    forward-focus: fs;
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        root.activate();
+    }
+
+    function activate() {
+        if (root.enabled) {
+            // Whatever the activation opens finds its way back here.
+            root.take-anchor();
+            root.activated();
+        }
+    }
+
+    ring := FocusRing {
+        shown: fs.has-focus && Nav.focus-visible;
+        host-width: root.width;
+        host-height: root.height;
+        host-radius: root.border-radius;
+        inside: root.ring-inside;
+    }
+
+    fs := FocusScope {
+        enabled: root.enabled && root.focusable;
+        focus-on-tab-navigation: root.tab-stop;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.activate();
+                return accept;
+            }
+            root.key(event)
+        }
+        // Synchronous, unlike the `has-focus` change below, so the
+        // shell's row walks read the column and row as soon as a
+        // synthesized Tab lands here.
+        focus-gained(reason) => {
+            if (Nav.focus-seq != root.anchor) {
+                root.take-anchor();
+            }
+        }
+        changed has-focus => {
+            if (self.has-focus) {
+                root.focus-in();
+            }
+        }
+    }
+
+    // The control's focus anchor, the way a dialog finds its opener
+    // again (`Nav`). Taken as focus arrives, and at once on activation,
+    // which may open the dialog with no focus change at all. `focus-in`
+    // runs from the deferred change handler instead, since its
+    // listeners switch panes and selections; it never runs for a
+    // control created and focused in one pass (a detail focusing its
+    // first stop from `init`), which `init` covers.
+    /// Whether a pane scrolls to keep the control and a margin around
+    /// it in view on focus; off for a dialog's buttons, which float over
+    /// the pane.
+    in property <bool> reveal: true;
+    property <int> anchor: -1;
+    function take-anchor() {
+        if (root.reveal) {
+            Nav.stop-focused-at(root.column, root.nav-row, root.accessible-id, root.absolute-position.x, root.absolute-position.y, root.height);
+        } else {
+            Nav.stop-focused(root.column, root.nav-row, root.accessible-id);
+        }
+        root.anchor = Nav.focus-seq;
+    }
+    init => {
+        if (fs.has-focus) {
+            root.focus-in();
+        }
+    }
+    // By the count for an instance that still exists, by the id for
+    // one re-created with its pane (history back). Only while it can
+    // take focus: a programmatic focus on an item that refuses walks on
+    // to the next item that accepts.
+    property <int> anchor-mirror: Nav.anchor-tick;
+    changed anchor-mirror => {
+        if (root.enabled && root.focusable && Nav.anchor-matches(root.anchor, root.accessible-id)) {
+            Nav.anchor-served = Nav.anchor-tick;
+            root.focus();
+        }
+    }
+
+    @children
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.mouse-cursor;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                Nav.focus-visible = false;
+            }
+        }
+        clicked => {
+            if (root.focusable) {
+                root.focus();
+            }
+            root.activate();
+        }
+        changed has-hover => {
+            root.hover-changed(self.has-hover);
+        }
+    }
+}
+
+// =============================================================================
+// Chip — small status pill (Connected, Managed, Unmanaged, etc.).
+// =============================================================================
+//
+// `tone` selects the color palette. Defaults to neutral.
+
+export component Chip inherits Focusable {
+    in property <string> label;
+    /// One of: "neutral", "success", "danger", "warn", "info".
+    in property <string> tone: "neutral";
+    /// `interactive: true` makes the chip a focusable control with a
+    /// pointer cursor and a click, a hyperlink-style affordance.
+    /// Default `false` keeps decorative chips (the About pane's
+    /// version chips, etc.) unclickable and out of the Tab order.
+    in property <bool> interactive: false;
+    /// Optional hover hint. A decorative chip with a tip is hoverable
+    /// only: no pointer cursor, no click, no focus. Empty → no tip.
+    in property <string> tip;
+    callback clicked();
+
+    /// Chips read as text either way (the activation below only fires
+    /// when `interactive: true`, so screen-reader users get the label
+    /// without phantom button affordance on decorative chips).
+    accessible-role: text;
+    accessible-label: root.label;
+    activated => {
+        if (root.interactive) {
+            root.clicked();
+            tip-trigger.hover-leave();
+        }
+    }
+    hover-changed(hovering) => {
+        tip-trigger.set-hover(hovering);
+    }
+    enabled: root.hoverable;
+    focusable: root.interactive;
+    mouse-cursor: root.interactive ? pointer : default;
+
+    property <brush> bg-color: tone == "success" ? Theme.success-soft
+                              : tone == "danger" ? Theme.danger-soft
+                              : tone == "warn" ? Theme.warn-soft
+                              : tone == "info" ? Theme.info-soft
+                              : Theme.chip;
+    property <brush> fg-color: tone == "success" ? Theme.success-text
+                              : tone == "danger" ? Theme.danger-text
+                              : tone == "warn" ? Theme.warn-text
+                              : tone == "info" ? Theme.info-text
+                              : Theme.chip-text;
+    property <brush> br-color: tone == "success" ? Theme.success
+                              : tone == "danger" ? Theme.danger
+                              : tone == "warn" ? Theme.warn
+                              : tone == "info" ? Theme.info
+                              : Theme.chip-border;
+
+    background: bg-color;
+    border-color: br-color;
+    border-width: Design.border-thin;
+    border-radius: Design.radius-pill;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 3px;
+        padding-bottom: 3px;
+        Text {
+            text: root.label;
+            color: root.fg-color;
+            font-size: Design.font-mini;
+            font-weight: 600;
+        }
+    }
+
+    // Hover hint: the shared trigger reports `tip` to the Help global;
+    // the window-root overlay draws the bubble.
+    tip-trigger := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.tip;
+    }
+    property <bool> hoverable: root.interactive || root.tip != "";
+    // The hit area is disabled when the chip stops being hoverable, so
+    // it can't emit `has-hover = false` to dismiss its own bubble —
+    // clear it here instead.
+    changed hoverable => {
+        if (!root.hoverable) {
+            tip-trigger.hover-leave();
+        }
+    }
+}
+
+// =============================================================================
+// ListRow — a row of a list region: the pads, the profiles.
+// =============================================================================
+//
+// A focusable in the list column with its ring inside its bounds (the
+// list clips), that `clicked`s on Return, Space and Right (which open
+// the detail; focusing the row is what selects it, in each list's own
+// `focus-in`), takes focus when its list asks (`focus-tick`, with
+// `focus-wanted` on the row meant), and hands Up and Down to its list
+// through `step` (`Nav.list-step-tick`). The selected row's look is
+// the base's: its background, the accent stripe at its left edge and
+// the colors its title takes (`title-color`, `title-weight`). What a
+// row shows and its height stay with each list.
+export component ListRow inherits Focusable {
+    in property <bool> selected;
+    /// The background of a row neither selected nor hovered: a list
+    /// drawn on a surface passes its surface.
+    in property <brush> resting-background: transparent;
+    /// The row's title follows the selection.
+    out property <brush> title-color: root.selected ? Theme.row-selected-text : Theme.text;
+    out property <int> title-weight: root.selected ? 600 : 500;
+    callback clicked();
+    /// The list asks a row to take focus by bumping `focus-tick` with
+    /// `focus-wanted` set on the one it means.
+    in property <int> focus-tick;
+    in property <bool> focus-wanted;
+    /// Up or Down while the row has focus: the list moves focus to the
+    /// neighbor.
+    callback step(bool);
+
+    accessible-role: list-item;
+    column: 1;
+    ring-inside: true;
+    // The selected fill snaps with the focus ring, which follows the
+    // same key; only the hover fades, on a layer under the ring.
+    background: root.selected ? Theme.row-selected : root.resting-background;
+    Rectangle {
+        z: -1;
+        background: root.hovered && !root.selected ? Theme.row-hover : transparent;
+        animate background { duration: 150ms; }
+    }
+
+    // The accent stripe at the selected row's left edge.
+    Rectangle {
+        x: 0;
+        width: 3px;
+        background: root.selected ? Theme.accent : transparent;
+    }
+
+    activated => {
+        root.clicked();
+    }
+    key(event) => {
+        if (event.text == Key.RightArrow) {
+            root.clicked();
+            return accept;
+        }
+        reject
+    }
+    changed focus-tick => {
+        if (root.focus-wanted) {
+            root.focus();
+        }
+    }
+    property <int> step-mirror: Nav.list-step-tick;
+    changed step-mirror => {
+        if (root.focused) {
+            root.step(Nav.list-step-forward);
+        }
+    }
+}
+
+// =============================================================================
+// ContextualHelpButton — KDE-style "i" toggletip for settings-row help.
+// =============================================================================
+//
+// A circled "i" glyph placed trailing a control, a stop of its row.
+// Return, Space or a click pins the help open (and again closes it);
+// Menu on any stop of the row does the same (`Help.menu-toggle`);
+// hovering (after a short linger) opens it transiently. A pinned
+// bubble closes when focus leaves the row, on Escape, or when another
+// pins. The glyph does NOT render the card — it reports its content and
+// absolute position to the `Help` global, and a single HelpOverlay at
+// the window root draws it (centered over the anchor, edge-aware, no
+// focus steal). See globals/help.slint.
+export component ContextualHelpButton inherits Focusable {
+    in property <string> text;
+    // Accessible name (the button's role label); the help copy itself
+    // rides on `accessible-description` so a screen-reader user who
+    // can't hover still hears it.
+    in property <string> name: @tr("Show help");
+
+    // Ghost style matching IconBtn: squarish, no resting border, dim
+    // glyph — so it sits naturally among the other right-side row
+    // buttons. Picks up the blue info tint only when hovered/engaged.
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    min-width: 24px;
+    min-height: 24px;
+    border-radius: Design.radius-control;
+    background: root.hovered || trigger.active ? Theme.info-soft : transparent;
+    animate background { duration: 150ms; }
+    mouse-cursor: help;
+
+    accessible-label: root.name;
+    accessible-description: root.text;
+
+    // The row a pin was made from: this "i"'s own, or the field row
+    // that relayed Menu to its section's "i". The bubble follows that
+    // row.
+    property <int> pinned-for-row;
+    activated => {
+        root.pinned-for-row = Nav.focus-row;
+        trigger.toggle();
+    }
+    key(event) => {
+        if (event.text == Key.Escape && trigger.pinned-mine) {
+            Help.dismiss();
+            return accept;
+        }
+        reject
+    }
+    hover-changed(hovering) => {
+        trigger.set-hover(hovering);
+    }
+    // Pinned from the keyboard or a click, the bubble follows the row:
+    // focus moving to another row (or to a list, the rail) closes it.
+    // Checked a tick later: a row walk probes past the row's end and
+    // undoes the hop, and that must not close the bubble.
+    property <int> row-mirror: Nav.focus-row;
+    changed row-mirror => {
+        if (trigger.pinned-mine && Nav.focus-row != root.pinned-for-row) {
+            row-left.running = true;
+        }
+    }
+    row-left := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if (trigger.pinned-mine && Nav.focus-row != root.pinned-for-row) {
+                Help.dismiss();
+            }
+        }
+    }
+    // Menu on a stop of this row toggles this help.
+    property <int> menu-mirror: Help.menu-tick;
+    changed menu-mirror => {
+        if (root.nav-row != 0 && Help.menu-row == root.nav-row) {
+            root.pinned-for-row = Nav.focus-row;
+            trigger.toggle();
+        }
+    }
+
+    Image {
+        source: Icons.info;
+        width: Design.size-glyph;
+        height: Design.size-glyph;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        colorize: root.hovered || trigger.active ? Theme.info-text : Theme.text-dim;
+        // Dim at rest like IconBtn's ghost glyph; full on engage.
+        opacity: root.hovered || trigger.active ? 1.0 : 0.7;
+    }
+
+    // Shared id / anchor / hover-timer machinery (fills the button so
+    // its absolute-position tracks the glyph).
+    trigger := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.text;
+    }
+}
+
+// =============================================================================
+// UriBtn — neutral outlined button for opening URLs.
+// =============================================================================
+//
+// KDE HIG ([develop.kde.org/hig/getting_input/](https://develop.kde.org/hig/getting_input/))
+// is unambiguous: "Only use the pointing finger cursor to signal
+// interactivity for a clickable URL." `UriBtn` is the one button
+// widget in this file that opts in to the hand cursor, because its
+// click action is by contract a URL open (xdg-open, webbrowser, or
+// the like). Every other custom button widget here (`DangerBtn`,
+// `IconBtn`, `CopyBtn`) sticks with the default arrow cursor for
+// in-app actions, matching std-widgets `Button` and the rest of the
+// KDE/GNOME desktop.
+//
+// Use `UriBtn` for: `Report issue`, `View source`, `Open release
+// notes`, etc. Do *not* use it for `Copy`, `Save`, `Reload`, `Remove`,
+// or any other in-app action — those are `DangerBtn`, `IconBtn`,
+// `CopyBtn`, or std-widgets `Button` instead.
+
+export component UriBtn inherits Focusable {
+    in property <string> text;
+    in property <length> min-button-width: 80px;
+    // Optional hover hint (hover-only); empty → no tip. Mirrors IconBtn.
+    in property <string> tip;
+    // Optional leading glyph (e.g. external-link); empty → text only.
+    in property <image> icon;
+    callback clicked();
+
+    accessible-label: root.text;
+    // Dismiss the tip on activation too (parity with IconBtn).
+    activated => {
+        root.clicked();
+        tip-trigger.hover-leave();
+    }
+    hover-changed(hovering) => {
+        tip-trigger.set-hover(hovering);
+    }
+    mouse-cursor: root.enabled ? pointer : default;
+
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    min-height: Design.size-input;
+    min-width: min-button-width;
+
+    background: !root.enabled
+        ? Theme.surface2
+        : root.hovered ? Theme.surface2
+        : Theme.surface;
+    border-color: Theme.border;
+    border-width: Design.border-thin;
+    border-radius: Design.radius-control;
+    animate background { duration: 150ms; }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: Design.gap-row;
+        padding-right: Design.gap-row;
+        spacing: Design.gap-stack;
+        alignment: center;
+        // Optional leading glyph in a centered wrapper (mirrors
+        // IconBtn — an Image's own vertical-alignment can't center it
+        // within the row). Colorized to the label, hidden when unset.
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                width: Design.size-glyph;
+                height: Design.size-glyph;
+                colorize: !root.enabled ? Theme.text-faint : Theme.text;
+            }
+        }
+        Text {
+            text: root.text;
+            color: !root.enabled ? Theme.text-faint : Theme.text;
+            font-size: Design.font-body;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+
+    // Hover hint: the shared trigger reports `tip` to the Help global,
+    // which the window-root overlay draws below the button.
+    tip-trigger := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.tip;
+    }
+
+    // Clear the tip if the button is disabled while open (no pointer
+    // event would otherwise reset has-hover).
+    changed enabled => {
+        if (!root.enabled) {
+            tip-trigger.hover-leave();
+        }
+    }
+}
+
+// =============================================================================
+// ThemedButton — the push button, neutral or primary.
+// =============================================================================
+//
+// Replaces the std-widgets `Button` so a focused button draws the shared
+// FocusRing alone, not fluent's stroke inside it. Neutral matches
+// `UriBtn`'s surface and border (the in-app action look, arrow cursor);
+// `primary` is the accent fill `DangerBtn` uses. An optional leading
+// glyph is colorized to the label.
+
+export component ThemedButton inherits Focusable {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <image> icon;
+    in property <length> min-button-width: 80px;
+    callback clicked();
+
+    accessible-label: root.text;
+    activated => {
+        root.clicked();
+    }
+
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    min-height: Design.size-input;
+    min-width: root.min-button-width;
+    background: !root.enabled
+        ? Theme.surface2
+        : root.primary
+            ? (root.hovered ? Theme.accent-pressed : Theme.accent)
+            : (root.hovered ? Theme.surface2 : Theme.surface);
+    border-color: !root.enabled
+        ? Theme.border
+        : root.primary
+            ? (root.hovered ? Theme.accent-pressed : Theme.accent)
+            : Theme.border;
+    border-width: Design.border-thin;
+    border-radius: Design.radius-control;
+    animate background, border-color { duration: 150ms; }
+
+    property <brush> fg: !root.enabled
+        ? Theme.text-faint
+        : root.primary ? white : Theme.text;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: Design.gap-row;
+        padding-right: Design.gap-row;
+        spacing: Design.gap-stack;
+        alignment: center;
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                width: Design.size-glyph;
+                height: Design.size-glyph;
+                colorize: root.fg;
+            }
+        }
+        Text {
+            text: root.text;
+            color: root.fg;
+            font-size: Design.font-body;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// =============================================================================
+// DangerBtn — destructive-action button (accent fill, white text).
+// =============================================================================
+//
+// Accent fill, not danger red: Plasma users expect their DE-chosen
+// accent on filled buttons, and a red one next to accent-tinted UI
+// looks alien. Placement (right side, after a Cancel) and explicit
+// wording carry the destructive intent. A primary `ThemedButton` under
+// its own name, so call sites read destructive-by-name
+// (`DangerBtn { text: "Forget pad" }`).
+export component DangerBtn inherits ThemedButton {
+    primary: true;
+}
+
+// =============================================================================
+// ThemedSwitch — on/off toggle.
+// =============================================================================
+//
+// Replaces the std-widgets `Switch`, but on another contract: a user
+// toggle only asks, firing `toggled` with the state asked for, and the
+// switch shows `checked` as the caller binds it. It never writes
+// `checked` itself, since writing a property removes its binding: the
+// switch would stop following the value it shows after one toggle (one
+// set elsewhere, as from the tray, wouldn't reach it) and a change that
+// was refused would leave it showing the state asked for. A pill track
+// that fills with the accent when on, with a sliding knob.
+
+export component ThemedSwitch inherits Focusable {
+    in property <bool> checked;
+    // The state asked for: the opposite of `checked`.
+    callback toggled(bool);
+
+    accessible-role: switch;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    activated => {
+        root.toggled(!root.checked);
+    }
+
+    width: 40px;
+    height: 20px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: 10px;
+    background: root.checked
+        ? (root.hovered && root.enabled ? Theme.accent-pressed : Theme.accent)
+        : (root.hovered && root.enabled ? Theme.border-strong : Theme.border);
+    opacity: root.enabled ? 1.0 : Design.opacity-disabled;
+    animate background { duration: 150ms; }
+
+    Rectangle {
+        width: 16px;
+        height: 16px;
+        x: root.checked ? root.width - self.width - 2px : 2px;
+        y: 2px;
+        border-radius: 8px;
+        background: white;
+        animate x { duration: 150ms; easing: ease-out; }
+    }
+}
+
+// =============================================================================
+// LineEditField — the themed text field.
+// =============================================================================
+//
+// A bare `TextInput` in the shared control box (the `ThemedSelect` and
+// `ThemedSpinBox` shape), with a placeholder at `Theme.text-faint`,
+// clearly apart from entered text, and the focus ring. Fluent's
+// `LineEdit` isn't used: a disabled one dims, and a read-only one stays
+// a Tab stop and keeps Left and Right, and couch mode needs an idle
+// field that is neither (below).
+//
+// On a desktop the input is the field's Tab stop. Couch mode has its
+// own, `reach`, a FocusScope outside the clip around the input, for
+// edit-on-Return: the on-screen keyboard follows an editable input's
+// focus, so a remote stepping past fields would raise it at every one.
+// There the scope is the ringed stop and the input is disabled, out of
+// the Tab order and refusing focus, until Return or a click starts
+// editing; Return or Escape ends it, with focus back on the stop. The
+// component has no `forward-focus`: `take-focus` and `focus-input` are
+// the ways in, and a `focus()` on it doesn't compile.
+
+export component LineEditField inherits Rectangle {
+    in property <string> placeholder-text;
+    in-out property <string> text <=> field.text;
+    in property <bool> enabled: true;
+    /// Optional font family (one family name, e.g. `Theme.mono-font`
+    /// for IP / MAC entry); empty is the default font.
+    in property <string> font-family <=> field.font-family;
+    in property <InputType> input-type <=> field.input-type;
+    /// The detail row the field sits in (`Nav.next-row-id`); 0 for none.
+    in property <int> nav-row: 0;
+    callback edited(string);
+    callback accepted(string);
+
+    property <bool> couch: Couch.active;
+    /// Couch mode's editing state (a desktop field edits whenever its
+    /// input has focus).
+    property <bool> editing;
+    /// Focus the field the way Tab would: the ringed stop in couch
+    /// mode, the input on a desktop.
+    public function take-focus() {
+        if (root.couch) {
+            reach.focus();
+        } else {
+            field.focus();
+            field.select-all();
+        }
+    }
+    /// Focus the input, editing, in either mode.
+    public function focus-input() {
+        root.editing = true;
+        field.focus();
+        field.select-all();
+    }
+    function stop-editing() {
+        root.editing = false;
+        reach.focus();
+    }
+
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    min-height: Design.size-input;
+    background: Theme.surface2;
+    // Accent border while editing; keyboard focus draws the shared ring.
+    border-color: field.has-focus ? Theme.accent : Theme.border;
+    border-width: Design.border-thin;
+    border-radius: Design.radius-control;
+    opacity: root.enabled ? 1.0 : Design.opacity-disabled;
+
+    accessible-role: text-input;
+    accessible-value: root.text;
+    accessible-placeholder-text: root.placeholder-text;
+    accessible-enabled: root.enabled;
+    accessible-action-set-value(v) => {
+        root.text = v;
+        root.edited(v);
+    }
+
+    ring := FocusRing {
+        shown: (field.has-focus || reach.has-focus) && Nav.focus-visible;
+        host-width: root.width;
+        host-height: root.height;
+        host-radius: root.border-radius;
+    }
+
+    // Couch mode's stop. It must not catch a Shift+Tab leaving the
+    // editing input: Slint takes focus away before it walks backwards,
+    // so `!field.has-focus` alone would re-enable the scope in time to
+    // bounce focus back. The input raises `leaving-backwards` from its
+    // own key handler, which runs before the walk, and clears it once it
+    // has lost focus.
+    property <bool> leaving-backwards;
+
+    reach := FocusScope {
+        enabled: root.enabled && root.couch && !field.has-focus && !root.leaving-backwards;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (root.enabled && event.text == Key.Return) {
+                root.focus-input();
+                return accept;
+            }
+            reject
+        }
+        focus-gained(reason) => {
+            Nav.stop-focused-at(2, root.nav-row, root.accessible-id, root.absolute-position.x, root.absolute-position.y, root.height);
+            root.anchor = Nav.focus-seq;
+        }
+    }
+
+    // The field's focus anchor, so a dialog Escape opens from it (the
+    // discard confirm) comes back to it; a focusable keeps its own.
+    property <int> anchor: -1;
+    property <int> anchor-mirror: Nav.anchor-tick;
+    changed anchor-mirror => {
+        if (root.enabled && Nav.anchor-matches(root.anchor, root.accessible-id)) {
+            Nav.anchor-served = Nav.anchor-tick;
+            root.take-focus();
+        }
+    }
+
+    // The right-click editing menu the std field has.
+    ContextMenuArea {
+        enabled: field.enabled;
+        Menu {
+            MenuItem {
+                title: @tr("Undo");
+                activated => { field.undo(); }
+            }
+            MenuItem {
+                title: @tr("Redo");
+                activated => { field.redo(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: @tr("Cut");
+                activated => { field.cut(); }
+            }
+            MenuItem {
+                title: @tr("Copy");
+                enabled: root.text != "";
+                activated => { field.copy(); }
+            }
+            MenuItem {
+                title: @tr("Paste");
+                activated => { field.paste(); }
+            }
+            MenuItem {
+                title: @tr("Select All");
+                enabled: root.text != "";
+                activated => { field.select-all(); }
+            }
+        }
+
+        layout := HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+
+            clip-box := Rectangle {
+                clip: true;
+                horizontal-stretch: 1;
+                // Clipped to nothing, the input couldn't take focus.
+                min-width: 1px;
+
+                if root.text == "" && !field.has-focus: Text {
+                    width: 100%;
+                    height: 100%;
+                    vertical-alignment: center;
+                    text: root.placeholder-text;
+                    color: Theme.text-faint;
+                    font-size: field.font-size;
+                    font-family: root.font-family;
+                    accessible-role: none;
+                }
+
+                field := TextInput {
+                    // Keeps the caret in view through text wider than
+                    // the box, as the std field does.
+                    property <length> computed-x;
+                    property <length> scroll-margin: layout.padding-left + layout.padding-right;
+                    x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.computed-x));
+                    width: max(parent.width - self.text-cursor-width, self.preferred-width);
+                    height: 100%;
+                    vertical-alignment: center;
+                    color: Theme.text;
+                    font-size: Design.font-body;
+                    selection-background-color: Theme.accent-soft;
+                    selection-foreground-color: Theme.text;
+                    enabled: root.enabled && (!root.couch || root.editing);
+                    // The field's root carries the accessible role.
+                    accessible-role: none;
+
+                    cursor-position-changed(cursor-position) => {
+                        if (cursor-position.x + self.computed-x < self.scroll-margin) {
+                            self.computed-x = -cursor-position.x + self.scroll-margin;
+                        } else if (cursor-position.x + self.computed-x > parent.width - self.scroll-margin - self.text-cursor-width) {
+                            self.computed-x = parent.width - cursor-position.x - self.scroll-margin - self.text-cursor-width;
+                        }
+                    }
+                    accepted => {
+                        root.accepted(self.text);
+                        if (root.couch) {
+                            root.stop-editing();
+                        }
+                    }
+                    edited => { root.edited(self.text); }
+                    key-pressed(event) => {
+                        if (event.text == Key.Backtab || (event.text == Key.Tab && event.modifiers.shift)) {
+                            root.leaving-backwards = true;
+                        }
+                        if (root.couch && event.text == Key.Escape) {
+                            root.stop-editing();
+                            return accept;
+                        }
+                        reject
+                    }
+                    changed has-focus => {
+                        if (self.has-focus) {
+                            Nav.stop-focused-at(2, root.nav-row, root.accessible-id, root.absolute-position.x, root.absolute-position.y, root.height);
+                            root.anchor = Nav.focus-seq;
+                        } else {
+                            root.leaving-backwards = false;
+                            root.editing = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Couch mode's click on an idle field: start editing (the disabled
+    // input can't take the click itself).
+    if root.couch && !root.editing: TouchArea {
+        enabled: root.enabled;
+        clicked => { root.focus-input(); }
+    }
+}
+
+
+// =============================================================================
+// InlineError — Kirigami-style sticky inline message.
+// =============================================================================
+//
+// Modeled on KDE Kirigami's [InlineMessage][1] — sticky by default
+// (no auto-dismiss), four tones (info / positive / warning /
+// error), optional action button on the right plus a close X.
+// Visible iff `message != ""`; dismissed when the user clicks
+// close or when Rust clears the slot (e.g. on retry success).
+//
+// Used by panes via the `Errors` global (one slot per pane). A
+// failed user-initiated daemon callback pushes a typed message
+// into `Errors.<pane>` and this widget renders it directly under
+// the pane's header. Sticky placement matches KDE convention so
+// users have time to read & act before dismissing.
+//
+// [1]: https://develop.kde.org/docs/getting-started/kirigami/components-inlinemessages/
+
+export component InlineError inherits Rectangle {
+    /// "info" | "success" | "warn" | "error". Drives both the
+    /// background tint and the leading glyph. Defaults to error
+    /// since user-initiated-action failures are the dominant case.
+    in property <string> tone: "error";
+    /// Headline (e.g. "Power-on failed"). Empty hides the message
+    /// entirely (the parent layout collapses).
+    in property <string> title;
+    /// Detail text (the underlying typed reason).
+    in property <string> message;
+    /// Font family for `message`; empty is the default font.
+    in property <string> message-font-family;
+    // The action and the close button make one row for the arrows.
+    property <int> row-id;
+    init => {
+        root.row-id = Nav.next-row-id();
+    }
+    /// Optional action label (e.g. "Retry", "Edit MAC"). Empty
+    /// hides the action button.
+    in property <string> action-label;
+    /// Whether to show the trailing close (×) button. Off only
+    /// when the message is non-dismissable (e.g. a fatal pane
+    /// state). Defaults to on, matching Kirigami.
+    in property <bool> dismissable: true;
+    callback action-clicked();
+    callback dismissed();
+
+    /// Inline messages are read-only diagnostics: a live region has AT
+    /// announce the title + detail when the message becomes visible,
+    /// at once for an error.
+    accessible-role: text;
+    accessible-live-region: root.tone == "error" ? AccessibleLiveness.assertive : AccessibleLiveness.polite;
+    accessible-label: root.title != "" && root.message != ""
+        ? root.title + ". " + root.message
+        : (root.title != "" ? root.title : root.message);
+
+    property <bool> visible-content: root.title != "" || root.message != "";
+
+    property <brush> bg-color:
+          tone == "success" ? Theme.success-soft
+        : tone == "warn"    ? Theme.warn-soft
+        : tone == "info"    ? Theme.info-soft
+        : Theme.danger-soft;
+    property <brush> border-c:
+          tone == "success" ? Theme.success
+        : tone == "warn"    ? Theme.warn
+        : tone == "info"    ? Theme.info
+        : Theme.danger;
+    property <brush> text-c:
+          tone == "success" ? Theme.success-text
+        : tone == "warn"    ? Theme.warn-text
+        : tone == "info"    ? Theme.info-text
+        : Theme.danger-text;
+    property <string> glyph:
+          tone == "success" ? "✓"
+        : tone == "warn"    ? "!"
+        : tone == "info"    ? "i"
+        : "⚠";
+
+    height: visible-content ? content.preferred-height : 0;
+    background: bg-color;
+    border-color: border-c;
+    border-width: visible-content ? Design.border-thin : 0;
+    border-radius: Design.radius-card;
+    visible: visible-content;
+    animate height { duration: 150ms; easing: ease-out; }
+
+    content := HorizontalLayout {
+        width: 100%;
+        padding: 12px;
+        spacing: Design.gap-row;
+
+        // Leading icon — uses a glyph instead of a freedesktop
+        // image so the inline message renders identically without
+        // an icon-theme dependency. Tone matches the border.
+        VerticalLayout {
+            alignment: start;
+            Rectangle {
+                width: 22px;
+                height: 22px;
+                border-radius: 11px;
+                background: root.border-c;
+                Text {
+                    text: root.glyph;
+                    color: white;
+                    font-size: Design.font-helper;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+        }
+
+        // Title + body — vertically centered when there's no body.
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: Design.gap-tight;
+            if root.title != "": Text {
+                text: root.title;
+                color: root.text-c;
+                font-size: Design.font-body;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            if root.message != "": Text {
+                text: root.message;
+                color: Theme.text;
+                font-size: Design.font-helper;
+                font-family: root.message-font-family;
+                wrap: word-wrap;
+            }
+        }
+
+        // Optional action button (e.g. "Retry"). Tinted to match
+        // the inline message's tone so it's clearly the message's
+        // own affordance, not a generic page-level button.
+        if root.action-label != "": VerticalLayout {
+            alignment: center;
+            action := Focusable {
+                nav-row: root.row-id;
+                accessible-label: root.action-label;
+                background: action.hovered ? root.border-c : transparent;
+                border-color: root.border-c;
+                border-width: Design.border-thin;
+                border-radius: Design.radius-control;
+                min-height: Design.size-input;
+                min-width: 80px;
+                animate background { duration: 120ms; }
+                activated => { root.action-clicked(); }
+                HorizontalLayout {
+                    width: 100%;
+                    height: 100%;
+                    padding-left: Design.gap-row;
+                    padding-right: Design.gap-row;
+                    alignment: center;
+                    Text {
+                        text: root.action-label;
+                        color: action.hovered ? white : root.text-c;
+                        font-size: Design.font-helper;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Trailing close (×). 24-px hit target keeps the click
+        // accessible without the glyph itself being oversized.
+        if root.dismissable: VerticalLayout {
+            alignment: start;
+            close := Focusable {
+                nav-row: root.row-id;
+                accessible-label: @tr("Dismiss");
+                width: 24px;
+                height: 24px;
+                border-radius: 12px;
+                background: close.hovered ? root.border-c : transparent;
+                animate background { duration: 120ms; }
+                activated => { root.dismissed(); }
+                Text {
+                    text: "×";
+                    color: close.hovered ? white : root.text-c;
+                    font-size: Design.font-section;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// ThemedSpinBox — themed integer entry with up/down steppers.
+// =============================================================================
+//
+// The `ThemedSelect` equivalent for integer fields (profile idle
+// timeouts). Replaces the std Fluent `SpinBox`, which exposes no
+// `Theme.*` binding path and dims its chrome on unfocused windows —
+// so it can't be retinted, only replaced. Chrome mirrors `ThemedSelect`
+// (surface2 fill, accent focus ring, `size-input` height); width
+// behavior is `min-width: 0` + stretch, as the std one's.
+//
+// Value model:
+//   - `value` is the gated authoritative value pushed by Rust (bound to
+//     the row's `number-value`). The daemon echoes an edit back as an
+//     in-place `set_row_data` on the SAME row, so committing per
+//     keystroke would rewrite `value` under the cursor and tear focus.
+//     This widget therefore commits ONLY on blur / Enter / stepper —
+//     there is DELIBERATELY no `TextInput.edited` (per-keystroke)
+//     handler; do not add one.
+//   - `display` is the local optimistic mirror. The imperative writes
+//     to it and to `field.text` drop their initial bindings, so the
+//     `changed value` handler re-syncs both — required, not decorative.
+//   - Steppers step from `display` (last committed), not half-typed
+//     text: a `TouchArea` never takes focus, so a stepper click while
+//     the field is focused does not blur-commit stale input.
+//   - Empty / non-numeric input reverts to `display` and writes nothing
+//     (`"".to-float()` is 0, which would otherwise commit the minimum).
+// The clamp here is belt-and-suspenders; Rust clamps authoritatively.
+component SpinStepper inherits Rectangle {
+    in property <bool> up;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+
+    // Subtle translucent veil on PRESS only (not hover), matching the
+    // native Fluent SpinBoxButton's `subtle` fill (~6% of the text color,
+    // not a solid surface). No animation — native snaps on press.
+    background: touch.pressed && root.enabled ? Theme.text.with-alpha(0.08) : transparent;
+    border-radius: Design.radius-control;
+    opacity: root.enabled ? 1.0 : Design.opacity-disabled;
+
+    Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        // 12px chevron matching the native Fluent SpinBox glyph weight.
+        // A stroked polyline (uniform, miter apex) rather than a
+        // hand-filled band, which rendered with uneven arm thickness.
+        width: 12px;
+        height: 7px;
+        stroke: root.enabled ? Theme.text-dim : Theme.text-faint;
+        stroke-width: 1.6px;
+        viewbox-width: 12;
+        viewbox-height: 7;
+        commands: root.up
+            ? "M 0.9 6 L 6 1 L 11.1 6"
+            : "M 0.9 1 L 6 6 L 11.1 1";
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component ThemedSpinBox inherits Rectangle {
+    /// Gated authoritative value (bound to the row's `number-value`).
+    in property <int> value;
+    in property <int> minimum;
+    in property <int> maximum;
+    in property <int> step: 1;
+    in property <bool> enabled: true;
+    /// Fired ONLY on commit (blur / Enter / stepper), rounded to int —
+    /// never per keystroke. Named `committed`, not `edited`, which in
+    /// this codebase means per keystroke.
+    callback committed(int);
+
+    // Local optimistic mirror. Re-synced from `value` on the daemon
+    // echo; the imperative writes below drop the initial bindings.
+    property <int> display: root.value;
+    changed value => {
+        root.display = root.value;
+        if (!field.has-focus) {
+            field.text = root.display;
+        }
+    }
+
+    function commit(v: int) {
+        root.display = v.clamp(root.minimum.max(0), root.maximum);
+        field.text = root.display;
+        // What was typed is in, so leaving won't commit it again.
+        root.typed = false;
+        root.committed(root.display);
+    }
+    // Parse-and-commit a typed string; empty/invalid reverts (no write).
+    function commit-text(t: string) {
+        if (t == "") {
+            field.text = root.display;
+            return;
+        }
+        root.commit(round(t.to-float()));
+    }
+
+    // Couch mode's typing: the input requests the on-screen keyboard
+    // only when it takes focus while editable, so editing starts and
+    // ends by re-taking focus around the `read-only` flip.
+    property <bool> couch: Couch.active;
+    property <bool> editing;
+    // Whether the text was typed into since focus arrived: only a typed
+    // edit is committed on the way out. A row walk passes through the
+    // field too, and must not write the value it shows.
+    property <bool> typed;
+    // `Nav.focus-seq` as of the field's focus-in: whether it's still the
+    // last stop to have reported when it loses focus.
+    property <int> seen-seq: -1;
+    function start-editing() {
+        root.editing = true;
+        field.clear-focus();
+        field.focus();
+        field.select-all();
+        root.sync-idle();
+    }
+    function stop-editing() {
+        root.editing = false;
+        field.clear-focus();
+        field.focus();
+        root.sync-idle();
+    }
+    // Idle in couch mode, Left and Right walk the row (the shell takes
+    // them while `Nav.value-idle`) rather than stepping the value.
+    function sync-idle() {
+        Nav.value-idle = root.couch && field.has-focus && !root.editing;
+    }
+    /// The detail row the spin box sits in (`Nav.next-row-id`); 0 for none.
+    in property <int> nav-row: 0;
+
+    // Same minimum as ThemedSelect (shared token) so a SpinBox and a
+    // ComboBox in the same value column render one width — now that the
+    // trailing modifier region is reserved on every row kind, the two
+    // columns are equal, so an equal minimum makes the controls equal.
+    min-width: Design.width-input-min;
+    horizontal-stretch: 1;
+    height: Design.size-input;
+    background: Theme.surface2;
+    border-color: Theme.border;
+    border-width: Design.border-thin;
+    border-radius: Design.radius-control;
+    opacity: root.enabled ? 1.0 : Design.opacity-disabled;
+    forward-focus: field;
+
+    accessible-role: spinbox;
+    // What the field shows, typed text included; the input inside has no
+    // role of its own.
+    accessible-value: field.text;
+    accessible-enabled: root.enabled;
+    accessible-action-increment => { root.commit(root.display + root.step); }
+    accessible-action-decrement => { root.commit(root.display - root.step); }
+
+    ring := FocusRing {
+        shown: field.has-focus && Nav.focus-visible;
+        host-width: root.width;
+        host-height: root.height;
+        host-radius: root.border-radius;
+    }
+
+    // Scroll-wheel stepping (native SpinBox parity). Behind the layout so
+    // the field/steppers keep their clicks; a discrete wheel notch is a
+    // deliberate change, so committing immediately is safe (unlike typing).
+    TouchArea {
+        enabled: root.enabled;
+        scroll-event(event) => {
+            if (event.delta-y > 0) { root.commit(root.display + root.step); return accept; }
+            if (event.delta-y < 0) { root.commit(root.display - root.step); return accept; }
+            reject
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 4px;
+        // Top/bottom inset (like the native SpinBox layout) so a pressed
+        // stepper's fill reads as an inset rounded button, not a bar that
+        // touches the control's top and bottom borders.
+        padding-top: 4px;
+        padding-bottom: 4px;
+        spacing: 4px;
+
+        field := TextInput {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            color: Theme.text;
+            font-size: Design.font-meta;
+            input-type: number;
+            // The control is the spin box a screen reader sees, and
+            // carries the value.
+            accessible-role: none;
+            // TextInput has no `enabled`; `read-only` blocks typing. In
+            // couch mode the field is read-only until Return, so the
+            // on-screen keyboard (which follows an editable input's
+            // focus) doesn't pop up at every number a remote steps past.
+            read-only: !root.enabled || (root.couch && !root.editing);
+            selection-background-color: Theme.accent-soft;
+            text: root.display;
+            edited => { root.typed = true; }
+            accepted => {
+                root.commit-text(self.text);
+                root.typed = false;
+                if (root.couch) {
+                    root.stop-editing();
+                }
+            }
+            changed has-focus => {
+                if (self.has-focus) {
+                    Nav.stop-focused-at(2, root.nav-row, root.accessible-id, root.absolute-position.x, root.absolute-position.y, root.height);
+                    root.seen-seq = Nav.focus-seq;
+                    root.sync-idle();
+                } else {
+                    if (root.typed) {
+                        root.commit-text(self.text);
+                    } else {
+                        // A value that arrived while the field had focus
+                        // (a reset's echo) is shown now that it's left.
+                        self.text = root.display;
+                    }
+                    root.typed = false;
+                    root.editing = false;
+                    // Change handlers run newest first, so the stop
+                    // gaining focus has usually reported by now and the
+                    // flag is its to set; clear it only while nobody has.
+                    if (Nav.focus-seq == root.seen-seq) {
+                        root.sync-idle();
+                    }
+                }
+            }
+            // Left/Right step the value, as a slider's do, so a remote
+            // can change a number without the on-screen keyboard. A
+            // step commits like a stepper click; Home/End still move
+            // the caret for typed edits.
+            key-pressed(event) => {
+                if (root.enabled && event.text == Key.RightArrow) {
+                    root.commit(root.display + root.step);
+                    return accept;
+                }
+                if (root.enabled && event.text == Key.LeftArrow) {
+                    root.commit(root.display - root.step);
+                    return accept;
+                }
+                if (root.couch && root.enabled && !root.editing && event.text == Key.Return) {
+                    root.start-editing();
+                    return accept;
+                }
+                if (root.couch && root.editing && event.text == Key.Escape) {
+                    self.text = root.display;
+                    root.typed = false;
+                    root.stop-editing();
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        // Up / down steppers, side by side at the right edge — the
+        // native Fluent SpinBox arrangement (chevron-up then chevron-down),
+        // grouped with no gap between the two arrows.
+        HorizontalLayout {
+            SpinStepper {
+                up: true;
+                width: 22px;
+                enabled: root.enabled && root.display < root.maximum;
+                accessible-label: @tr("Increase");
+                clicked => { root.commit(root.display + root.step); }
+            }
+            SpinStepper {
+                width: 22px;
+                enabled: root.enabled && root.display > root.minimum;
+                accessible-label: @tr("Decrease");
+                clicked => { root.commit(root.display - root.step); }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// SettingRow — a label with optional helper text, and its control.
+// =============================================================================
+//
+// Layout:
+//   [ label  (flex) ] [ control ]
+//   [ helper        ]
+//
+// The control is the row's child, centered against the text column.
+
+export component SettingRow {
+    in property <string> label;
+    in property <string> helper;
+
+    HorizontalLayout {
+        spacing: Design.gap-row;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: Design.gap-form;
+            alignment: center;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: Design.font-body;
+            }
+            if root.helper != "": Text {
+                text: root.helper;
+                color: Theme.text-faint;
+                font-size: Design.font-mini;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            @children
+        }
+    }
+}
+
+// =============================================================================
+// Group — uppercase 11px title above a card.
+// =============================================================================
+//
+// Replaces std-widgets' GroupBox with the design's flatter shape.
+// Children supply their own vertical layout via `@children`.
+
+export component Group {
+    in property <string> title;
+    /// What the group is about, behind an "i" after its title; none
+    /// where empty. `help-id` is the "i"'s accessible id.
+    in property <string> help;
+    in property <string> help-id;
+    // The "i" is a stop of a row of its own.
+    property <int> help-row;
+    init => {
+        if (root.help != "") {
+            root.help-row = Nav.next-row-id();
+        }
+    }
+    in property <length> body-padding: Design.pad-card;
+    /// Vertical spacing between body children. Default
+    /// `Design.gap-block` gives interactive rows (FormRow,
+    /// sliders, switches) room to breathe; tighten to 0 for
+    /// read-only data-table groups (INFO) where LabeledRow's own
+    /// padding-form suffices.
+    in property <length> body-spacing: Design.gap-block;
+
+    VerticalLayout {
+        width: 100%;
+        // gap-stack (title → card) as layout spacing, so the title band's
+        // min-height governs the band alone (see below).
+        spacing: Design.gap-stack;
+
+        // Title band. `min-height: size-card-header` reserves room for an
+        // action IconBtn, so a title with actions and one without are the
+        // same height — the card body never shifts when actions are added,
+        // and cards stay box-aligned across panes. Cards that need actions
+        // (a profile's cards) mirror this band structure.
+        HorizontalLayout {
+            min-height: Design.size-card-header;
+            padding-left: 2px;
+            spacing: Design.gap-form;
+            alignment: start;
+            // Center the title in the reserved band (matching cards whose
+            // header carries action icons), so the label sits at the same
+            // height whether or not the header has actions.
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: root.title;
+                    color: Theme.text-dim;
+                    font-size: Design.font-mini;
+                    font-weight: 600;
+                    letter-spacing: 0.6px;
+                }
+            }
+            if root.help != "": VerticalLayout {
+                alignment: center;
+                ContextualHelpButton {
+                    nav-row: root.help-row;
+                    text: root.help;
+                    accessible-id: root.help-id;
+                }
+            }
+        }
+
+        // Card
+        Rectangle {
+            background: Theme.surface;
+            border-color: Theme.border;
+            border-width: Design.border-thin;
+            border-radius: Design.radius-card;
+
+            VerticalLayout {
+                width: 100%;
+                padding: root.body-padding;
+                spacing: root.body-spacing;
+                @children
+            }
+        }
+    }
+}
+
+// =============================================================================
+// SpinnerArc — track ring + rotating top-quarter arc.
+// =============================================================================
+//
+// A still gray ring with one accent-colored quarter at the top,
+// rotating 360° every 0.9s linearly.
+//
+// Slint's std-widgets `Spinner` uses a Material-style growing/
+// shrinking arc with two simultaneous animations — visually busier
+// and not what the design calls for. This is the simple
+// fixed-arc-rotating variant.
+
+export component SpinnerArc inherits Rectangle {
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+
+    // Track ring — neutral, still.
+    Rectangle {
+        border-radius: self.width / 2;
+        border-width: 2.5px;
+        border-color: Theme.border;
+    }
+
+    // Rotating top-quarter arc — accent, ~0.9s/rev linear.
+    Path {
+        viewbox-width: 100;
+        viewbox-height: 100;
+        stroke: Theme.accent;
+        stroke-width: 2.5px;
+        transform-rotation: (360deg * animation-tick() / 900ms).mod(360deg);
+
+        // 90° arc spanning from 12 o'clock to 3 o'clock. Radius 47
+        // sits the arc curve atop the 2.5px-wide track ring.
+        MoveTo { x: 50; y: 3; }
+        ArcTo {
+            radius-x: 47;
+            radius-y: 47;
+            x: 97;
+            y: 50;
+            sweep: true;
+        }
+    }
+}
+
+// =============================================================================
+// CopyBtn — square ghost button that copies a string to the clipboard.
+// =============================================================================
+//
+// Used next to read-only identifier values (a pad's ID, model, address)
+// where the user might want to copy the value into another tool.
+// Glyph comes from `Clipboard.copy-icon` (Rust resolves it against
+// the freedesktop `edit-copy` name); when missing, the button still
+// renders a (mostly-blank) hit target so the action stays
+// reachable. Click fires `Clipboard.copy(value, label)` — Rust
+// handles the platform clipboard write and surfaces a
+// "Copied {label}." toast on success.
+
+export component CopyBtn inherits Focusable {
+    in property <string> value;
+    /// Noun the success toast displays — typically forwarded from
+    /// the wrapping `LabeledRow`'s `@tr()`-translated label
+    /// ("Pad ID", "Address", …). Empty string falls
+    /// back to the generic "Copied to clipboard." toast.
+    in property <string> label;
+
+    /// Spell out the action when the visible content is just a
+    /// glyph. Caller-supplied `label` (the noun being copied) plus
+    /// the universal verb makes for a useful screen-reader phrase.
+    accessible-label: root.label != "" ? @tr("Copy {}", root.label) : @tr("Copy");
+    activated => {
+        Clipboard.copy(root.value, root.label);
+    }
+    // A clipboard is little use on a couch; the stops it would add to
+    // every INFO row aren't worth the presses.
+    focusable: !Couch.active;
+
+    width: 24px;
+    height: 24px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    background: root.hovered ? Theme.row-hover : transparent;
+    border-radius: Design.radius-control;
+    animate background { duration: 150ms; }
+
+    Image {
+        source: Clipboard.copy-icon;
+        width: Design.size-glyph;
+        height: Design.size-glyph;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        colorize: root.hovered ? Theme.text : Theme.text-dim;
+        opacity: root.hovered ? 1.0 : 0.7;
+    }
+}
+
+// =============================================================================
+// IconBtn — square ghost button with a centered glyph.
+// =============================================================================
+//
+// Same 24px ghost shape as `CopyBtn`, but the icon is supplied by
+// the caller rather than tied to a specific role. Used for the
+// pencils that open a pad or a profile, and a field's reset. Callers
+// wire each instance to its own icon (loaded into the `Icons` global
+// at startup) and `clicked` callback. `enabled = false` dims the
+// glyph and disables the pointer interaction, so a button that can't
+// act now reads as inert without changing the layout.
+//
+// `loading = true` swaps the icon for a `SpinnerArc` in the same
+// slot. Standard "the thing I clicked is processing" pattern
+// (GitHub, Notion, GNOME Contacts) — no layout shift, the spinner
+// motion communicates the wait. Click is blocked while spinning
+// so a double-tap can't fire two saves in flight.
+
+export component IconBtn inherits Focusable {
+    in property <image> source;
+    in property <bool> loading: false;
+    /// `framed: false` (default) → ghost style: transparent
+    /// background, hover-only highlight, no border. Used by the
+    /// pencils and resets in the panes.
+    /// `framed: true` → matches `UriBtn`'s surface fill + border, so
+    /// an icon-only button can sit alongside text buttons in a row
+    /// without looking like an empty slot. Used by the About-pane
+    /// `Diagnostics` and `Notices` actions.
+    in property <bool> framed: false;
+    /// Optional label rendered to the right of the icon. When set,
+    /// the button auto-grows to fit `icon + label + padding` so it
+    /// reads as a labeled action; when empty, behaves as a square
+    /// icon-only button (the original 24×24 ghost style).
+    in property <string> label: "";
+    /// Optional hover help. Especially useful for icon-only buttons
+    /// (label == ""), where the glyph alone doesn't name the action.
+    in property <string> tip;
+    /// Toggle-state accent: an active button colorizes its glyph with
+    /// the theme accent at full opacity, so a stateless button can
+    /// render an on/off fact owned by the model (no internal checked
+    /// state to go stale - a std CheckBox severs its binding on the
+    /// first user toggle).
+    in property <bool> active: false;
+    callback clicked();
+
+    /// `label` is the visible text when set; for icon-only callsites
+    /// (label == "") the caller MUST supply `accessible-label: ...`
+    /// directly on the instance for screen readers to announce the
+    /// action.
+    accessible-label: root.label;
+    // Blocked while spinning so a double activation can't fire two
+    // saves in flight. Dismiss the tip as well: an activation can
+    // destroy this button (an `if`-gated row glyph) before the hit
+    // area can report the pointer leaving, which would strand the
+    // bubble.
+    activated => {
+        if (!root.loading) {
+            root.clicked();
+        }
+        tip-trigger.hover-leave();
+    }
+    hover-changed(hovering) => {
+        tip-trigger.set-hover(hovering);
+    }
+    // An icon-only button shows its tip once keyboard focus lingers on
+    // it, the way hover does: the glyph alone doesn't name the action.
+    // Only visible focus counts, as with the ring: a click that lands
+    // focus here (a list row handing focus to its detail) pops no tip.
+    property <bool> focus-tip: root.focused && Nav.focus-visible && root.interactive && !root.has-label;
+    changed focus-tip => {
+        tip-trigger.set-hover(root.focus-tip);
+    }
+
+    property <bool> interactive: root.enabled && !root.loading;
+    // A button disabled while its tip is open (enabled/loading flips
+    // with no pointer event) would strand the bubble; clear it the
+    // moment interactivity drops.
+    changed interactive => {
+        if (!root.interactive) {
+            tip-trigger.hover-leave();
+        }
+    }
+    property <bool> has-label: root.label != "";
+    /// Foreground (icon colorize + label color) at rest. Ghost mode
+    /// dims at rest and brightens on hover — the dim-then-bright
+    /// fade substitutes for the missing border. Framed mode follows
+    /// `UriBtn` / `DangerBtn` and keeps a stable foreground; only
+    /// the surface fill changes on hover.
+    property <brush> fg-rest: root.active ? Theme.accent : (root.framed ? Theme.text : Theme.text-dim);
+    property <brush> fg-hover: root.active ? Theme.accent : Theme.text;
+    property <brush> fg: !root.enabled ? Theme.text-faint
+        : (root.hovered && root.interactive ? root.fg-hover : root.fg-rest);
+
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    min-width: 24px;
+    min-height: 24px;
+    background: root.framed
+        ? (!root.interactive
+            ? Theme.surface2
+            : (root.hovered ? Theme.surface2 : Theme.surface))
+        : (root.hovered && root.interactive ? Theme.row-hover : transparent);
+    border-color: root.framed ? Theme.border : transparent;
+    border-width: root.framed ? Design.border-thin : 0;
+    border-radius: Design.radius-control;
+    animate background { duration: 150ms; }
+    opacity: root.enabled || root.loading ? 1.0 : Design.opacity-disabled;
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: root.has-label ? Design.gap-row : 0;
+        padding-right: root.has-label ? Design.gap-row : 0;
+        spacing: root.has-label ? Design.gap-stack : 0;
+        alignment: center;
+
+        if !root.loading: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.source;
+                width: Design.size-glyph;
+                height: Design.size-glyph;
+                colorize: root.fg;
+                // Ghost mode also fades icon opacity at rest. Framed
+                // mode stays fully opaque so the icon reads as a
+                // first-class button glyph alongside `UriBtn` text.
+                opacity: root.framed || root.active ? 1.0 : (root.hovered ? 1.0 : 0.7);
+            }
+        }
+
+        if root.loading: VerticalLayout {
+            alignment: center;
+            SpinnerArc {
+                width: Design.size-glyph;
+                height: Design.size-glyph;
+            }
+        }
+
+        if root.has-label: Text {
+            text: root.label;
+            color: root.fg;
+            font-size: Design.font-body;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+
+    // Hover hint (hover-only): the shared trigger reports `tip` to the
+    // Help global, which the window-root overlay draws below the button.
+    // Empty `tip` → the trigger no-ops on hover.
+    tip-trigger := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.tip;
+    }
+}
+
+// =============================================================================
+// ConfirmDialog — generic OK/Cancel modal scrim.
+// =============================================================================
+//
+// 380-wide card centered on the pane with a translucent scrim
+// behind. The content height grows with the message so long
+// "this profile is used by …" lists don't clip. Clicking the scrim
+// or Cancel dismisses; Confirm fires `confirmed()` and the caller
+// closes by clearing whatever state was driving `open`.
+
+export component ConfirmDialog inherits Rectangle {
+    in property <bool> open: false;
+    in property <string> title;
+    in property <string> message;
+    in property <string> confirm-label: @tr("OK");
+    /// When false, the Confirm button is disabled — useful when the
+    /// dialog represents a non-actionable state (e.g. delete blocked
+    /// because the profile is in use; the user can only Cancel).
+    in property <bool> confirm-enabled: true;
+    callback confirmed();
+    callback cancelled();
+
+    // Modal to the keyboard: opening focuses Cancel, the safe choice,
+    // Escape cancels, Tab and Shift+Tab cycle the two buttons (Confirm
+    // only while enabled), and closing puts focus back on the opener,
+    // through its anchor (`Nav`).
+    property <int> opener-anchor;
+    property <string> opener-id;
+    property <int> opener-column;
+    changed open => {
+        if (root.open) {
+            root.opener-anchor = Nav.focus-seq;
+            root.opener-id = Nav.focus-id;
+            root.opener-column = Nav.column;
+            cancel-button.focus();
+        } else {
+            Nav.request-anchor(root.opener-anchor, root.opener-id, root.opener-column);
+        }
+    }
+    function cycle(forward: bool) {
+        if (cancel-button.focused && forward && root.confirm-enabled) {
+            confirm-button.focus();
+        } else if (confirm-button.focused && !forward) {
+            cancel-button.focus();
+        } else if (!cancel-button.focused && !confirm-button.focused) {
+            cancel-button.focus();
+        } else if (root.confirm-enabled) {
+            // Wrapping: Tab past Confirm, Shift+Tab past Cancel.
+            if (cancel-button.focused) {
+                confirm-button.focus();
+            } else {
+                cancel-button.focus();
+            }
+        }
+    }
+
+    visible: open;
+    background: Theme.scrim;
+    width: 100%;
+    height: 100%;
+
+    // The keys the buttons don't take bubble up here; no stop itself.
+    FocusScope {
+        focus-on-tab-navigation: false;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.cancelled();
+                return accept;
+            }
+            if (event.text == Key.Tab || event.text == Key.Backtab) {
+                root.cycle(event.text == Key.Tab && !event.modifiers.shift);
+                return accept;
+            }
+            if (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                // The buttons sit side by side: Left is Cancel, Right
+                // is Confirm. Taken so they don't jump columns behind
+                // the dialog.
+                if (event.text == Key.LeftArrow) {
+                    cancel-button.focus();
+                } else if (root.confirm-enabled) {
+                    confirm-button.focus();
+                }
+                return accept;
+            }
+            reject
+        }
+
+        TouchArea {
+            clicked => { root.cancelled(); }
+        }
+
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Design.radius-card;
+            border-color: Theme.border;
+            border-width: Design.border-thin;
+            width: 380px;
+            // Grow with content; `max()` enforces the 170px floor so
+            // short messages keep the same visual weight as before.
+            height: max(170px, card-layout.preferred-height);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+
+            // Inner TouchArea swallows clicks so they don't fall through
+            // to the scrim-cancel TouchArea below.
+            TouchArea {}
+
+            card-layout := VerticalLayout {
+                width: 100%;
+                padding: 18px;
+                spacing: Design.gap-block;
+
+                Text {
+                    text: root.title;
+                    color: Theme.text;
+                    font-size: Design.font-title-3;
+                    font-weight: 700;
+                }
+                Text {
+                    text: root.message;
+                    color: Theme.text-dim;
+                    font-size: Design.font-body;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: Design.gap-stack;
+                    alignment: end;
+                    cancel-button := ThemedButton {
+                        text: @tr("Cancel");
+                        accessible-id: "dialog-cancel";
+                        reveal: false;
+                        clicked => { root.cancelled(); }
+                    }
+                    confirm-button := DangerBtn {
+                        text: root.confirm-label;
+                        enabled: root.confirm-enabled;
+                        accessible-id: "dialog-confirm";
+                        reveal: false;
+                        clicked => { root.confirmed(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// NameInputDialog — generic "type a name" modal scrim.
+// =============================================================================
+//
+// Mirrors `ConfirmDialog`'s shape with an extra text field row + an
+// `error-message` slot that turns the helper text red when populated
+// (e.g. "Reserved name"). The Confirm button is enabled iff
+// `name != ""` AND `error-message == ""`.
+
+export component NameInputDialog inherits Rectangle {
+    in property <bool> open: false;
+    in property <string> title;
+    in property <string> prompt;
+    in property <string> placeholder: "";
+    in property <string> confirm-label: @tr("Create");
+    /// Caller-supplied validation reason. Empty means valid;
+    /// non-empty puts the dialog into invalid state.
+    in property <string> error-message: "";
+    /// Current name typed by the user. The dialog owns the field;
+    /// the caller observes via `name-changed`.
+    in-out property <string> name;
+    /// Fires on every keystroke so the caller can validate
+    /// (reserved-name check, existing-name check, etc.).
+    callback name-changed(string);
+    callback confirmed();
+    callback cancelled();
+
+    // Modal to the keyboard: opening focuses the field, editing (the
+    // dialog exists to type a name), Escape cancels, Tab and Shift+Tab
+    // cycle field, Cancel and Confirm (Confirm only while enabled), and
+    // closing puts focus back on the opener, through its anchor (`Nav`).
+    property <int> opener-anchor;
+    property <string> opener-id;
+    property <int> opener-column;
+    property <bool> confirm-enabled: root.name != "" && root.error-message == "";
+    changed open => {
+        if (root.open) {
+            root.opener-anchor = Nav.focus-seq;
+            root.opener-id = Nav.focus-id;
+            root.opener-column = Nav.column;
+            name-field.focus-input();
+        } else {
+            Nav.request-anchor(root.opener-anchor, root.opener-id, root.opener-column);
+        }
+    }
+    function cycle(forward: bool) {
+        if (cancel-button.focused) {
+            if (forward && root.confirm-enabled) {
+                confirm-button.focus();
+            } else {
+                name-field.focus-input();
+            }
+        } else if (confirm-button.focused) {
+            if (forward) {
+                name-field.focus-input();
+            } else {
+                cancel-button.focus();
+            }
+        } else if (forward) {
+            cancel-button.focus();
+        } else if (root.confirm-enabled) {
+            confirm-button.focus();
+        } else {
+            cancel-button.focus();
+        }
+    }
+
+    visible: open;
+    background: Theme.scrim;
+    width: 100%;
+    height: 100%;
+
+    // The keys the field and the buttons don't take bubble up here; no
+    // stop itself.
+    FocusScope {
+        focus-on-tab-navigation: false;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.cancelled();
+                return accept;
+            }
+            if (event.text == Key.Tab || event.text == Key.Backtab) {
+                root.cycle(event.text == Key.Tab && !event.modifiers.shift);
+                return accept;
+            }
+            if (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                // Between the two buttons; from the field (an idle one,
+                // in couch mode) nothing. Taken so they don't jump
+                // columns behind the dialog.
+                if (event.text == Key.LeftArrow && confirm-button.focused) {
+                    cancel-button.focus();
+                } else if (event.text == Key.RightArrow && cancel-button.focused && root.confirm-enabled) {
+                    confirm-button.focus();
+                }
+                return accept;
+            }
+            reject
+        }
+
+        TouchArea {
+            clicked => { root.cancelled(); }
+        }
+
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Design.radius-card;
+            border-color: Theme.border;
+            border-width: Design.border-thin;
+            width: 380px;
+            height: max(220px, card-layout.preferred-height);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+
+            TouchArea {}
+
+            card-layout := VerticalLayout {
+                width: 100%;
+                padding: 18px;
+                spacing: Design.gap-block;
+
+                Text {
+                    text: root.title;
+                    color: Theme.text;
+                    font-size: Design.font-title-3;
+                    font-weight: 700;
+                }
+                if root.prompt != "": Text {
+                    text: root.prompt;
+                    color: Theme.text-dim;
+                    font-size: Design.font-body;
+                    wrap: word-wrap;
+                }
+                name-field := LineEditField {
+                    accessible-label: root.title;
+                    placeholder-text: root.placeholder;
+                    text <=> root.name;
+                    accessible-id: "dialog-name";
+                    edited(v) => { root.name-changed(v); }
+                    accepted(v) => {
+                        if (v != "" && root.error-message == "") {
+                            root.confirmed();
+                        }
+                    }
+                }
+                if root.error-message != "": Text {
+                    text: root.error-message;
+                    color: Theme.danger-text;
+                    font-size: Design.font-helper;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: Design.gap-stack;
+                    alignment: end;
+                    cancel-button := ThemedButton {
+                        text: @tr("Cancel");
+                        accessible-id: "dialog-cancel";
+                        reveal: false;
+                        clicked => { root.cancelled(); }
+                    }
+                    confirm-button := ThemedButton {
+                        text: root.confirm-label;
+                        primary: true;
+                        enabled: root.confirm-enabled;
+                        accessible-id: "dialog-confirm";
+                        reveal: false;
+                        clicked => { root.confirmed(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A pad's tile: its maker's mark in the maker's color, as a TV's tile is
+// in TisVlay; a pad of a maker with no mark gets a gamepad on the chip
+// color. `maker` is Rust's word for the maker, from the pad's vendor
+// number: "sony", "microsoft", "nintendo", "8bitdo", "valve", or empty;
+// or "ctrlassist", for a virtual pad that presents itself as its own.
+export component PadTile inherits Rectangle {
+    in property <string> maker;
+    in property <length> tile-size: Design.size-tile-sm;
+    // A virtual pad's: the mark in the maker's color on no fill, so it
+    // is told from a real pad's at a glance.
+    in property <bool> outlined;
+
+    width: tile-size;
+    height: tile-size;
+    border-radius: 5px;
+
+    property <bool> is-known: maker == "sony" || maker == "microsoft" || maker == "nintendo"
+        || maker == "8bitdo" || maker == "valve" || maker == "ctrlassist";
+
+    property <brush> maker-color: maker == "sony" ? Theme.maker-sony
+              : maker == "microsoft" ? Theme.maker-microsoft
+              : maker == "nintendo" ? Theme.maker-nintendo
+              : maker == "8bitdo" ? Theme.maker-8bitdo
+              : maker == "valve" ? Theme.maker-valve
+              // CtrlAssist's own virtual pad: the window's accent.
+              : maker == "ctrlassist" ? Theme.accent
+              : Theme.chip;
+    background: root.outlined ? transparent : root.maker-color;
+    border-width: root.outlined ? 1.5px : is-known ? 0 : Design.border-thin;
+    border-color: root.outlined && is-known ? root.maker-color
+        : root.outlined ? Theme.border-strong : Theme.border;
+
+    if root.is-known: Text {
+        text: root.maker == "sony" ? "PS"
+            : root.maker == "microsoft" ? "XB"
+            : root.maker == "nintendo" ? "NS"
+            : root.maker == "8bitdo" ? "8B"
+            : root.maker == "ctrlassist" ? "CA"
+            : "SD";
+        // On no fill the mark is the text's own color, which reads in
+        // both modes where a maker's dark color wouldn't.
+        color: root.outlined ? Theme.text : white;
+        font-size: root.tile-size * 0.40;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+    }
+    if !root.is-known: Image {
+        source: Icons.gamepad;
+        width: root.tile-size * 0.7;
+        height: root.tile-size * 0.7;
+        x: (root.tile-size - self.width) / 2;
+        y: (root.tile-size - self.height) / 2;
+        image-fit: contain;
+        colorize: Theme.chip-text;
+    }
+}
+
+// A profile's tile: its arrangement's shape. Two lines joining into one
+// for a preset that merges two pads, one line splitting into two for a
+// preset that shares one pad out; a profile that is neither, written by
+// hand, gets a plain mark.
+export component ProfileTile inherits Rectangle {
+    // "merge", "split", or anything else for neither.
+    in property <string> shape;
+    in property <length> tile-size: Design.size-tile-sm;
+
+    width: tile-size;
+    height: tile-size;
+    border-radius: 5px;
+    background: Theme.chip;
+    border-width: Design.border-thin;
+    border-color: Theme.border;
+
+    Path {
+        width: root.tile-size * 0.62;
+        height: root.tile-size * 0.62;
+        x: (root.tile-size - self.width) / 2;
+        y: (root.tile-size - self.height) / 2;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        stroke: Theme.chip-text;
+        stroke-width: 2px;
+        fill: transparent;
+        commands: root.shape == "merge" ? "M 3 6 C 10 6 10 12 14 12 L 21 12 M 3 18 C 10 18 10 12 14 12"
+            : root.shape == "split" ? "M 3 12 L 10 12 C 14 12 14 6 21 6 M 10 12 C 14 12 14 18 21 18"
+            : "M 4 7 L 20 7 M 4 12 L 20 12 M 4 17 L 14 17";
+    }
+}
+
+// A caption band over a section of a list, as the lists' headers are:
+// small capitals on the surface color, 40 high.
+export component ListCaption inherits Rectangle {
+    in property <string> title;
+
+    height: 40px;
+    background: Theme.surface;
+
+    Rectangle {
+        x: parent.width - 1px;
+        width: Design.border-thin;
+        background: Theme.border;
+    }
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 12px;
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.title;
+                color: Theme.text-dim;
+                font-size: Design.font-mini;
+                font-weight: 600;
+                letter-spacing: 0.6px;
+            }
+        }
+    }
+}
+
+// A word in one of the tones a chip has, small, for the state under a
+// list row's name and under a detail row's label.
+export component ToneText inherits Text {
+    in property <string> tone;
+    color: tone == "success" ? Theme.success-text
+         : tone == "warn" ? Theme.warn-text
+         : tone == "danger" ? Theme.danger-text
+         : tone == "info" ? Theme.info-text
+         : Theme.text-faint;
+    font-size: Design.font-mini;
+}
+
+// The dot before a toned word: a state's color at a glance.
+export component ToneDot inherits Rectangle {
+    in property <string> tone;
+    width: Design.size-status-dot;
+    height: Design.size-status-dot;
+    border-radius: 3px;
+    background: tone == "success" ? Theme.success
+        : tone == "warn" ? Theme.warn
+        : tone == "danger" ? Theme.danger
+        : tone == "info" ? Theme.info
+        : Theme.text-faint;
+}
+
+// A detail's row: a label in a fixed column, the control, and then the
+// row's "i" when it has help. The label may carry a second line, a dot
+// and a word for how the row's thing is, as a list row does under its
+// name; an optional helper line sits under the control. TisVlay's
+// `FormRow`, whose labels run to two lines the same way.
+export component FormRow {
+    // How the row's thing is, under its label; empty for none.
+    in property <string> status-word;
+    in property <string> status-tone;
+    in property <string> label;
+    // A stable name for the row, in its help button's id.
+    in property <string> key;
+    in property <string> helper;
+    in property <string> help;
+    in property <string> id-prefix;
+    in property <length> label-width: Design.width-label-col;
+    // The row's id for the arrows: its controls and its "i" share it.
+    out property <int> row-id;
+    init => {
+        root.row-id = Nav.next-row-id();
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        spacing: Design.gap-row;
+
+        VerticalLayout {
+            width: root.label-width;
+            alignment: root.helper != "" ? start : center;
+            spacing: 2px;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: Design.font-body;
+                vertical-alignment: root.helper != "" ? top : center;
+                wrap: word-wrap;
+            }
+            if root.status-word != "": HorizontalLayout {
+                spacing: Design.gap-tight;
+                alignment: start;
+                ToneDot {
+                    y: (parent.height - self.height) / 2;
+                    tone: root.status-tone;
+                }
+                ToneText {
+                    text: root.status-word;
+                    tone: root.status-tone;
+                    accessible-id: root.id-prefix + "status-" + root.key;
+                }
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: Design.gap-form;
+            HorizontalLayout {
+                spacing: Design.gap-row;
+                @children
+                if root.help != "": VerticalLayout {
+                    alignment: center;
+                    width: 24px;
+                    ContextualHelpButton {
+                        text: root.help;
+                        nav-row: root.row-id;
+                        accessible-id: root.id-prefix + "help-" + root.key;
+                    }
+                }
+            }
+            if root.helper != "": Text {
+                text: root.helper;
+                color: Theme.text-faint;
+                font-size: Design.font-mini;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

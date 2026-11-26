@@ -1,0 +1,17 @@
+# Environment for every cargo invocation in the workspace. Warnings are not
+# denied here: the Nix package build reads this file with nixpkgs' compiler,
+# and a newer compiler's new warning must not break a rebuild. The gate
+# recipes in the justfile deny them.
+[env]
+# Where an instrumented binary writes its coverage data when nothing says
+# otherwise. Without it, a test binary left instrumented by an earlier
+# coverage run writes `default_<hash>_<pid>.profraw` into whatever
+# directory it runs in, which under nextest is each crate's own, outside
+# `target/`. cargo-llvm-cov sets the variable itself before it runs cargo,
+# and `[env]` yields to a variable already set, so `just cov` and `just
+# test-ci` write where the tool expects. `%m` and `%p` keep parallel test
+# processes apart. TisVlay's default.
+LLVM_PROFILE_FILE = { value = "target/profraw/default_%m_%p.profraw", relative = true }
+# clippy's config lives in `.config/clippy.toml`, a directory clippy
+# doesn't search on its own.
+CLIPPY_CONF_DIR = { value = ".config", relative = true }

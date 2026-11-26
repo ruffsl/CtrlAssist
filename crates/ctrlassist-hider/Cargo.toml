@@ -1,0 +1,30 @@
+[package]
+name = "ctrlassist-hider"
+description = "CtrlAssist's hiding service: the unprivileged process that hides pads from games and hands the daemon open descriptors for them, and the client for it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ctrlassist-hider"
+path = "src/main.rs"
+
+# Kept short on purpose: this is the one process every user's daemon
+# trusts with their pads. No async runtime, no control-plane crates.
+[dependencies]
+libc = { workspace = true }
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "rand", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+udev = { workspace = true }
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
+[lints]
+workspace = true

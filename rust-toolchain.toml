@@ -1,4 +1,8 @@
+# Pinned to an exact stable release so a build reproduces from a git SHA alone
+# (a floating "stable" silently changes the compiler under you). One file drives
+# rustup and the Nix devShell: flake.nix reads it via rust-overlay's
+# fromRustupToolchainFile. Bump deliberately.
 [toolchain]
-channel = "stable"
+channel = "1.100.0"
 components = ["rust-analyzer", "rust-src"]
 profile = "default"

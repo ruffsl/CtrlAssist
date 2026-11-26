@@ -1,0 +1,11 @@
+# Making the virtual DualSense behind the hiding service
+
+The seat user is given `/dev/uhid` so the daemon can make a virtual DualSense, which the kernel's PlayStation driver binds as it would a real one ([the concern](../concerns/uinput-uhid-grant.md)). Steam's rules give the user uinput and not uhid, so uhid is the part of the grant that is this project's alone, and it is the wider of the two: it reaches every HID driver's parser.
+
+The hiding service could make the device instead. It would be given `/dev/uhid` by its group in place of the user, and the rule's uhid line for the seat user would go. The daemon asks for a virtual DualSense, with the descriptor and the address it wants, and the service checks that what is asked for is a DualSense and nothing else, and creates it.
+
+What the service then hands back decides what is gained. If it passes the descriptor to the daemon, as it passes a hidden pad's, reports take the path they do now, but the gain is small: as the kernel's uhid is remembered, a descriptor whose device is destroyed can create another, of any kind, so whoever holds one holds what the grant gave, and any program of the user's can ask the service for one. To be confirmed in the kernel's source before anything is built on it. If the service keeps the descriptor and carries reports both ways, the user's programs can make a DualSense and nothing else, and every report to and from the virtual pad crosses a socket to another process, which the input path has been kept free of.
+
+**Why deferred.** The form that closes the risk puts a second process in the path of every report, and the form that doesn't cost that closes little. The service has just been made to run without root and with as little as it can; either form gives it a second job, a new device to open, and the wire a new request. The risk is real mostly where several people share a machine. And uinput would stay granted, as Steam grants it, so the user's programs could still make a keyboard.
+
+**Would bring it in.** A fault in a HID driver's parser reachable through uhid; a distribution or a packager refusing the grant; a way to hold a uhid descriptor to the one device it made (a kernel that refuses a second create, or a filter on what may be written to it); or a measurement that says carrying reports through the service costs nothing a player would feel.

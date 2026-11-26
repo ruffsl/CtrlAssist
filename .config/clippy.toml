@@ -1,0 +1,8 @@
+# clippy configuration. Test code may unwrap, panic, index and print: a
+# test exists to fail loudly. These keys cover `#[test]` fns and
+# `#[cfg(test)]` modules only, not helper fns under `tests/`.
+allow-unwrap-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true

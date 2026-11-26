@@ -1,0 +1,82 @@
+// The Pads pane's model and callbacks. Rust pushes `rows` from the
+// daemon's mirror on every change and binds the callbacks; the pane's
+// components read and call them directly.
+
+// One known pad, as the pane shows it. Everything is text made in
+// Rust, so the pane only lays it out.
+// A profile that names a pad, as the pad's detail lists it.
+export struct PadProfileRow {
+    name: string,
+    // The part the pad plays in it: "Primary", "Assist", "Pad", or a
+    // source's own name in a profile written by hand.
+    part: string,
+    // How the profile is, in a word, and the word's tone.
+    word: string,
+    tone: string,
+}
+
+export struct PadRow {
+    // What the daemon knows the pad by across reconnects, as a profile
+    // names it; the rpcs take it.
+    id: string,
+    // `id` made fit for an `accessible-id`.
+    key: string,
+    // The pad's own name.
+    name: string,
+    // A few characters of what tells this pad from another of its
+    // model; empty when nothing does.
+    tag: string,
+    // Vendor and product, `054c:0ce6`.
+    model: string,
+    // "USB", "Bluetooth", or empty while it isn't connected or the bus
+    // is some other.
+    connection: string,
+    connected: bool,
+    // "Yes", "No", or empty when the daemon couldn't tell: shown, and
+    // never compared, since it may be translated.
+    rumble: string,
+    // The daemon found it has no rumble, so Identify can't buzz it.
+    without-rumble: bool,
+    // Its maker, for its tile: "sony", "microsoft", "nintendo",
+    // "8bitdo", "valve", or empty for any other.
+    maker: string,
+    // What it is doing, in a word, and the word's tone: "In couch",
+    // "Free", "Remembered".
+    word: string,
+    tone: string,
+    // Whether games see it, in a few words.
+    games: string,
+    // Every profile that names it.
+    profiles: [PadProfileRow],
+    // A virtual pad, which a running profile makes: it has a profile, an
+    // identity and a node, and no address, rumble or forgetting.
+    is-virtual: bool,
+    // For a virtual pad: what it presents itself as, and its node.
+    identity: string,
+    node: string,
+    // The setup that has it, and its role there; empty for none.
+    setup: string,
+    role: string,
+    // While a setup has it: hidden from games by the hiding service,
+    // or only grabbed.
+    hidden: bool,
+    // Its address, when what it is known by is one; empty otherwise.
+    address: string,
+}
+
+export global Pads {
+    in property <[PadRow]> rows;
+    // How many of `rows` are connected: Slint can't count a model in a
+    // binding.
+    in property <int> connected-count;
+    // How many of `rows` are real pads: they come first, connected and
+    // then remembered, and the virtual pads after them.
+    in property <int> real-count;
+    in-out property <int> selected-index: -1;
+    // Buzz the pad, so a person can tell which it is.
+    callback identify(string);
+    // Stop remembering a pad that isn't connected.
+    callback forget(string);
+    // Show a profile in the Profiles pane.
+    callback open-profile(string);
+}

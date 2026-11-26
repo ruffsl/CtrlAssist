@@ -1,0 +1,18 @@
+# CtrlAssist creates virtual pads through uinput, and through uhid for the
+# identities that need a HID device. A stock machine gives neither to
+# users; this gives both to the user at the seat, as pads themselves are
+# given. It must sort before systemd's 73-seat-late.rules, which applies
+# the tag.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
+KERNEL=="uhid", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uhid"
+
+# A virtual DualSense's touchpad is a pad's, away from any keyboard.
+# udev says so of a real pad's by its bus, which a uhid device has none
+# of, and libinput takes a touchpad it isn't told is external for a
+# laptop's: a touch that begins at its left or right edge is a palm's,
+# and moves nothing until it is lifted. A finger that slides off a pad's
+# touchpad and back on begins there. The virtual pad is known by the
+# start of its HID device's phys, which an input device's event node
+# has from its parent, and that from its own.
+SUBSYSTEM=="input", ACTION!="remove", ENV{DEVPATH}=="/devices/virtual/misc/uhid/*", IMPORT{parent}="HID_PHYS"
+SUBSYSTEM=="input", ACTION!="remove", KERNEL=="event*", ENV{HID_PHYS}=="ctrlassist/virtual/*", ENV{ID_INPUT_TOUCHPAD}=="1", ENV{ID_INPUT_TOUCHPAD_INTEGRATION}="external", ENV{ID_INTEGRATION}="external"

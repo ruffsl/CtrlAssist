@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 88bd03f8245dbd1056697557c42e25322fe69130651175775e9c793ab3f0a10f # shrinks to ops = [Retarget { sink: 1, targets: 5 }, Upload { key: EffectKey { sink: 1, id: 1 }, effect: Effect { strong: 1, weak: 0 }, accept: 3 }, Play { key: EffectKey { sink: 1, id: 1 }, playing: true }, Upload { key: EffectKey { sink: 1, id: 1 }, effect: Effect { strong: 1, weak: 0 }, accept: 4 }]

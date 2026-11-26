@@ -1,0 +1,203 @@
+// The Settings pane: what is the window's own to set, and the tray's.
+//
+// Couch mode is the window's preference, edited through the `Couch`
+// global's callbacks. The notification switches are the tray's, read
+// and set through the `Tray` global: with no tray running they stay in
+// view, disabled, under a line saying why.
+
+import { HelpScrollView } from "../globals/help.slint";
+import { Theme } from "../theme.slint";
+import { Design } from "../design.slint";
+import { Tray } from "../globals/tray.slint";
+import { Couch } from "../globals/couch.slint";
+import { Nav } from "../globals/nav.slint";
+import { ThemedSelect } from "../globals/select.slint";
+import { Group, InlineError, SettingRow, ThemedButton, ThemedSpinBox, ThemedSwitch } from "../widgets.slint";
+
+// A notification kind's switch. It inherits the row rather than
+// wrapping it, so the row itself fills the group's width.
+component NotificationRow inherits SettingRow {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    in property <string> switch-id;
+    callback toggled(bool);
+
+    public function focus-switch() {
+        switch.focus();
+    }
+
+    switch := ThemedSwitch {
+        accessible-label: root.label;
+        accessible-id: root.switch-id;
+        checked: root.checked;
+        enabled: root.enabled;
+        toggled(on) => { root.toggled(on); }
+    }
+}
+
+
+export component SettingsPane inherits Rectangle {
+    background: Theme.surface-alt;
+
+    // The couch-mode preference's choices, in the order of `mode-index`.
+    property <[string]> couch-modes: [@tr("Follow the session"), @tr("On"), @tr("Off")];
+    property <int> mode-index: Couch.mode == "on" ? 1 : Couch.mode == "off" ? 2 : 0;
+
+    // A column request lands on the pane's first control: the first
+    // notification switch, or with no tray to set them, couch mode. One
+    // for the sidebar is the shell's.
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 0) {
+            return;
+        }
+        Nav.column-served = Nav.column-tick;
+        if (Tray.available) {
+            first-switch.focus-switch();
+        } else {
+            couch-select.focus();
+        }
+    }
+
+    // A scroll view, not a plain column: couch mode's scale makes this
+    // pane the first to outgrow a screen.
+    HelpScrollView {
+        content-width: self.visible-width;
+    VerticalLayout {
+        width: 100%;
+        padding-left: Design.pad-pane;
+        padding-right: Design.pad-pane;
+        padding-top: Design.pad-pane-top;
+        padding-bottom: Design.pad-pane;
+        spacing: Design.gap-pane;
+        alignment: start;
+
+        Text {
+            text: @tr("Settings");
+            color: Theme.text;
+            font-size: Design.font-title-2;
+            font-weight: 700;
+        }
+
+        // With no tray the switches below stay in view, disabled, as
+        // they were last known.
+        if !Tray.available: InlineError {
+            accessible-id: "settings-tray-offline";
+            tone: "warn";
+            title: @tr("The tray isn't running");
+            message: @tr("These are the tray's settings. Start it, with the daemon running, to change them.");
+            dismissable: false;
+        }
+
+        // -- NOTIFICATIONS group --
+        //
+        // One switch per kind of thing the tray says. The key each
+        // passes is the tray's own for that switch, in its file and on
+        // the wire.
+        Group {
+            title: @tr("NOTIFY ME WHEN");
+            help: @tr("Desktop notifications, sent by the tray: they need it running, and are kept with it. What you start or stop from the tray itself isn't announced, since you can see it there.");
+            help-id: "settings-help-notify";
+
+            first-switch := NotificationRow {
+                label: @tr("A setup starts or stops");
+                helper: @tr("Each time a profile is started or stopped, by you or by itself.");
+                switch-id: "settings-notify-setup-started";
+                checked: Tray.notifications.setup-started;
+                enabled: Tray.available;
+                toggled(v) => { Tray.set-notification("setup_started", v); }
+            }
+            NotificationRow {
+                label: @tr("Something is wrong");
+                helper: @tr("A setup is held for a missing pad, or failed; its pads are only grabbed, or one can't rumble; the daemon stopped.");
+                switch-id: "settings-notify-setup-trouble";
+                checked: Tray.notifications.setup-trouble;
+                enabled: Tray.available;
+                toggled(v) => { Tray.set-notification("setup_trouble", v); }
+            }
+            NotificationRow {
+                label: @tr("A pad connects or leaves");
+                helper: @tr("For a pad no setup is using. A setup says so itself when one of its pads leaves.");
+                switch-id: "settings-notify-pad-connection";
+                checked: Tray.notifications.pad-connection;
+                enabled: Tray.available;
+                toggled(v) => { Tray.set-notification("pad_connection", v); }
+            }
+            NotificationRow {
+                label: @tr("The tray couldn't do what was asked");
+                helper: @tr("Something picked in the tray's menu that the daemon refused, with its reason.");
+                switch-id: "settings-notify-refused";
+                checked: Tray.notifications.refused;
+                enabled: Tray.available;
+                toggled(v) => { Tray.set-notification("refused", v); }
+            }
+
+            HorizontalLayout {
+                spacing: Design.gap-row;
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: @tr("Show one now, whatever the switches say, to see that your desktop shows notifications at all.");
+                        color: Theme.text-dim;
+                        font-size: Design.font-meta;
+                        wrap: word-wrap;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    ThemedButton {
+                        text: @tr("Send a test notification");
+                        accessible-id: "settings-notify-test";
+                        enabled: Tray.available;
+                        clicked => { Tray.send-test-notification(); }
+                    }
+                }
+            }
+        }
+
+        // -- COUCH MODE group --
+        //
+        // The layout for a TV across the room. Rust owns the decision
+        // (`couch::active`) and the window side; the pane only edits
+        // the preference through the `Couch` callbacks.
+        Group {
+            title: @tr("COUCH MODE");
+            help: @tr("For using this window from across the room, on a TV, with a remote or a pad. It changes this window only: not the tray, and not what a profile does.");
+            help-id: "settings-help-couch";
+
+            SettingRow {
+                label: @tr("Couch mode");
+                helper: @tr("Maximized and scaled up, with the keys arranged for a remote or a pad. Following the session turns it on under a TV shell such as Plasma Bigscreen.");
+                couch-select := ThemedSelect {
+                    accessible-label: @tr("Couch mode");
+                    accessible-id: "settings-couch-mode";
+                    width: 200px;
+                    model: root.couch-modes;
+                    values: ["auto", "on", "off"];
+                    current-value: root.couch-modes[root.mode-index];
+                    selected(mode) => {
+                        Couch.mode-changed(mode);
+                    }
+                }
+            }
+
+            SettingRow {
+                label: @tr("Scale");
+                helper: @tr("On top of the display's own scale, in percent. Larger for a farther couch or a smaller screen.");
+                ThemedSpinBox {
+                    width: 200px;
+                    value: Couch.scale-percent;
+                    minimum: Couch.scale-min-percent;
+                    maximum: Couch.scale-max-percent;
+                    step: 10;
+                    accessible-label: @tr("Scale");
+                    accessible-id: "settings-couch-scale";
+                    committed(v) => { Couch.scale-changed(v); }
+                }
+            }
+        }
+    }
+    }
+}

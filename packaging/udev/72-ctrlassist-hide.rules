@@ -1,0 +1,164 @@
+# The CtrlAssist hiding service's rule. The service runs as the user and
+# group ctrlassist-hider, with no capabilities; what it may do is what
+# this rule gives that group:
+#
+# - ask udev to re-bind a pad's driver, which cuts off whatever had the
+#   pad open, through the uevent file of the pad's HID device or USB
+#   interface, which only pads have given to the group;
+# - open the raw node of a PlayStation pad;
+# - have a pad hidden, by creating a marker file named after it in
+#   /run/ctrlassist/hide: its nodes then go to the group alone, and lose
+#   seat access, at the pad's next event.
+#
+# This file never changes and udev is never asked to reload it: the
+# markers are tested at each event. Every test is of a file directly in
+# the marker directory: a value that carries "/" is never tested, and
+# the other parts of a marker's name are kernel names, which can't.
+#
+# It must sort after 70-uaccess.rules, which tags pads for seat access,
+# and after any 60-*.rules that opens hidraw, as Steam's does; and before
+# 73-seat-late.rules, which grants the access the tag asks for.
+
+ACTION=="remove", GOTO="ctrlassist_hide_end"
+
+# The re-bind: a change event the service sends a pad's device, marked
+# with its own argument. The probe, not a bind to the same driver, so
+# whichever driver a plug-in would bind takes the pad again.
+SUBSYSTEM=="hid|usb", ACTION=="change", ENV{SYNTH_ARG_CTRLASSIST}=="rebind", \
+  ATTR{driver/unbind}="%k", ATTR{subsystem/drivers_probe}="%k", GOTO="ctrlassist_hide_end"
+
+SUBSYSTEM=="hidraw", GOTO="ctrlassist_hide_hidraw"
+SUBSYSTEM!="input", GOTO="ctrlassist_hide_end"
+KERNEL!="event*|js*|mouse*", GOTO="ctrlassist_hide_end"
+# Never a keyboard's or a pointer's node, a joystick's that udev classes
+# as one as well among them: the service would refuse to hide it, and
+# nothing would show it again.
+ENV{ID_INPUT_KEYBOARD}=="1", GOTO="ctrlassist_hide_end"
+ENV{ID_INPUT_MOUSE}=="1", GOTO="ctrlassist_hide_end"
+ENV{ID_INPUT_TABLET}=="1", GOTO="ctrlassist_hide_end"
+ENV{ID_INPUT_POINTINGSTICK}=="1", GOTO="ctrlassist_hide_end"
+# A pad: a joystick that is nothing a keystroke or a pointer could come
+# from, as the service itself checks. Any other node is one of a pad's
+# other nodes, if it is a pad's at all.
+ENV{ID_INPUT_JOYSTICK}!="1", GOTO="ctrlassist_hide_other"
+ENV{ID_INPUT_TOUCHPAD}=="1", GOTO="ctrlassist_hide_other"
+ENV{ID_INPUT_KEY}!="1", GOTO="ctrlassist_hide_pad"
+# A joystick udev marks as having keys is a pad where every key is at
+# code 128 or above, as a share button (KEY_RECORD) or a menu key is:
+# below are every typing, editing, arrow, modifier, Enter, Esc and
+# function key. The input device's keys are a bitmap in hex words, most
+# significant first, from the highest with a key in it, each a long of
+# the process reading it, udev's here: 64 bits, or 32 for a 32-bit
+# process. Keys below 128 are the last four words of 32 bits, or the
+# last two of 64, and a word of more than eight digits can only be of
+# 64. Where none is that wide, four words must be clear, which on 64 bits
+# refuses keys below 256 as well: a pad with a joystick's or a game pad's
+# button (0x120 to 0x13f) has a wide word. The service reads the same
+# file the same way.
+ATTRS{capabilities/key}=="* 0 0 0 0", GOTO="ctrlassist_hide_pad"
+ATTRS{capabilities/key}=="*[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]* 0 0", GOTO="ctrlassist_hide_pad"
+GOTO="ctrlassist_hide_other"
+
+# Which devices the service may ask to re-bind: the HID device, or with
+# none the USB interface, of a pad. sysfs keeps the file's group and mode
+# for as long as the device exists, which a re-bind of its driver
+# doesn't end. Whether another of the device's inputs is a keyboard
+# can't be seen from here: the service refuses such a device itself.
+LABEL="ctrlassist_hide_pad"
+KERNEL!="event*", GOTO="ctrlassist_hide_markers"
+# A device whose file hasn't the bit yet is enumerated for the first
+# time; if the pad is hidden, its other nodes may have been passed over.
+SUBSYSTEMS=="hid", DRIVERS=="?*", TEST{0020}!="/sys/bus/hid/devices/%b/uevent", \
+  ENV{.CTRLASSIST_PAD_DEVICE}="/sys/bus/hid/devices/%b"
+SUBSYSTEMS=="hid", DRIVERS=="?*", \
+  RUN+="/usr/bin/chgrp ctrlassist-hider /sys/bus/hid/devices/%b/uevent", \
+  RUN+="/usr/bin/chmod g+w /sys/bus/hid/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
+SUBSYSTEMS=="usb", DRIVERS=="?*", TEST{0020}!="/sys/bus/usb/devices/%b/uevent", \
+  ENV{.CTRLASSIST_PAD_DEVICE}="/sys/bus/usb/devices/%b"
+SUBSYSTEMS=="usb", DRIVERS=="?*", \
+  RUN+="/usr/bin/chgrp ctrlassist-hider /sys/bus/usb/devices/%b/uevent", \
+  RUN+="/usr/bin/chmod g+w /sys/bus/usb/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
+
+# A pad's other nodes: its touchpad, its motion sensors, the mouse node a
+# touchpad has, and a joystick the service wouldn't take for a pad, one
+# with a key below 128 or a touchpad's axes. Only under a device known
+# for a pad's, whose uevent file the lines above have given the group,
+# which shows as the file's group-write bit: such a joystick hidden by
+# another pad's marker alone would stay hidden, the service finding no
+# pad in it to show again. At a device's first enumeration, a pad
+# plugged in, udev runs these nodes' events beside the joystick's, which
+# sets the bit, and not after it: those that came too early are taken
+# again by the change event the joystick's own event has udev send them
+# once the bit is set.
+LABEL="ctrlassist_hide_other"
+SUBSYSTEMS=="hid", TEST{0020}=="/sys/bus/hid/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
+SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST{0020}=="/sys/bus/usb/devices/%b/uevent", GOTO="ctrlassist_hide_markers"
+GOTO="ctrlassist_hide_end"
+
+# Event, js and mouse nodes: by the pad's address, by its USB serial
+# number, by its HID device, or by its USB port, named by the kernel's
+# name for the USB interface (such as 1-2:1.0), which a device made
+# through uhid doesn't have. The attributes are the input device's, the
+# parent each line's ATTRS match selected.
+LABEL="ctrlassist_hide_markers"
+ATTRS{uniq}=="?*", ATTRS{uniq}!="*/*", TEST=="/run/ctrlassist/hide/addr-%s{uniq}", GOTO="ctrlassist_hide"
+ENV{ID_SERIAL_SHORT}=="?*", ENV{ID_SERIAL_SHORT}!="*/*", ATTRS{id/vendor}=="?*", TEST=="/run/ctrlassist/hide/serial-%s{id/vendor}-%s{id/product}-$env{ID_SERIAL_SHORT}", GOTO="ctrlassist_hide"
+SUBSYSTEMS=="hid", TEST=="/run/ctrlassist/hide/hid-%b", GOTO="ctrlassist_hide"
+SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST=="/run/ctrlassist/hide/port-%b", GOTO="ctrlassist_hide"
+GOTO="ctrlassist_hide_end"
+
+# Hidraw nodes: by their HID device, by its own unique string (an
+# address on Bluetooth, set as the device is made), or, for a HID device
+# on the USB bus, by its USB port and its model together, so that a
+# keyboard, a headset or a security key later plugged into that port is
+# never taken for the pad. A pad on Bluetooth through the kernel's HIDP
+# has a USB interface above it too, the adapter's, which isn't its port. The imports
+# have lines of their own: udev compares a line's ENV keys before it runs
+# the line's imports.
+LABEL="ctrlassist_hide_hidraw"
+# The raw node of a pad whose raw node the service opens unhidden, for
+# the DualSense identity's copy: the group's, beside whatever seat access
+# it has.
+DRIVERS=="playstation", GROUP="ctrlassist-hider", MODE="0660"
+SUBSYSTEMS=="hid", TEST=="/run/ctrlassist/hide/hid-%b", GOTO="ctrlassist_hide"
+IMPORT{parent}="HID_UNIQ"
+IMPORT{parent}="HID_ID"
+ENV{HID_UNIQ}=="?*", ENV{HID_UNIQ}!="*/*", ENV{HID_ID}=="?*", ENV{HID_ID}!="*/*", TEST=="/run/ctrlassist/hide/uniq-$env{HID_ID}-$env{HID_UNIQ}", GOTO="ctrlassist_hide"
+ENV{HID_ID}=="0003:?*", ENV{HID_ID}!="*/*", SUBSYSTEMS=="usb", KERNELS=="?*:?*", TEST=="/run/ctrlassist/hide/raw-%b-$env{HID_ID}", GOTO="ctrlassist_hide"
+GOTO="ctrlassist_hide_end"
+
+# Hidden: the group's alone, with no seat access. Final, so that a later
+# rule can't open the node again. A node made by a re-bind has no ACL
+# for the tag's removal to leave behind. CTRLASSIST_HIDDEN says so in
+# udev's record of the node until its next event, which the service
+# reads to find a raw node left hidden that no marker names any more:
+# the group can't say it, a PlayStation pad's raw node having the group
+# hidden or not.
+LABEL="ctrlassist_hide"
+OWNER:="root", GROUP:="ctrlassist-hider", MODE:="0660", TAG-="uaccess", ENV{CTRLASSIST_HIDDEN}="1"
+# And left alone by libinput, the compositor's reader of input, which
+# has logind open a node for it whatever the node's group, and would take
+# a pad's touchpad for a pointer. libinput reads this only as it adds a
+# node, and reads event nodes alone; a hide's re-bind makes every node
+# anew, and so does the showing again, which leaves it off.
+KERNEL=="event*", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+# A touchpad hidden by a change event, as one of a pad plugged in while
+# hidden can be, below, was added unhidden, and libinput keeps a node it
+# has taken whatever a change event says: udev is told it went and came
+# back, its node left as it is, so that libinput lets it go and leaves it
+# alone as it comes back. Only a touchpad that isn't a joystick: libinput
+# passes over a pad's joystick and motion sensors by itself, and a
+# joystick's node going would be taken for its pad going.
+ACTION=="change", KERNEL=="event*", ENV{ID_INPUT_TOUCHPAD}=="1", ENV{ID_INPUT_JOYSTICK}!="1", \
+  RUN+="/usr/bin/udevadm trigger --action=remove /sys%p", \
+  RUN+="/usr/bin/udevadm trigger --action=add /sys%p"
+# A hidden pad's joystick node, its device enumerated for the first time:
+# once its file has the bit, after the lines above, a change event for
+# every node under the device. udev runs each after any event of that
+# node before it, and a node made after the bit is set is hidden by its
+# own event, so none of the pad's other nodes is passed over. Only for
+# an add, so that no change event sends more.
+ACTION=="add", ENV{.CTRLASSIST_PAD_DEVICE}=="?*", \
+  RUN+="/usr/bin/udevadm trigger --action=change --subsystem-match=input --parent-match=$env{.CTRLASSIST_PAD_DEVICE}"
+
+LABEL="ctrlassist_hide_end"

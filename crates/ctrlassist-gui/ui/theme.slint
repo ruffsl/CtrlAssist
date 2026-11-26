@@ -1,0 +1,161 @@
+// Design color tokens for ctrlassist-gui.
+//
+// Single source of truth. Every token branches on `dark-mode`; consumers
+// reference `Theme.token-name` without caring which variant they get.
+//
+// Palette provenance: the neutral chrome and the status colors are
+// derived from the KDE Breeze color schemes (Breeze Light / Breeze Dark),
+// so the app reads as a native Breeze application in either scheme. Each
+// token names the Breeze role it comes from inline — the KDE color-scheme
+// roles `View` / `Window` / `Button` (background levels),
+// `ForegroundNormal` / `ForegroundInactive` (text), `Foreground{Positive,
+// Negative,Neutral,Link}` (status), and `Selection` (accent-driven).
+// A few tokens (borders, faint text, the `-soft` / `-text` status
+// variants) have no direct Breeze role and are derived from one, as noted.
+// A drift-guard test (tests/theme_breeze.rs) parses this file and asserts
+// each fixed-hex token equals its Breeze value; the full provenance table
+// lives in docs/gui/theme-breeze.md.
+//
+// `dark-mode` is a thin alias over `Palette.color-scheme`, which is
+// driven by `xdg-desktop-portal`'s
+// `org.freedesktop.appearance / color-scheme` via Slint's winit
+// backend. Live DE theme changes propagate through the binding chain
+// without code on our end. The app intentionally has no override —
+// users get whatever the desktop reports.
+//
+// When adding a new token: add the property here, derive it from a Breeze
+// role where one applies, note the role, and reference it via `Theme.foo`.
+
+import { Palette } from "std-widgets.slint";
+
+export global Theme {
+    /// Convenience alias for `Palette.color-scheme == ColorScheme.dark`,
+    /// kept so brush bindings stay short. Reactive: portal change →
+    /// `Palette.color-scheme` updates → this re-evaluates → all
+    /// downstream brushes re-evaluate.
+    out property <bool> dark-mode: Palette.color-scheme == ColorScheme.dark;
+
+    // -- Surfaces --
+    //
+    // Breeze's three background levels, assigned so the panels read as
+    // list views and the cards as the text/UI surface:
+    //   View   — the list-view / panel extreme (black in dark, white in light)
+    //   Window — the primary text-and-controls background (a mid tone)
+    //   Button — a raised control fill
+    //
+    // surface = card / dialog / toast body → Breeze Window:BackgroundNormal
+    // (the mid-tone surface text and controls sit on — not the black/white
+    // extreme).
+    out property <brush> surface: dark-mode ? #202326 : #eff0f1;
+    // surface2 = input / control field (ThemedSelect, ThemedSpinBox,
+    // LineEditField) → Breeze Button:BackgroundNormal.
+    out property <brush> surface2: dark-mode ? #292c30 : #fcfcfc;
+    // surface-alt = the app background behind the cards, and the master-list
+    // panel → Breeze View:BackgroundNormal (the list-view surface; black in
+    // dark, white in light).
+    out property <brush> surface-alt: dark-mode ? #141618 : #ffffff;
+    // Functional overlays — not Breeze palette colors. Same alpha in both
+    // schemes: a 50%-black modal scrim, and a lighter elevation-shadow
+    // tint fed to Slint's `drop-shadow-color`.
+    out property <brush> scrim: #00000080;
+    out property <brush> drop-shadow: #00000060;
+
+    // -- Sidebar --
+    //
+    // Left nav panel → Breeze Window:BackgroundNormal (the mid tone),
+    // the same surface as the master-list header band. Selected items
+    // render with the live `accent`.
+    out property <brush> sidebar: dark-mode ? #202326 : #eff0f1;
+    out property <brush> sidebar-text: dark-mode ? #fcfcfc : #232629;      // *:ForegroundNormal
+    out property <brush> sidebar-text-dim: dark-mode ? #a1a9b1 : #707d8a;  // *:ForegroundInactive
+    out property <color> sidebar-selected: accent;
+    out property <brush> sidebar-hover: dark-mode ? #292c30 : #e3e5e7;     // Window:BackgroundAlternate
+
+    // -- Borders --
+    //
+    // Breeze defines no standalone border color; these are the frame shade
+    // KDE draws around cards / inputs — the Window/View background stepped
+    // toward the foreground. `border-strong` is a heavier step.
+    out property <brush> border: dark-mode ? #31363b : #bcc0c4;
+    out property <brush> border-strong: dark-mode ? #45494f : #9fa4aa;
+
+    // -- Text --
+    out property <color> text: dark-mode ? #fcfcfc : #232629;        // *:ForegroundNormal
+    out property <brush> text-dim: dark-mode ? #a1a9b1 : #707d8a;    // *:ForegroundInactive
+    // Fainter than dim (Breeze has a single inactive level):
+    // ForegroundInactive shaded toward the background.
+    out property <brush> text-faint: dark-mode ? #6e757e : #9096a0;
+
+    // -- Accent --
+    //
+    // `accent` is the user's DE-chosen accent color. Rust pushes it here
+    // at startup and on `SettingChanged` from
+    // `org.freedesktop.appearance.accent-color` (xdg-desktop-portal 1.18+,
+    // supported by KDE 6 / GNOME 46+ / Cosmic / Elementary). When the
+    // portal isn't available or the user has no preference, the binding
+    // stays at the default below — Breeze's own blue
+    // (Selection:BackgroundNormal / DecorationFocus, 61,174,233).
+    in-out property <color> accent: #3daee9;
+    // The keyboard-focus ring the focusable widgets draw: the accent,
+    // so it tracks the DE like Breeze's DecorationFocus.
+    out property <color> focus-ring: accent;
+    // The desktop's monospace family by name, set from Rust at startup;
+    // empty, the default font, until it lands.
+    in-out property <string> mono-font;
+    // Hover / pressed state for filled accent buttons. Light mode darkens,
+    // dark mode brightens, so the bg shift stays visible against the
+    // surface in either scheme.
+    out property <color> accent-pressed: dark-mode
+        ? accent.brighter(0.18)
+        : accent.darker(0.22);
+    // Selection background — accent at low alpha, alpha-composited onto the
+    // surface underneath. Higher alpha in dark mode keeps the tint visible.
+    out property <color> accent-soft: dark-mode
+        ? accent.with-alpha(0.25)
+        : accent.with-alpha(0.15);
+
+    // -- Status colors --
+    //
+    // Base hues from Breeze Foreground{Positive,Negative,Neutral,Link}
+    // (mode-invariant except Link). Each triple derives from its base:
+    // `-soft` = the base at low alpha (a tint wash for badges / banners),
+    // `-text` = the base brightened in dark / darkened in light so it stays
+    // legible on the soft wash.
+    out property <color> success: #27ae60;                                          // *:ForegroundPositive
+    out property <color> success-soft: dark-mode ? success.with-alpha(0.22) : success.with-alpha(0.14);
+    out property <color> success-text: dark-mode ? success.brighter(0.35) : success.darker(0.15);
+
+    out property <color> danger: #da4453;                                           // *:ForegroundNegative
+    out property <color> danger-soft: dark-mode ? danger.with-alpha(0.22) : danger.with-alpha(0.14);
+    out property <color> danger-text: dark-mode ? danger.brighter(0.35) : danger.darker(0.15);
+
+    out property <color> warn: #f67400;                                             // *:ForegroundNeutral
+    out property <color> warn-soft: dark-mode ? warn.with-alpha(0.22) : warn.with-alpha(0.14);
+    out property <color> warn-text: dark-mode ? warn.brighter(0.35) : warn.darker(0.15);
+
+    out property <color> info: dark-mode ? #1d99f3 : #2980b9;                        // *:ForegroundLink
+    out property <color> info-soft: dark-mode ? info.with-alpha(0.22) : info.with-alpha(0.14);
+    out property <color> info-text: dark-mode ? info.brighter(0.35) : info.darker(0.15);
+
+    // -- Chips / inline tags --
+    out property <brush> chip: dark-mode ? #292c30 : #e3e5e7;        // Window:BackgroundAlternate
+    out property <brush> chip-text: dark-mode ? #fcfcfc : #232629;   // *:ForegroundNormal
+    out property <brush> chip-border: dark-mode ? #31363b : #bcc0c4; // = border (frame shade)
+
+    // -- List rows --
+    out property <brush> row-hover: dark-mode ? #292c30 : #e3e5e7;   // Window:BackgroundAlternate
+    // Breeze's Selection role is the accent, so a selected row is a soft
+    // accent wash (tracking the DE accent + focus ring) — but the label
+    // keeps the normal text color rather than being tinted to the accent,
+    // so it stays legible against the wash.
+    out property <color> row-selected: dark-mode ? accent.with-alpha(0.24) : accent.with-alpha(0.16);
+    out property <color> row-selected-text: text;
+
+    // A pad maker's own color, behind its mark on the pad's tile. The
+    // same in both modes: each reads with white on it.
+    out property <brush> maker-sony: #00439c;
+    out property <brush> maker-microsoft: #107c10;
+    out property <brush> maker-nintendo: #e60012;
+    out property <brush> maker-8bitdo: #5a5d61;
+    out property <brush> maker-valve: #2a475e;
+}

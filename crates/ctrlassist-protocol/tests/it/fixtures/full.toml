@@ -1,0 +1,34 @@
+[source.one]
+pad = "0a:1b:2c:3d:4e:14"
+
+[source.two]
+pad = "a4:5e:60:c1:22:07"
+
+[source.helper]
+pad = "1a:2b:3c:4d:5e:da"
+deadzone = 0.15  # this one's stick is worn
+
+[node.share]
+demux = "unicast"
+input = "helper"
+outputs = 2
+
+[node.first]
+mux = "priority"
+inputs = ["one", "share.0"]  # later inputs outrank earlier ones
+
+[node.second]
+mux = "priority"
+inputs = ["two", "share.1"]
+engage = 0.2
+release = 0.1
+rules = { trigger = "blended" }  # priority everywhere else
+feedback = ["two"]  # the helper doesn't feel this game
+
+[sink.player-one]
+input = "first"
+identity = "generic"
+
+[sink.player-two]
+input = "second"
+identity = "xbox"

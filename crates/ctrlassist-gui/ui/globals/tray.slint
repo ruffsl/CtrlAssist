@@ -1,0 +1,34 @@
+// The tray's notification switches, and what the Settings pane asks of
+// the tray. Rust sets the state from the SDK's tray client and binds the
+// callbacks to its rpcs.
+//
+// The tray owns the switches and keeps them in its own file. While no
+// tray is running (`available` false) the pane shows the switches as
+// they were last known, disabled.
+
+export struct TrayNotificationSettings {
+    setup-started: bool,
+    setup-trouble: bool,
+    pad-connection: bool,
+    refused: bool,
+}
+
+export global Tray {
+    /// A tray is running and serving its settings.
+    in property <bool> available: false;
+    /// The switches as the tray last published them; all on until it
+    /// has, which is what a tray that was never told anything holds.
+    in property <TrayNotificationSettings> notifications: {
+        setup-started: true,
+        setup-trouble: true,
+        pad-connection: true,
+        refused: true,
+    };
+    /// The file the tray keeps them in, once it has said.
+    in property <string> config-path;
+    /// Set one switch, by its key in the tray's file (`setup_started`,
+    /// `setup_trouble`, `pad_connection`, `refused`).
+    callback set-notification(string, bool);
+    /// Have the tray show a notification whatever the switches say.
+    callback send-test-notification();
+}

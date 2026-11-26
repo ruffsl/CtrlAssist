@@ -1,0 +1,60 @@
+# Version-bump + CHANGELOG automation via release-plz (config: .config/release-plz.toml).
+#
+# On every push to `main`, release-plz opens/updates a single "release" PR
+# that bumps the shared workspace version (from the conventional-commit
+# history) and regenerates the per-crate CHANGELOGs. Merging that PR lands
+# the bump on `main` — that's how you cut a release. Then tag `vX.Y.Z` to
+# build and verify the distro packages (release.yml).
+#
+# Prerequisite: the repo setting "Allow GitHub Actions to create and
+# approve pull requests" must be enabled so this job can open its PR.
+name: Release PR
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Nothing by default: the job grants itself what it needs.
+permissions: {}
+
+# One open release PR at a time; never cancel an in-flight update.
+concurrency:
+  group: release-plz-pr-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-plz-pr:
+    name: Release PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libudev-dev libsystemd-dev libfontconfig1-dev pkg-config
+
+      - name: Toolchain
+        run: rustup show
+
+      - name: Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Release-plz PR
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

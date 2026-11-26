@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ctrlassist-gui": {
+      "type": "http",
+      "url": "http://127.0.0.1:9315/mcp"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+# release-plz drives the release bump. `just release-bump` runs
+# `release-plz update` locally, which bumps the shared workspace version
+# (`version.workspace`) and writes the CHANGELOGs, and the result merges
+# as a `chore(release)` PR. The release-PR workflow
+# (.github/workflows/release-plz.yml) can do the same on each push to
+# main. Nothing is published to crates.io: every crate is `publish =
+# false`. After TisVlay's.
+#
+# `git_release_enable = false`: release-plz creates no GitHub release;
+# release.yml owns that, as the draft it makes for a `v*` tag.
+[workspace]
+git_release_enable = false
+# Every `feat` bumps the minor, at 0.x too. The daemon and its clients
+# check each other's release on `major.minor`
+# (`ctrlassist_protocol::compatible`), so a protocol change must never
+# ship as a patch.
+features_always_increment_minor = true

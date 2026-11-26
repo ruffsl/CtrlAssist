@@ -1,0 +1,458 @@
+//! The mux node: several pads in, one out.
+
+use crate::control::{
+    AXES, AxisBits, ButtonBits, Contact, Control, Group, Kind, Layout, PadState, Touchpad, gamepad,
+};
+use crate::graph::GraphError;
+
+/// How a group's output is chosen from the inputs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Rule {
+    /// The highest input that is active on the group owns every member of
+    /// it; with none active, the first input does.
+    Owned,
+    /// Each member takes the input furthest from rest; a button is pressed
+    /// if any input holds it.
+    Largest,
+    /// Each axis is the mean of the inputs active on the group; a button
+    /// is pressed if any input holds it.
+    Blended,
+    /// The input the switch last selected owns the group.
+    Switched,
+}
+
+/// The mux modes, each a table of rules by group kind.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// The assist overrides what it touches; the larger trigger wins.
+    Priority,
+    /// Sticks and triggers blend; buttons combine.
+    Average,
+    /// One pad at a time, handed over by the switch.
+    Toggle,
+}
+
+impl Mode {
+    /// The rule this mode applies to a group of the given kind.
+    #[must_use]
+    pub fn rule(self, kind: Kind) -> Rule {
+        match (self, kind) {
+            (Self::Toggle, _) => Rule::Switched,
+            (Self::Priority, Kind::Trigger) => Rule::Largest,
+            (Self::Priority, _) => Rule::Owned,
+            (Self::Average, Kind::Stick | Kind::Trigger) => Rule::Blended,
+            (Self::Average, Kind::Button | Kind::Hat) => Rule::Largest,
+        }
+    }
+
+    /// The rule this mode applies to the touchpad's contacts, as
+    /// [`MuxConfig::touchpad`] reads one: in priority the assist's
+    /// touchpad while they touch it, in average whoever touched first, in
+    /// toggle the selected pad's.
+    #[must_use]
+    pub fn touchpad(self) -> Rule {
+        match self {
+            Self::Priority => Rule::Owned,
+            Self::Average => Rule::Blended,
+            Self::Toggle => Rule::Switched,
+        }
+    }
+}
+
+/// The button that raises a mux's switch. It is consumed: the game never
+/// sees it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Switch {
+    /// The input whose button it is, or any input.
+    pub input: Option<usize>,
+    /// The button.
+    pub button: Control,
+}
+
+/// Which inputs a mux passes feedback back to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MuxFeedback {
+    /// None of them.
+    None,
+    /// A fixed set, as a mask over the inputs, whoever is providing input.
+    Inputs(u32),
+    /// The inputs that can currently reach the output: the selected one if
+    /// any group is switched, otherwise all of them.
+    Active,
+}
+
+/// A mux node's settings.
+///
+/// Motion is no group's, and no rule covers it: a mux takes it whole from
+/// one input, the one selected if it [`selects`](Self::selects), as a
+/// toggle does, and otherwise its first, a preset's primary. The
+/// touchpad's contacts are taken whole from one input too, never a finger
+/// from each, by a [rule of their own](Self::touchpad).
+#[derive(Clone, PartialEq, Debug)]
+pub struct MuxConfig {
+    /// The rule for each group.
+    pub rules: Vec<(Group, Rule)>,
+    /// The rule for a button in no group, as a group of one.
+    pub ungrouped_buttons: Rule,
+    /// The rule for an axis in no group, as a group of one.
+    pub ungrouped_axes: Rule,
+    /// Whose touchpad the contacts are, an input being active on it while
+    /// it has a finger down. `Owned`: the highest input touching, and the
+    /// first with none. `Switched`: the input selected, the first on a mux
+    /// that doesn't [select](Self::selects). `Largest` and
+    /// `Blended`, places having no mean: the input that touched first,
+    /// until it lifts. When the input changes with a finger down on both
+    /// sides of the change, one step shows the fingers lifted, where they
+    /// were, so that nothing reads the change as a finger's movement.
+    pub touchpad: Rule,
+    /// An input becomes active on a group at or above this.
+    pub engage: f32,
+    /// An active input stops being active on a group below this.
+    pub release: f32,
+    /// What raises the switch, besides a client asking.
+    pub switch: Option<Switch>,
+    /// The button that hands motion over while it is held: while its
+    /// input holds it, the motion is that input's, both sensors, in
+    /// place of the input's it would be; let go, it is that one's again
+    /// at the next step. It is one input's, never any's, and like the
+    /// switch's it is consumed: the game never sees it, and the same
+    /// button of another input is left alone.
+    pub gyro: Option<Switch>,
+    /// Where feedback goes.
+    pub feedback: MuxFeedback,
+}
+
+impl MuxConfig {
+    /// A mode's rules over a layout, with the default thresholds. Toggle
+    /// switches on the second input's Mode button.
+    #[must_use]
+    pub fn new(mode: Mode, layout: &Layout) -> Self {
+        Self {
+            rules: layout
+                .groups
+                .iter()
+                .map(|(group, kind)| (*group, mode.rule(*kind)))
+                .collect(),
+            ungrouped_buttons: mode.rule(Kind::Button),
+            ungrouped_axes: mode.rule(Kind::Stick),
+            touchpad: mode.touchpad(),
+            engage: 0.1,
+            release: 0.05,
+            switch: (mode == Mode::Toggle).then_some(Switch {
+                input: Some(1),
+                button: gamepad::MODE,
+            }),
+            gyro: None,
+            feedback: MuxFeedback::Active,
+        }
+    }
+
+    /// Whether anything the mux outputs follows the input selected, by
+    /// a switch or a client: whether any group it has is `Switched`. One
+    /// that doesn't has no use for a switch.
+    #[must_use]
+    pub fn selects(&self) -> bool {
+        let mut buttons: ButtonBits = 0;
+        let mut axes: AxisBits = 0;
+        for (group, _) in &self.rules {
+            buttons |= group.buttons;
+            axes |= group.axes;
+        }
+        // Controls in no group are groups of one under the ungrouped
+        // rules, where there are any.
+        self.rules.iter().any(|(_, rule)| *rule == Rule::Switched)
+            || (self.ungrouped_buttons == Rule::Switched && buttons != ButtonBits::MAX)
+            || (self.ungrouped_axes == Rule::Switched && axes != AxisBits::MAX)
+    }
+}
+
+pub(crate) struct Mux {
+    config: MuxConfig,
+    inputs: usize,
+    /// The configured groups, then one group per axis that is in none.
+    rules: Vec<(Group, Rule)>,
+    /// Buttons in no group. As groups of one they need no activity state:
+    /// every rule but `Switched` comes to "down if any input holds it".
+    loose_buttons: ButtonBits,
+    /// Whether any group follows the selection.
+    selects: bool,
+    /// Per group, which inputs are active on it, as a mask.
+    active: Vec<u32>,
+    selected: usize,
+    /// Which inputs were present at the last step, as a mask.
+    present: u32,
+    switch_down: bool,
+    /// The input the touchpad's contacts were last taken from.
+    touched: usize,
+    /// The contacts last put out.
+    contacts: Touchpad,
+}
+
+/// Whether a pad has a finger on its touchpad.
+fn touching(state: &PadState) -> bool {
+    state.touchpad().contacts().iter().any(Contact::down)
+}
+
+fn copy_group(out: &mut PadState, from: &PadState, group: &Group) {
+    let buttons = out.buttons_mut();
+    *buttons = (*buttons & !group.buttons) | (from.buttons() & group.buttons);
+    for index in 0..AXES {
+        if group.axes & (1 << index) != 0 {
+            out.axes_mut()[index] = from.axes()[index];
+        }
+    }
+}
+
+impl Mux {
+    /// Checks everything a profile can say about a mux.
+    pub(crate) fn validate(config: &MuxConfig, inputs: usize) -> Result<(), GraphError> {
+        // 0 < release <= engage <= 1, which a value that isn't a number
+        // fails. Activity runs from 0 to 1, so an engage above 1 is never
+        // reached, and a release of 0 is never gone below: an input that
+        // touched a group once would hold it for good.
+        let thresholds_ok =
+            config.release > 0.0 && config.release <= config.engage && config.engage <= 1.0;
+        if !thresholds_ok {
+            return Err(GraphError::BadThreshold);
+        }
+        if let Some(switch) = config.switch {
+            let is_button = matches!(switch.button, Control::Button(_)) && switch.button.is_valid();
+            // A switch is taken out of the input whatever it does, so on
+            // a mux that never selects it would only keep a button from
+            // the game.
+            let selects = config.selects();
+            if !is_button || switch.input.is_some_and(|input| input >= inputs) || !selects {
+                return Err(GraphError::BadControl);
+            }
+        }
+        if let Some(gyro) = config.gyro {
+            let is_button = matches!(gyro.button, Control::Button(_)) && gyro.button.is_valid();
+            // Whose motion it hands over has to be said, and a button
+            // that also raised the switch would do both at each press.
+            let on_an_input = gyro.input.is_some_and(|input| input < inputs);
+            let is_the_switch = config.switch.is_some_and(|switch| {
+                switch.button == gyro.button
+                    && (switch.input.is_none() || switch.input == gyro.input)
+            });
+            if !is_button || !on_an_input || is_the_switch {
+                return Err(GraphError::BadControl);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn new(config: MuxConfig, inputs: usize) -> Self {
+        let mut buttons: ButtonBits = 0;
+        let mut axes: AxisBits = 0;
+        for (group, _) in &config.rules {
+            buttons |= group.buttons;
+            axes |= group.axes;
+        }
+        let mut rules = config.rules.clone();
+        for axis in 0..AXES {
+            if axes & (1 << axis) == 0 {
+                let group = Group {
+                    buttons: 0,
+                    axes: 1 << axis,
+                };
+                rules.push((group, config.ungrouped_axes));
+            }
+        }
+        Self {
+            active: vec![0; rules.len()],
+            rules,
+            loose_buttons: !buttons,
+            selects: config.selects(),
+            config,
+            inputs,
+            selected: 0,
+            present: u32::MAX,
+            switch_down: false,
+            touched: 0,
+            contacts: Touchpad::UNTOUCHED,
+        }
+    }
+
+    /// Moves the selection to the next input that is present.
+    pub(crate) fn switch(&mut self) {
+        for step in 1..=self.inputs {
+            let candidate = (self.selected + step) % self.inputs;
+            if self.present & (1 << candidate) != 0 {
+                self.selected = candidate;
+                return;
+            }
+        }
+    }
+
+    /// Selects an input by index, as a client asks. Does nothing if it is
+    /// out of range, so a repeated or stale request is harmless.
+    pub(crate) fn select(&mut self, input: usize) {
+        if input < self.inputs {
+            self.selected = input;
+        }
+    }
+
+    /// The input the switch last selected, if anything here follows the
+    /// switch.
+    pub(crate) fn selected(&self) -> Option<usize> {
+        self.selects.then_some(self.selected)
+    }
+
+    /// The input motion comes from: the one
+    /// selected if anything here follows the selection, otherwise the
+    /// first.
+    fn carrier(&self) -> usize {
+        self.selected().unwrap_or(0)
+    }
+
+    /// The inputs feedback goes to, as a mask.
+    pub(crate) fn feedback_inputs(&self) -> u32 {
+        let all = (1 << self.inputs) - 1;
+        match self.config.feedback {
+            MuxFeedback::None => 0,
+            MuxFeedback::Inputs(mask) => mask & all,
+            MuxFeedback::Active if self.selects => 1 << self.selected,
+            MuxFeedback::Active => all,
+        }
+    }
+
+    /// Computes the output from the inputs. `present` says which inputs
+    /// are connected; an absent one is expected to read as at rest.
+    pub(crate) fn step(&mut self, inputs: &mut [PadState], present: u32, out: &mut PadState) {
+        self.present = present;
+        // The switch button raises the switch on its press, once, and is
+        // then removed so nothing downstream sees it.
+        if let Some(Switch {
+            input,
+            button: Control::Button(button),
+        }) = self.config.switch
+        {
+            let bit = (1 as ButtonBits) << button;
+            let mut down = false;
+            for (index, state) in inputs.iter_mut().enumerate() {
+                if input.is_none_or(|input| input == index) {
+                    down |= state.buttons() & bit != 0;
+                    *state.buttons_mut() &= !bit;
+                }
+            }
+            if down && !self.switch_down {
+                self.switch();
+            }
+            self.switch_down = down;
+        }
+        // The selection never rests on an input that is gone.
+        if present & (1 << self.selected) == 0 {
+            self.switch();
+        }
+
+        // Buttons in no group, all at once.
+        *out = PadState::NEUTRAL;
+        let loose = if self.config.ungrouped_buttons == Rule::Switched {
+            inputs[self.selected].buttons()
+        } else {
+            inputs.iter().fold(0, |held, state| held | state.buttons())
+        };
+        *out.buttons_mut() = loose & self.loose_buttons;
+
+        // Motion, whole from one input and never blended: a game sees
+        // one pad's two sensors, which agree. The input that holds the
+        // button that hands it over has it while it does, and the button
+        // is removed.
+        let mut carrier = self.carrier();
+        if let Some(Switch {
+            input: Some(input),
+            button: Control::Button(button),
+        }) = self.config.gyro
+            && let Some(state) = inputs.get_mut(input)
+        {
+            let bit = (1 as ButtonBits) << button;
+            if state.buttons() & bit != 0 {
+                carrier = input;
+            }
+            *state.buttons_mut() &= !bit;
+        }
+        out.set_motion(inputs[carrier].motion());
+
+        // The touchpad, whole from one input too.
+        let from = match self.config.touchpad {
+            Rule::Switched => self.selected,
+            Rule::Owned => inputs.iter().rposition(touching).unwrap_or(0),
+            Rule::Largest | Rule::Blended if touching(&inputs[self.touched]) => self.touched,
+            Rule::Largest | Rule::Blended => {
+                inputs.iter().position(touching).unwrap_or(self.touched)
+            }
+        };
+        let contacts = inputs[from].touchpad();
+        let was_down = self.contacts.contacts().iter().any(Contact::down);
+        self.contacts = if from != self.touched && was_down && touching(&inputs[from]) {
+            // One pad's finger gives way to another's: lifted first, where
+            // it was, and the other's is put down at the next step.
+            Touchpad::new(
+                self.contacts
+                    .contacts()
+                    .map(|contact| Contact::new(false, contact.x(), contact.y())),
+            )
+        } else {
+            contacts
+        };
+        self.touched = from;
+        out.set_touchpad(self.contacts);
+
+        for (index, (group, rule)) in self.rules.iter().enumerate() {
+            let active = &mut self.active[index];
+            for (input, state) in inputs.iter().enumerate() {
+                let activity = group.activity(state);
+                if activity >= self.config.engage {
+                    *active |= 1 << input;
+                } else if activity < self.config.release {
+                    *active &= !(1 << input);
+                }
+            }
+            match rule {
+                Rule::Owned => {
+                    let owner = if *active == 0 {
+                        0
+                    } else {
+                        (31 - active.leading_zeros()) as usize
+                    };
+                    copy_group(out, &inputs[owner], group);
+                }
+                Rule::Switched => copy_group(out, &inputs[self.selected], group),
+                Rule::Largest | Rule::Blended => {
+                    let mut buttons = 0;
+                    for state in inputs.iter() {
+                        buttons |= state.buttons() & group.buttons;
+                    }
+                    *out.buttons_mut() = (out.buttons() & !group.buttons) | buttons;
+                    for axis in 0..AXES {
+                        if group.axes & (1 << axis) == 0 {
+                            continue;
+                        }
+                        out.axes_mut()[axis] = if *rule == Rule::Largest {
+                            inputs.iter().map(|state| state.axes()[axis]).fold(
+                                0.0,
+                                |best: f32, value| {
+                                    if value.abs() > best.abs() {
+                                        value
+                                    } else {
+                                        best
+                                    }
+                                },
+                            )
+                        } else if *active == 0 {
+                            inputs[0].axes()[axis]
+                        } else {
+                            let mut sum = 0.0;
+                            for (input, state) in inputs.iter().enumerate() {
+                                if *active & (1 << input) != 0 {
+                                    sum += state.axes()[axis];
+                                }
+                            }
+                            sum / active.count_ones() as f32
+                        };
+                    }
+                }
+            }
+        }
+    }
+}

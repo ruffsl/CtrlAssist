@@ -7,34 +7,316 @@ on:
   pull_request:
     branches:
       - "main"
+    # Drafts skip the heavy jobs, so marking a PR ready starts a full run.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 env:
   CARGO_TERM_COLOR: always
 
+# Default for every job; a job widens it only where it needs to.
+permissions:
+  contents: read
+
+# A new push to a PR cancels that PR's in-progress run. Pushes to main
+# group by commit, so none is ever cancelled or replaced.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The jobs dispatch through `just`, so a failure here reproduces locally
+# with the recipe of the same name.
 jobs:
-  build:
+  # Which jobs this change needs. GitHub's `paths` filters only gate whole
+  # workflows, so the gate is a job whose outputs the others read.
+  changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify
+        id: classify
+        env:
+          # A PR checks out its merge commit, whose first parent is main.
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || github.event.before }}
+        run: |
+          # Fail open: no diff, or an empty one, runs everything.
+          if ! files=$(git diff --name-only "$BASE" HEAD) || [ -z "$files" ]; then
+            printf 'code=true\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Docs-only paths. Crate READMEs are not: they're doctests.
+          docs='^(docs/|\.claude/|README\.md$|LICENSE$|\.github/(CONTRIBUTING|SECURITY|pull_request_template)\.md$|\.github/ISSUE_TEMPLATE/)'
+          code=false; grep -qvE "$docs" <<< "$files" && code=true
+          printf 'code=%s\n' "$code" >> "$GITHUB_OUTPUT"
+
+  # File checks, spelling and the workflow linters on every run, drafts
+  # and docs-only changes included.
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned to the dev shell's versions, so local and CI agree.
       - name: Setup
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: |
+            just
+            shellcheck@0.11.0
+            typos@1.52.0
+            zizmor@1.32.0
+
+      # actionlint isn't in install-action's manifest, and it's a Go program,
+      # not a crate, so the cargo-binstall fallback can't install it. Fetch
+      # the release pinned to the flake's version, and check it against the
+      # digest from that release's checksums file.
+      - name: actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v$VERSION/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "$SHA256  $archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: File checks
+        uses: j178/prek-action@44924fe9ef4a6f88253c4b6b1bf11c689d3ce53d # v3.1.0
+        env:
+          # zizmor's online audits (such as a pinned SHA that doesn't match
+          # its version comment) read the GitHub API.
+          GH_TOKEN: ${{ github.token }}
+        with:
+          extra-args: >-
+            --all-files
+            check-added-large-files check-merge-conflict check-toml
+            check-yaml end-of-file-fixer trailing-whitespace typos
+            actionlint zizmor
+
+  ci:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # The OIDC token the Codecov upload authenticates with.
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # libudev for the udev crate, libsystemd for the hiding service's
+      # session check, fontconfig for the settings window, which links it.
+      - name: System libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libudev-dev
-      - name: Cache
-        uses: actions/cache@v4
+          sudo apt-get install -y --no-install-recommends \
+            libudev-dev libsystemd-dev libfontconfig1-dev pkg-config
+
+      - name: Toolchain
+        run: rustup component add llvm-tools-preview && rustup show
+
+      # Tools whose output can differ between releases (formatters, linters,
+      # dictionaries, the license bundle) are pinned to the flake's versions
+      # so local and CI agree; bump them together after a `nix flake update`.
+      # cargo-about is for the licenses-html hook the Lint step runs.
+      - name: Setup
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build
-        run: cargo build --verbose
+          tool: |
+            cargo-about@0.9.1
+            cargo-deny@0.20.2
+            cargo-llvm-cov
+            cargo-nextest
+            cargo-shear@1.14.0
+            just
+            tombi@1.7.1
+            typos@1.52.0
+
+      - name: Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-on-failure: true
+
+      # The hooks the Test step doesn't repeat: it builds, lints and tests
+      # under coverage itself. The workflow linters ran in the checks job.
+      - name: Lint
+        uses: j178/prek-action@44924fe9ef4a6f88253c4b6b1bf11c689d3ce53d # v3.1.0
+        with:
+          extra-args: >-
+            --all-files
+            --skip build
+            --skip clippy
+            --skip test
+            --skip actionlint
+            --skip zizmor
+
+      # A runner is nobody's seat, so nothing gives its user uinput, uhid,
+      # the event nodes or a pad's raw node. Open them on this throwaway
+      # machine, and make a test that still can't make a fake pad fail
+      # instead of skipping. The PlayStation driver, which a fake DualSense
+      # is bound by, is in the kernel's extra modules where the runner's
+      # image leaves them out.
+      - name: Let the tests make fake pads
+        run: |
+          sudo modprobe uinput
+          sudo modprobe uhid
+          sudo modprobe hid-playstation || {
+            sudo apt-get update
+            sudo apt-get install --yes "linux-modules-extra-$(uname -r)"
+            sudo modprobe hid-playstation
+          }
+          echo 'KERNEL=="uinput", MODE="0666"' | sudo tee /etc/udev/rules.d/99-ctrlassist-ci.rules
+          echo 'KERNEL=="uhid", MODE="0666"' | sudo tee --append /etc/udev/rules.d/99-ctrlassist-ci.rules
+          echo 'SUBSYSTEM=="input", MODE="0666"' | sudo tee --append /etc/udev/rules.d/99-ctrlassist-ci.rules
+          echo 'SUBSYSTEM=="hidraw", MODE="0666"' | sudo tee --append /etc/udev/rules.d/99-ctrlassist-ci.rules
+          sudo udevadm control --reload
+          sudo udevadm trigger --settle
+
       - name: Test
-        run: cargo test --verbose
-      - name: Clippy
-        run: cargo clippy -- -D warnings
-      - name: Format
-        run: cargo fmt -- --check
+        run: just test-ci
+        env:
+          CTRLASSIST_REQUIRE_FAKE_PADS: "1"
+
+      # Coverage trends and PR diff annotations on Codecov (free for OSS).
+      # It authenticates with GitHub's OIDC token, so no secret is stored.
+      # A PR from a fork gets no OIDC token; it uploads without one, which
+      # Codecov accepts for forks of public repos.
+      - name: Upload to Codecov
+        if: ${{ !cancelled() && hashFiles('lcov.info') != '' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: lcov.info
+          disable_search: true
+          use_oidc: ${{ !github.event.pull_request.head.repo.fork }}
+          # An upload error warns but never fails CI: `CI result` is a
+          # required check, so a Codecov outage would block every merge.
+          # Coverage is gated by the floor in `just test-ci`.
+          fail_ci_if_error: false
+
+      - name: Upload coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          retention-days: 14
+
+      # The JUnit results for test-report.yml, which turns them into the
+      # "Tests" check run: a fork PR's token here is read-only and can't
+      # create one. hashFiles guard: if a step before nextest failed there
+      # is no JUnit file, and test-report.yml skips a run without the
+      # artifact.
+      - name: Upload test results
+        if: ${{ !cancelled() && hashFiles('target/nextest/ci/junit.xml') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
+
+  # The workspace still builds on the oldest compiler it claims to support.
+  msrv:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # As in the ci job: `--all-targets` builds the settings window too.
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libudev-dev libsystemd-dev libfontconfig1-dev pkg-config
+
+      # The floor is read from Cargo.toml, padded to x.y.z for rustup.
+      - name: Toolchain
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          case "$msrv" in *.*.*) ;; *) msrv="$msrv.0" ;; esac
+          rustup toolchain install "$msrv" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
+
+      - name: Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: msrv
+
+      - name: Check
+        run: cargo check --workspace --all-targets --all-features --locked
+
+  # The user guide: its generated pages match the code, it builds, and its
+  # local links and anchors resolve.
+  # It runs for a docs-only change too, which is the change most likely to
+  # break it.
+  docs:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libudev-dev libsystemd-dev pkg-config
+
+      - name: Toolchain
+        run: rustup show
+
+      - name: Setup
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: |
+            lychee@0.24.2
+            mdbook@0.5.4
+            just
+
+      - name: Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: docs
+
+      # A stale generated page would ship a reference that no longer
+      # matches the command.
+      - name: Generated pages
+        run: just docs-gen-check
+
+      - name: Build and check links
+        run: just docs-links
+
+  # The one check a branch ruleset needs to require: it passes only if
+  # every job above passed or was skipped.
+  ci-result:
+    name: CI result
+    if: ${{ always() }}
+    needs: [changes, checks, ci, msrv, docs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Result
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1
