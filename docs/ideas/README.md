@@ -47,4 +47,4 @@ Deferred work and designs set aside, one file each. An entry says what the idea 
 ## Feedback
 
 - [`rumble-routing-model.md`](rumble-routing-model.md) — the alternatives to level-based rumble routing and the prior art behind the choice, kept in case it is revisited.
-- [`steam-controller-haptics.md`](steam-controller-haptics.md) — a Steam Controller's trackpad pulses and Steam Input's effects, which nothing a game sends carries.
+- [`steam-controller-haptics.md`](steam-controller-haptics.md) — a Haptics choice of its own beside Rumble, for a trackpad's clicks to go to whoever touches it.

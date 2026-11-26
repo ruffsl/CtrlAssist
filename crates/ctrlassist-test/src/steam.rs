@@ -544,6 +544,22 @@ fn valve_collection(report_47: bool) -> Vec<u8> {
     }
     collection.extend(declared(RUMBLE, 9, OUTPUT));
     collection.extend(declared(PULSE, 7, OUTPUT));
+    // The haptic reports a real pad declares after the pulse, each at
+    // its length after its number: a command, a tone, a sweep and a
+    // built-in effect, as SDL has them, then the four that carry sound
+    // for the actuators, as a real pad's descriptor is published.
+    for (id, length) in [
+        (0x82, 3),
+        (0x83, 9),
+        (0x84, 8),
+        (0x85, 3),
+        (0x86, 3),
+        (0x87, 63),
+        (0x88, 63),
+        (0x89, 63),
+    ] {
+        collection.extend(declared(id, length, OUTPUT));
+    }
     collection.extend(declared(CONTROLLER_COMMANDS, 63, FEATURE));
     collection.extend(declared(RECEIVER_COMMANDS, 63, FEATURE));
     collection.push(0xc0); // End of the collection.
@@ -1624,6 +1640,14 @@ mod tests {
                 (INPUT, 0x79, 2),
                 (OUTPUT, 0x80, 10),
                 (OUTPUT, 0x81, 8),
+                (OUTPUT, 0x82, 4),
+                (OUTPUT, 0x83, 10),
+                (OUTPUT, 0x84, 9),
+                (OUTPUT, 0x85, 4),
+                (OUTPUT, 0x86, 4),
+                (OUTPUT, 0x87, 64),
+                (OUTPUT, 0x88, 64),
+                (OUTPUT, 0x89, 64),
                 (FEATURE, 1, 64),
                 (FEATURE, 2, 64),
             ]

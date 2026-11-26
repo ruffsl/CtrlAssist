@@ -803,6 +803,19 @@ impl Setup {
                 let _ = pad.rumble(*level);
             }
         }
+        // The haptic reports a reader wrote a virtual Steam Controller go
+        // to the pads its feedback goes to, each whole and in order: a
+        // Steam Controller among them is sent it, and no other pad is.
+        for (index, sink) in sinks.iter_mut().enumerate() {
+            let targets = graph.feedback_targets(SinkId(index));
+            while let Some(haptic) = sink.take_haptic() {
+                for source in targets.iter() {
+                    if let Some(Some(pad)) = pads.get_mut(source.0) {
+                        pad.haptic(haptic);
+                    }
+                }
+            }
+        }
         // What the games set on a virtual pad beyond rumble goes to the
         // pads its feedback goes to, as everything they have set: to all
         // of them when a report is new, and to one that has just become

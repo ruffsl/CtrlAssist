@@ -524,7 +524,7 @@ impl Pad {
     /// driver, which puts it back in lizard mode. It is sent nothing of
     /// what [`pass`](Self::pass) is given: a virtual DualSense's lights
     /// and trigger effects are nothing this pad has. Its haptics beyond
-    /// plain rumble are not sent at all (see `output.rs`'s `SteamNode`).
+    /// plain rumble are sent it by [`haptic`](Self::haptic) alone.
     /// The pad's going is its raw node failing or hanging up, or, in a
     /// receiver's slot, the slot saying its pad left.
     ///
@@ -688,6 +688,17 @@ impl Pad {
         match &mut self.output {
             Ok(output) => Ok(output.pass(report)?),
             Err(_) => Ok(()),
+        }
+    }
+
+    /// Sends the pad a haptic report a reader wrote a virtual Steam
+    /// Controller: a pulse, a tone, a built-in effect, sound for its
+    /// actuators, whole and as written. Only a Steam Controller read
+    /// through its raw node takes one; any other pad ignores it. It is
+    /// written without waiting for the pad.
+    pub fn haptic(&self, haptic: crate::Haptic) {
+        if let Ok(output) = &self.output {
+            output.haptic(haptic);
         }
     }
 

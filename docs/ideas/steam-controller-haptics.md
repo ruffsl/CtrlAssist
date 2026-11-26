@@ -1,9 +1,9 @@
-# A Steam Controller's richer haptics
+# A Haptics choice beside Rumble
 
-A Steam Controller (2026) has haptics beyond the two-motor rumble every pad is sent: a pulse on either trackpad (output report `0x81`, which the kernel's driver sends as lizard mode changes), and the reports after it, `0x82` to `0x89`, which Steam Input uses for its own effects. A setup sends the pad only a rumble level, as its own rumble report.
+A virtual Steam Controller passes the haptics a reader sends it, past rumble, to the Steam Controllers behind it: a pulse on a trackpad, a tone, a built-in effect, sound for the actuators ([Feedback](../architecture.md#feedback)). They go where rumble goes, by the profile's Rumble choice.
 
-**Why deferred.** Nothing a game sends can carry them. A game's force feedback on a uinput virtual pad, and a virtual DualSense's output report, are rumble, lights and trigger effects; the router's levels are two motors. Only a virtual Steam Controller would be sent them, by a game or Steam that knew it for one, and it would pass them through to a real one behind it as a virtual DualSense passes its output report to a real DualSense ([that idea](virtual-steam-controller.md)).
+**The idea.** A Haptics choice beside Rumble, the same as Rumble by default, that could send a trackpad's haptics to whoever has a finger on that trackpad, which is whom a click is for, or to one pad, both or neither. Each report names its side, left, right or both, so "whoever touches it" can be told from the pad state as the report is passed.
 
-**Would bring it in.** The virtual Steam Controller identity.
+**Why deferred.** It matters only with two real Steam Controllers behind a virtual one, and nobody has felt what is passed today. The maintainer chose the one rule first, on 2026-11-26.
 
-**A field of their own.** With a Steam Controller identity, a game's trackpad pulses go where its rumble goes, by the profile's Rumble choice. A Haptics choice beside it, the same as Rumble by default, could send a trackpad's pulses to whoever has a finger on that trackpad, which is whom a click is for, or to one pad, both or neither. It matters only with two real Steam Controllers behind a virtual one.
+**Would bring it in.** Two people with a Steam Controller each finding that the helper's hands buzz for the player's clicks.

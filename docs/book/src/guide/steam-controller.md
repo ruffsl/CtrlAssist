@@ -21,7 +21,7 @@ Behind any identity but [its own](#as-an-identity), these have no place, so a ga
 - the left trackpad, a DualSense having one touchpad;
 - the capacitive touch of a thumb on a stick or a hand on a grip, and how hard a trackpad is pressed;
 - the back buttons, the quick access button and the triggers' clicks, as buttons of their own;
-- the controller's own haptics beyond plain rumble, such as a pulse on a trackpad, since what a game sends a controller carries none.
+- the controller's own haptics beyond plain rumble, such as a pulse on a trackpad, since what a game sends any other controller carries none.
 
 The lights and trigger effects a game sends a virtual DualSense don't reach it, as they don't reach any controller that is only grabbed ([Identity](./profiles.md#identity)).
 
@@ -31,7 +31,7 @@ A profile's **Identity** can be **Steam Controller**: the virtual controller the
 
 It is for Steam, and for games that read a Steam Controller as Steam does, which those built on a recent SDL do. **Any other game gets nothing from it.** The system keeps every Steam Controller silent to such games until the player holds its Menu button for half a second, a virtual one included, and CtrlAssist leaves that as it is. For those games choose **Xbox** or **DualSense**.
 
-Steam takes a virtual Steam Controller as its own, as it does a real one: it applies its own configuration to it and shows the game a controller of Steam's making. The virtual one keeps the same serial number each time a profile runs, so Steam keeps one configuration for each profile. What Steam writes to it, its settings and any firmware it offers, stays in the virtual controller and never reaches a real one.
+Steam takes a virtual Steam Controller as its own, as it does a real one: it applies its own configuration to it and shows the game a controller of Steam's making. The virtual one keeps the same serial number each time a profile runs, so Steam keeps one configuration for each profile. What Steam writes to it, its settings and any firmware it offers, stays in the virtual controller and never reaches a real one. Its haptics do: the clicks, tones and effects Steam or a game sends the virtual controller's trackpads go on to each real Steam Controller the profile's [Rumble](./profiles.md#rumble) choice names, as they were sent.
 
 It needs Linux 7.3 or newer, as a real one does. **Nobody has tried it with Steam yet**: the system's own driver and SDL take it for the controller, and that is all that has been seen.
 

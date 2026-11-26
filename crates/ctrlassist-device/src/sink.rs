@@ -584,6 +584,16 @@ impl VirtualPad {
         }
     }
 
+    /// The oldest haptic report a reader wrote a virtual Steam Controller
+    /// that nothing has taken yet: one for each call, until none is left.
+    /// No other kind of virtual pad has any.
+    pub fn take_haptic(&mut self) -> Option<steam::Haptic> {
+        match &mut self.kind {
+            Kind::Uinput(_) | Kind::DualSense(_) => None,
+            Kind::Steam(pad) => pad.take_haptic(),
+        }
+    }
+
     /// The last output report a game sent a virtual DualSense, if any
     /// ever came.
     #[must_use]

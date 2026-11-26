@@ -38,8 +38,9 @@ use rustix::event::{PollFd, PollFlags, poll};
 use rustix::fs::OFlags;
 
 use super::{
-    BATTERY, BATTERY_SIZE, FEATURE_PAD, FEATURE_SIZE, PRODUCT_CABLE, RUMBLE, RUMBLE_SIZE, STATE,
-    STATE_PLAIN, STATE_PLAIN_SIZE, STATE_SIZE, VENDOR, WIRELESS, WIRELESS_SIZE,
+    BATTERY, BATTERY_SIZE, FEATURE_PAD, FEATURE_SIZE, HAPTIC_FIRST, HAPTIC_SIZES, Haptic,
+    PRODUCT_CABLE, RUMBLE, RUMBLE_SIZE, STATE, STATE_PLAIN, STATE_PLAIN_SIZE, STATE_SIZE, VENDOR,
+    WIRELESS, WIRELESS_SIZE,
 };
 use crate::sink::{OWN_MARKER, Request};
 
@@ -54,11 +55,10 @@ const BUS_USB: u16 = 3;
 const DRIVER: &str = "/sys/bus/hid/drivers/hid-steam";
 const DRIVER_NAME: &str = "hid-steam";
 
-/// A trackpad's pulse, the output report after rumble
-/// (`REPORT_ID_HAPTIC_PULSE`, `hid-steam.c:330`), and its size, its
-/// number included.
-const PULSE: u8 = 0x81;
-const PULSE_SIZE: usize = 8;
+/// How many haptic reports are kept until the input thread takes them:
+/// it takes them as soon as it has served the pad, so this is room for
+/// what one reader writes in one go. Past it the oldest is let go.
+const HAPTICS_KEPT: usize = 32;
 
 // The commands answered with more than what was set
 // (`ID_GET_ATTRIBUTES_VALUES` and `ID_GET_STRING_ATTRIBUTE`,
@@ -116,9 +116,9 @@ const FEATURE: u8 = 0xb0;
 /// The report descriptor: Valve's vendor collection, each report a run
 /// of bytes of 0 to 255. Every report a Steam Controller on its cable
 /// sends that the kernel's driver or SDL reads is declared at its
-/// length, since the kernel drops one undeclared or short; the two
-/// output reports for rumble and a trackpad's pulse; and the feature
-/// report commands go by.
+/// length, since the kernel drops one undeclared or short; the output
+/// reports for rumble and for every haptic a real pad declares; and the
+/// feature report commands go by.
 pub(crate) fn descriptor() -> Vec<u8> {
     let mut descriptor = vec![
         0x06, 0x00, 0xff, // Usage page: vendor 0xff00.
@@ -137,7 +137,9 @@ pub(crate) fn descriptor() -> Vec<u8> {
         descriptor.extend(declared(id, size, INPUT));
     }
     descriptor.extend(declared(RUMBLE, RUMBLE_SIZE, OUTPUT));
-    descriptor.extend(declared(PULSE, PULSE_SIZE, OUTPUT));
+    for (id, size) in (HAPTIC_FIRST..).zip(HAPTIC_SIZES) {
+        descriptor.extend(declared(id, size, OUTPUT));
+    }
     descriptor.extend(declared(FEATURE_PAD, FEATURE_SIZE, FEATURE));
     descriptor.push(0xc0); // End of the collection.
     descriptor
@@ -263,6 +265,11 @@ pub(crate) struct Emulator {
     level: Level,
     /// Whether the driver has let the pad go since this was last asked.
     stopped: bool,
+    /// The haptic reports a reader has written and nothing has taken
+    /// yet, oldest first from `first`, `kept` of them.
+    haptics: Box<[Option<Haptic>; HAPTICS_KEPT]>,
+    first: usize,
+    kept: usize,
     /// Kept between calls so that serving allocates nothing.
     event: Box<[u8; UHID_EVENT]>,
 }
@@ -305,6 +312,9 @@ impl Emulator {
             command: None,
             level: Level::default(),
             stopped: false,
+            haptics: Box::new([None; HAPTICS_KEPT]),
+            first: 0,
+            kept: 0,
             event: Box::new([0; UHID_EVENT]),
         };
         let uniq = pad.serial.clone();
@@ -400,8 +410,37 @@ impl Emulator {
         self.uhid.write_all(&event)
     }
 
+    /// Keeps a haptic report for whoever takes them, letting the oldest
+    /// go if there is no room: what a hand feels should be what was last
+    /// asked, not what was asked a while ago.
+    fn keep(&mut self, haptic: Haptic) {
+        if self.kept == HAPTICS_KEPT {
+            self.first = self.first.wrapping_add(1) % HAPTICS_KEPT;
+            self.kept = self.kept.saturating_sub(1);
+        }
+        let at = self.first.wrapping_add(self.kept) % HAPTICS_KEPT;
+        if let Some(place) = self.haptics.get_mut(at) {
+            *place = Some(haptic);
+            self.kept = self.kept.saturating_add(1);
+        }
+    }
+
+    /// The oldest haptic report a reader wrote that nothing has taken
+    /// yet: a pulse, a tone, a built-in effect, sound for the actuators,
+    /// for a real Steam Controller behind this one.
+    pub(crate) fn take_haptic(&mut self) -> Option<Haptic> {
+        if self.kept == 0 {
+            return None;
+        }
+        let haptic = self.haptics.get_mut(self.first).and_then(Option::take);
+        self.first = self.first.wrapping_add(1) % HAPTICS_KEPT;
+        self.kept = self.kept.saturating_sub(1);
+        haptic
+    }
+
     /// Answers everything the kernel has waiting, passing a change of
-    /// rumble to `handle`. Returns when nothing is left.
+    /// rumble to `handle` and keeping each haptic report for
+    /// [`take_haptic`](Self::take_haptic). Returns when nothing is left.
     pub(crate) fn serve(
         &mut self,
         mut handle: impl FnMut(Request) -> Result<(), FeedbackError>,
@@ -421,15 +460,18 @@ impl Emulator {
                 // data[4096], then size u16.
                 UHID_OUTPUT => {
                     let size = usize::from(u16_at(event, 4 + UHID_DATA)).min(UHID_DATA);
-                    let level = event
-                        .get(4..size.saturating_add(4))
-                        .and_then(super::rumble_of);
+                    let report = event.get(4..size.saturating_add(4));
+                    let level = report.and_then(super::rumble_of);
+                    let haptic = report.and_then(Haptic::of);
                     if let Some(level) = level
                         && level != self.level
                     {
                         self.level = level;
                         // Nothing waits on this; a refusal has nowhere to go.
                         let _ = handle(Request::Level(level));
+                    }
+                    if let Some(haptic) = haptic {
+                        self.keep(haptic);
                     }
                 }
                 // id u32, then the report's number.
@@ -542,6 +584,27 @@ mod tests {
         assert_eq!(answer("X", &settings), settings);
     }
 
+    /// A haptic report is one of the pad's haptic output reports, whole,
+    /// and nothing else is: not rumble, which goes as a level, nor a
+    /// report past the last, nor an empty or overlong one.
+    #[test]
+    fn a_haptic_report_is_one_of_the_pad_s_and_kept_whole() {
+        let pulse = [0x81, 1, 0x10, 0x27, 0, 0, 1, 0];
+        assert_eq!(Haptic::of(&pulse).unwrap().as_bytes(), pulse);
+        let sound = [0x87; 64];
+        assert_eq!(Haptic::of(&sound).unwrap().as_bytes(), sound);
+        assert!(Haptic::of(&[0x89, 1]).is_some());
+        for not in [
+            &[0x80u8, 0, 0][..],
+            &[0x8a, 0],
+            &[0x42, 0],
+            &[],
+            &[0x87; 65],
+        ] {
+            assert!(Haptic::of(not).is_none(), "{not:?}");
+        }
+    }
+
     /// The descriptor declares each report at the length it is sent or
     /// taken at, its number aside, and nothing of a keyboard or pointer.
     #[test]
@@ -557,7 +620,20 @@ mod tests {
         assert!(declares(0x43, 14, INPUT));
         assert!(declares(0x79, 1, INPUT));
         assert!(declares(0x80, 9, OUTPUT));
-        assert!(declares(0x81, 7, OUTPUT));
+        // Every haptic a real pad declares, at SDL's sizes and the pad's.
+        for (id, after) in [
+            (0x81, 7),
+            (0x82, 3),
+            (0x83, 9),
+            (0x84, 8),
+            (0x85, 3),
+            (0x86, 3),
+            (0x87, 63),
+            (0x88, 63),
+            (0x89, 63),
+        ] {
+            assert!(declares(id, after, OUTPUT), "{id:#x}");
+        }
         assert!(declares(0x01, 63, FEATURE));
         // One application collection, the vendor's.
         assert_eq!(descriptor.iter().filter(|byte| **byte == 0xa1).count(), 1);

@@ -865,3 +865,82 @@ async fn a_steam_controller_behind_a_virtual_one_is_read_whole_at_its_raw_node()
     client.stop_setup("couch").await.unwrap();
     daemon.stop().await;
 }
+
+/// The haptic reports a reader writes a virtual Steam Controller, past
+/// rumble, reach the Steam Controllers behind it that the profile's
+/// Rumble choice names, each whole and as written, and no other: here
+/// the assist's alone gets a pulse and a report of sound, and the
+/// primary's neither.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_virtual_steam_controller_s_haptics_go_where_its_rumble_goes() {
+    use std::io::Write as _;
+
+    const TEST: &str = "a_virtual_steam_controller_s_haptics_go_where_its_rumble_goes";
+    let (Some(primary), Some(assist)) = (fake(TEST), fake(TEST)) else {
+        return;
+    };
+    let (_dir, daemon, client) = with_couch(
+        &primary,
+        &format!(
+            "mode = \"priority\"\nprimary = \"{}\"\nassist = \"{}\"\nidentity = \"steam-controller\"\nrumble = \"assist\"\n",
+            id_of(&primary),
+            id_of(&assist)
+        ),
+    )
+    .await;
+    eventually("the daemon never listed the assist", async || {
+        client
+            .list_pads()
+            .unwrap()
+            .iter()
+            .any(|pad| pad.id == id_of(&assist) && pad.connected)
+    })
+    .await;
+    client.start_setup("couch").await.unwrap();
+    let setup = in_phase(&client, "couch", Phase::Running).await;
+    let raw = std::path::PathBuf::from(setup.sinks[0].node.clone().unwrap());
+    if !may_open_once_udev_is_done(&raw, true) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED {TEST}: a virtual Steam Controller's raw node isn't this user's to open here"
+        );
+        client.stop_setup("couch").await.unwrap();
+        daemon.stop().await;
+        return;
+    }
+    let mut game = std::fs::OpenOptions::new().write(true).open(&raw).unwrap();
+    // A pulse on the left trackpad, and a report of sound.
+    let pulse = vec![0x81, 1, 0x10, 0x27, 0x10, 0x27, 3, 0];
+    let mut sound = vec![0x87];
+    sound.extend((1..64u8).map(|byte| byte.wrapping_mul(3)));
+    game.write_all(&pulse).unwrap();
+    game.write_all(&sound).unwrap();
+    // And a level, which the assist's gets too, after them.
+    game.write_all(&[0x80, 0, 0, 0, 0x00, 0x80, 0, 0, 0, 0])
+        .unwrap();
+
+    let wanted = [Received::Output(pulse), Received::Output(sound)];
+    let got = |received: &[Received]| wanted.iter().all(|wanted| received.contains(wanted));
+    assert!(assist.wait_for(got), "{:?}", assist.received());
+    let received = assist.received();
+    let at = |wanted: &Received| received.iter().position(|sent| sent == wanted).unwrap();
+    assert!(at(&wanted[0]) < at(&wanted[1]), "in the order written");
+    // The assist has rumbled by now, so the primary has had its chance.
+    assert!(
+        assist.wait_for(|received| received.iter().any(
+            |sent| matches!(sent, Received::Output(report) if report.first() == Some(&0x80)
+                && report.get(5) == Some(&0x80))
+        )),
+        "{:?}",
+        assist.received()
+    );
+    let stray: Vec<Received> = primary
+        .received()
+        .into_iter()
+        .filter(|sent| wanted.contains(sent))
+        .collect();
+    assert!(stray.is_empty(), "{stray:?}");
+
+    client.stop_setup("couch").await.unwrap();
+    daemon.stop().await;
+}

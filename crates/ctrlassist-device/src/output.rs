@@ -40,6 +40,8 @@ use ctrlassist_core::Level;
 use evdev::{FFEffect, FFEffectData, FFEffectKind, FFReplay, FFTrigger};
 
 use crate::dualsense::{Composer, GAME_SIZE, Kind, Once};
+use crate::queue::{self, Receiver, Sender};
+use crate::steam::Haptic;
 use crate::{hidraw, steam};
 
 /// The mailbox's size in words: a game's report, then one for the level
@@ -318,6 +320,11 @@ pub(crate) trait Target: Send + 'static {
     /// there, and the input thread is told nothing of it.
     fn keep_up(&mut self, _now: Instant) {}
 
+    /// Writes what has come for the pad by a way of its own, beside
+    /// what the mailbox holds: each time the writer looks. Nothing, for
+    /// a pad with no such way.
+    fn drain(&mut self) {}
+
     /// Leaves the pad as no game had it. The writer's last act on it.
     fn rest(self);
 }
@@ -414,11 +421,12 @@ impl SteamOut for File {
 /// (`steam_work_connect_cb`, `hid-steam.c:1460-1484`).
 ///
 /// Rumble is the plain level every pad is sent. The pad's richer haptics
-/// (a pulse on either trackpad, output report `0x81`, and the reports
-/// after it that Steam Input uses for its own effects) are not sent: a
-/// game's force feedback, the router's levels and a virtual DualSense's
-/// output report have nothing to carry them, and a Steam Controller
-/// identity that passed them through would be where they start.
+/// ([`Haptic`]: a pulse on either trackpad, a tone, a built-in effect,
+/// sound for its actuators) come by a way of their own, from a virtual
+/// Steam Controller alone: a game's force feedback, the router's levels
+/// and a virtual DualSense's output report have nothing to carry them.
+/// They are events, each written once, whole, as it came
+/// ([`drain`](Target::drain)).
 struct SteamNode<O> {
     out: O,
     /// The level the motors were last sent.
@@ -430,7 +438,20 @@ struct SteamNode<O> {
     /// Whether the node has said the pad has gone (`ENODEV`): nothing
     /// written there will reach it again, so nothing is due.
     gone: bool,
+    /// The haptic reports the pad is to be sent, from the input thread:
+    /// none for a node nothing sends any.
+    haptics: Option<Receiver<Haptic>>,
 }
+
+/// How many haptic reports wait between the input thread and a pad's
+/// writer, and how many of those the writer keeps to write when it finds
+/// more waiting than that: the newest, in their order. A hand should
+/// feel what was last asked, so a writer that was held up, by a pad slow
+/// to take a write, lets the oldest go. Past the first number the input
+/// thread, which never waits, has nowhere to put one more, and that one
+/// is lost instead.
+const HAPTICS_WAITING: usize = 64;
+const HAPTICS_WRITTEN: usize = 16;
 
 /// How far a Steam Controller's node is with [`steam::take_over`].
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -453,7 +474,14 @@ impl<O: SteamOut> SteamNode<O> {
             rumble_due: None,
             taken: Taken::Due(now),
             gone: false,
+            haptics: None,
         }
+    }
+
+    /// The same node, sent the haptic reports that come by `haptics`.
+    fn with_haptics(mut self, haptics: Receiver<Haptic>) -> Self {
+        self.haptics = Some(haptics);
+        self
     }
 
     /// Notes what a write said of the pad.
@@ -531,6 +559,32 @@ impl<O: SteamOut> Target for SteamNode<O> {
         }
         if self.rumble_due.is_some_and(|due| due <= now) {
             let _ = self.write_rumble(now);
+        }
+    }
+
+    fn drain(&mut self) {
+        let Some(haptics) = &self.haptics else {
+            return;
+        };
+        // All that wait, the newest kept where there are too many.
+        let mut kept = [None; HAPTICS_WRITTEN];
+        let mut count = 0usize;
+        while let Some(haptic) = haptics.try_recv() {
+            if let Some(place) = kept.get_mut(count % HAPTICS_WRITTEN) {
+                *place = Some(haptic);
+            }
+            count = count.wrapping_add(1);
+        }
+        let first = count.saturating_sub(HAPTICS_WRITTEN);
+        for at in first..count {
+            let Some(Some(haptic)) = kept.get(at % HAPTICS_WRITTEN) else {
+                continue;
+            };
+            if self.gone {
+                return;
+            }
+            let result = self.out.output(haptic.as_bytes());
+            self.heard(&result);
         }
     }
 
@@ -624,6 +678,8 @@ pub(crate) struct Output {
     held: bool,
     /// Whether what is wanted changed while kept back.
     changed: bool,
+    /// Where a Steam Controller's haptic reports go to its writer.
+    haptics: Option<Sender<Haptic>>,
 }
 
 /// What a writer writes to.
@@ -659,9 +715,21 @@ impl Output {
     /// Takes a Steam Controller's raw node. Its writer sets lizard mode
     /// off as it starts.
     pub(crate) fn steam(raw: OwnedFd) -> io::Result<Self> {
-        let target = SteamNode::new(File::from(raw), Instant::now());
-        let (output, _) = Self::start(target, To::Steam, "pad-output")?;
+        let (unbound, haptics) = queue::queue(HAPTICS_WAITING);
+        let target = SteamNode::new(File::from(raw), Instant::now()).with_haptics(haptics);
+        let (mut output, _) = Self::start(target, To::Steam, "pad-output")?;
+        output.haptics = Some(unbound.to(output.writer.clone()));
         Ok(output)
+    }
+
+    /// Sends a Steam Controller a haptic report a reader wrote a virtual
+    /// one, whole, without waiting for the pad. A pad of another kind
+    /// ignores it, and so does one whose writer has more waiting than it
+    /// has room for.
+    pub(crate) fn haptic(&self, haptic: Haptic) {
+        if let Some(haptics) = &self.haptics {
+            let _ = haptics.send(haptic);
+        }
     }
 
     /// Takes a pad's one kernel effect, uploaded at rest.
@@ -746,6 +814,7 @@ impl Output {
             once: Once::default(),
             held: false,
             changed: false,
+            haptics: None,
         };
         Ok((output, writer))
     }
@@ -947,6 +1016,7 @@ fn write_out<T: Target>(shared: &Shared, target: &mut T, between: &impl Fn()) {
         // Before the mailbox is looked in, so that what was put before
         // the stop is written.
         let stopping = shared.stop.load(Ordering::Acquire);
+        target.drain();
         let (sequence, words) = shared.mailbox.get();
         between();
         once = once.then(Once::from_bits(shared.once.swap(0, Ordering::AcqRel)));
@@ -1842,6 +1912,59 @@ mod tests {
         assert_eq!(told.recv().unwrap(), Done::Sent(level(0x2000, 0)));
         drop(output);
         writer.join().unwrap();
+    }
+
+    /// The haptic reports that come for a Steam Controller are written as
+    /// they came, whole and in order, each time the writer looks; where
+    /// more wait than the writer keeps, the newest are written and the
+    /// oldest let go; and a pad that has gone is written none.
+    #[test]
+    fn a_steam_controller_s_haptic_reports_are_written_in_order_the_newest_kept() {
+        let (recorder, written, refuse) = steam_recorder();
+        let (unbound, haptics) = queue::queue(HAPTICS_WAITING);
+        let sender = unbound.to(std::thread::current());
+        let mut node = SteamNode::new(recorder, Instant::now()).with_haptics(haptics);
+        let report = |number: u8| Haptic::of(&[0x81, number, 0, 0, 0, 0, 0, 0]).unwrap();
+        node.drain();
+        assert!(written.try_recv().is_err(), "nothing waits");
+
+        let sound = Haptic::of(&[0x87; 64]).unwrap();
+        sender.send(report(1)).unwrap();
+        sender.send(sound).unwrap();
+        node.drain();
+        assert_eq!(
+            written.try_recv().unwrap(),
+            Steam::Output(report(1).as_bytes().to_vec())
+        );
+        assert_eq!(written.try_recv().unwrap(), Steam::Output(vec![0x87; 64]));
+        assert!(written.try_recv().is_err());
+
+        // More than the writer keeps: the newest, in their order.
+        let many = u8::try_from(HAPTICS_WRITTEN + 4).unwrap();
+        for number in 0..many {
+            sender.send(report(number)).unwrap();
+        }
+        node.drain();
+        let wrote: Vec<Steam> = written.try_iter().collect();
+        let newest: Vec<Steam> = (4..many)
+            .map(|number| Steam::Output(report(number).as_bytes().to_vec()))
+            .collect();
+        assert_eq!(wrote, newest);
+
+        // Past what can wait, the sender is refused and never waits.
+        for _ in 0..HAPTICS_WAITING {
+            sender.send(report(0)).unwrap();
+        }
+        assert!(sender.send(report(1)).is_err());
+        node.drain();
+        assert_eq!(written.try_iter().count(), HAPTICS_WRITTEN);
+
+        // Gone: the first write says so, and nothing follows it.
+        refuse.store(rustix::io::Errno::NODEV.raw_os_error(), Ordering::SeqCst);
+        sender.send(report(1)).unwrap();
+        sender.send(report(2)).unwrap();
+        node.drain();
+        assert_eq!(written.try_iter().count(), 1);
     }
 
     /// By the pad's own clock: a rumble report the pad was slow to take

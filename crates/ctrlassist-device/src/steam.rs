@@ -17,11 +17,10 @@
 //! [`RUMBLE_AGAIN`]. The pad's writer does both (`output.rs`).
 //!
 //! What the pad state has no place for is not carried: a trackpad's
-//! pressure, the pad's own reckoning of its orientation, the battery, and
-//! every haptic command beyond plain rumble (the pulse of output report
-//! `0x81` and the reports after it, which SDL's driver sends for Steam
-//! Input's own effects). A virtual pad's rumble reaches the pad as a
-//! level, as it reaches every other pad.
+//! pressure, the pad's own reckoning of its orientation and the battery.
+//! A virtual pad's rumble reaches the pad as a level, as it reaches every
+//! other pad; the pad's haptics beyond rumble ([`Haptic`]) reach it only
+//! from a virtual Steam Controller, whole, as a reader wrote them there.
 //!
 //! Two sources say what the bytes are, and this file is meant to be read
 //! against them:
@@ -1389,6 +1388,64 @@ pub(crate) fn rumble_of(report: &[u8]) -> Option<Level> {
         strong: u16::from_le_bytes([strong_low, strong_high]),
         weak: u16::from_le_bytes([weak_low, weak_high]),
     })
+}
+
+/// The first and last of the pad's haptic output reports past rumble:
+/// a pulse (`0x81`), a command, a tone, a sweep and a built-in effect
+/// (`0x82` to `0x85`; `REPORT_ID_HAPTIC_*`, `hid-steam.c:329-334`, and
+/// SDL's `ValveTritonOutReportMessageIDs` with a struct for each), then
+/// the reports a real pad declares after them, which carry sound for its
+/// actuators and which neither source names (`0x86` to `0x89`). Each
+/// names the side it is for itself.
+pub(crate) const HAPTIC_FIRST: u8 = 0x81;
+pub(crate) const HAPTIC_LAST: u8 = 0x89;
+/// The sizes those reports are declared at, each with its number, from
+/// `0x81` on: SDL's (`HID_HAPTIC_*_BYTES`) for the first five, and a real
+/// pad's descriptor, as published, for the rest.
+pub(crate) const HAPTIC_SIZES: [usize; 9] = [8, 4, 10, 9, 4, 4, 64, 64, 64];
+/// The most a haptic report is.
+pub(crate) const HAPTIC_MOST: usize = 64;
+
+/// One haptic output report, whole, as a reader wrote it to a virtual
+/// Steam Controller: passed to a real one behind it as it is, its side
+/// and all. What it asks is the reader's and the pad's business; nothing
+/// here reads past its number.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Haptic {
+    bytes: [u8; HAPTIC_MOST],
+    length: u8,
+}
+
+impl Haptic {
+    /// The haptic report `report` is, its number first: none for a report
+    /// of another number, an empty one, or one longer than any is.
+    #[must_use]
+    pub fn of(report: &[u8]) -> Option<Self> {
+        let id = *report.first()?;
+        let length = u8::try_from(report.len()).ok()?;
+        if !(HAPTIC_FIRST..=HAPTIC_LAST).contains(&id) || report.len() > HAPTIC_MOST {
+            return None;
+        }
+        let mut bytes = [0; HAPTIC_MOST];
+        for (place, byte) in bytes.iter_mut().zip(report) {
+            *place = *byte;
+        }
+        Some(Self { bytes, length })
+    }
+
+    /// The report, its number first.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.bytes
+            .get(..usize::from(self.length))
+            .unwrap_or(&self.bytes)
+    }
+}
+
+impl std::fmt::Debug for Haptic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Haptic").field(&self.as_bytes()).finish()
+    }
 }
 
 /// A virtual Steam Controller.
