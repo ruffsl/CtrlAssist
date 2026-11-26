@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** drafted, its first questions answered and the README added to it (see Decided). Nothing in the book or the README has been changed.
-- **Next action:** the maintainer's go-ahead on the plan as a whole; then step 1.
+- **Status:** drafted, its first questions answered and the README added to it (see Decided). The capture was spiked while the maintainer read the plan (see Spike: drawing the window off screen). Nothing in the book or the README has been changed.
+- **Next action:** the maintainer's review of the spike's finding and their go-ahead on the plan as a whole; then step 1.
 - **Branch:** `docs/user-guide`, from `main` at `39c1b4c`.
 
 ## Goal
@@ -156,6 +156,29 @@ Everything from the banner to the end of Architecture is inside `<!-- ANCHOR: ov
 
 **In the tree.** `docs/screenshots/*.png` through LFS (`docs/.gitattributes` already tracks `*.png`), with `docs/book/src/docs/screenshots` and `docs/book/src/docs/artwork` as symbolic links to them, as TisVlay has, so a page links `../docs/screenshots/pads_pane.png` and the README links `docs/screenshots/pads_pane.png`.
 
+## Spike: drawing the window off screen
+
+**Question.** Can the settings window be drawn with no display, from made-up state, closely enough to stand as a screenshot?
+
+**Method.** `spikes/screenshots`, a throwaway workspace: a platform of its own around Slint's `MinimalSoftwareWindow`, the real `AppWindow` from the window's library, filled by `Snapshot::show` as the window's tests fill theirs, the Pads page chosen, and `Window::take_snapshot` written out as a PNG. Run in the dev shell on the maintainer's machine, 2026-11-25, Slint 1.19.0.
+
+**Finding: it can.** Three captures of the Pads page, dark, light, and dark at twice the density, each drawn in well under a second:
+
+- **Text, icons and shape are right.** The sidebar's and the buttons' glyphs come from the desktop's icon theme through the window's own loader; chips, rounded cards, the selected row's accent and the health dots are as on screen. Nothing was missing or misplaced.
+- **Both themes work,** and so does a scale of two: 1440 by 960 for the window's 720 by 480, the density TisVlay's hand-taken screenshots have.
+- **No change to the shipped window.** The software renderer and its use of system fonts are features the spike's own manifest turns on; the workspace's build is untouched.
+
+**What the tool has to work around,** each small:
+
+- **The color scheme is set through Slint's internals:** `i_slint_core`'s context has the process's scheme, which a platform's backend sets and a public platform can't. The spike depends on `i-slint-core` at the workspace's exact Slint pin and sets it there. The alternative is a property of the window that overrides the scheme, which is more code in the shipped window for a tool's sake.
+- **The icon loader is the library's own.** The spike compiles the window's `icons.rs` and `icon_theme.rs` into itself by path. The tool wants them reachable: one public function in the window's library, or the tool as a second binary of that crate.
+- **Nothing settles by itself.** With no event loop, the spike steps Slint's timers and animations twenty times before it captures. The tool does the same after each change of page or selection.
+- **There is no title bar,** the compositor drawing that and not the window. TisVlay's screenshots have one. Without it a capture is the window's contents alone, the same on any desktop.
+- **At the size the window opens at, 720 by 480, a pad's name is cut short** in the list and the header, as it is on screen at that size.
+- **Fonts and icons are the machine's.** The captures used what the dev shell and the desktop gave: they are not the same bytes on another machine, as the plan expected.
+
+**So.** The capture tool is built as planned, at step 2. Left for the maintainer: the density and the size, since the answer "at a scale of one" was given before a capture at two could be seen beside it.
+
 ## Steps
 
 Each is one commit or a few, with `prek run -a --skip build --skip clippy --skip doc --skip test` and `just docs-links` before it, and the whole gates where Rust changes.
@@ -174,7 +197,8 @@ Each is one commit or a few, with `prek run -a --skip build --skip clippy --skip
 
 For the maintainer:
 
-1. **The capture tool for TisVlay** (after step 3). It would replace fourteen screenshots taken by hand there. Carried back as an idea, or as code?
+1. **Density and size,** now that both can be seen: a scale of one (720 by 480) or of two (1440 by 960, as TisVlay's are), and whether the window should be captured larger than it opens, so a pad's name isn't cut short.
+2. **The capture tool for TisVlay** (after step 3). It would replace fourteen screenshots taken by hand there. Carried back as an idea, or as code?
 
 ## Deviations
 
