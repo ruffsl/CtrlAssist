@@ -18,7 +18,7 @@ use ctrlassist_core::{
     Graph, GraphSpec, Input, Layout, Level, Mode, MuxConfig, NodeId, NodeSpec, PadState, SourceId,
     SourceSpec, Switch, gamepad,
 };
-use ctrlassist_device::{Command, InputThread, Pad, Report, Setup, VirtualPad};
+use ctrlassist_device::{Command, Identity, InputThread, Pad, Report, Setup, VirtualPad};
 use ctrlassist_test::{
     FakeSteamController, Received, StateReport, SteamButton, SteamState, SteamTransport, Trackpad,
     can_make_steam_pads, may_open_once_udev_is_done,
@@ -468,6 +468,320 @@ fn the_right_trackpad_and_the_motion_reach_a_virtual_dualsense() {
     assert!(x.abs_diff(1439) <= 1 && y.abs_diff(539) <= 1, "{x} {y}");
 }
 
+/// A little-endian `i16` of a DualSense's input report.
+fn i16_at(report: &[u8; 64], at: usize) -> i16 {
+    i16::from_le_bytes([report[at], report[at + 1]])
+}
+
+/// The gyroscope's pitch, yaw and roll counts of a DualSense's input
+/// report, then its accelerometer's x, y and z.
+fn motion_of(report: &[u8; 64]) -> ([i16; 3], [i16; 3]) {
+    (
+        [16, 18, 20].map(|at| i16_at(report, at)),
+        [22, 24, 26].map(|at| i16_at(report, at)),
+    )
+}
+
+/// The sensor time of a DualSense's input report, in thirds of a
+/// microsecond.
+fn sensor_time(report: &[u8; 64]) -> u32 {
+    u32::from_le_bytes([report[28], report[29], report[30], report[31]])
+}
+
+/// What a game reads of a DualSense's input report for its controls and
+/// its touchpad: the sticks and triggers, the buttons, the motion and the
+/// two contacts. The rest is the report's count and clocks, which move
+/// whatever the pad does.
+fn shown(report: &[u8; 64]) -> Vec<u8> {
+    [1..=6, 8..=11, 16..=27, 33..=40]
+        .into_iter()
+        .flat_map(|bytes| report[bytes].to_vec())
+        .collect()
+}
+
+/// Everything of a Steam Controller that a DualSense has no place for,
+/// held on top of `state`: the left trackpad touched, pressed and
+/// clicked, the four back buttons, the capacitive touches on both sticks
+/// and grips, the quick access button and the triggers' clicks.
+fn beyond_a_dualsense(state: SteamState) -> SteamState {
+    SteamState {
+        left_pad: Trackpad {
+            touched: true,
+            x: -12000,
+            y: 9000,
+            pressure: 20000,
+        },
+        ..state
+    }
+    .with(SteamButton::LeftPadClick)
+    .with(SteamButton::UpperRightBack)
+    .with(SteamButton::UpperLeftBack)
+    .with(SteamButton::LowerRightBack)
+    .with(SteamButton::LowerLeftBack)
+    .with(SteamButton::LeftStickTouch)
+    .with(SteamButton::RightStickTouch)
+    .with(SteamButton::LeftGripTouch)
+    .with(SteamButton::RightGripTouch)
+    .with(SteamButton::QuickAccess)
+    .with(SteamButton::LeftTriggerClick)
+    .with(SteamButton::RightTriggerClick)
+}
+
+/// Behind a virtual DualSense, what a DualSense has no place for changes
+/// nothing in its report: the left trackpad, the back buttons, the
+/// capacitive touches, the quick access button and the triggers' clicks.
+/// A pad lying flat and still reads as a DualSense at rest does.
+#[test]
+fn what_a_dualsense_has_no_place_for_changes_nothing_in_its_report() {
+    const TEST: &str = "what_a_dualsense_has_no_place_for_changes_nothing_in_its_report";
+    if !can_make_steam_pads(TEST) || !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    let fake = FakeSteamController::new().unwrap();
+    let Some(pad) = steam_pad(TEST, &fake) else {
+        return;
+    };
+    let Some((sink, mut game)) = virtual_dualsense(TEST, 3) else {
+        return;
+    };
+    let setup = Setup::new(straight(1), vec![Some(pad)], vec![sink]);
+    let (thread, _reports) = InputThread::spawn().unwrap();
+    thread.send(Command::Start(ID, Box::new(setup))).unwrap();
+
+    // Flat and still: 1 g on the report's z, which is up.
+    let flat = SteamState {
+        accel: [0, 0, 16384],
+        ..SteamState::default()
+    };
+    let rest = sent_to_dualsense(&fake, &flat, &mut game, |report| {
+        motion_of(report).1[1] > 8000
+    });
+    assert_eq!(
+        motion_of(&rest),
+        ([0, 0, 0], [0, 8192, 0]),
+        "a DualSense at rest: {rest:?}"
+    );
+
+    // All of it held, and south with it, which says the report was read.
+    let south = beyond_a_dualsense(flat).with(SteamButton::South);
+    let report = sent_to_dualsense(&fake, &south, &mut game, |report| report[8] & 0x20 != 0);
+    let mut wanted = rest;
+    wanted[8] |= 0x20;
+    assert_eq!(shown(&report), shown(&wanted), "{report:?}");
+}
+
+/// Behind a virtual DualSense, the right trackpad's click is the
+/// touchpad's click, apart from its touch, and the left trackpad's is
+/// nothing.
+#[test]
+fn the_right_trackpad_s_click_is_a_virtual_dualsense_s_touchpad_click() {
+    const TEST: &str = "the_right_trackpad_s_click_is_a_virtual_dualsense_s_touchpad_click";
+    if !can_make_steam_pads(TEST) || !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    let fake = FakeSteamController::new().unwrap();
+    let Some(pad) = steam_pad(TEST, &fake) else {
+        return;
+    };
+    let Some((sink, mut game)) = virtual_dualsense(TEST, 4) else {
+        return;
+    };
+    let setup = Setup::new(straight(1), vec![Some(pad)], vec![sink]);
+    let (thread, _reports) = InputThread::spawn().unwrap();
+    thread.send(Command::Start(ID, Box::new(setup))).unwrap();
+    let clicked = |report: &[u8; 64]| report[10] & 0x02 != 0;
+
+    // Touched in the middle, and clicked.
+    let touched = SteamState {
+        right_pad: Trackpad {
+            touched: true,
+            x: 0,
+            y: 0,
+            pressure: 30000,
+        },
+        ..SteamState::default()
+    };
+    let report = sent_to_dualsense(
+        &fake,
+        &touched.with(SteamButton::RightPadClick),
+        &mut game,
+        clicked,
+    );
+    assert!(clicked(&report), "{report:?}");
+    let (down, x, y) = contact(&report);
+    assert!(
+        down && x.abs_diff(960) <= 1 && y.abs_diff(540) <= 1,
+        "{x} {y}"
+    );
+
+    // Let up and still touched: the finger stays down.
+    send(&fake, &touched);
+    let report = dualsense_until(&mut game, |report| !clicked(report));
+    assert!(!clicked(&report) && contact(&report).0, "{report:?}");
+
+    // The left trackpad clicked instead, and the right lifted: nothing.
+    send(
+        &fake,
+        &SteamState::default().with(SteamButton::LeftPadClick),
+    );
+    let report = dualsense_until(&mut game, |report| !contact(report).0);
+    assert!(!contact(&report).0, "{report:?}");
+    for _ in 0..20 {
+        let report = dualsense_within(&mut game, Duration::from_millis(50), |_| true);
+        assert!(!clicked(&report), "{report:?}");
+    }
+}
+
+/// Behind a virtual DualSense, each of the pad's axes of turning and of
+/// acceleration arrives on the one the pad state's axes put it on: the
+/// report's x, z and minus y, as SDL and the kernel's driver both hand
+/// them on, at the DualSense's own counts; and every report's sensor time
+/// is later than the one before's.
+#[test]
+fn the_motion_reaches_a_virtual_dualsense_on_its_axes_with_a_moving_clock() {
+    const TEST: &str = "the_motion_reaches_a_virtual_dualsense_on_its_axes_with_a_moving_clock";
+    if !can_make_steam_pads(TEST) || !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    let fake = FakeSteamController::new().unwrap();
+    let Some(pad) = steam_pad(TEST, &fake) else {
+        return;
+    };
+    let Some((sink, mut game)) = virtual_dualsense(TEST, 5) else {
+        return;
+    };
+    let setup = Setup::new(straight(1), vec![Some(pad)], vec![sink]);
+    let (thread, _reports) = InputThread::spawn().unwrap();
+    thread.send(Command::Start(ID, Box::new(setup))).unwrap();
+
+    // 500 degrees a second, and half a g, at the pad's full scales of
+    // 2000 and 2; as the DualSense's counts, 17678 to 1080 degrees a
+    // second and 8192 to the g.
+    let rate = 8192;
+    let dualsense_rate = 8184;
+    let near = |read: i16, wanted: i16| read.abs_diff(wanted) <= wanted.unsigned_abs() / 100 + 1;
+    let mut clock = 0;
+    let mut reading = |gyro: [i16; 3], accel: [i16; 3]| {
+        clock += 4000;
+        SteamState {
+            gyro,
+            accel,
+            sensor_clock: clock,
+            ..SteamState::default()
+        }
+    };
+    let cases = [
+        // About the report's x: pitch.
+        (
+            [rate, 0, 0],
+            [8192, 0, 16384],
+            [dualsense_rate, 0, 0],
+            [4096, 8192, 0],
+        ),
+        // About its z, which is up: yaw.
+        (
+            [0, 0, rate],
+            [0, 0, 16384],
+            [0, dualsense_rate, 0],
+            [0, 8192, 0],
+        ),
+        // About its y, away from the player: roll, the other way.
+        (
+            [0, rate, 0],
+            [0, 8192, 16384],
+            [0, 0, -dualsense_rate],
+            [0, 8192, -4096],
+        ),
+    ];
+    for (gyro, accel, rates, gravity) in cases {
+        let state = reading(gyro, accel);
+        let report = sent_to_dualsense(&fake, &state, &mut game, |report| {
+            let (read_rates, read_gravity) = motion_of(report);
+            read_rates
+                .iter()
+                .zip(rates)
+                .all(|(read, wanted)| near(*read, wanted))
+                && read_gravity
+                    .iter()
+                    .zip(gravity)
+                    .all(|(read, wanted)| near(*read, wanted))
+        });
+        let (read_rates, read_gravity) = motion_of(&report);
+        assert!(
+            read_rates
+                .iter()
+                .zip(rates)
+                .all(|(read, wanted)| near(*read, wanted))
+                && read_gravity
+                    .iter()
+                    .zip(gravity)
+                    .all(|(read, wanted)| near(*read, wanted)),
+            "{gyro:?} {accel:?} read as {read_rates:?} {read_gravity:?}"
+        );
+    }
+
+    // Fresh readings and beats between them: each report later.
+    let mut times = Vec::new();
+    for _ in 0..30 {
+        send(&fake, &reading([0, 0, 0], [0, 0, 16384]));
+        let report = dualsense_within(&mut game, Duration::from_millis(50), |_| true);
+        times.push(sensor_time(&report));
+    }
+    assert!(
+        times.windows(2).all(|pair| pair[1] > pair[0]),
+        "the sensor time stood still or went back: {times:?}"
+    );
+}
+
+/// Behind a virtual pad of the generic or the Xbox identity, the
+/// standard controls arrive and nothing else: neither trackpad, their
+/// clicks, the motion, the back buttons, the capacitive touches, the
+/// quick access button nor the triggers' clicks makes a frame.
+#[test]
+fn behind_a_generic_or_an_xbox_virtual_pad_only_the_standard_controls_arrive() {
+    const TEST: &str = "behind_a_generic_or_an_xbox_virtual_pad_only_the_standard_controls_arrive";
+    if !can_make(TEST) {
+        return;
+    }
+    for identity in [Identity::Generic, Identity::Xbox] {
+        let fake = FakeSteamController::new().unwrap();
+        let Some(pad) = steam_pad(TEST, &fake) else {
+            return;
+        };
+        let sink = VirtualPad::create(identity).unwrap();
+        let mut game = Pad::from_fd(crate::opened(sink.event_node())).unwrap();
+        let setup = Setup::new(straight(1), vec![Some(pad)], vec![sink]);
+        let (thread, _reports) = InputThread::spawn().unwrap();
+        thread.send(Command::Start(ID, Box::new(setup))).unwrap();
+
+        let everything = beyond_a_dualsense(SteamState {
+            right_pad: Trackpad {
+                touched: true,
+                x: 16384,
+                y: -16384,
+                pressure: 30000,
+            },
+            gyro: [8192, -8192, 8192],
+            accel: [8192, 8192, 16384],
+            sensor_clock: 4000,
+            ..SteamState::default()
+        })
+        .with(SteamButton::RightPadClick);
+        send(&fake, &everything);
+        let south = PadState::NEUTRAL.with(gamepad::SOUTH, 1.0);
+        let frames = played(
+            &fake,
+            &everything.with(SteamButton::South),
+            &mut game,
+            south,
+        );
+        assert_eq!(frames, [south], "{identity:?}");
+        // And let go, back to rest with nothing between.
+        let frames = played(&fake, &SteamState::default(), &mut game, PadState::NEUTRAL);
+        assert_eq!(frames, [PadState::NEUTRAL], "{identity:?}");
+    }
+}
+
 /// A back button held by the assist as the button that hands the motion
 /// over: while it is held, the virtual DualSense turns as the assist's
 /// pad does, and the game never sees the button.
@@ -521,6 +835,8 @@ fn a_paddle_held_by_the_assist_hands_the_motion_over() {
     send(&assist, &turning(-8192).with(SteamButton::UpperRightBack));
     let report = dualsense_until(&mut game, |report| pitch(report) < 0);
     assert!(pitch(&report) < 0, "the assist's motion: {report:?}");
+    // No button down: the D-pad at none, and nothing else.
+    assert_eq!(report[8..=10], [8, 0, 0], "the paddle shown: {report:?}");
 
     send(&assist, &turning(-8192));
     send(&primary, &turning(8192));

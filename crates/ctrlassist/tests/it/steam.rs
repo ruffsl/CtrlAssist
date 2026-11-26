@@ -590,3 +590,107 @@ async fn a_steam_controller_can_t_be_left_to_games() {
     assert!(on_a_node(&client, &id).await);
     daemon.stop().await;
 }
+
+/// A virtual DualSense's input report, read from its raw node as a game
+/// reads it, `fake` sending `state` before each read, until `wanted` says
+/// what is waited for, or twenty seconds at most; the last report.
+fn dualsense_after(
+    fake: &FakeSteamController,
+    state: &SteamState,
+    game: &mut std::fs::File,
+    wanted: impl Fn(&[u8; 64]) -> bool,
+) -> [u8; 64] {
+    use std::io::Read as _;
+    let started = std::time::Instant::now();
+    let mut report = [0u8; 64];
+    while started.elapsed() < Duration::from_secs(20) {
+        fake.send_state(state, StateReport::Full).unwrap();
+        // It reports every 10 ms whatever happens behind it.
+        assert_eq!(game.read(&mut report).unwrap(), 64);
+        if wanted(&report) {
+            break;
+        }
+    }
+    report
+}
+
+/// The gyroscope's pitch count of a DualSense's input report.
+fn pitch(report: &[u8; 64]) -> i16 {
+    i16::from_le_bytes([report[16], report[17]])
+}
+
+/// A profile of two Steam Controllers behind a virtual DualSense, with
+/// the assist's first back button as its Gyro button: the game turns as
+/// the primary does until the assist holds the paddle, and as the assist
+/// does while they hold it, and never sees the paddle.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_paddle_named_as_the_gyro_button_hands_the_motion_over() {
+    const TEST: &str = "a_paddle_named_as_the_gyro_button_hands_the_motion_over";
+    if !ctrlassist_test::can_make_hid_pads(TEST) {
+        return;
+    }
+    let (Some(primary), Some(assist)) = (fake(TEST), fake(TEST)) else {
+        return;
+    };
+    let (_dir, daemon, client) = with_couch(
+        &primary,
+        &format!(
+            "mode = \"priority\"\nprimary = \"{}\"\nassist = \"{}\"\nidentity = \"dualsense\"\nassist-gyro = \"paddle-1\"\n",
+            id_of(&primary),
+            id_of(&assist)
+        ),
+    )
+    .await;
+    eventually("the daemon never listed the assist", async || {
+        client
+            .list_pads()
+            .unwrap()
+            .iter()
+            .any(|pad| pad.id == id_of(&assist) && pad.connected)
+    })
+    .await;
+    client.start_setup("couch").await.unwrap();
+    let setup = in_phase(&client, "couch", Phase::Running).await;
+    let event = std::path::PathBuf::from(setup.sinks[0].node.clone().unwrap());
+    let raw = ctrlassist_test::raw_node_of(&event).expect("a virtual DualSense has a raw node");
+    if !may_open_once_udev_is_done(&raw, false) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED {TEST}: a virtual DualSense's raw node isn't this user's to open here"
+        );
+        client.stop_setup("couch").await.unwrap();
+        daemon.stop().await;
+        return;
+    }
+    let mut game = std::fs::File::open(&raw).unwrap();
+
+    // The primary turns one way, the assist the other, each a fresh
+    // reading.
+    let turning = |pitch: i16, clock: u32| SteamState {
+        gyro: [pitch, 0, 0],
+        accel: [0, 0, 16384],
+        sensor_clock: clock,
+        ..SteamState::default()
+    };
+    assist
+        .send_state(&turning(-8192, 4000), StateReport::Full)
+        .unwrap();
+    let report = dualsense_after(&primary, &turning(8192, 4000), &mut game, |report| {
+        pitch(report) > 0
+    });
+    assert!(pitch(&report) > 0, "the primary's motion: {report:?}");
+
+    let held = turning(-8192, 8000).with(SteamButton::UpperRightBack);
+    let report = dualsense_after(&assist, &held, &mut game, |report| pitch(report) < 0);
+    assert!(pitch(&report) < 0, "the assist's motion: {report:?}");
+    // No button down: the D-pad at none, and nothing else.
+    assert_eq!(report[8..=10], [8, 0, 0], "the paddle shown: {report:?}");
+
+    let report = dualsense_after(&assist, &turning(-8192, 12000), &mut game, |report| {
+        pitch(report) > 0
+    });
+    assert!(pitch(&report) > 0, "the primary's again: {report:?}");
+
+    client.stop_setup("couch").await.unwrap();
+    daemon.stop().await;
+}
