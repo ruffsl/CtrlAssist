@@ -49,7 +49,8 @@ On NixOS, add the flake and set `services.ctrlassist.enable = true`. For Debian,
 The rendered user guide is at [ctrlassist.readthedocs.io](https://ctrlassist.readthedocs.io/). It is an mdBook under [`docs/book`](docs/book/src/SUMMARY.md), which `just docs-serve` builds and serves; the links below are to its source:
 
 - New here? Start with [Installation](docs/book/src/getting-started/installation.md), then the [Quick Start](docs/book/src/getting-started/quick-start.md).
-- Everyday use: [The Tray](docs/book/src/guide/tray.md), [Profiles](docs/book/src/guide/profiles.md) and the [Command Line](docs/book/src/guide/cli.md).
+- Everyday use: [GUI & Tray](docs/book/src/guide/gui-tray.md) and [Profiles](docs/book/src/guide/profiles.md).
+- Scripting? See the [Command Line](docs/book/src/guide/cli.md) and [Configuration Files](docs/book/src/guide/configuration.md).
 - Something wrong? See [Troubleshooting](docs/book/src/operations/troubleshooting.md).
 - Want to help? See the [Contributing Guide](.github/CONTRIBUTING.md); how the workspace builds and is tested is in [docs/build.md](docs/build.md) and [docs/testing.md](docs/testing.md).
 

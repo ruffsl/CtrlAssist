@@ -1,4 +1,4 @@
-# The Tray
+# GUI & Tray
 
 The tray is the everyday way to use CtrlAssist. Its icon shows trouble at a glance: a warning when an arrangement is waiting for a controller, an error when one has failed. Hovering over it lists what runs: each arrangement with its mode, its controllers, a ● beside the one that has control, and its virtual controller. After them come the profiles that are ready to start, and when nothing runs, how many controllers are connected.
 

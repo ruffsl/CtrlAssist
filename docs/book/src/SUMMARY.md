@@ -9,13 +9,17 @@
 
 # Using CtrlAssist
 
-- [The Tray](./guide/tray.md)
+- [GUI & Tray](./guide/gui-tray.md)
 - [Profiles](./guide/profiles.md)
-- [Command Line](./guide/cli.md)
 
 # Help
 
 - [Troubleshooting](./operations/troubleshooting.md)
+
+# Advanced
+
+- [Command Line](./guide/cli.md)
+- [Configuration Files](./guide/configuration.md)
 
 # Reference
 

@@ -45,7 +45,7 @@ ctrlassist setups          # what is running
 ctrlassist stop couch
 ```
 
-[Profiles](../guide/profiles.md) has everything a profile can say.
+[Configuration Files](../guide/configuration.md) has everything a profile can say.
 
 ## If a controller disconnects
 
