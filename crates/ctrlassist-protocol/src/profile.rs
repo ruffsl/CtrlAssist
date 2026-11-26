@@ -528,8 +528,10 @@ pub struct Plan {
     pub hide: Hide,
 }
 
-/// Button names, as profiles write them.
-const BUTTONS: [(&str, Control); 16] = [
+/// Button names, as profiles write them. The back buttons are in SDL's
+/// order: upper right, upper left, lower right, lower left. Capacitive
+/// touch has no name: a hand resting on a pad is no button to press.
+const BUTTONS: [(&str, Control); 20] = [
     ("south", gamepad::SOUTH),
     ("east", gamepad::EAST),
     ("north", gamepad::NORTH),
@@ -546,6 +548,10 @@ const BUTTONS: [(&str, Control); 16] = [
     ("dpad-left", gamepad::DPAD_LEFT),
     ("dpad-right", gamepad::DPAD_RIGHT),
     ("touchpad", gamepad::TOUCHPAD),
+    ("paddle-1", gamepad::PADDLE_1),
+    ("paddle-2", gamepad::PADDLE_2),
+    ("paddle-3", gamepad::PADDLE_3),
+    ("paddle-4", gamepad::PADDLE_4),
 ];
 
 /// What `assist-gyro` says for no button, as leaving it out does.

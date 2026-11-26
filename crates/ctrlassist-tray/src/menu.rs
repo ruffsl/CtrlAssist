@@ -1043,6 +1043,10 @@ default ✓ (Not set up) >
     ( ) Dpad left
     ( ) Dpad right
     ( ) Touchpad
+    ( ) Paddle 1
+    ( ) Paddle 2
+    ( ) Paddle 3
+    ( ) Paddle 4
   Visibility: Hidden >
     (o) Hidden
     ( ) Grabbed
