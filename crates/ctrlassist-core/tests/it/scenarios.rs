@@ -1165,6 +1165,10 @@ fn every_gamepad_place_is_its_own_and_the_new_ones_are_in_no_group() {
         assert!(place.is_valid(), "{place:?}");
         assert!(!places[..index].contains(place), "{place:?} twice");
     }
+    assert_eq!(
+        NAMED_BUTTONS, places,
+        "every name, in the order of its place"
+    );
     // The controller database's places: `misc1` at 15, the paddles at 16
     // to 19, `touchpad` at 20, `misc2` to `misc6` at 21 to 25.
     assert_eq!(PADDLES, [16, 17, 18, 19].map(Control::Button));

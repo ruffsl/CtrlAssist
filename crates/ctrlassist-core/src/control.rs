@@ -86,6 +86,37 @@ pub mod gamepad {
     /// Steam Controller's left trackpad's.
     pub const SECOND_TOUCHPAD: Control = Control::Button(30);
 
+    /// Every button above, in the order of their places. A reader that
+    /// hands a pad's other buttons the places left over passes these by,
+    /// so that none of them stands in for a button with a name.
+    pub const NAMED_BUTTONS: [Control; 25] = [
+        SOUTH,
+        EAST,
+        NORTH,
+        WEST,
+        LEFT_BUMPER,
+        RIGHT_BUMPER,
+        SELECT,
+        START,
+        MODE,
+        LEFT_THUMB,
+        RIGHT_THUMB,
+        DPAD_UP,
+        DPAD_DOWN,
+        DPAD_LEFT,
+        DPAD_RIGHT,
+        PADDLE_1,
+        PADDLE_2,
+        PADDLE_3,
+        PADDLE_4,
+        TOUCHPAD,
+        LEFT_STICK_TOUCH,
+        RIGHT_STICK_TOUCH,
+        LEFT_GRIP_TOUCH,
+        RIGHT_GRIP_TOUCH,
+        SECOND_TOUCHPAD,
+    ];
+
     pub const LEFT_X: Control = Control::Axis(0);
     pub const LEFT_Y: Control = Control::Axis(1);
     pub const RIGHT_X: Control = Control::Axis(2);
