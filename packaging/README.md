@@ -63,7 +63,7 @@ The bundle is generated, not committed.
 
 ## Releasing
 
-Workflows after TisVlay's, without its crates.io and Nix cache phases: nothing here is published to crates.io.
+Workflows after TisVlay's, without its crates.io phase: nothing here is published to crates.io.
 
 1. **Bump.** `just release-bump` runs release-plz, which picks the version from the commit history and writes the CHANGELOGs; merge that as a `chore(release)` change. `release-plz.yml` opens the same change as a pull request on each push to `main`.
 2. **Tag.** Pushing `vX.Y.Z` runs `release.yml`. It calls `build-packages.yml`, which builds the three packages and one SBOM per binary for x86_64 and arm64, checks each SBOM against what its binary embeds, and signs them through Sigstore: a provenance attestation over the packages and binaries, and an SBOM attestation per binary. Building and signing are separate jobs, so the job that runs every dependency's build scripts holds no signing token.

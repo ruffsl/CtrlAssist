@@ -2,7 +2,8 @@
 #
 # Push a `vX.Y.Z` tag -> build the distro packages (.deb, .rpm, .pkg) and
 # per-binary SBOMs for x86_64 and arm64, sign them (build-packages.yml),
-# verify every signature, and attach it all to a DRAFT GitHub release. Run
+# verify every signature, attach it all to a DRAFT GitHub release, and push
+# the Nix package to ctrlassist.cachix.org (after your approval). Run
 # `just verify-release vX.Y.Z` on the draft and test the packages; then
 # publish the draft by hand. With immutable releases on, publishing also
 # locks the tag and the assets.
@@ -10,7 +11,7 @@
 # Version bumps and CHANGELOGs come from `release-plz update`, run locally
 # (`just release-bump`) or by release-plz.yml's pull request, and merged
 # before tagging. Nothing is published to crates.io. After TisVlay's
-# release workflow, without its crates.io and Nix cache phases.
+# release workflow, without its crates.io phase.
 name: Release
 
 on:
@@ -153,3 +154,58 @@ jobs:
             echo "::error::$TAG is already published; tag a new version instead."
             exit 1
           fi
+
+  # Build the flake's package and push it to the public
+  # ctrlassist.cachix.org cache (packaging/nix/README.md "Binary cache").
+  #
+  # The push token lives in the `cachix` environment, which only admits `v*`
+  # tags and needs the maintainer's approval (repo Settings → Environments),
+  # so a branch run can't push, and a tag run waits for that click, even if
+  # these triggers change. The job only writes to the cache: it builds from
+  # cache.nixos.org alone (`skipAddingSubstituter`), keeping this workflow's
+  # no-cache rule above.
+  nix-cache:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-26.04
+            system: x86_64-linux
+          - runner: ubuntu-26.04-arm
+            system: aarch64-linux
+    runs-on: ${{ matrix.runner }}
+    environment: cachix
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Nix
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # 31.11.3
+
+      # Installs the cachix CLI only: no substituter, no automatic push.
+      - name: Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: ctrlassist
+          skipAddingSubstituter: true
+          skipPush: true
+
+      - name: Build
+        run: nix build --print-build-logs .#default
+
+      # Push the output's runtime closure, not every path the build made:
+      # the vendored crate sources are build-only. Then pin it under the tag
+      # so cache churn can't evict it. Keeping one revision means a tag moved
+      # before its release is published moves the pin to the new build, and
+      # the old one falls to normal eviction.
+      - name: Push
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          PIN: ${{ github.ref_name }}-${{ matrix.system }}
+        run: |
+          out=$(nix build --no-link --print-out-paths .#default)
+          cachix push ctrlassist "$out"
+          cachix pin ctrlassist "$PIN" "$out" --keep-revisions 1

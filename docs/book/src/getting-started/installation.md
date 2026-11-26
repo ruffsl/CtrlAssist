@@ -21,6 +21,87 @@ Add the flake and enable the module:
 }
 ```
 
+<details><summary id="module-without-flakes">Without flakes</summary>
+
+Without flakes, import a fetched copy of the repository (or one pinned with npins or niv); it evaluates to the same outputs the flake has:
+
+```nix
+# configuration.nix
+let
+  ctrlassist = import (builtins.fetchTarball "https://github.com/CtrlAssist/CtrlAssist/archive/main.tar.gz");
+in
+{
+  imports = [ ctrlassist.nixosModules.default ];
+  services.ctrlassist.enable = true;
+}
+```
+
+</details>
+
+<details><summary id="prebuilt-binaries-optional">Prebuilt binaries (optional)</summary>
+
+By default the module builds CtrlAssist against your system's nixpkgs, so it compiles locally on every install and update. Each [release](https://github.com/CtrlAssist/CtrlAssist/releases) is also built by CI and published to the public `ctrlassist.cachix.org` binary cache, for x86_64 and aarch64 Linux. To use those builds instead, pin the repository to a release tag, trust the cache, and point the module at the repository's own package. With flakes:
+
+```nix
+# flake.nix
+{
+  inputs.ctrlassist.url = "github:CtrlAssist/CtrlAssist/vX.Y.Z"; # a release tag
+  # No `inputs.ctrlassist.inputs.nixpkgs.follows`: it would change the build
+  # and miss the cache.
+
+  outputs = { nixpkgs, ctrlassist, ... }: {
+    nixosConfigurations.my-machine = nixpkgs.lib.nixosSystem {
+      modules = [
+        ctrlassist.nixosModules.default
+        ({ pkgs, ... }: {
+          nix.settings.substituters = [ "https://ctrlassist.cachix.org" ];
+          nix.settings.trusted-public-keys = [
+            "ctrlassist.cachix.org-1:bGlpD8WCqOqGDpJH9EEO9YqlCwH1V31N2nNv6IurgNY="
+          ];
+          services.ctrlassist.enable = true;
+          services.ctrlassist.package =
+            ctrlassist.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        })
+      ];
+    };
+  };
+}
+```
+
+<details><summary id="prebuilt-without-flakes">Without flakes</summary>
+
+```nix
+# configuration.nix
+{ pkgs, ... }:
+let
+  # A release tag.
+  ctrlassist = import (builtins.fetchTarball "https://github.com/CtrlAssist/CtrlAssist/archive/vX.Y.Z.tar.gz");
+in
+{
+  imports = [ ctrlassist.nixosModules.default ];
+  nix.settings.substituters = [ "https://ctrlassist.cachix.org" ];
+  nix.settings.trusted-public-keys = [
+    "ctrlassist.cachix.org-1:bGlpD8WCqOqGDpJH9EEO9YqlCwH1V31N2nNv6IurgNY="
+  ];
+  services.ctrlassist.enable = true;
+  services.ctrlassist.package = ctrlassist.packages.${pkgs.stdenv.hostPlatform.system}.default;
+}
+```
+
+</details>
+
+The `nix.settings` lines take effect once a switch activates them, so pass the cache on the command line for the first switch, or it builds locally (without flakes, drop `--flake`):
+
+```sh
+sudo nixos-rebuild switch --flake .#my-machine \
+  --option extra-substituters https://ctrlassist.cachix.org \
+  --option extra-trusted-public-keys ctrlassist.cachix.org-1:bGlpD8WCqOqGDpJH9EEO9YqlCwH1V31N2nNv6IurgNY=
+```
+
+Later switches pick the cache up from `nix.settings` alone.
+
+</details>
+
 Rebuild, then log out and back in. The module installs everything below and starts the daemon and the tray with your session. Three options switch parts off, all on by default:
 
 | Option | What it controls |
