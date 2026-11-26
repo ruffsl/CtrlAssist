@@ -794,7 +794,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"${pkgs.acl}/bin/setfacl -b {raw}")
         machine.fail(f"su -l alice -c 'test -r {raw}'")
         refused = cli("start", "steam", fails=True)
-        assert "70-ctrlassist.rules" in refused, refused
+        assert "isn't yours to open" in refused and "udev rule" in refused, refused
         assert setup("steam") is None
         machine.succeed(f"ctrlassist-fixture pads | grep 'uniq=\"{serial}\"'")
         # The rule applied again, as `udevadm trigger` after installing it

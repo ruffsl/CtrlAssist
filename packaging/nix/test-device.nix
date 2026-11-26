@@ -196,10 +196,11 @@ pkgs.testers.runNixOSTest {
         assert re.search(r"^received set-feature 0183", log, re.M), log
         assert log.count("received get-feature 1") >= 2, log
 
-        # The raw node is the client device's, root's alone without a rule
-        # like Steam's; root opens it, and the driver takes its input
+        # The raw node is the client device's. The packaged rule gives it
+        # to the seat user (the daemon's check shows it is that rule and
+        # no other); here root opens it, and the driver takes its input
         # devices away while it is open.
-        machine.fail(f"su -l alice -c 'test -r {raw}'")
+        machine.succeed(f"su -l alice -c 'test -r {raw}'")
         machine.succeed(
             f"systemd-run --unit steam-raw ctrlassist-fixture hidraw {raw} --reads 6 "
             "--write 80000040001000002000 --set-feature 0187030900 --hold"
