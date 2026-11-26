@@ -9,8 +9,7 @@
 # The generated pages under docs/book/src/generated/ are committed and
 # refreshed by `just docs-gen`; this build is a plain `mdbook build` and
 # never runs cargo. mdbook is pinned to the version the Nix dev shell
-# ships, so local and Read the Docs builds match. The book includes no
-# Git LFS file, so nothing is pulled.
+# ships, so local and Read the Docs builds match.
 version: 2
 
 build:
@@ -19,9 +18,20 @@ build:
   # release binary (see `install`).
   tools:
     rust: latest
+  # The book's pages show screenshots, which are Git LFS files. Read the
+  # Docs checks out without LFS, so they would ship as pointer stubs;
+  # git-lfs from Ubuntu fixes that.
+  apt_packages:
+    - git-lfs
   # Neither `sphinx` nor `mkdocs` is set, so Read the Docs runs only the
   # jobs listed here. Each command runs in a new shell.
   jobs:
+    # apt packages install after `post_checkout`, so the pull runs here.
+    post_system_dependencies:
+      - git lfs install --local
+      - git lfs pull --include "docs/screenshots/*,docs/artwork/*"
+      # Fail if any image is still an LFS pointer stub.
+      - "! grep -rl 'git-lfs.github.com/spec/v1' docs/screenshots docs/artwork"
     # The official musl release binary, checked against the SHA-256 that
     # GitHub publishes for the release asset. Bump the version and its
     # digest together: `gh release view <tag> -R rust-lang/mdBook --json

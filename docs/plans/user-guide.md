@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** approved by the maintainer on 2026-11-25, after the capture was spiked (see Spike: drawing the window off screen). Steps 1 to 3 are done; the maintainer passed step 2's stop on the capture seen.
-- **Next action:** step 4, the new contents.
+- **Status:** approved by the maintainer on 2026-11-25, after the capture was spiked (see Spike: drawing the window off screen). Steps 1 to 5 are done; the maintainer passed step 2's stop on the capture seen, and asked for steps 4 to 7 to be run through without a stop between.
+- **Next action:** step 6.
 - **Branch:** `docs/user-guide`, from `main` at `39c1b4c`.
 
 ## Goal
