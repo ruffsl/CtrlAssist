@@ -599,6 +599,28 @@ fn an_assist_holding_the_engaging_button_has_the_motion_while_it_is_held() {
 }
 
 #[test]
+fn an_engaging_button_in_no_group_is_consumed_as_well() {
+    // The touchpad's click is in no group of the gamepad layout.
+    let mut config = MuxConfig::new(Mode::Priority, &Layout::gamepad());
+    config.gyro = Some(Switch {
+        input: Some(1),
+        button: TOUCHPAD,
+    });
+    let mut graph = mux_graph(config);
+    let assist = pad().with_motion(turning(-200.0, 9));
+    step(&mut graph, ASSIST, assist.with(TOUCHPAD, 1.0));
+    let sink = *graph.sink(SinkId(0));
+    assert_eq!(sink.motion(), assist.motion(), "held");
+    assert_eq!(sink.get(TOUCHPAD), 0.0, "the game never sees it");
+    step(&mut graph, PRIMARY, pad().with(TOUCHPAD, 1.0));
+    assert_eq!(
+        graph.sink(SinkId(0)).get(TOUCHPAD),
+        1.0,
+        "the primary's same button is its own"
+    );
+}
+
+#[test]
 fn an_engaging_button_is_a_button_of_one_input_and_not_the_switch() {
     let layout = Layout::gamepad();
     let build = |config: MuxConfig| {

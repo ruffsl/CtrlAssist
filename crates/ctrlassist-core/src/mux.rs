@@ -345,19 +345,11 @@ impl Mux {
             self.switch();
         }
 
-        // Buttons in no group, all at once.
-        *out = PadState::NEUTRAL;
-        let loose = if self.config.ungrouped_buttons == Rule::Switched {
-            inputs[self.selected].buttons()
-        } else {
-            inputs.iter().fold(0, |held, state| held | state.buttons())
-        };
-        *out.buttons_mut() = loose & self.loose_buttons;
-
         // Motion, whole from one input and never blended: a game sees
         // one pad's two sensors, which agree. The input that holds the
         // button that hands it over has it while it does, and the button
-        // is removed.
+        // is removed before any button is put out, so that one in no
+        // group is consumed as one in a group is.
         let mut carrier = self.carrier();
         if let Some(Switch {
             input: Some(input),
@@ -371,7 +363,16 @@ impl Mux {
             }
             *state.buttons_mut() &= !bit;
         }
+        *out = PadState::NEUTRAL;
         out.set_motion(inputs[carrier].motion());
+
+        // Buttons in no group, all at once.
+        let loose = if self.config.ungrouped_buttons == Rule::Switched {
+            inputs[self.selected].buttons()
+        } else {
+            inputs.iter().fold(0, |held, state| held | state.buttons())
+        };
+        *out.buttons_mut() = loose & self.loose_buttons;
 
         // The touchpad, whole from one input too.
         let from = match self.config.touchpad {
