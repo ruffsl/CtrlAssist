@@ -3769,6 +3769,12 @@ mod tests {
             return None;
         }
         let fake = ctrlassist_test::FakePad::new(name, 0x1209, 0x8301).unwrap();
+        // Once udev has given the seat its node, which on a busy machine
+        // it hasn't yet as the node appears.
+        assert!(ctrlassist_test::may_open_once_udev_is_done(
+            fake.event_node(),
+            true
+        ));
         let pad = open(fake.event_node())
             .and_then(|fd| read(fd, fake.event_node(), &Database::parse("")))
             .unwrap();

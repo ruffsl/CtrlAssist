@@ -506,16 +506,22 @@ async fn with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored
     // Almost always. The daemon can hear from the input thread that the
     // pad went, and find a pad on its node again, before udev has told
     // anyone the pad is back: the service then says it is absent, and
-    // the daemon hides it afresh and gives up the old name, which leaves
-    // the pad hidden once all the same.
-    let all = asked(&hider);
-    let reopened = all.last() == Some(&Asked::Reopen(assist_id.clone()));
-    let afresh = all.ends_with(&[
-        Asked::Reopen(assist_id.clone()),
-        Asked::Hide(assist_id.clone()),
-        Asked::Restore(assist_id.clone()),
-    ]);
-    assert!(reopened || afresh, "everything asked: {all:?}");
+    // the daemon hides it afresh and gives up the old name, by closing
+    // the connection it was hidden on, which the service hears a moment
+    // after: the pad is left hidden once all the same.
+    let as_it_should = |all: &[Asked]| {
+        let reopened = all.last() == Some(&Asked::Reopen(assist_id.clone()));
+        let afresh = all.ends_with(&[
+            Asked::Reopen(assist_id.clone()),
+            Asked::Hide(assist_id.clone()),
+            Asked::Closed,
+        ]);
+        reopened || afresh
+    };
+    eventually("the service was never asked as it should be", async || {
+        as_it_should(&asked(&hider))
+    })
+    .await;
     assist.south(true).unwrap();
     south_is(&mut game, true).await;
 
@@ -1029,12 +1035,25 @@ async fn another_pad_is_taken_as_the_setup_runs_and_the_one_given_up_is_shown_ag
         .unwrap();
     assert!(!client.update_setup("couch", true).await.unwrap().disruptive);
     assert_eq!(asked(&hider).len(), before);
+    // Once the client has heard: the update is answered on one path and
+    // the setup as it now is published on another, which a busy machine
+    // can deliver after the answer.
+    let primary_is_third = |setup: &Setup| {
+        setup
+            .sources
+            .iter()
+            .find(|source| source.name == "primary")
+            .and_then(|source| source.pad.as_deref())
+            == Some(third_id.as_str())
+    };
+    eventually("the setup never showed its parts swapped", async || {
+        client
+            .setup("couch")
+            .unwrap()
+            .is_some_and(|setup| primary_is_third(&setup))
+    })
+    .await;
     let swapped = client.setup("couch").unwrap().unwrap();
-    let primary_now = swapped
-        .sources
-        .iter()
-        .find(|source| source.name == "primary");
-    assert_eq!(primary_now.unwrap().pad.as_deref(), Some(third_id.as_str()));
     assert!(swapped.sources.iter().all(|source| source.present));
 
     // A pad another setup has can't be taken, and the setup stays as it is.

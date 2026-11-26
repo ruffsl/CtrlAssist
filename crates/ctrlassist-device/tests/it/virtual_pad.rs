@@ -16,7 +16,14 @@ use crate::{can_make_pads, read_until};
 fn pair(identity: Identity) -> (VirtualPad, Pad) {
     let sink = VirtualPad::create(identity).unwrap();
     let node = sink.event_node().to_path_buf();
-    let _ = std::process::Command::new("udevadm").arg("settle").status();
+    // Once udev has given the seat the node, which on a busy machine it
+    // hasn't yet as the node appears, nor always by the time `udevadm
+    // settle` returns: that can come back before udev has heard of it.
+    assert!(
+        ctrlassist_test::may_open_once_udev_is_done(&node, false),
+        "{} isn't this user's to open",
+        node.display()
+    );
     let fd: OwnedFd = File::open(node).unwrap().into();
     (sink, Pad::from_fd(fd).unwrap())
 }
@@ -258,8 +265,15 @@ fn an_upload_that_is_refused_fails_in_the_game_and_does_not_hang_it() {
     assert_eq!(outcome, Err(Some(28)));
 }
 
-/// A pad opened for writing as well, as the hiding service opens them.
+/// A pad opened for writing as well, as the hiding service opens them,
+/// once udev has given the seat its node: a pad just made isn't this
+/// user's to open until then.
 pub(crate) fn writable(node: &Path) -> Pad {
+    assert!(
+        ctrlassist_test::may_open_once_udev_is_done(node, true),
+        "{} isn't this user's to open",
+        node.display()
+    );
     let fd: OwnedFd = File::options()
         .read(true)
         .write(true)
