@@ -21,11 +21,11 @@ use ctrlassist_core::{
 use ctrlassist_device::{Command, InputThread, Pad, Report, Setup, VirtualPad};
 use ctrlassist_test::{
     FakeSteamController, Received, StateReport, SteamButton, SteamState, SteamTransport, Trackpad,
-    can_make_steam_pads,
+    can_make_steam_pads, may_open_once_udev_is_done,
 };
 
 use crate::thread::{ID, PRIMARY, input_thread_switches, last, mux, sink};
-use crate::{can_make_pads, openable, read_until};
+use crate::{can_make_pads, read_until};
 
 const ASSIST: SourceId = SourceId(1);
 
@@ -52,7 +52,8 @@ fn nodes(
     let gamepad = fake.gamepad().expect("the driver makes the gamepad");
     let raw = fake.raw_node().expect("the driver makes a raw node");
     settle();
-    if !openable(&gamepad.event, false) || !openable(&raw, true) {
+    if !may_open_once_udev_is_done(&gamepad.event, false) || !may_open_once_udev_is_done(&raw, true)
+    {
         skip(test, "the fake's nodes aren't this user's to open here");
         return None;
     }
@@ -307,7 +308,7 @@ fn virtual_dualsense(test: &str, last: u32) -> Option<(VirtualPad, File)> {
         VirtualPad::dualsense(&data, ctrlassist_device::own_address(0x7e_5c00 + last)).unwrap();
     settle();
     let raw = ctrlassist_test::raw_node_of(sink.event_node()).unwrap();
-    if !openable(&raw, false) {
+    if !may_open_once_udev_is_done(&raw, false) {
         skip(
             test,
             "a virtual DualSense's raw node isn't this user's to open here",
@@ -451,19 +452,22 @@ fn lizard_off() -> Received {
     Received::SetFeature(frame)
 }
 
-/// How many lizard-mode-off frames the fake has been set.
-fn lizard_offs(fake: &FakeSteamController) -> usize {
+/// How many of `received` set lizard mode off.
+fn lizard_offs(received: &[Received]) -> usize {
     let wanted = lizard_off();
-    fake.received()
+    received
         .iter()
         .filter(|received| **received == wanted)
         .count()
 }
 
 /// Lizard mode is set off, with the motion sensors on, as the pad is
-/// given its raw node, before anything reads it; and again once the
-/// pad's own interval has passed, and not before. This waits for that
-/// interval, three seconds.
+/// given its raw node, with no setup reading it; and again once the pad's
+/// own interval of three seconds has passed, not in a burst before it.
+/// By the fake's own times, as its thread read each, which a busy test
+/// thread looking late moves neither of; the first read late only makes
+/// the two look closer, so the bound is well under three seconds. This
+/// waits for that interval.
 #[test]
 fn lizard_mode_is_set_off_at_once_and_again_after_the_pad_s_interval() {
     const TEST: &str = "lizard_mode_is_set_off_at_once_and_again_after_the_pad_s_interval";
@@ -475,27 +479,20 @@ fn lizard_mode_is_set_off_at_once_and_again_after_the_pad_s_interval() {
         return;
     };
     assert!(
-        fake.wait_for(|_| lizard_offs(&fake) >= 1),
+        fake.wait_for(|received| lizard_offs(received) >= 2),
         "{:?}",
         fake.received()
     );
-    let first = Instant::now();
-    let mut again = None;
-    // Ten seconds at most, so that a test that fails ends.
-    while first.elapsed() < Duration::from_secs(10) {
-        if lizard_offs(&fake) >= 2 {
-            again = Some(first.elapsed());
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let again = again.expect("lizard mode is set off again");
-    // Seen up to a look late the first time: a little under the three
-    // seconds between the two writes.
-    assert!(
-        again >= Duration::from_millis(2950),
-        "again after {again:?}"
-    );
+    let wanted = lizard_off();
+    let at: Vec<Instant> = fake
+        .received_at()
+        .into_iter()
+        .filter(|(_, received)| *received == wanted)
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(at.len(), 2, "no burst: {at:?}");
+    let between = at[1] - at[0];
+    assert!(between >= Duration::from_secs(2), "again after {between:?}");
     drop(pad);
 }
 

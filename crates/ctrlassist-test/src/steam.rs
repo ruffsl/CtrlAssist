@@ -972,8 +972,31 @@ impl FakeSteamController {
             .clone()
     }
 
+    /// Everything it was sent, in the order it arrived, each with when it
+    /// arrived, as the fake's own thread read it: a busy test thread that
+    /// looks late doesn't move it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the serving thread panicked while noting something.
+    #[must_use]
+    pub fn received_at(&self) -> Vec<(Instant, Received)> {
+        let entries = self
+            .received
+            .entries
+            .lock()
+            .expect("nothing panics while the log is held");
+        let times = self
+            .received
+            .times
+            .lock()
+            .expect("nothing panics while the log is held");
+        times.iter().copied().zip(entries.iter().cloned()).collect()
+    }
+
     /// Waits until what it was sent satisfies `wanted`, woken as each
-    /// thing arrives, for ten seconds at most; whether it did.
+    /// thing arrives, for ten seconds at most; whether it did. `wanted`
+    /// is called with the log held, so it must not look at the fake.
     ///
     /// # Panics
     ///
@@ -1273,6 +1296,9 @@ impl Drop for FakeSteamController {
 #[derive(Default)]
 struct Log {
     entries: Mutex<Vec<Received>>,
+    /// When each entry arrived, by the serving thread's clock, in the
+    /// same order: written with the entries' lock held.
+    times: Mutex<Vec<Instant>>,
     /// Set when the kernel says `hid-steam` has bound the fake: its probe
     /// has returned, and the HID core passes it the fake's reports.
     bound: AtomicBool,
@@ -1360,10 +1386,16 @@ fn serve(
     use rustix::net::{RecvFlags, recv};
 
     let note = |what: Received| {
-        log.entries
+        let mut entries = log
+            .entries
+            .lock()
+            .expect("nothing panics while the log is held");
+        entries.push(what);
+        log.times
             .lock()
             .expect("nothing panics while the log is held")
-            .push(what);
+            .push(Instant::now());
+        drop(entries);
         log.arrived.notify_all();
     };
     let word = |event: &[u8], at: usize| {
