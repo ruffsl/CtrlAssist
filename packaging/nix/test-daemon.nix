@@ -2,7 +2,8 @@
 # machine with one user at a graphical session: the daemon as that user's
 # service, a profile run from real device nodes to a virtual pad, with its
 # pads hidden by the real hiding service, through a reconnect, a stop, a
-# kill, and a start by itself.
+# kill, and a start by itself; and a Steam Controller read through the
+# raw node the packaged rule gives the seat.
 {
   pkgs,
   fixture,
@@ -24,8 +25,15 @@ pkgs.testers.runNixOSTest {
     # takes for pads only when asked to.
     systemd.user.services.ctrlassist-daemon.environment.CTRLASSIST_TEST_PADS = "1";
 
-    # For the js nodes the checks look at; the module loads the rest.
-    boot.kernelModules = [ "joydev" ];
+    # The first release whose hid-steam knows the 2026 Steam Controller,
+    # from the binary cache, so that a fake one is bound here.
+    boot.kernelPackages = pkgs.linuxPackages_7_3;
+    # For the js nodes the checks look at, and the driver a fake Steam
+    # Controller is bound by; the module loads the rest.
+    boot.kernelModules = [
+      "joydev"
+      "hid-steam"
+    ];
     users.users.alice = {
       isNormalUser = true;
       uid = 1000;
@@ -756,11 +764,77 @@ pkgs.testers.runNixOSTest {
         machine.succeed(as_alice("ctrlassist-fixture version --socket /run/ctrlassist/hider.sock"))
         assert service_said(REFUSES) and not service_said(TAKES)
 
+    with subtest("a Steam Controller is read through the raw node the packaged rule gives the seat, and never said to have left"):
+        STEAM, HELD_BACK = "Steam Controller", "a pad is back from its raw node being held"
+        machine.succeed("systemd-run --unit steam ctrlassist-fixture fake-steam --pulse 20")
+        machine.wait_until_succeeds("journalctl -u steam -o cat | grep '^raw '")
+        steam_log = machine.succeed("journalctl -u steam -o cat")
+        serial, raw = field(r"(?m)^serial (\S+)$", steam_log), field(r"(?m)^raw (\S+)$", steam_log)
+        machine.succeed("udevadm settle")
+        retry(lambda _last: known().get(STEAM, {}).get("connected", False))
+        steam_id = known()[STEAM]["id"]
+        assert steam_id == f"address:{serial}", known()[STEAM]
+        # The client device's raw node is the seat user's by the packaged
+        # rule's tag, nobody else's; a stock machine gives it to root alone.
+        sysraw = "/sys/class/hidraw/" + raw.split("/")[-1]
+        assert ":uaccess:" in machine.succeed(f"udevadm info -q property {sysraw} | grep '^TAGS='"), raw
+        machine.succeed(f"su -l alice -c 'test -r {raw} -a -w {raw}'")
+        machine.fail(f"su -s /bin/sh nobody -c 'test -r {raw}'")
+
+        machine.succeed(f"printf '%s\\n' 'mode = \"unicast\"' 'pad = \"{steam_id}\"' > /tmp/steam.toml")
+        cli("profile", "put", "/tmp/steam.toml")
+
+        # Without the grant the start is refused with what to do, and the
+        # pad is left as it was.
+        machine.succeed(f"${pkgs.acl}/bin/setfacl -b {raw}")
+        machine.fail(f"su -l alice -c 'test -r {raw}'")
+        refused = cli("start", "steam", fails=True)
+        assert "70-ctrlassist.rules" in refused, refused
+        assert setup("steam") is None
+        machine.succeed(f"ctrlassist-fixture pads | grep 'uniq=\"{serial}\"'")
+        machine.succeed(f"udevadm trigger --settle --action=change {sysraw}")
+        machine.succeed(f"su -l alice -c 'test -r {raw} -a -w {raw}'")
+
+        def counts():
+            journal = daemon_journal()
+            return {what: journal.count(what) for what in ("a pad connected", "a pad disconnected", HELD_BACK)}
+
+        before = counts()
+        cli("start", "steam")
+        phase_is("running", name="steam")
+        # Its driver took its gamepad away as its raw node was opened: no
+        # game reading event nodes sees it, as of a pad grabbed.
+        machine.wait_until_fails(f"ctrlassist-fixture pads | grep 'uniq=\"{serial}\"'")
+        pad = known()[STEAM]
+        assert pad["connected"] and not pad["hidden"] and pad["setup"] == "steam", pad
+        node = setup("steam")["sinks"][0]["node"]
+        machine.succeed("udevadm settle")
+        out = machine.succeed(f"su -l alice -c 'ctrlassist-fixture read {node} --frames 4'")
+        presses = [line.split()[1] for line in out.splitlines() if line.startswith("frame ")]
+        assert len(presses) == 4 and all(a != b for a, b in zip(presses, presses[1:])), out
+
+        # Stopped, the driver has its gamepad back, and the pad is back,
+        # never said to have gone or come.
+        cli("stop", "steam")
+        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep 'uniq=\"{serial}\"'")
+        retry(lambda _last: counts()[HELD_BACK] == before[HELD_BACK] + 1)
+        assert counts() == {**before, HELD_BACK: before[HELD_BACK] + 1}, (before, counts())
+        pad = known()[STEAM]
+        assert pad["connected"] and pad.get("setup") is None, pad
+
+        # Held again as the daemon stops, for the subtest below.
+        cli("start", "steam")
+        phase_is("running", name="steam")
+        machine.wait_until_fails(f"ctrlassist-fixture pads | grep 'uniq=\"{serial}\"'")
+
     with subtest("stopping the service restores the pads"):
         machine.succeed(as_alice("systemctl --user stop ctrlassist-daemon.service"))
         wait_restored()
         assert alice_can_open(HID) and alice_can_open(PLAIN)
         assert VIRTUAL not in nodes()
         assert "the daemon has stopped" in daemon_journal()
+        # The Steam Controller held is given back to its driver.
+        machine.wait_until_succeeds(f"ctrlassist-fixture pads | grep 'uniq=\"{serial}\"'")
+        machine.succeed("systemctl stop steam")
   '';
 }
