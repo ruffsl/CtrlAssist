@@ -721,6 +721,23 @@ fn input_thread_switches(thread: &InputThread) -> u64 {
         .sum()
 }
 
+/// Waits until `thread` sleeps: the kernel's own word for it, the state
+/// after the name in the task's `stat`. The input thread waits nowhere
+/// but for something to do.
+fn wait_until_asleep(thread: &InputThread) {
+    let task = thread.task().unwrap();
+    loop {
+        let stat = std::fs::read_to_string(format!("/proc/self/task/{task}/stat")).unwrap();
+        // The name is in parentheses and may hold anything; the state is
+        // the field after the last of them.
+        let state = stat.rsplit_once(')').unwrap().1.trim_start().chars().next();
+        if state == Some('S') {
+            return;
+        }
+        std::thread::yield_now();
+    }
+}
+
 #[test]
 fn an_idle_input_thread_never_wakes() {
     if !can_make_pads("an_idle_input_thread_never_wakes") {
@@ -731,6 +748,9 @@ fn an_idle_input_thread_never_wakes() {
     rig.primary.frame(&[(EV_KEY, BTN_SOUTH, 1)]).unwrap();
     read_until(&mut rig.game, |frames| !frames.is_empty());
 
+    // The game has its frame before the thread is back waiting, and going
+    // to wait is itself counted.
+    wait_until_asleep(&rig.thread);
     let before = input_thread_switches(&rig.thread);
     std::thread::sleep(std::time::Duration::from_secs(1));
     assert_eq!(
