@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** approved by the maintainer on 2026-11-25, after the capture was spiked (see Spike: drawing the window off screen). Steps 1 to 7 are done; the maintainer passed step 2's stop on the capture seen, and asked for steps 4 to 7 to be run through without a stop between.
-- **Next action:** the maintainer's read of the guide and the README as they now stand; then step 8, the tray's shots, and step 9.
+- **Next action:** step 9, the read of every page against the code, while the maintainer reads the guide and the README on the draft pull request (#63); step 8, the tray's shots, is theirs.
 - **Branch:** `docs/user-guide`, from `main` at `39c1b4c`.
 
 ## Goal
@@ -48,7 +48,7 @@ By the maintainer, 2026-11-25:
 
 - **TisVlay's shape,** with the window and the tray on one page.
 - **Screenshots are made by a Rust binary** that builds the real window against made-up state and renders it off screen with Slint's software renderer. No compositor, no daemon, no hand at the mouse.
-- **The tray's screenshots come last,** being drawn by the desktop and not by CtrlAssist.
+- **The tray's screenshots come last,** being drawn by the desktop and not by CtrlAssist. Decided later: the maintainer takes them by hand, as TisVlay's were taken.
 - **The reasons above go into `docs/book/README.md`,** and into TisVlay's on its local branch.
 - **Screenshots are committed through git LFS,** as the artwork is.
 
@@ -147,7 +147,7 @@ Everything from the banner to the end of Architecture is inside `<!-- ANCHOR: ov
 | `about_pane.png` | The parts and their releases |
 | `pads_pane_light.png` | The Pads page again, in the light theme |
 | `couch_mode.png` | The window in its ten-foot layout |
-| `system_tray_menu.png`, `system_tray_hover.png` | The tray, last, by whatever means step 8 finds |
+| `system_tray_menu.png`, `system_tray_hover.png` | The tray, last, taken by hand at step 8 |
 
 **What wasn't known** when this was first written is answered by the spike below: the software renderer draws the window as it is on screen, with the machine's fonts and icons, as a feature only the tool turns on.
 
@@ -189,7 +189,7 @@ Each is one commit or a few, with `prek run -a --skip build --skip clippy --skip
 5. **GUI & Tray, and Quick Start from the window.** With the first page that shows a screenshot, Read the Docs pulls the LFS files, as TisVlay's build does (`git lfs pull` for `docs/screenshots` and `docs/artwork`, and a check that none is left a pointer). The window's pages by their labels, with their screenshots; couch mode and navigating by keys and gamepad, from `docs/gui/`; the tray after. Quick Start leads with the window.
 6. **Profiles by the window's labels,** with each mode's emoji and example; Configuration Files finished; the FAQ, opening with the background; and the canonical homes table in `docs/book/README.md`.
 7. **The README in TisVlay's stanzas,** as The README above: mdbook-mermaid in `flake.nix`, the docs job and `.config/.readthedocs.yaml`, their versions in step; the diagram; the Screenshots table; the `overview` anchor widened to the whole of it, and the introduction's own copy of anything it now includes removed.
-8. **The tray's shots.** Tried in this order: a nested Plasma session driven over D-Bus; the menu as the tray's own data, drawn by a small page of the tool; by hand. Its own stop, since each costs differently.
+8. **The tray's shots,** by hand: the maintainer takes `system_tray_menu.png`, the menu open on a profile, and `system_tray_hover.png`, the icon's tooltip, on their own desktop, looking that nothing in frame is theirs to keep private, a controller's address above all. GUI & Tray and the README's table then show them.
 9. **A read of every page against the code,** as TisVlay's sweep was: each label quoted is the label shown, each command runs, each claim holds. Then the plan is retired: what lasts is already in `docs/book/README.md` after step 1.
 
 ## Open questions
@@ -203,7 +203,7 @@ For the maintainer:
 - **`just docs-screenshots` arrived with the tool,** at step 2 and not step 3: a recipe is added in the commit that first gives it something to do, and the tool is run through it.
 - **The tool is kept out of the coverage figure,** as the tray's desktop files are: it is run and looked at, and its lines would otherwise count as untested against a floor half a point below the figure.
 - **The accents are not Plasma's swatches but what Plasma reports for them under a dark scheme,** which is darker: the window is told the reported color, and TisVlay's screenshots, taken on such a desktop, show it. The values were read off those screenshots; the swatches are in Plasma's `AccentColorUI.qml`.
-- **What the pictures showed that the plan didn't expect,** left for the steps that write the pages: a profile's form fields (Identity, Rumble, Gyro, Visibility) are below the fold at the size the window opens at, so `profiles_pane.png` shows a profile's status, inputs and the top of its outputs; and the window says "Games see a Xbox pad", an article to mend in the window.
+- **What the pictures showed that the plan didn't expect:** a profile's form fields (Identity, Rumble, Gyro, Visibility) are below the fold at the size the window opens at, so `profiles_pane.png` shows a profile's status, inputs and the top of its outputs, which the maintainer chose to leave; and the window said "Games see a Xbox pad", mended here to "the Xbox pad", which suits every identity's name.
 - **The README's note that 0.5.0 isn't released sits below the overview,** not at the top: the guide's introduction includes the overview, and the note is about a branch, which a reader of the guide isn't on.
 - **No link to the guide inside the README's Features,** as the plan's first list had for the modes: the overview is included into the guide, where a link written for the repository's root doesn't resolve. The Documentation stanza has the links.
 - **The license bundle names the software renderer,** a crate the packages don't hold: the bundle is made with every feature on, the tool's among them. Its license is Slint's, as the rest of Slint's crates are.

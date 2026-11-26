@@ -229,7 +229,8 @@ fn setup_note(setup: &Setup) -> String {
                     None => format!("{} pad", crate::status::identity(&sink.identity)),
                 })
                 .collect();
-            format!("Games see a {}.", sinks.join(" and a "))
+            // "the", which suits every identity's name: "a Xbox pad" doesn't.
+            format!("Games see the {}.", sinks.join(" and the "))
         }
         _ => "Starting.".to_string(),
     }

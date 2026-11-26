@@ -306,7 +306,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     let quick = row(&rows, "quick");
     assert_eq!(quick.setup_index, 0);
     assert_eq!(row(&rows, "couch").setup_index, -1);
-    assert_eq!(quick.note, "Games see a generic pad at event31.");
+    assert_eq!(quick.note, "Games see the generic pad at event31.");
     // The pads it names, as its setup has them, for the header's links.
     let uses: Vec<String> = quick
         .uses
