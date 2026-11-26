@@ -750,6 +750,9 @@ fn behind_a_generic_or_an_xbox_virtual_pad_only_the_standard_controls_arrive() {
         };
         let sink = VirtualPad::create(identity).unwrap();
         let mut game = Pad::from_fd(crate::opened(sink.event_node())).unwrap();
+        // Its events as the kernel sends them, beside what this crate's
+        // reader makes of them, which maps only the codes it knows.
+        let mut events = File::from(crate::opened(sink.event_node()));
         let setup = Setup::new(straight(1), vec![Some(pad)], vec![sink]);
         let (thread, _reports) = InputThread::spawn().unwrap();
         thread.send(Command::Start(ID, Box::new(setup))).unwrap();
@@ -779,6 +782,50 @@ fn behind_a_generic_or_an_xbox_virtual_pad_only_the_standard_controls_arrive() {
         // And let go, back to rest with nothing between.
         let frames = played(&fake, &SteamState::default(), &mut game, PadState::NEUTRAL);
         assert_eq!(frames, [PadState::NEUTRAL], "{identity:?}");
+        // Every event the kernel sent was south's press, its release, or
+        // the end of a frame: no code that reader might not map.
+        let sent = raw_events(&mut events);
+        let south_key = |value| (EV_KEY, BTN_SOUTH, value);
+        assert!(
+            sent.iter()
+                .all(|event| *event == south_key(1) || *event == south_key(0) || event.0 == EV_SYN),
+            "{identity:?}: {sent:?}"
+        );
+        assert!(
+            sent.contains(&south_key(1)) && sent.contains(&south_key(0)),
+            "{sent:?}"
+        );
+    }
+}
+
+const EV_SYN: u16 = 0x00;
+const EV_KEY: u16 = 0x01;
+const BTN_SOUTH: u16 = 0x130;
+
+/// Every event waiting on an event node, as its type, code and value,
+/// without waiting for more.
+fn raw_events(node: &mut File) -> Vec<(u16, u16, i32)> {
+    use std::os::fd::AsFd as _;
+    rustix::fs::fcntl_setfl(node.as_fd(), rustix::fs::OFlags::NONBLOCK).unwrap();
+    // A `struct input_event`: a time of two longs, then the type, the
+    // code and the value.
+    const SIZE: usize = 24;
+    let mut events = Vec::new();
+    let mut buffer = [0u8; SIZE * 64];
+    loop {
+        match node.read(&mut buffer) {
+            Ok(read) => {
+                for event in buffer[..read].as_chunks::<SIZE>().0 {
+                    events.push((
+                        u16::from_ne_bytes([event[16], event[17]]),
+                        u16::from_ne_bytes([event[18], event[19]]),
+                        i32::from_ne_bytes([event[20], event[21], event[22], event[23]]),
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return events,
+            Err(error) => unreachable!("reading the virtual pad's events: {error}"),
+        }
     }
 }
 
