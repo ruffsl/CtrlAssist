@@ -29,7 +29,7 @@ pub use steam::{
     ChargeState, FakeSteamController, GAMEPAD, InVirtualMachineCheck, MOTION, Received,
     StateReport, SteamBattery, SteamButton, SteamControllerBuilder, SteamInput, SteamState,
     SteamTransport, Trackpad, VALVE, VM_CHECK_MARKER, WIRELESS_GAMEPAD,
-    kernel_knows_steam_controller, steam_is_running,
+    kernel_knows_steam_controller, steam_is_running, wireless_report,
 };
 
 use std::path::Path;
@@ -164,14 +164,34 @@ pub fn can_make_steam_pads(test: &str) -> bool {
     if steam_is_running() {
         return skip("Steam is running, and would take a fake Steam Controller for its own");
     }
-    if uhid_available() {
+    if !uhid_available() {
+        assert!(
+            !fake_pads_required(),
+            "{test}: /dev/uhid isn't writable, and fake pads are required here"
+        );
+        return skip("/dev/uhid isn't writable here");
+    }
+    if hid_steam_binds() {
         return true;
     }
     assert!(
         !fake_pads_required(),
-        "{test}: /dev/uhid isn't writable, and fake pads are required here"
+        "{test}: the kernel's hid-steam doesn't bind a fake Steam Controller, and fake pads are required here"
     );
-    skip("/dev/uhid isn't writable here")
+    skip("the kernel's hid-steam doesn't bind a fake Steam Controller here: blacklisted, say")
+}
+
+/// Whether the kernel's `hid-steam` binds a fake Steam Controller here:
+/// it is loaded, or loads for one and binds it. A kernel that knows the
+/// controller may still have the module blacklisted, as some do to keep
+/// lizard mode's own pointer. Found once in a process, by making one fake
+/// if the module isn't loaded yet.
+fn hid_steam_binds() -> bool {
+    static BINDS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *BINDS.get_or_init(|| {
+        Path::new("/sys/bus/hid/drivers/hid-steam").exists()
+            || FakeSteamController::new().is_ok_and(|fake| fake.bound_by_hid_steam())
+    })
 }
 
 /// Whether this process may create pads through uhid.

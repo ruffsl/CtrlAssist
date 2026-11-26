@@ -925,6 +925,10 @@ pub(crate) fn lizard_mode_on() -> [[u8; FEATURE_SIZE]; 2] {
     ]
 }
 
+/// The test crate's fake Steam Controller held against this reading.
+#[cfg(test)]
+mod fake;
+
 #[cfg(test)]
 #[expect(
     clippy::arithmetic_side_effects,

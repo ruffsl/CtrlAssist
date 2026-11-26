@@ -53,12 +53,21 @@ struct Bytes(Vec<u8>);
 
 /// Bytes read from hex, two digits each.
 fn parse_bytes(text: &str) -> Result<Bytes, String> {
-    if !text.len().is_multiple_of(2) {
+    let digit = |byte: u8| {
+        char::from(byte)
+            .to_digit(16)
+            .ok_or_else(|| format!("{:?} isn't a hex digit", char::from(byte)))
+    };
+    let (pairs, rest) = text.as_bytes().as_chunks::<2>();
+    if !rest.is_empty() {
         return Err("an odd number of hex digits".into());
     }
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).map_err(|error| error.to_string()))
+    pairs
+        .iter()
+        .map(|[high, low]| {
+            let value = digit(*high)? << 4 | digit(*low)?;
+            u8::try_from(value).map_err(|error| error.to_string())
+        })
         .collect::<Result<_, _>>()
         .map(Bytes)
 }
@@ -125,11 +134,24 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         pulse: u64,
         /// Give it lizard mode's mouse and keyboard beside Valve's
-        /// collection, as a real controller has them. Refused outside a
-        /// virtual machine check.
+        /// collection, as a real Steam Controller has them. Refused
+        /// outside a virtual machine check.
         #[arg(long)]
         lizard_mouse_and_keyboard: bool,
+        /// Send `SteamState::busy` at each pulse, not the south button
+        /// pressed and released by turns.
+        #[arg(long)]
+        busy: bool,
+        /// First, as a player does in lizard mode: send the busy state
+        /// once and say whether the gamepad stayed silent (`silent
+        /// true`), then hold the menu button until the driver writes
+        /// lizard mode off and say `gamepad-mode`, then release it.
+        #[arg(long)]
+        menu_first: bool,
     },
+    /// Say a device's state from its event node: each key held as `key
+    /// <code>`, and each axis as `abs <code> <value>`.
+    EvdevState { node: PathBuf },
     /// Open a raw HID node, read and write, and say each report read from
     /// it as `read <hex>` until `reads` have come; first write an output
     /// report, with --write, and set a feature report, padded to 64
@@ -363,7 +385,12 @@ fn hide(node: &Path, socket: &Path, control: &Path) -> Result<()> {
 
 /// Makes a fake Steam Controller and holds it until killed; see
 /// [`Command::FakeSteam`].
-fn fake_steam(pulse: u64, lizard_mouse_and_keyboard: bool) -> Result<()> {
+fn fake_steam(
+    pulse: u64,
+    lizard_mouse_and_keyboard: bool,
+    busy: bool,
+    menu_first: bool,
+) -> Result<()> {
     use ctrlassist_test::{
         FakeSteamController, InVirtualMachineCheck, Received, StateReport, SteamButton, SteamState,
     };
@@ -384,6 +411,33 @@ fn fake_steam(pulse: u64, lizard_mouse_and_keyboard: bool) -> Result<()> {
     say(format_args!("motion {}", motion.event.display()))?;
     let raw = fake.raw_node().context("the driver made no raw node")?;
     say(format_args!("raw {}", raw.display()))?;
+    if menu_first {
+        let device = evdev::Device::open(&gamepad.event)
+            .with_context(|| format!("opening {}", gamepad.event.display()))?;
+        fake.send_state(&SteamState::busy(), StateReport::Full)
+            .context("sending a state report")?;
+        let held = device.get_key_state()?.contains(evdev::KeyCode::BTN_SOUTH);
+        say(format_args!("silent {}", !held))?;
+        let before = fake.received().len();
+        fake.send_state(
+            &SteamState::default().with(SteamButton::Menu),
+            StateReport::Full,
+        )
+        .context("sending a state report")?;
+        let switched = fake.wait_for(|received| {
+            received[before..]
+                .iter()
+                .filter_map(Received::command)
+                .any(|command| command.first() == Some(&0x87))
+        });
+        anyhow::ensure!(
+            switched,
+            "holding the menu button didn't switch the driver to gamepad mode"
+        );
+        say("gamepad-mode")?;
+        fake.send_state(&SteamState::default(), StateReport::Full)
+            .context("sending a state report")?;
+    }
     let mut told = 0;
     let mut sequence = 0u8;
     let mut pressed = false;
@@ -399,16 +453,19 @@ fn fake_steam(pulse: u64, lizard_mouse_and_keyboard: bool) -> Result<()> {
             say(line)?;
         }
         if pulse == 0 {
-            // What arrives is said within this, as a test waits for it.
-            sleep(Duration::from_millis(50));
+            // Woken by what arrives next, which is said at once.
+            let _ = fake.wait_for(|received| received.len() > told);
             continue;
         }
         sleep(Duration::from_millis(pulse));
         pressed = !pressed;
-        let mut state = SteamState::default();
-        if pressed {
-            state = state.with(SteamButton::South);
-        }
+        let state = if busy {
+            SteamState::busy()
+        } else if pressed {
+            SteamState::default().with(SteamButton::South)
+        } else {
+            SteamState::default()
+        };
         let report = state.report(StateReport::Full, sequence);
         sequence = sequence.wrapping_add(1);
         fake.send(&report).context("sending a state report")?;
@@ -539,7 +596,27 @@ fn run(command: Command) -> Result<()> {
         Command::FakeSteam {
             pulse,
             lizard_mouse_and_keyboard,
-        } => fake_steam(pulse, lizard_mouse_and_keyboard),
+            busy,
+            menu_first,
+        } => fake_steam(pulse, lizard_mouse_and_keyboard, busy, menu_first),
+        Command::EvdevState { node } => {
+            let device = evdev::Device::open(&node)
+                .with_context(|| format!("opening {}", node.display()))?;
+            for key in device.get_key_state()?.iter() {
+                say(format_args!("key {}", key.0))?;
+            }
+            let axes = device.get_abs_state()?;
+            if let Some(supported) = device.supported_absolute_axes() {
+                for axis in supported.iter() {
+                    say(format_args!(
+                        "abs {} {}",
+                        axis.0,
+                        axes[usize::from(axis.0)].value
+                    ))?;
+                }
+            }
+            Ok(())
+        }
         Command::Hidraw {
             node,
             reads,
