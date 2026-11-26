@@ -780,6 +780,11 @@ pkgs.testers.runNixOSTest {
         assert ":uaccess:" in machine.succeed(f"udevadm info -q property {sysraw} | grep '^TAGS='"), raw
         machine.succeed(f"su -l alice -c 'test -r {raw} -a -w {raw}'")
         machine.fail(f"su -s /bin/sh nobody -c 'test -r {raw}'")
+        # And the tag is the packaged rule's: udev, testing the node, says
+        # which rule's line set it, and no other rule sets it.
+        tested = machine.succeed(f"udevadm test --verbose --action=add {sysraw} 2>&1")
+        tagged = [line for line in tested.splitlines() if 'TAG+="uaccess"' in line and ".rules:" in line]
+        assert tagged and all("70-ctrlassist.rules" in line for line in tagged), tested
 
         machine.succeed(f"printf '%s\\n' 'mode = \"unicast\"' 'pad = \"{steam_id}\"' > /tmp/steam.toml")
         cli("profile", "put", "/tmp/steam.toml")
@@ -792,8 +797,16 @@ pkgs.testers.runNixOSTest {
         assert "70-ctrlassist.rules" in refused, refused
         assert setup("steam") is None
         machine.succeed(f"ctrlassist-fixture pads | grep 'uniq=\"{serial}\"'")
+        # The rule applied again, as `udevadm trigger` after installing it
+        # does, gives the node back, and the hotplug watch hears that of
+        # the pad's raw node: what has a setup that refused the pad for it
+        # send for it again.
+        machine.succeed("systemd-run --unit rawwatch -p StandardOutput=file:/tmp/rawwatch ctrlassist-fixture watch")
+        machine.wait_until_succeeds("grep -qx watching /tmp/rawwatch")
         machine.succeed(f"udevadm trigger --settle --action=change {sysraw}")
         machine.succeed(f"su -l alice -c 'test -r {raw} -a -w {raw}'")
+        machine.wait_until_succeeds("grep -q '^raw-node-changed ' /tmp/rawwatch")
+        machine.succeed("systemctl stop rawwatch")
 
         def counts():
             journal = daemon_journal()
