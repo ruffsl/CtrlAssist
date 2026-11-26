@@ -136,7 +136,172 @@ fn is_pad(device: &udev::Device) -> bool {
             .is_some_and(|value| value == "1")
 }
 
-/// The pad a udev event device is, read without opening it.
+/// The driver that binds a Steam Controller, its own HID device and the
+/// client HID device it makes beside it alike.
+const STEAM_DRIVER: &str = "hid-steam";
+
+fn is_hid(device: &udev::Device) -> bool {
+    device.subsystem().and_then(|found| found.to_str()) == Some("hid")
+}
+
+/// The HID device a node hangs from.
+fn hid_of(node: &udev::Device) -> Option<udev::Device> {
+    std::iter::successors(Some(node.clone()), udev::Device::parent).find(is_hid)
+}
+
+/// The group the kernel's driver puts the client HID device it makes in,
+/// as the device's `MODALIAS` says it (`hid:b<bus>g<group>v…`):
+/// `HID_GROUP_STEAM`. A Puck's interface for its charging pins, or any
+/// other of the same vendor and product the driver doesn't take for a
+/// pad's own, has a raw node too, and isn't in it.
+const STEAM_CLIENT_GROUP: &str = "g0103";
+
+/// Whether `device` is a client HID device `hid-steam` made, through
+/// which a program reads a Steam Controller raw.
+fn is_steam_client(device: &udev::Device) -> bool {
+    let group = device
+        .property_value("MODALIAS")
+        .and_then(|modalias| modalias.to_str())
+        .and_then(|modalias| modalias.strip_prefix("hid:b"))
+        .and_then(|rest| rest.get(4..9));
+    is_hid(device)
+        && device.driver().and_then(|driver| driver.to_str()) == Some(STEAM_DRIVER)
+        && group == Some(STEAM_CLIENT_GROUP)
+}
+
+/// The raw nodes, udev having finished with each, that could be the one
+/// a Steam Controller is read through, the pad's HID device being `hid`.
+/// That is the node of the client HID device the kernel's driver makes
+/// beside the pad's own, which has none: a sibling of it in the driver's
+/// own group, that says it is plugged where the pad does (`HID_PHYS`).
+/// The driver makes it after the pad's input devices, so a pad can be
+/// seen before its raw node is there to open. On USB the parent is the
+/// pad's own interface, and the node is the one; over Bluetooth it is the
+/// uhid device every Bluetooth pad shares, and two controllers on one
+/// adapter say the same `HID_PHYS`.
+fn steam_raw_beside(hid: &udev::Device) -> Vec<udev::Device> {
+    let (Some(parent), Some(phys)) = (hid.parent(), hid.property_value("HID_PHYS")) else {
+        return Vec::new();
+    };
+    let listed = udev::Enumerator::new().and_then(|mut nodes| {
+        nodes.match_parent(&parent)?;
+        nodes.match_subsystem("hidraw")?;
+        Ok(nodes.scan_devices()?.collect::<Vec<_>>())
+    });
+    let Ok(listed) = listed else {
+        return Vec::new();
+    };
+    listed
+        .into_iter()
+        .filter(udev::Device::is_initialized)
+        .filter(|raw| {
+            raw.parent().is_some_and(|client| {
+                is_steam_client(&client)
+                    && client.syspath() != hid.syspath()
+                    && client.property_value("HID_PHYS") == Some(phys)
+            })
+        })
+        .collect()
+}
+
+/// Where a Steam Controller is read, found from its event node: see
+/// [`steam_raw_node`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SteamRaw {
+    /// The event node's place in sysfs: the node the kernel's driver
+    /// takes away while the raw node is open.
+    pub syspath: PathBuf,
+    /// The raw node to read the pad through.
+    pub node: PathBuf,
+}
+
+/// The raw node of the Steam Controller whose event node `event` is open,
+/// which is the client HID device's that the kernel's driver makes beside
+/// the pad's own HID device, and the event node's place in sysfs. Found by
+/// the open descriptor's device number, which names one device for as
+/// long as it is there, and not by a node's name, which is handed on.
+///
+/// # Errors
+///
+/// Fails if the descriptor isn't a node udev knows, the pad has no raw
+/// node beside it (its driver isn't `hid-steam`, or hasn't made the node
+/// yet), or more than one could be its: two controllers on one Bluetooth
+/// adapter can't be told apart by what udev says of them.
+pub fn steam_raw_node(event: BorrowedFd<'_>) -> io::Result<SteamRaw> {
+    let number = rustix::fs::fstat(event)?.st_rdev;
+    let device = udev::Device::from_devnum(udev::DeviceType::Character, number)?;
+    let hid = hid_of(&device).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "the pad hangs from no HID device, so it has no raw node",
+        )
+    })?;
+    let mut beside = steam_raw_beside(&hid).into_iter();
+    let raw = match (beside.next(), beside.next()) {
+        (Some(raw), None) => raw,
+        (None, _) => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "no raw node of {STEAM_DRIVER} is beside {}",
+                    hid.syspath().display()
+                ),
+            ));
+        }
+        (Some(_), Some(_)) => {
+            return Err(io::Error::other(format!(
+                "more than one raw node of {STEAM_DRIVER} could be that of {}, and which is can't be told",
+                hid.syspath().display()
+            )));
+        }
+    };
+    let node = raw.devnode().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "the raw node has no device file")
+    })?;
+    Ok(SteamRaw {
+        syspath: device.syspath().to_path_buf(),
+        node: node.to_path_buf(),
+    })
+}
+
+/// The pads a Steam Controller's raw node, which udev has just finished
+/// with, completes: each event node of a Steam Controller beside it that
+/// udev has finished with too. Such a pad is [found](found) only once
+/// its raw node is there, and the driver makes that after the pad's input
+/// devices, so its arrival can come here, after its own.
+fn steam_pads_completed_by(raw: &udev::Device) -> Vec<Found> {
+    let Some(client) = raw.parent().filter(is_steam_client) else {
+        return Vec::new();
+    };
+    let (Some(parent), Some(phys)) = (client.parent(), client.property_value("HID_PHYS")) else {
+        return Vec::new();
+    };
+    let listed = udev::Enumerator::new().and_then(|mut nodes| {
+        nodes.match_parent(&parent)?;
+        nodes.match_subsystem("input")?;
+        nodes.match_sysname("event*")?;
+        Ok(nodes.scan_devices()?.collect::<Vec<_>>())
+    });
+    let Ok(listed) = listed else {
+        return Vec::new();
+    };
+    listed
+        .into_iter()
+        .filter(udev::Device::is_initialized)
+        .filter(|node| {
+            hid_of(node).is_some_and(|hid| {
+                hid.syspath() != client.syspath() && hid.property_value("HID_PHYS") == Some(phys)
+            })
+        })
+        .filter_map(|node| found(&node))
+        .filter(|found| found.identifiers.is_steam_controller())
+        .collect()
+}
+
+/// The pad a udev event device is, read without opening it. A Steam
+/// Controller, which is read through its raw node, is a pad once that is
+/// there and udev has finished with it, so that it can be opened at once
+/// as any other pad's nodes can.
 pub(crate) fn found(device: &udev::Device) -> Option<Found> {
     if !is_pad(device) {
         return None;
@@ -164,6 +329,11 @@ pub(crate) fn found(device: &udev::Device) -> Option<Found> {
     // read is a pad only if its node was still there afterwards: once
     // its input device has gone, udev takes the nearest device above
     // that is still there for the node's parent, its HID device, say.
+    if identifiers.is_steam_controller()
+        && hid_of(device).is_none_or(|hid| steam_raw_beside(&hid).is_empty())
+    {
+        return None;
+    }
     let anchor = anchor::of(device);
     let syspath = device.syspath().to_path_buf();
     syspath.exists().then_some(Found {
@@ -249,7 +419,8 @@ impl Monitor {
     /// Starts watching. Changes from now on are kept until read, so
     /// calling this before [`connected`] misses nothing between the two.
     /// Beside input nodes it hears the devices a pad can be anchored to,
-    /// filtered by udev before they are sent.
+    /// and raw nodes, the last of which a Steam Controller needs to be a
+    /// pad; each filtered by udev before it is sent.
     ///
     /// Its socket's buffer is as large as an unprivileged process can
     /// have: udev's library asks 128 MiB, which the kernel caps at
@@ -264,6 +435,7 @@ impl Monitor {
         let socket = udev::MonitorBuilder::new()?
             .match_subsystem("input")?
             .match_subsystem("hid")?
+            .match_subsystem("hidraw")?
             .match_subsystem_devtype("usb", "usb_interface")?
             .listen()?;
         Ok(Self { socket })
@@ -338,6 +510,13 @@ fn changed(device: &udev::Device, kind: udev::EventType, change: &mut impl FnMut
                     anchor: device.syspath().to_path_buf(),
                     present,
                 });
+            }
+        }
+        udev::EventType::Add | udev::EventType::Change
+            if device.subsystem().and_then(|found| found.to_str()) == Some("hidraw") =>
+        {
+            for found in steam_pads_completed_by(device) {
+                change(Change::Arrived(found));
             }
         }
         udev::EventType::Add | udev::EventType::Change => {
