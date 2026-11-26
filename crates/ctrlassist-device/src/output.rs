@@ -366,6 +366,11 @@ pub(crate) trait SteamOut: Send + 'static {
     fn output(&mut self, report: &[u8]) -> io::Result<()>;
     /// Sets a feature report, its number first.
     fn feature(&mut self, report: &[u8]) -> io::Result<()>;
+    /// The time, read as a write has returned: what the next write of
+    /// its kind is counted from.
+    fn ended(&self) -> Instant {
+        Instant::now()
+    }
 }
 
 impl SteamOut for File {
@@ -388,8 +393,12 @@ impl SteamOut for File {
 /// and lizard mode off every [`steam::LIZARD_MODE_AGAIN`], since its own
 /// watchdog puts it back, the motion sensors asked for each time as SDL
 /// asks for them, since Steam turns them off when it has no use for them.
-/// The first is written as the writer starts. Nothing is written to put
-/// lizard mode back as the pad is let go: the raw node closed, as it is
+/// The first is written as the writer starts. Each is counted from when
+/// the last write of its kind returned, so a pad slow or silent to them,
+/// whose request waits up to five seconds holding a lock every raw node
+/// on the machine needs, is asked again an interval later and never back
+/// to back. Nothing is written to put lizard mode back as the pad is let
+/// go: the raw node closed, as it is
 /// however the daemon ends, has the kernel's driver set the pad up as it
 /// was (`steam_work_connect_cb`, `hid-steam.c:1460-1484`), and the pad's
 /// own watchdog puts lizard mode back besides once nothing keeps it off.
@@ -459,8 +468,10 @@ impl<O: SteamOut> SteamNode<O> {
     fn write_rumble(&mut self, now: Instant) -> io::Result<()> {
         let result = self.out.output(&steam::rumble(self.level));
         self.heard(&result);
+        // From when the write returned, as lizard mode's (`keep_up`).
+        let ended = self.out.ended().max(now);
         self.rumble_due = (self.level != Level::default())
-            .then(|| now.checked_add(steam::RUMBLE_AGAIN))
+            .then(|| ended.checked_add(steam::RUMBLE_AGAIN))
             .flatten();
         result
     }
@@ -492,9 +503,19 @@ impl<O: SteamOut> Target for SteamNode<O> {
             // one can show.
             let result = self.out.feature(&steam::lizard_mode_off_motion_on());
             self.heard(&result);
-            // From now, not from when it was due: a write that waited on
-            // the pad is followed by a whole interval, not a burst.
-            self.lizard_due = now.checked_add(steam::LIZARD_MODE_AGAIN);
+            // From when the request returned, not from when it was due or
+            // made: one that waited on the pad, up to the five seconds a
+            // slow or silent pad is given, is followed by a whole interval
+            // and never by another at once. While it waits it holds the
+            // lock of every raw node on the machine for reading
+            // (`minors_rwsem`, taken across `hidraw_ioctl`), which every
+            // raw node's opening, closing, coming and going waits for:
+            // back to back, such requests would hold it nearly always.
+            self.lizard_due = self
+                .out
+                .ended()
+                .max(now)
+                .checked_add(steam::LIZARD_MODE_AGAIN);
         }
         if self.rumble_due.is_some_and(|due| due <= now) {
             let _ = self.write_rumble(now);
@@ -1537,6 +1558,9 @@ mod tests {
     struct SteamRecorder {
         written: mpsc::Sender<Steam>,
         refuse: Arc<AtomicI32>,
+        /// When its last write returned, by the test's clock: as it was
+        /// made, before any time the test gives, unless the test says.
+        ended: Arc<Mutex<Instant>>,
     }
 
     impl SteamRecorder {
@@ -1558,16 +1582,33 @@ mod tests {
             self.written.send(Steam::Feature(report.to_vec())).unwrap();
             self.answer()
         }
+
+        fn ended(&self) -> Instant {
+            *self.ended.lock().unwrap()
+        }
     }
 
     fn steam_recorder() -> (SteamRecorder, mpsc::Receiver<Steam>, Arc<AtomicI32>) {
+        let (recorder, steam, refuse, _) = clocked_recorder();
+        (recorder, steam, refuse)
+    }
+
+    /// A recorder, and the time its writes return at, for the test to set.
+    fn clocked_recorder() -> (
+        SteamRecorder,
+        mpsc::Receiver<Steam>,
+        Arc<AtomicI32>,
+        Arc<Mutex<Instant>>,
+    ) {
         let (written, steam) = mpsc::channel();
         let refuse = Arc::new(AtomicI32::new(0));
+        let ended = Arc::new(Mutex::new(Instant::now()));
         let recorder = SteamRecorder {
             written,
             refuse: Arc::clone(&refuse),
+            ended: Arc::clone(&ended),
         };
-        (recorder, steam, refuse)
+        (recorder, steam, refuse, ended)
     }
 
     fn lizard_off() -> Steam {
@@ -1765,6 +1806,83 @@ mod tests {
         assert_eq!(told.recv().unwrap(), Done::KeptUp);
         assert_eq!(told.recv().unwrap(), Done::Sent(level(0x2000, 0)));
         drop(output);
+        writer.join().unwrap();
+    }
+
+    /// By the pad's own clock: a request that waited on the pad longer
+    /// than the interval is followed by a whole interval from when it
+    /// returned, not by another at once; and so is a rumble report.
+    #[test]
+    fn the_next_write_is_counted_from_when_the_last_returned() {
+        let (recorder, written, _, ended) = clocked_recorder();
+        let start = Instant::now();
+        let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+        let mut node = SteamNode::new(recorder, start);
+        // Lizard mode off, made at the start, returns five seconds later.
+        *ended.lock().unwrap() = at(5000);
+        node.keep_up(start);
+        assert_eq!(written.try_recv().unwrap(), lizard_off());
+        assert_eq!(node.due(), Some(at(8000)), "not at three seconds");
+        node.keep_up(at(5000));
+        assert!(written.try_recv().is_err(), "nothing at once");
+        // A rumble report that takes 100 ms is due 40 ms after it returns.
+        *ended.lock().unwrap() = at(5100);
+        node.rumble_at(level(0x8000, 0), at(5000)).unwrap();
+        assert_eq!(written.try_recv().unwrap(), rumbled(level(0x8000, 0)));
+        assert_eq!(node.due(), Some(at(5140)));
+    }
+
+    /// Stands in for a Steam Controller's node whose feature requests
+    /// wait until the test lets each go, as a slow or silent pad's do,
+    /// and says when each was made.
+    struct Silent {
+        asked: mpsc::Sender<Instant>,
+        gate: mpsc::Receiver<()>,
+    }
+
+    impl SteamOut for Silent {
+        fn output(&mut self, _: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn feature(&mut self, _: &[u8]) -> io::Result<()> {
+            self.asked.send(Instant::now()).unwrap();
+            self.gate.recv().unwrap();
+            Ok(())
+        }
+    }
+
+    /// The writer itself, against a pad that holds its lizard mode request
+    /// longer than the interval: the next request comes a whole interval
+    /// after that one returned, and not back to back with it. This holds
+    /// the first request for the interval and waits another.
+    #[test]
+    fn a_request_that_waits_longer_than_the_interval_is_not_followed_at_once() {
+        let (asked_by, asked) = mpsc::channel();
+        let (open, gate) = mpsc::channel();
+        let target = SteamNode::new(
+            Silent {
+                asked: asked_by,
+                gate,
+            },
+            Instant::now(),
+        );
+        let (output, writer) = Output::start(target, To::Steam, "pad-output").unwrap();
+        let first = asked.recv().unwrap();
+        // Held past the interval, as a pad given five seconds might hold it.
+        while first.elapsed() <= steam::LIZARD_MODE_AGAIN {
+            std::thread::sleep(steam::LIZARD_MODE_AGAIN.saturating_sub(first.elapsed()));
+        }
+        let returned = Instant::now();
+        open.send(()).unwrap();
+        let next = asked.recv().unwrap();
+        assert!(
+            next.duration_since(returned) >= steam::LIZARD_MODE_AGAIN,
+            "the next came {:?} after the last returned",
+            next.duration_since(returned)
+        );
+        drop(output);
+        open.send(()).unwrap();
         writer.join().unwrap();
     }
 }
