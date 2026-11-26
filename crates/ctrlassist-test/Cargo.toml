@@ -24,6 +24,7 @@ ctrlassist-core = { workspace = true }
 ctrlassist-device = { workspace = true }
 ctrlassist-hider = { workspace = true }
 evdev = { workspace = true }
+libc = { workspace = true }
 rustix = { workspace = true, features = ["event", "fs", "net", "param"] }
 udev = { workspace = true }
 
