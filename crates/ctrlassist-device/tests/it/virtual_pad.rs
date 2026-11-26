@@ -735,3 +735,87 @@ fn a_dualsense_let_go_is_left_as_its_driver_keeps_it() {
     assert_eq!((last[2], last[44]), (0x14, players));
     assert_eq!(last[45..48], [0, 0, 128]);
 }
+
+/// A virtual Steam Controller is bound by the kernel's own driver for
+/// the pad as a real one is: its node is the raw node of the client
+/// device the driver makes, what is written is read there as the pad's
+/// state report, and a reader's rumble comes back as a level. Skipped
+/// where the kernel has no driver for the pad, Steam is running, or the
+/// raw node isn't this user's to open.
+#[test]
+fn a_virtual_steam_controller_is_one_to_the_kernel_s_driver() {
+    use std::io::{Read as _, Write as _};
+
+    const TEST: &str = "a_virtual_steam_controller_is_one_to_the_kernel_s_driver";
+    if !ctrlassist_test::can_make_steam_pads(TEST) {
+        return;
+    }
+    // Made with a serial of its own and nothing else.
+    assert!(VirtualPad::create(Identity::SteamController).is_err());
+    let mut sink = VirtualPad::steam_controller("CAVIRTTEST001").unwrap();
+    assert_eq!(sink.identity(), Identity::SteamController);
+    assert_eq!(Identity::SteamController.model(), (0x28de, 0x1302));
+    let node = sink.event_node().to_path_buf();
+    assert!(
+        node.to_string_lossy().starts_with("/dev/hidraw"),
+        "{node:?}"
+    );
+    if !ctrlassist_test::may_open_once_udev_is_done(&node, true) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED {TEST}: the pad's raw node isn't this user's to open here"
+        );
+        return;
+    }
+    let mut raw = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&node)
+        .unwrap();
+
+    let held = PadState::NEUTRAL
+        .with(gamepad::SOUTH, 1.0)
+        .with(gamepad::PADDLE_1, 1.0)
+        .with(gamepad::LEFT_X, 1.0)
+        .with(gamepad::RIGHT_TRIGGER, 1.0);
+    sink.write(&held).unwrap();
+    let mut report = [0u8; 64];
+    let read = raw.read(&mut report).unwrap();
+    assert_eq!((read, report[0]), (54, 0x42), "{report:?}");
+    let buttons = u32::from_le_bytes([report[2], report[3], report[4], report[5]]);
+    // A, and the upper right back button.
+    assert_eq!(buttons, 0x1 | 0x80, "{buttons:#x}");
+    assert_eq!(
+        i16::from_le_bytes([report[8], report[9]]),
+        32767,
+        "the right trigger"
+    );
+    assert_eq!(
+        i16::from_le_bytes([report[10], report[11]]),
+        32767,
+        "the left stick's x"
+    );
+
+    // A reader's rumble, as SDL writes it.
+    raw.write_all(&[0x80, 0, 0, 0, 0x00, 0x80, 0, 0x00, 0x40, 0])
+        .unwrap();
+    let mut level = None;
+    while level.is_none() {
+        let mut fds = [PollFd::new(&sink, PollFlags::IN)];
+        poll(&mut fds, None).unwrap();
+        sink.serve(|request| {
+            if let Request::Level(asked) = request {
+                level = Some(asked);
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+    assert_eq!(
+        level,
+        Some(Level {
+            strong: 0x8000,
+            weak: 0x4000
+        })
+    );
+}

@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use ctrlassist_core::{Control, Effect, FeedbackError, Level, PadState, gamepad};
 
 use crate::dualsense::{self, DualSenseData, Emulator};
+use crate::steam::{self, emulator::Emulator as SteamEmulator};
 use evdev::uinput::VirtualDevice;
 use evdev::{
     AbsInfo, AbsoluteAxisCode, AttributeSet, BusType, EventSummary, EventType, FFEffectCode,
@@ -62,6 +63,10 @@ pub enum Identity {
     /// A DualSense, which SDL and Steam read through its raw HID node:
     /// made through uhid from a connected pad's copied data.
     DualSense,
+    /// A Steam Controller (2026) on its cable, which SDL and Steam read
+    /// through its raw HID node: made through uhid, and bound by the
+    /// kernel's own driver for the pad.
+    SteamController,
 }
 
 impl Identity {
@@ -72,6 +77,7 @@ impl Identity {
             Self::Generic => "CtrlAssist Virtual Pad",
             Self::Xbox => "Microsoft Xbox Series S|X Controller",
             Self::DualSense => dualsense::NAME,
+            Self::SteamController => "Steam Controller",
         }
     }
 
@@ -88,6 +94,12 @@ impl Identity {
                 dualsense::PRODUCT,
                 0x8111,
             ),
+            Self::SteamController => InputId::new(
+                BusType::BUS_USB,
+                steam::VENDOR,
+                steam::PRODUCT_CABLE,
+                0x0307,
+            ),
         }
     }
 
@@ -101,7 +113,7 @@ impl Identity {
     /// The highest value of a trigger, as that pad's driver reports it.
     fn trigger_max(self) -> i32 {
         match self {
-            Self::Generic | Self::DualSense => 255,
+            Self::Generic | Self::DualSense | Self::SteamController => 255,
             Self::Xbox => 1023,
         }
     }
@@ -401,6 +413,7 @@ fn errno(refusal: FeedbackError) -> i32 {
 enum Kind {
     Uinput(Box<Uinput>),
     DualSense(Box<Emulator>),
+    Steam(Box<SteamEmulator>),
 }
 
 /// A virtual pad.
@@ -429,14 +442,19 @@ impl VirtualPad {
     /// # Errors
     ///
     /// Fails if uinput can't be opened or the kernel refuses the pad,
-    /// and for an identity that is made from a copied pad's data; see
-    /// [`dualsense`](Self::dualsense).
+    /// and for an identity that is made through uhid; see
+    /// [`dualsense`](Self::dualsense) and
+    /// [`steam_controller`](Self::steam_controller).
     pub fn create(identity: Identity) -> io::Result<Self> {
-        if identity == Identity::DualSense {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "a DualSense is made from a connected one's copied data",
-            ));
+        let through_uhid = match identity {
+            Identity::Generic | Identity::Xbox => None,
+            Identity::DualSense => Some("a DualSense is made from a connected one's copied data"),
+            Identity::SteamController => {
+                Some("a Steam Controller is made with a serial of its own")
+            }
+        };
+        if let Some(why) = through_uhid {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, why));
         }
         Ok(Self {
             kind: Kind::Uinput(Box::new(Uinput::create(identity)?)),
@@ -458,21 +476,41 @@ impl VirtualPad {
         })
     }
 
+    /// Creates a virtual Steam Controller through uhid, answers the
+    /// kernel's driver as it binds, and waits for the pad's raw node.
+    /// `serial` is the pad's own, which a reader keeps what it knows of
+    /// the pad by: at most 13 characters of it are used.
+    ///
+    /// # Errors
+    ///
+    /// Fails if uhid can't be opened, or the kernel has no driver for
+    /// the pad, as before Linux 7.3, or it doesn't take the pad.
+    pub fn steam_controller(serial: &str) -> io::Result<Self> {
+        Ok(Self {
+            kind: Kind::Steam(Box::new(SteamEmulator::create(serial)?)),
+        })
+    }
+
     /// What it presents itself as.
     #[must_use]
     pub fn identity(&self) -> Identity {
         match &self.kind {
             Kind::Uinput(pad) => pad.identity,
             Kind::DualSense(_) => Identity::DualSense,
+            Kind::Steam(_) => Identity::SteamController,
         }
     }
 
-    /// The pad's event node, which a game opens.
+    /// The pad's node, which a game opens: its event node, or a virtual
+    /// Steam Controller's raw node, which is what reads that pad. Its
+    /// gamepad's event node goes while anything has the raw node open,
+    /// and is silent until a player takes the pad out of lizard mode.
     #[must_use]
     pub fn event_node(&self) -> &Path {
         match &self.kind {
             Kind::Uinput(pad) => &pad.event_node,
             Kind::DualSense(pad) => pad.event_node(),
+            Kind::Steam(pad) => pad.node(),
         }
     }
 
@@ -492,6 +530,7 @@ impl VirtualPad {
         match &mut self.kind {
             Kind::Uinput(pad) => pad.write(state),
             Kind::DualSense(pad) => pad.write(state),
+            Kind::Steam(pad) => pad.write(state),
         }
     }
 
@@ -513,6 +552,7 @@ impl VirtualPad {
         match &mut self.kind {
             Kind::Uinput(pad) => pad.serve(handle),
             Kind::DualSense(pad) => pad.serve(handle),
+            Kind::Steam(pad) => pad.serve(handle),
         }
     }
 }
@@ -523,7 +563,7 @@ impl VirtualPad {
     /// for the pads behind it. No other kind of virtual pad has any.
     pub fn take_output(&mut self) -> Option<&[u8]> {
         match &mut self.kind {
-            Kind::Uinput(_) => None,
+            Kind::Uinput(_) | Kind::Steam(_) => None,
             Kind::DualSense(pad) => pad.take_output(),
         }
     }
@@ -539,7 +579,7 @@ impl VirtualPad {
     /// Fails if the kernel refuses the write.
     pub fn beat(&mut self, now_ms: u64) -> io::Result<Option<u64>> {
         match &mut self.kind {
-            Kind::Uinput(_) => Ok(None),
+            Kind::Uinput(_) | Kind::Steam(_) => Ok(None),
             Kind::DualSense(pad) => pad.beat(now_ms).map(Some),
         }
     }
@@ -549,7 +589,7 @@ impl VirtualPad {
     #[must_use]
     pub fn last_output(&self) -> Option<&[u8]> {
         match &self.kind {
-            Kind::Uinput(_) => None,
+            Kind::Uinput(_) | Kind::Steam(_) => None,
             Kind::DualSense(pad) => pad.last_output(),
         }
     }
@@ -562,7 +602,7 @@ impl VirtualPad {
     /// kind of virtual pad, or before a game has sent one.
     pub(crate) fn settings(&mut self, fresh: bool) -> Option<[u8; dualsense::GAME_SIZE]> {
         match &mut self.kind {
-            Kind::Uinput(_) => None,
+            Kind::Uinput(_) | Kind::Steam(_) => None,
             Kind::DualSense(pad) => pad.settings(fresh),
         }
     }
@@ -573,6 +613,7 @@ impl AsFd for VirtualPad {
         match &self.kind {
             Kind::Uinput(pad) => pad.device.as_fd(),
             Kind::DualSense(pad) => pad.as_fd(),
+            Kind::Steam(pad) => pad.as_fd(),
         }
     }
 }

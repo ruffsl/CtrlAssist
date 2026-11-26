@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** drafted with the maintainer on 2026-11-25, who then stepped away for the night with the coordinator left to build through the stops. The research is in, and the design it left to decide is under For review. Building.
-- **Next action:** the maintainer's choice of the identity's descriptor, on [the second spike's finding](#spike-sdl-and-the-two-descriptors): SDL makes the same of the retail one and one written here. Then the identity, the coordinator's alone ([Decided on review](#decided-on-review)). Steps 1 to 6, 8 and 10 are done, and the hiding service takes the pad on its cable. Left besides: step 7 (the Puck and Bluetooth beyond what works already, and a controller Steam holds, now [an idea](../ideas/steam-controller-held-by-steam.md)).
+- **Next action:** the identity's second stage, a profile that asks for it ([The identity's stages](#the-identitys-stages)); the first, the emulator, is built. Then the maintainer's trial of it with Steam. Steps 1 to 6, 8 and 10 are done, and the hiding service takes the pad on its cable. Left besides: step 7 (the Puck and Bluetooth beyond what works already, and a controller Steam holds, now [an idea](../ideas/steam-controller-held-by-steam.md)).
 - **Branch:** `feat/steam-controller`, from `docs/user-guide` at `383c798`, so the new user guide is there for the agents to read. Pushed on 2026-11-26 at the maintainer's word, with no pull request, and pushed freely since, by the same. When the guide's pull request (#63) has merged, this branch's own goes to `main`.
 
 ## Goal
@@ -259,6 +259,26 @@ The maintainer's answers on 2026-11-26, to what For review had left open.
 - **The hiding service takes a Steam Controller on its cable** (For review 4): an exception for `28de:1302` to the rule that refuses a pad whose device could type or point. Its keyboard's and pointer's nodes are left unhidden, silent with lizard mode off, so the rule never hides what types; hiding them too can be added on top. Its raw node is named by the port-and-model marker the service already writes, which a pad made through uhid can't have and nobody has seen name a real pad's: the Puck and Bluetooth stay grabbed. Built, and seen in the `daemon` check against the fake with the retail keyboard and mouse.
 - **The identity is to be built,** by the coordinator alone, after hiding.
 - **Agreed for the identity:** both trackpads owned as a touchpad is today and never blended; the stick and grip touches following whichever pad gives the motion, with a touch nameable as the assist's Gyro button and not withheld from the game, "either player's touch" left as an idea; haptics following the Rumble field, a field of their own left as an idea; Steam's settings writes answered by the stand-in and never passed to a real pad; and its descriptor chosen after a spike of both.
+
+## The identity's stages
+
+Decided with the maintainer on 2026-11-26, after the second spike:
+
+- **Its descriptor is written here,** Valve's collection alone, with the retail one the fallback if Steam doesn't take it.
+- **Its serial is the same each time a profile's output is made,** as a virtual DualSense's address is, so that Steam keeps one configuration for it.
+- **Everything a reader sets is absorbed:** settings acknowledged and kept in the stand-in, a firmware no reader has newer, and nothing but rumble and haptics passed to a pad behind it.
+- **It is the "Steam Controller" identity,** `steam-controller` in a profile.
+- **It is for Steam and games on SDL.** The kernel's driver keeps every Steam Controller's gamepad silent until a player holds its menu button, a virtual one's too, and nothing is done about that: the guide and the choice's help say to choose another identity for other games.
+- **It reports as its state changes,** and not on a beat, as a real one does every 4 ms: neither the kernel's driver nor SDL takes a quiet pad for one gone. Whether Steam does is for the maintainer's trial; a beat is added only if it does.
+- **The node shown for it is its raw node,** which is what reads it and stays; its gamepad's event node goes whenever anything opens that.
+
+The stages, each gated and pushed:
+
+1. **The emulator,** in the device crate: the descriptor, the driver's questions answered, pad state as the state report, rumble read back. Done: the kernel's driver binds it on 7.3, and what is written is read at its raw node.
+2. **A profile that asks for it:** the identity in the profile's schema, the daemon making one with its serial, the clients' choice and its help.
+3. **The merge rules for what is new:** the stick and grip touches following whichever pad gives the motion, a touch nameable as the Gyro button and not withheld.
+4. **Haptics** passed to a real Steam Controller behind it, by the Rumble choice.
+5. **The checks and the guide:** a virtual machine check with SDL's probe against the daemon's own virtual pad, the guide's page and the architecture, and the spike deleted.
 
 ## Deviations
 

@@ -1275,6 +1275,125 @@ pub(crate) fn lizard_mode_on() -> [[u8; FEATURE_SIZE]; 2] {
     ]
 }
 
+/// The state report a pad holding `state` sends, [`STATE`] at its full
+/// size: what [`Reading::take`] reads back as `state`, each control in
+/// the place [`place`] names and each trackpad's touch from whether its
+/// contact is down. `time` is the sensor clock, in microseconds. The
+/// trackpads' pressure and the pad's own reckoning of its orientation
+/// are sent as nothing: the pad state carries neither.
+///
+/// A lifted trackpad's place is sent as where its finger left, as SDL
+/// keeps it; the kernel's driver reads no place without the touch bit.
+pub(crate) fn report(state: &PadState, sequence: u8, time: u32) -> [u8; STATE_SIZE] {
+    let mut report = [0u8; STATE_SIZE];
+    let mut put = |at: usize, bytes: &[u8]| {
+        if let Some(place) = report.get_mut(at..at.saturating_add(bytes.len())) {
+            place.copy_from_slice(bytes);
+        }
+    };
+    let [right, _] = state.touchpad().contacts();
+    let [left, _] = state.second_touchpad().contacts();
+    let mut buttons = 0u32;
+    for button in Button::ALL {
+        let on = match button {
+            Button::RightTrackpadTouch => right.down(),
+            Button::LeftTrackpadTouch => left.down(),
+            other => place(other).is_some_and(|control| state.get(control) >= 0.5),
+        };
+        if on {
+            buttons |= button.mask();
+        }
+    }
+    let full = f32::from(FULL);
+    // A float to a count: `as` saturates and takes NaN to 0.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a float cast to an integer saturates"
+    )]
+    let count = |value: f32| value.round() as i16;
+    put(0, &[STATE, sequence]);
+    put(BUTTONS, &buttons.to_le_bytes());
+    for (at, control) in [
+        (LEFT_TRIGGER, gamepad::LEFT_TRIGGER),
+        (RIGHT_TRIGGER, gamepad::RIGHT_TRIGGER),
+    ] {
+        put(
+            at,
+            &count(state.get(control).clamp(0.0, 1.0) * full).to_le_bytes(),
+        );
+    }
+    for (at, x, y) in [
+        (LEFT_STICK, gamepad::LEFT_X, gamepad::LEFT_Y),
+        (RIGHT_STICK, gamepad::RIGHT_X, gamepad::RIGHT_Y),
+    ] {
+        put(
+            at,
+            &count(state.get(x).clamp(-1.0, 1.0) * full).to_le_bytes(),
+        );
+        put(
+            at.saturating_add(2),
+            &count(-state.get(y).clamp(-1.0, 1.0) * full).to_le_bytes(),
+        );
+    }
+    for (at, contact) in [(LEFT_TRACKPAD, left), (RIGHT_TRACKPAD, right)] {
+        let x = contact.x().clamp(0.0, 1.0);
+        let y = contact.y().clamp(0.0, 1.0);
+        put(at, &count(x * 2.0 * full - full).to_le_bytes());
+        put(
+            at.saturating_add(2),
+            &count(full - y * 2.0 * full).to_le_bytes(),
+        );
+    }
+    put(SENSOR_TIME, &time.to_le_bytes());
+    // The pad state's (x, y, z) are the report's (x, z, -y): see
+    // [`motion`], which this undoes.
+    let turned_back = |[x, y, z]: [f32; 3]| [x, -z, y];
+    let motion = state.motion();
+    for (at, counts) in [
+        (
+            ACCEL,
+            turned_back(motion.accel()).map(|g| count(g * COUNTS_PER_G)),
+        ),
+        (
+            GYRO,
+            turned_back(motion.gyro()).map(|rate| count(rate / DEGREES_PER_COUNT)),
+        ),
+    ] {
+        for (axis, value) in counts.into_iter().enumerate() {
+            put(
+                at.saturating_add(axis.saturating_mul(2)),
+                &value.to_le_bytes(),
+            );
+        }
+    }
+    report
+}
+
+/// The level a rumble output report asks for, as [`rumble`] writes one:
+/// none for another report, or one cut short. The gains are not read.
+pub(crate) fn rumble_of(report: &[u8]) -> Option<Level> {
+    let report = report.first_chunk::<RUMBLE_SIZE>()?;
+    let [
+        id,
+        _,
+        _,
+        _,
+        strong_low,
+        strong_high,
+        _,
+        weak_low,
+        weak_high,
+        _,
+    ] = *report;
+    (id == RUMBLE).then(|| Level {
+        strong: u16::from_le_bytes([strong_low, strong_high]),
+        weak: u16::from_le_bytes([weak_low, weak_high]),
+    })
+}
+
+/// A virtual Steam Controller.
+pub(crate) mod emulator;
+
 /// The test crate's fake Steam Controller held against this reading.
 #[cfg(test)]
 mod fake;
@@ -1780,6 +1899,86 @@ mod tests {
             lizard_mode_on(),
             [frame(&[0x01, 0x85]), frame(&[0x01, 0x8e])]
         );
+    }
+
+    /// A state report written from a pad state is read back as that
+    /// state: every control the report has a place for, both trackpads,
+    /// and the motion to within a count.
+    #[test]
+    fn a_report_written_from_a_state_reads_back_as_it() {
+        let mut state = PadState::NEUTRAL;
+        for button in Button::ALL {
+            if let Some(control) = place(button) {
+                state.set(control, 1.0);
+            }
+        }
+        state.set(gamepad::LEFT_X, 0.5);
+        state.set(gamepad::LEFT_Y, -0.25);
+        state.set(gamepad::RIGHT_X, -1.0);
+        state.set(gamepad::RIGHT_Y, 1.0);
+        state.set(gamepad::LEFT_TRIGGER, 0.75);
+        state.set(gamepad::RIGHT_TRIGGER, 1.0);
+        state.set_touchpad(Touchpad::new([Contact::new(true, 0.25, 0.75), Contact::UP]));
+        state.set_second_touchpad(Touchpad::new([Contact::new(false, 0.5, 0.5), Contact::UP]));
+        state.set_motion(Motion::new([10.0, -20.0, 30.0], [0.0, 1.0, -0.5], 1, 0));
+        let report = super::report(&state, 7, 4000);
+        assert_eq!(report.len(), STATE_SIZE);
+        let Some(Input::State(sample)) = parse(&report) else {
+            panic!("a state report: {report:?}");
+        };
+        assert_eq!(sample.sequence, 7);
+        assert_eq!(sample.time, SensorTime::Wide(4000));
+        assert_eq!(
+            sample.buttons.bits() & Button::RightTrackpadTouch.mask(),
+            Button::RightTrackpadTouch.mask()
+        );
+        assert_eq!(sample.buttons.bits() & Button::LeftTrackpadTouch.mask(), 0);
+        let mut reading = Reading::NEW;
+        let read = *reading.take(&sample);
+        for button in Button::ALL {
+            if let Some(control) = place(button) {
+                assert!((read.get(control) - 1.0).abs() < f32::EPSILON, "{button:?}");
+            }
+        }
+        let close = |a: f32, b: f32| (a - b).abs() < 0.001;
+        for control in [
+            gamepad::LEFT_X,
+            gamepad::LEFT_Y,
+            gamepad::RIGHT_X,
+            gamepad::RIGHT_Y,
+            gamepad::LEFT_TRIGGER,
+            gamepad::RIGHT_TRIGGER,
+        ] {
+            assert!(close(read.get(control), state.get(control)), "{control:?}");
+        }
+        let [right, _] = read.touchpad().contacts();
+        assert!(
+            right.down() && close(right.x(), 0.25) && close(right.y(), 0.75),
+            "{right:?}"
+        );
+        assert!(!read.second_touchpad().contacts()[0].down());
+        let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 0.1);
+        assert!(
+            near(read.motion().gyro(), [10.0, -20.0, 30.0]),
+            "{:?}",
+            read.motion()
+        );
+        assert!(
+            near(read.motion().accel(), [0.0, 1.0, -0.5]),
+            "{:?}",
+            read.motion()
+        );
+        assert_eq!(
+            rumble_of(&rumble(Level {
+                strong: 0x8000,
+                weak: 0x4000
+            })),
+            Some(Level {
+                strong: 0x8000,
+                weak: 0x4000
+            })
+        );
+        assert_eq!(rumble_of(&[0x81, 0, 0, 0, 0, 0, 0, 0, 0, 0]), None);
     }
 
     #[test]
