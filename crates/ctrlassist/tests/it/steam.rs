@@ -14,37 +14,31 @@ use std::time::Duration;
 
 use ctrlassist::{DaemonClient, ErrorCode, Phase};
 use ctrlassist_core::gamepad;
+use ctrlassist_daemon::Daemon;
 use ctrlassist_device::Pad;
 use ctrlassist_protocol::{bootstrap, keys};
 use ctrlassist_test::{
-    FakeSteamController, StateReport, SteamButton, SteamState, can_make_pads, can_make_steam_pads,
-    can_open,
+    FakeSteamController, StateReport, SteamButton, SteamControllerBuilder, SteamState,
+    SteamTransport, can_make_pads, can_make_steam_pads, may_open_once_udev_is_done,
 };
 use zenoh::Session;
 
 use crate::client::{eventually, socket, start_daemon};
 use crate::setups::{game, hydrated, in_phase};
 
-/// A fake Steam Controller whose nodes are this user's to open, or none,
-/// with why said, where the machine can't give one.
-fn fake(test: &str) -> Option<FakeSteamController> {
+/// A fake Steam Controller made by `builder` whose nodes are this user's
+/// to open, or none, with why said, where the machine can't give one.
+/// Whether they are is asked of the kernel without opening them: the raw
+/// node opened would take the fake's gamepad away.
+fn fake_made(test: &str, builder: SteamControllerBuilder) -> Option<FakeSteamController> {
     if !(can_make_steam_pads(test) && can_make_pads(test)) {
         return None;
     }
-    let fake = FakeSteamController::new().unwrap();
+    let fake = builder.build().unwrap();
     let gamepad = fake.gamepad().expect("the driver makes the gamepad");
     let raw = fake.raw_node().expect("the driver makes a raw node");
-    let open = |node: &std::path::Path, write: bool| {
-        let deadline = std::time::Instant::now() + Duration::from_secs(4);
-        while !can_open(node, write) {
-            if std::time::Instant::now() > deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        true
-    };
-    if !open(&gamepad.event, false) || !open(&raw, true) {
+    if !may_open_once_udev_is_done(&gamepad.event, false) || !may_open_once_udev_is_done(&raw, true)
+    {
         let _ = writeln!(
             std::io::stderr(),
             "SKIPPED {test}: the fake's nodes aren't this user's to open here"
@@ -54,18 +48,30 @@ fn fake(test: &str) -> Option<FakeSteamController> {
     Some(fake)
 }
 
+/// A fake on a cable, as [`fake_made`].
+fn fake(test: &str) -> Option<FakeSteamController> {
+    fake_made(test, FakeSteamController::builder())
+}
+
 /// What the daemon calls the fake: its address, which its driver gives
 /// as the controller's serial.
 fn id_of(fake: &FakeSteamController) -> String {
     format!("address:{}", fake.serial())
 }
 
-/// Every state of the pad `id` the daemon publishes from now on, whether
-/// it was connected in each.
+/// A state of a pad as published: whether it was connected, and the
+/// setup it was in.
+type State = (bool, Option<String>);
+
+/// Every state of the pad `id` the daemon publishes from now on: whether
+/// it was connected in each, and the setup it was in.
 struct Published {
     _session: Session,
     _subscriber: zenoh::pubsub::Subscriber<()>,
-    connected: Arc<Mutex<Vec<bool>>>,
+    _barrier: zenoh::pubsub::Subscriber<()>,
+    states: Arc<Mutex<Vec<State>>>,
+    /// How many times the profile `barrier` was heard put.
+    barriers: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Published {
@@ -73,8 +79,8 @@ impl Published {
         let session = zenoh::open(bootstrap::client_config(socket).unwrap())
             .await
             .unwrap();
-        let connected = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&connected);
+        let states = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&states);
         let subscriber = session
             .declare_subscriber(keys::pad(&keys::pad_id(id)))
             .callback(move |sample| {
@@ -82,28 +88,57 @@ impl Published {
                     serde_json::from_slice(&sample.payload().to_bytes()).unwrap_or_default();
                 if let Some(connected) = body.get("connected").and_then(serde_json::Value::as_bool)
                 {
-                    seen.lock().unwrap().push(connected);
+                    let setup = body
+                        .get("setup")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string);
+                    seen.lock().unwrap().push((connected, setup));
                 }
+            })
+            .await
+            .unwrap();
+        let barriers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let heard = Arc::clone(&barriers);
+        let barrier = session
+            .declare_subscriber(keys::profile("barrier"))
+            .callback(move |_| {
+                heard.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             })
             .await
             .unwrap();
         Self {
             _session: session,
             _subscriber: subscriber,
-            connected,
+            _barrier: barrier,
+            states,
+            barriers,
         }
     }
 
-    fn states(&self) -> Vec<bool> {
-        self.connected.lock().unwrap().clone()
+    fn states(&self) -> Vec<State> {
+        self.states.lock().unwrap().clone()
     }
 
-    /// Asserts the pad was published connected every time, and at least
-    /// `least` times.
-    fn never_left(&self, least: usize) {
+    /// Has the daemon publish something after all it published of the
+    /// pad, a profile put, and waits for that to arrive here, the daemon's
+    /// samples reaching this session in the order they were put; then
+    /// asserts the pad was published connected every time, at least
+    /// `least` times, and last free.
+    async fn never_left(&self, client: &DaemonClient, least: usize) {
+        let before = self.barriers.load(std::sync::atomic::Ordering::Acquire);
+        let toml = format!(
+            "mode = \"unicast\"\npad = \"model:1209:{:04x}\"\n",
+            before + 1
+        );
+        client.put_profile("barrier", &toml).await.unwrap();
+        eventually("the barrier was never heard", async || {
+            self.barriers.load(std::sync::atomic::Ordering::Acquire) > before
+        })
+        .await;
+        assert_eq!(self.states().last(), Some(&(true, None)));
         let states = self.states();
         assert!(
-            states.len() >= least && states.iter().all(|connected| *connected),
+            states.len() >= least && states.iter().all(|(connected, _)| *connected),
             "{states:?}"
         );
     }
@@ -212,7 +247,7 @@ async fn a_steam_controller_plays_through_a_setup_and_never_leaves() {
         .await;
         let pad = listed(&client, &id);
         assert!(pad.connected && pad.setup.is_none(), "{pad:?}");
-        published.never_left(2 * (round + 1));
+        published.never_left(&client, 2 * (round + 1)).await;
     }
     daemon.stop().await;
 }
@@ -258,30 +293,56 @@ async fn a_managed_profile_stopped_by_hand_stays_stopped_as_the_node_returns() {
     daemon.stop().await;
 }
 
-/// A Steam Controller unplugged while its setup holds it is the pad gone,
-/// as what reads it says, and the setup is held for it; plugged in again
-/// it is a pad plugged in, and the setup takes it back.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_steam_controller_unplugged_while_held_is_gone_and_its_setup_held() {
-    const TEST: &str = "a_steam_controller_unplugged_while_held_is_gone_and_its_setup_held";
-    let Some(fake) = fake(TEST) else {
-        return;
-    };
-    let id = id_of(&fake);
-    let (_dir, socket) = socket();
+/// A daemon with `fake` listed, and a client of it, with `toml` put as
+/// the profile `couch`.
+async fn with_couch(
+    fake: &FakeSteamController,
+    toml: &str,
+) -> (tempfile::TempDir, Daemon, DaemonClient) {
+    let id = id_of(fake);
+    let (dir, socket) = socket();
     let daemon = start_daemon(&socket).await;
     let client = hydrated(&socket).await;
     eventually("the daemon never listed the fake", async || {
-        client.list_pads().unwrap().iter().any(|pad| pad.id == id)
+        client
+            .list_pads()
+            .unwrap()
+            .iter()
+            .any(|pad| pad.id == id && pad.connected)
     })
     .await;
-    client
-        .put_profile("couch", &format!("mode = \"unicast\"\npad = \"{id}\"\n"))
-        .await
-        .unwrap();
-    client.start_setup("couch").await.unwrap();
-    in_phase(&client, "couch", Phase::Running).await;
+    client.put_profile("couch", toml).await.unwrap();
+    (dir, daemon, client)
+}
+
+/// The profile `couch` over the pad `id` alone.
+fn unicast(id: &str) -> String {
+    format!("mode = \"unicast\"\npad = \"{id}\"\n")
+}
+
+/// Its setup taking the pad back and playing it once it is there again.
+async fn plays_again(client: &DaemonClient, fake: &FakeSteamController) {
+    let setup = in_phase(client, "couch", Phase::Running).await;
+    assert!(setup.sources[0].present, "{setup:?}");
     assert!(fake.inputs_gone());
+    let mut game = game(&setup).await;
+    south_through(fake, &mut game, true).await;
+    south_through(fake, &mut game, false).await;
+}
+
+/// A Steam Controller unplugged while its setup holds it is the pad gone,
+/// as what reads it says, and the setup is held for it; plugged in again,
+/// the same pad, it is a pad plugged in, and the setup takes it back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_steam_controller_unplugged_while_held_is_gone_and_taken_back() {
+    const TEST: &str = "a_steam_controller_unplugged_while_held_is_gone_and_taken_back";
+    let Some(fake) = fake(TEST) else {
+        return;
+    };
+    let (id, serial) = (id_of(&fake), fake.serial().to_string());
+    let (_dir, daemon, client) = with_couch(&fake, &unicast(&id)).await;
+    client.start_setup("couch").await.unwrap();
+    plays_again(&client, &fake).await;
 
     drop(fake);
     let setup = in_phase(&client, "couch", Phase::Held).await;
@@ -291,6 +352,106 @@ async fn a_steam_controller_unplugged_while_held_is_gone_and_its_setup_held() {
     })
     .await;
     assert_eq!(listed(&client, &id).setup.as_deref(), Some("couch"));
+
+    let again = FakeSteamController::builder()
+        .same_pad_as(&serial)
+        .build()
+        .unwrap();
+    plays_again(&client, &again).await;
+    assert!(listed(&client, &id).connected);
+    client.stop_setup("couch").await.unwrap();
+    daemon.stop().await;
+}
+
+/// A Steam Controller in a Puck's slot that leaves the slot while its
+/// setup holds it: the slot's HID device stays, so nothing udev says
+/// tells the pad has gone, and what reads it, saying so, is what the book
+/// acts on. The pad is gone and the setup held; back in the slot, it is a
+/// pad plugged in, and the setup takes it back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_steam_controller_leaving_a_puck_while_held_is_gone_and_taken_back() {
+    const TEST: &str = "a_steam_controller_leaving_a_puck_while_held_is_gone_and_taken_back";
+    let builder = FakeSteamController::builder().transport(SteamTransport::Puck { joined: true });
+    let Some(fake) = fake_made(TEST, builder) else {
+        return;
+    };
+    let id = id_of(&fake);
+    let (dir, daemon, client) = with_couch(&fake, &unicast(&id)).await;
+    let published = Published::watch(&dir.path().join("zenoh.sock"), &id).await;
+    client.start_setup("couch").await.unwrap();
+    plays_again(&client, &fake).await;
+    // Never said to have left as it was taken.
+    let before = published.states().len();
+    assert!(
+        published.states().iter().all(|(connected, _)| *connected),
+        "{:?}",
+        published.states()
+    );
+
+    fake.send_wireless(false).unwrap();
+    in_phase(&client, "couch", Phase::Held).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !published.states()[before..]
+        .iter()
+        .any(|(connected, _)| !connected)
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the pad was never said to have gone: {:?}, inputs {:?}",
+            published.states(),
+            fake.inputs()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    fake.send_wireless(true).unwrap();
+    plays_again(&client, &fake).await;
+    assert!(listed(&client, &id).connected);
+    client.stop_setup("couch").await.unwrap();
+    daemon.stop().await;
+}
+
+/// A profile that asks for its pads to be left to games, naming a Steam
+/// Controller the daemon has never seen, starts held; the pad, plugged
+/// in, is refused, and the setup says why, the pad left as it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_steam_controller_left_to_games_is_refused_as_it_comes() {
+    const TEST: &str = "a_steam_controller_left_to_games_is_refused_as_it_comes";
+    let Some(first) = fake(TEST) else {
+        return;
+    };
+    let serial = first.serial().to_string();
+    let id = id_of(&first);
+    drop(first);
+    let (_dir, socket) = socket();
+    let daemon = start_daemon(&socket).await;
+    let client = hydrated(&socket).await;
+    client
+        .put_profile(
+            "couch",
+            &format!("mode = \"unicast\"\npad = \"{id}\"\nhide = \"none\"\n"),
+        )
+        .await
+        .unwrap();
+    client.start_setup("couch").await.unwrap();
+    in_phase(&client, "couch", Phase::Held).await;
+
+    let fake = FakeSteamController::builder()
+        .same_pad_as(&serial)
+        .build()
+        .unwrap();
+    eventually("the setup never said why", async || {
+        client
+            .setup("couch")
+            .unwrap()
+            .and_then(|setup| setup.reason)
+            .is_some_and(|reason| reason.contains("hide"))
+    })
+    .await;
+    let setup = client.setup("couch").unwrap().unwrap();
+    assert_eq!(setup.phase, Phase::Held);
+    assert!(!setup.sources[0].present);
+    assert!(fake.gamepad().is_some(), "its gamepad is where it was");
     client.stop_setup("couch").await.unwrap();
     daemon.stop().await;
 }
@@ -383,7 +544,7 @@ async fn a_steam_controller_beside_a_dualsense_and_swapped_in_and_out() {
     south_through(&fake, &mut game, false).await;
     client.stop_setup("couch").await.unwrap();
     assert!(fake.gamepad().is_some());
-    published.never_left(4);
+    published.never_left(&client, 4).await;
     daemon.stop().await;
 }
 

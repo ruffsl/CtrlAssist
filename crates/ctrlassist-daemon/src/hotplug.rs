@@ -28,6 +28,11 @@ use tracing::warn;
 pub(crate) enum Seen {
     /// A pad connected, or changed.
     Arrived(Found),
+    /// A Steam Controller pad's raw node came, or udev handled it again,
+    /// as once a rule that gives it to the seat is installed: the pad is
+    /// there, and a refusal to take it for its raw node is to be tried
+    /// again.
+    RawNodeChanged(Found),
     /// The pad on the event node at this place in sysfs has gone. Its
     /// place, not its node's name, which a node made since may have.
     Left(PathBuf),
@@ -62,8 +67,12 @@ pub(crate) enum Seen {
     /// is about to be opened, which has the pad's driver take that node
     /// away: see [`Holds`].
     Holding(PathBuf),
-    /// That raw node wasn't opened after all.
+    /// That raw node wasn't opened after all, or was let go with no
+    /// effect.
     NotHolding(PathBuf),
+    /// The pad, read through its raw node, has gone, as the input thread
+    /// says: see [`Book::lost`](crate::book::Book::lost).
+    Lost(String),
 }
 
 /// What says, on the hotplug watch's own queue, that a pad's raw node is
@@ -88,9 +97,18 @@ impl Holds {
         let _ = self.0.send(Seen::Holding(syspath.to_path_buf()));
     }
 
-    /// It wasn't opened after all.
+    /// It wasn't opened after all, or was let go with no effect.
     pub(crate) fn not_holding(&self, syspath: &Path) {
         let _ = self.0.send(Seen::NotHolding(syspath.to_path_buf()));
+    }
+
+    /// The pad `id`, held by its raw node, has gone, as the input thread
+    /// says. Said on this queue, so that the book hears it after the
+    /// hold's mark and all udev said before: the input thread's reports
+    /// come on a queue of their own, which can overtake this one when
+    /// udev says much.
+    pub(crate) fn lost(&self, id: &str) {
+        let _ = self.0.send(Seen::Lost(id.to_string()));
     }
 }
 
@@ -211,6 +229,11 @@ impl Watch {
                         Change::Arrived(found) => {
                             let opened = vec![to_open(&found)];
                             let _ = seen.send(Seen::Arrived(found));
+                            learn(opened);
+                        }
+                        Change::RawNodeChanged(found) => {
+                            let opened = vec![to_open(&found)];
+                            let _ = seen.send(Seen::RawNodeChanged(found));
                             learn(opened);
                         }
                         Change::Left { syspath, .. } => {

@@ -498,6 +498,21 @@ impl Reactor {
             // node it takes away is heard going.
             Seen::Holding(syspath) => self.book.holding(&syspath),
             Seen::NotHolding(syspath) => self.book.not_holding(&syspath),
+            Seen::Lost(id) => {
+                if self.book.lost(&id) {
+                    info!(pad = id, "a pad disconnected");
+                    self.publish_pad_logged(&id).await;
+                }
+            }
+            // Taken in as any arrival, and then what was refused for its
+            // raw node is tried again: what may be done with it may have
+            // changed, as when a rule that gives it to the seat is
+            // applied.
+            Seen::RawNodeChanged(found) => {
+                let id = found.identifiers.id().to_string();
+                self.took_in(found).await;
+                self.try_refused_again(&id).await;
+            }
             // Looked for unless it is there as far as the daemon knows: a
             // look would start a service nothing needs. A service gone
             // from under hidden pads is known gone as they come back.
@@ -691,7 +706,7 @@ impl Reactor {
                 return Err(WireError::refusal(
                     ErrorCode::PadRefused,
                     format!(
-                        "{id} is away: its driver is being re-bound, or a program holds its raw node; try again"
+                        "{id} is away: its driver is being re-bound, which takes a moment, or another program holds its raw interface, as Steam does, and the controller is back once that program lets it go"
                     ),
                 ));
             }
