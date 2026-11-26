@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** drafted with the maintainer on 2026-11-25, who then stepped away for the night with the coordinator left to build through the stops. The research is in, and the design it left to decide is under For review. Building.
-- **Next action:** a spike of the identity's descriptor, the retail one's bytes against one written here, each tried with the kernel's driver and SDL in a virtual machine, stopping for the maintainer at its finding; then the identity, the coordinator's alone ([Decided on review](#decided-on-review)). Steps 1 to 6, 8 and 10 are done, and the hiding service takes the pad on its cable. Left besides: step 7 (the Puck and Bluetooth beyond what works already, and a controller Steam holds, now [an idea](../ideas/steam-controller-held-by-steam.md)).
+- **Next action:** the maintainer's choice of the identity's descriptor, on [the second spike's finding](#spike-sdl-and-the-two-descriptors): SDL makes the same of the retail one and one written here. Then the identity, the coordinator's alone ([Decided on review](#decided-on-review)). Steps 1 to 6, 8 and 10 are done, and the hiding service takes the pad on its cable. Left besides: step 7 (the Puck and Bluetooth beyond what works already, and a controller Steam holds, now [an idea](../ideas/steam-controller-held-by-steam.md)).
 - **Branch:** `feat/steam-controller`, from `docs/user-guide` at `383c798`, so the new user guide is there for the agents to read. Pushed on 2026-11-26 at the maintainer's word, with no pull request, and pushed freely since, by the same. When the guide's pull request (#63) has merged, this branch's own goes to `main`.
 
 ## Goal
@@ -125,6 +125,23 @@ Read by an agent on 2026-11-26, with file and line for each claim in its report;
 - **Reading the raw node (step 5)** needs a rule that gives the seat that node, a sibling HID device found from the pad's by parent and `HID_PHYS`; a report the firmware sends undeclared, or short, never arrives, so `0x47` is read only where a descriptor declares it. While CtrlAssist holds the node the driver sends nothing, so lizard mode off is CtrlAssist's to keep.
 - **Holding a pad through its joystick's going (step 5) and finding one Steam holds (step 7)** go by the real HID device, which stays while the raw node is held; its `inputN` changes, and its event node may come back under the same name.
 - **Hiding (For review 4)** is refused for the retail descriptor exactly as read; a raw-node marker would have to name the client device.
+
+## Spike: SDL and the two descriptors
+
+**Question.** For the identity: does SDL3 take a stand-in made through uhid for a Steam Controller, and does it matter to SDL whether the stand-in says the retail controller's descriptor or one written here?
+
+**Method.** `spikes/steam/sdl.nix`, run by the coordinator on 2026-11-26 with `nix build --impure --expr 'import ./spikes/steam/sdl.nix { }' -L`: the first spike's stand-in, under its own descriptor and under the retail one, each bound by `hid-steam` on Linux 7.3.4 in a virtual machine, with a probe built on nixpkgs' SDL 3.4.18 run beside it as root (`probe.c`: every pad added, opened as a gamepad, rumbled, asked for its gyro, and its events for five seconds) while the stand-in reported A with the left trackpad touched, then the upper right back button.
+
+**Finding: SDL makes the same of both, to the line.**
+
+- **It takes the stand-in with its own driver for the pad,** through the raw node (`/dev/hidraw1`, a GUID with the HIDAPI mark), as a gamepad of type `steam` named "Steam Controller", `28de:1302`: 22 buttons, 6 axes, 2 touchpads, a gyroscope and an accelerometer, and rumble. No second pad from the kernel's gamepad is listed beside it.
+- **It reads what was sent:** `a` down and up, `paddle1` for the upper right back button, the stick and trigger axes, a touch on touchpad 0 at the place sent, and sensor updates once the gyro was asked for.
+- **It asks the stand-in nothing.** It only writes: the motion sensors on (`87 03 30 18 00`) as the gyro is enabled, lizard mode off (`87 03 09 00 00`) as it opens and again 3.0 s later, and rumble as output report `0x80` every 41 ms while it lasts, then a stop. No serial is read (SDL says none), no attributes, nothing a stand-in would have to answer rightly. What the stand-in heard asked (`AE`, `83`, `85`, `8E`) was the kernel's driver, as SDL let go.
+- **SDL's touchpad 0 is the left trackpad.** CtrlAssist's first touchpad is the right one, the one a virtual DualSense's touchpad is made from. Nothing rests on SDL's order today; an identity that writes both trackpads puts each in its own place in the report.
+
+**So.** Neither the kernel's driver (the first spike) nor SDL tells the two descriptors apart; the choice rests on what neither can show. The retail descriptor brings its keyboard and mouse: a virtual pad made with it adds a keyboard and a pointer to the desktop, silent ones, which udev, libinput and the hiding service's own checks all see. One written here brings none, and copies nothing. What Steam makes of either is not seen: Steam can't be run in a check, and the two projects that show Steam listing a stand-in each used the retail bytes.
+
+**Recommended:** the descriptor written here, declaring every report the stand-in sends and takes and no keyboard or mouse, with the retail one the fallback if Steam, tried by the maintainer, doesn't take it.
 
 ## Steps
 
