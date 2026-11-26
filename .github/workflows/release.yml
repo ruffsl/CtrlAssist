@@ -71,7 +71,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libarchive-tools
 
       - name: Setup
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: just
 
@@ -183,7 +183,7 @@ jobs:
           persist-credentials: false
 
       - name: Nix
-        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # 31.11.3
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # 31.11.5
 
       # Installs the cachix CLI only: no substituter, no automatic push.
       - name: Cachix
