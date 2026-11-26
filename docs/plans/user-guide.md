@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** approved by the maintainer on 2026-11-25, after the capture was spiked (see Spike: drawing the window off screen). Steps 1 to 7 are done; the maintainer passed step 2's stop on the capture seen, and asked for steps 4 to 7 to be run through without a stop between.
-- **Next action:** the maintainer's read of the guide and the README on the draft pull request (#63), and step 8, the tray's shots, which are theirs to take. Step 9's check of the pages against the code is done but for what the tray's pictures add; the plan is retired once they are in.
+- **Next action:** the maintainer's read of the guide and the README on the draft pull request (#63), and step 8, the tray's shots, which are theirs to take. The pull request stays a draft and open until they are in. Step 9's check of the pages against the code is done but for what the tray's pictures add; the plan is retired once they are in.
 - **Branch:** `docs/user-guide`, from `main` at `39c1b4c`.
 
 ## Goal
@@ -194,9 +194,7 @@ Each is one commit or a few, with `prek run -a --skip build --skip clippy --skip
 
 ## Open questions
 
-For the maintainer:
-
-1. **The capture tool for TisVlay** (after step 3). It would replace fourteen screenshots taken by hand there. Carried back as an idea, or as code?
+None. The capture tool goes back to TisVlay as an idea, `docs/ideas/screenshot-tool.md` on its branch `chore/from-ctrlassist` (TisVlay `8f4b2617`), by the maintainer's choice.
 
 ## Deviations
 
