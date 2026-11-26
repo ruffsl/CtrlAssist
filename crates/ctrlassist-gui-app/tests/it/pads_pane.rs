@@ -122,7 +122,7 @@ fn rows_put_connected_pads_first_and_say_what_each_is() {
         ("In quick", "success")
     );
     assert_eq!(dualsense.maker, "sony");
-    assert_eq!(dualsense.games, "Hidden from them");
+    assert_eq!(dualsense.visibility, "Hidden");
     // Every profile that names it, with its part and how the profile is.
     let named: Vec<String> = dualsense
         .profiles
@@ -135,7 +135,7 @@ fn rows_put_connected_pads_first_and_say_what_each_is() {
     );
     let free = &made[2];
     assert_eq!((free.word.as_str(), free.tone.as_str()), ("Free", "info"));
-    assert_eq!(free.games, "See this pad");
+    assert_eq!(free.visibility, "Visible");
     assert_eq!(free.profiles.row_count(), 1);
     assert_eq!(made[0].profiles.row_count(), 0);
     assert_eq!(made[0].maker, "sony");

@@ -507,24 +507,37 @@ fn choice_entry(
         .map_or(field.default.as_str(), String::as_str);
     let selected = choices.iter().position(|choice| choice.value == stands_at);
     let label = selected.map_or(stands_at, |at| choices[at].label.as_str());
-    let radio = Entry::Radio {
-        choices: choices
-            .iter()
-            .map(|choice| Choice {
-                label: choice.label.clone(),
-                // An identity the daemon says it can't make now can't
-                // be picked.
-                enabled: field.key != "identity"
-                    || view
-                        .identities
-                        .iter()
-                        .find(|known| known.id == choice.value)
-                        .is_none_or(|known| known.available),
-                command: Command::set(name, &field.key, &choice.value),
-            })
-            .collect(),
-        selected,
-    };
+    // Choices that share a caption are a group under it, each by what
+    // the caption leaves to say; the rest are a group by their labels.
+    let mut entries = Vec::new();
+    for run in choices.chunk_by(|one, next| one.caption == next.caption) {
+        let caption = run.first().map_or("", |choice| choice.caption.as_str());
+        if !caption.is_empty() {
+            entries.push(said(icon::NONE, caption));
+        }
+        entries.push(Entry::Radio {
+            choices: run
+                .iter()
+                .map(|choice| Choice {
+                    label: if choice.brief.is_empty() {
+                        choice.label.clone()
+                    } else {
+                        choice.brief.clone()
+                    },
+                    // An identity the daemon says it can't make now
+                    // can't be picked.
+                    enabled: field.key != "identity"
+                        || view
+                            .identities
+                            .iter()
+                            .find(|known| known.id == choice.value)
+                            .is_none_or(|known| known.available),
+                    command: Command::set(name, &field.key, &choice.value),
+                })
+                .collect(),
+            selected: run.iter().position(|choice| choice.value == stands_at),
+        });
+    }
     let icon = match field.key.as_str() {
         PRESET => icon::MODE,
         "rumble" => icon::RUMBLE,
@@ -532,7 +545,7 @@ fn choice_entry(
         "identity" => icon::IDENTITY,
         _ => icon::NONE,
     };
-    sub(icon, format!("{}: {label}", field.label), vec![radio])
+    sub(icon, format!("{}: {label}", field.label), entries)
 }
 
 /// A number in a range: each it may be, with the one it stands at.
@@ -1006,13 +1019,14 @@ default ✓ (Not set up) >
     ( ) Toggle
     ( ) Unicast
     ( ) Multicast
-  Rumble goes to: Both pads >
+  Rumble: Both pads >
     (o) Both pads
     ( ) Primary only
     ( ) Assist only
     ( ) Neither
-  Assist aims with: No button >
-    (o) No button
+  Gyro: Primary only >
+    (o) Primary only
+    - Assist holds
     ( ) South
     ( ) East
     ( ) North
@@ -1029,7 +1043,7 @@ default ✓ (Not set up) >
     ( ) Dpad left
     ( ) Dpad right
     ( ) Touchpad
-  Real pads: Hidden >
+  Visibility: Hidden >
     (o) Hidden
     ( ) Grabbed
     ( ) Visible
@@ -1040,6 +1054,29 @@ default ✓ (Not set up) >
         assert_eq!(of(&menu, "default ✓"), expected, "\n{menu}");
         assert!(menu.starts_with("default ✓ (Not set up) >\n"), "{menu}");
         assert!(!menu.contains("Quick start"), "{menu}");
+    }
+
+    /// A field's line says the whole choice; in its menu, choices that
+    /// share a caption sit under it, each by what is left to say.
+    #[test]
+    fn choices_that_share_a_caption_are_listed_under_it() {
+        let mut view = view(None, Hiding::Service);
+        view.profiles.push(Profile {
+            toml: "mode = \"priority\"\nassist-gyro = \"right-bumper\"\n".to_string(),
+            unset: vec!["primary".to_string(), "assist".to_string()],
+            ..profile("default", None)
+        });
+        let menu = outline(&menu(&view));
+        assert!(
+            menu.contains(
+                "  Gyro: Assist · Right bumper >\n    ( ) Primary only\n    - Assist holds\n    ( ) South\n"
+            ),
+            "{menu}"
+        );
+        assert!(
+            menu.contains("    ( ) Left bumper\n    (o) Right bumper\n"),
+            "{menu}"
+        );
     }
 
     /// A profile that runs has Stop, who has control, and its fields; a
@@ -1064,7 +1101,7 @@ default ✓ (Not set up) >
             "{desk}"
         );
         assert!(
-            desk.contains("  Virtual pads: 2 >\n    ( ) 1\n    (o) 2\n"),
+            desk.contains("  Outputs: 2 >\n    ( ) 1\n    (o) 2\n"),
             "{desk}"
         );
         assert!(!desk.contains("Rumble"), "{desk}");

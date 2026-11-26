@@ -201,10 +201,10 @@ fn real_rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow
                     .find(|(name, ..)| *name == setup)
                     .map(|(_, plan, _)| plan.hide)
             });
-            let games = match (pad.setup.is_some(), pad.hidden, asked) {
-                (false, ..) | (true, false, Some(Hide::None)) => "See this pad",
-                (true, true, _) => "Hidden from them",
-                (true, false, _) => "Only grabbed",
+            let visibility = match (pad.setup.is_some(), pad.hidden, asked) {
+                (false, ..) | (true, false, Some(Hide::None)) => "Visible",
+                (true, true, _) => "Hidden",
+                (true, false, _) => "Grabbed",
             };
             PadRow {
                 is_virtual: false,
@@ -213,7 +213,7 @@ fn real_rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow
                 maker: SharedString::from(maker_of(pad.vendor)),
                 word: SharedString::from(word),
                 tone: SharedString::from(tone),
-                games: SharedString::from(games),
+                visibility: SharedString::from(visibility),
                 profiles: ModelRc::new(VecModel::from(named)),
                 id: SharedString::from(pad.id.as_str()),
                 key: SharedString::from(key_of(&pad.id)),

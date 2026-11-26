@@ -20,7 +20,7 @@ To stop, open **default ✓** again and click **Stop**. The real controllers com
 
 Two more choices in the same menu:
 
-- **Rumble goes to** picks who feels the game's rumble: both, the primary only, the assist only, or neither.
+- **Rumble** picks who feels the game's rumble: both, the primary only, the assist only, or neither.
 - **Managed** has CtrlAssist start this arrangement itself whenever both controllers are plugged in, from then on. Unmanaged, you start it.
 
 Your choices are the profile: they are kept as you make them, and the settings window shows the same profile under **Profiles**.

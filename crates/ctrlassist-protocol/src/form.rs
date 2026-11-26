@@ -23,6 +23,15 @@ pub struct Choice {
     /// A sentence on what choosing it does; empty when the label says it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// What a run of choices has in common, for a form that can say it
+    /// once above them, as a menu can: "Assist holds". Empty for a
+    /// choice that stands by itself.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub caption: String,
+    /// The choice as it reads under its caption, which says the rest:
+    /// "Right bumper". Empty where there is no caption.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub brief: String,
 }
 
 /// What a field holds, and so what a form shows for it.
@@ -109,6 +118,8 @@ fn choice(value: &str, label: &str, description: &str) -> Choice {
         value: value.to_string(),
         label: label.to_string(),
         description: description.to_string(),
+        caption: String::new(),
+        brief: String::new(),
     }
 }
 
@@ -201,7 +212,7 @@ fn described() -> Vec<Field> {
         pad("pad", "Pad", "The pad that is shared out.", &ONE_PAD),
         Field {
             key: "outputs".to_string(),
-            label: "Virtual pads".to_string(),
+            label: "Outputs".to_string(),
             help: "How many virtual pads to make.".to_string(),
             kind: Kind::Number { min: 1, max: 8 },
             presets: names(&ONE_PAD),
@@ -237,7 +248,7 @@ fn described() -> Vec<Field> {
         },
         Field {
             key: "rumble".to_string(),
-            label: "Rumble goes to".to_string(),
+            label: "Rumble".to_string(),
             help: "Who feels what a game rumbles.".to_string(),
             kind: Kind::Choice {
                 choices: vec![
@@ -253,12 +264,21 @@ fn described() -> Vec<Field> {
         },
         Field {
             key: "assist-gyro".to_string(),
-            label: "Assist aims with".to_string(),
-            help: "A button on the assist's pad that gives their motion sensors to the virtual pad while it is held, in place of the primary's. The game doesn't see that button of the assist's. Only a DualSense identity carries motion."
+            label: "Gyro".to_string(),
+            help: "Whose motion sensors the virtual pad carries: the primary's, or the assist's while the assist holds a button of their pad, which the game then doesn't see. Only a DualSense identity carries motion."
                 .to_string(),
             kind: Kind::Choice {
-                choices: std::iter::once(choice(NO_BUTTON, "No button", ""))
-                    .chain(button_names().map(|name| choice(name, &button_label(name), "")))
+                // Each says whose motion the game gets, so a line that shows
+                // the choice alone still reads.
+                choices: std::iter::once(choice(NO_BUTTON, "Primary only", ""))
+                    .chain(button_names().map(|name| {
+                        let button = button_label(name);
+                        Choice {
+                            caption: "Assist holds".to_string(),
+                            brief: button.clone(),
+                            ..choice(name, &format!("Assist · {button}"), "")
+                        }
+                    }))
                     .collect(),
             },
             presets: names(&MOTION_TAKEN),
@@ -267,7 +287,7 @@ fn described() -> Vec<Field> {
         },
         Field {
             key: "hide".to_string(),
-            label: "Real pads".to_string(),
+            label: "Visibility".to_string(),
             help: "How the pads behind the virtual pad are kept from games while this runs."
                 .to_string(),
             kind: Kind::Choice {

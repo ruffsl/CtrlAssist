@@ -746,7 +746,7 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         };
-        assert!(menu.contains("Rumble goes to: Primary only >"), "{menu}");
+        assert!(menu.contains("Rumble: Primary only >"), "{menu}");
         assert!(menu.contains("Managed: On >"), "{menu}");
     }
 
