@@ -186,6 +186,15 @@ impl View {
             if setup.phase != Phase::Starting || entry.replacing != Some(setup.start) {
                 entry.replacing = None;
             }
+            // A Steam Controller only grabbed, said once for the setup,
+            // as soon as it reads one: at its start, or as one comes to it
+            // later; not again as one goes and comes, nor at a restart.
+            let steam = self.steam_grabbed(setup);
+            let steam_before = same.map_or(0, |was| before.steam_grabbed(was));
+            if steam > 0 && steam_before == 0 && !entry.steam_said {
+                news.push(steam_news(name, steam));
+            }
+            entry.steam_said |= steam > 0;
         }
         for setup in &before.setups {
             if self.setup(&setup.name).is_some() {
@@ -199,6 +208,7 @@ impl View {
             )];
             let entry = asked.entry(setup.name.clone()).or_default();
             entry.replacing = None;
+            entry.steam_said = false;
             entry.stopped(setup.start, said, &mut news);
         }
         asked.retain(|_, asked| !asked.is_empty());
@@ -261,6 +271,38 @@ impl View {
             })
     }
 
+    /// How many Steam Controllers `setup` reads with the hiding service
+    /// there, which doesn't take them, for a profile that asked for its
+    /// pads hidden: none where nothing else would say they are only
+    /// grabbed. Without the service, the warning for every pad says it;
+    /// while the daemon still looks for it, that warning may yet come;
+    /// and a profile that chose Grabbed was told so by its own choice.
+    fn steam_grabbed(&self, setup: &Setup) -> usize {
+        let service = self
+            .daemon
+            .as_ref()
+            .is_some_and(|daemon| daemon.hiding == Hiding::Service);
+        let running = matches!(setup.phase, Phase::Running | Phase::Held);
+        let grab_chosen = self
+            .profiles
+            .iter()
+            .find(|profile| profile.name == setup.name)
+            .and_then(|profile| {
+                toml::from_str::<ctrlassist_protocol::profile::Profile>(&profile.toml).ok()
+            })
+            .is_some_and(|written| written.hide == Some(ctrlassist_protocol::profile::Hide::Grab));
+        if !service || !running || grab_chosen {
+            return 0;
+        }
+        setup
+            .sources
+            .iter()
+            .filter(|source| source.present)
+            .filter_map(|source| self.pad(source.pad.as_deref()?))
+            .filter(|pad| pad.is_steam_controller())
+            .count()
+    }
+
     /// Whether the daemon is still looking for the hiding service.
     fn looking(&self) -> bool {
         self.daemon
@@ -293,25 +335,6 @@ impl View {
         )];
         if self.grabbed() {
             news.push(grabbed_news(name));
-        } else {
-            // The hiding service doesn't take a Steam Controller, there
-            // or not: said here, where nothing else says it.
-            let held: Vec<&str> = setup
-                .sources
-                .iter()
-                .filter(|source| source.present)
-                .filter_map(|source| self.pad(source.pad.as_deref()?))
-                .filter(|pad| pad.is_steam_controller())
-                .map(|pad| pad.name.as_str())
-                .collect();
-            if !held.is_empty() {
-                news.push(toast(
-                    Category::SetupTrouble,
-                    format!("{name}: {} grabbed, not hidden", held.join(" and ")),
-                    "A Steam Controller can't be hidden: Steam, and games that read it through SDL, still see it beside the virtual pad.",
-                    WARNING,
-                ));
-            }
         }
         let silent: Vec<&str> = setup
             .sources
@@ -364,6 +387,24 @@ fn failed_news(setup: &Setup) -> Toast {
     )
 }
 
+/// What the setup `name`'s notification says when the hiding service is
+/// there and its `count` Steam Controllers are only grabbed.
+fn steam_news(name: &str, count: usize) -> Toast {
+    let (title, them) = if count == 1 {
+        ("its Steam Controller is", "it")
+    } else {
+        ("its Steam Controllers are", "them")
+    };
+    toast(
+        Category::SetupTrouble,
+        format!("{name}: {title} grabbed, not hidden"),
+        format!(
+            "A Steam Controller can't be hidden: Steam, and games that read it through SDL, still see {them} beside the virtual pad."
+        ),
+        WARNING,
+    )
+}
+
 /// What the setup `name`'s notification says when its pads are only
 /// grabbed.
 fn grabbed_news(name: &str) -> Toast {
@@ -400,6 +441,9 @@ pub struct Asked {
     /// A start seen in place of another and still starting, by its
     /// number: once it has started, it is said to have restarted.
     replacing: Option<u32>,
+    /// Whether it was said that the setup's Steam Controller is only
+    /// grabbed: said once while the setup runs, restarts included.
+    steam_said: bool,
 }
 
 impl Asked {
@@ -412,6 +456,7 @@ impl Asked {
             && self.held.is_empty()
             && self.restarted_as.is_none()
             && self.replacing.is_none()
+            && !self.steam_said
     }
 
     /// Takes the setup's start numbered `start` seen to stop, which
@@ -1350,31 +1395,112 @@ pub(crate) mod tests {
         );
     }
 
+    /// `couch` as `phase` has it, under `hiding`, with its first
+    /// `steam` pads (the DualSense, then the Xbox pad) Steam Controllers.
+    fn with_steam(phase: Option<Phase>, hiding: Hiding, steam: usize) -> View {
+        let mut view = view(phase, hiding);
+        for at in [0, 2].into_iter().take(steam) {
+            view.pads[at].name = "Steam Controller".to_string();
+            (view.pads[at].vendor, view.pads[at].product) = (0x28de, 0x1302);
+        }
+        view
+    }
+
     /// A Steam Controller in a setup is said to be grabbed, not hidden,
-    /// with the hiding service there, which doesn't take it; without the
-    /// service, the warning for every pad says it already.
+    /// once, where the hiding service is there, which doesn't take it:
+    /// as the setup starts, or as one comes to it later, and two said as
+    /// two. Not without the service, whose warning for every pad says it
+    /// already, nor while the daemon still looks for it, whose warning
+    /// may yet come; nor for a profile that chose Grabbed.
     #[test]
-    fn a_steam_controller_starting_in_a_setup_is_said_to_be_only_grabbed() {
-        let steam = |hiding| {
-            let mut view = view(Some(Phase::Running), hiding);
-            view.pads[0].name = "Steam Controller".to_string();
-            (view.pads[0].vendor, view.pads[0].product) = (0x28de, 0x1302);
-            view
-        };
-        let news = steam(Hiding::Service).news(&view(None, Hiding::Service));
+    fn a_steam_controller_in_a_setup_is_said_once_to_be_only_grabbed() {
+        let none = with_steam(None, Hiding::Service, 1);
+        let news = with_steam(Some(Phase::Running), Hiding::Service, 1).news(&none);
         assert_eq!(
             summaries(&news),
             [
                 "couch started",
-                "couch: Steam Controller grabbed, not hidden"
+                "couch: its Steam Controller is grabbed, not hidden"
             ]
         );
         assert_eq!(news[1].category, Category::SetupTrouble);
-        assert!(news[1].body.contains("Steam"), "{news:?}");
+        assert!(news[1].body.contains("still see it"), "{news:?}");
+
+        // Two, said as two.
+        let news = with_steam(Some(Phase::Running), Hiding::Service, 2).news(&with_steam(
+            None,
+            Hiding::Service,
+            2,
+        ));
         assert_eq!(
-            summaries(&steam(Hiding::Grab).news(&view(None, Hiding::Grab))),
+            summaries(&news)[1],
+            "couch: its Steam Controllers are grabbed, not hidden"
+        );
+
+        // Without the service: the warning for every pad, alone.
+        assert_eq!(
+            summaries(
+                &with_steam(Some(Phase::Running), Hiding::Grab, 1).news(&with_steam(
+                    None,
+                    Hiding::Grab,
+                    1
+                ))
+            ),
             ["couch started", "couch: its pads are grabbed, not hidden"]
         );
+
+        // Started while the daemon looks: nothing until it has found out,
+        // and then one warning or the other, never both.
+        let looking = with_steam(Some(Phase::Running), Hiding::Looking, 1);
+        assert_eq!(
+            summaries(&looking.news(&with_steam(None, Hiding::Looking, 1))),
+            ["couch started"]
+        );
+        assert_eq!(
+            summaries(&with_steam(Some(Phase::Running), Hiding::Grab, 1).news(&looking)),
+            ["couch: its pads are grabbed, not hidden"]
+        );
+        assert_eq!(
+            summaries(&with_steam(Some(Phase::Running), Hiding::Service, 1).news(&looking)),
+            ["couch: its Steam Controller is grabbed, not hidden"]
+        );
+
+        // A profile that chose Grabbed: nothing to warn of.
+        let chose = |phase| {
+            let mut view = with_steam(phase, Hiding::Service, 1);
+            view.profiles[0].toml = format!("{COUCH}hide = \"grab\"\n");
+            view
+        };
+        assert_eq!(
+            summaries(&chose(Some(Phase::Running)).news(&chose(None))),
+            ["couch started"]
+        );
+
+        // Missing as it started, the Xbox pad the Steam Controller here:
+        // said as it comes, and once only as it goes and comes again.
+        let mut asked = BTreeMap::new();
+        let steam_assist = |phase| {
+            let mut view = view(phase, Hiding::Service);
+            (view.pads[2].vendor, view.pads[2].product) = (0x28de, 0x1302);
+            view
+        };
+        let held = steam_assist(Some(Phase::Held));
+        let news = held.news_for(&steam_assist(None), &mut asked);
+        assert_eq!(summaries(&news), ["couch started"]);
+        let running = steam_assist(Some(Phase::Running));
+        let news = running.news_for(&held, &mut asked);
+        assert_eq!(
+            summaries(&news),
+            [
+                "couch is running again",
+                "couch: its Steam Controller is grabbed, not hidden"
+            ]
+        );
+        let held_again = steam_assist(Some(Phase::Held));
+        let news = held_again.news_for(&running, &mut asked);
+        assert_eq!(summaries(&news), ["couch is held"]);
+        let news = running.news_for(&held_again, &mut asked);
+        assert_eq!(summaries(&news), ["couch is running again"]);
     }
 
     /// While the daemon is still looking for the hiding service, a setup
