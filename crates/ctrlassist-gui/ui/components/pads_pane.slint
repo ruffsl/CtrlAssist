@@ -469,17 +469,17 @@ component PadDetail inherits Rectangle {
                     }
                     if root.pad.connected && !root.pad.is-virtual: FormRow {
                         id-prefix: root.id-prefix;
-                        label: @tr("Games");
-                        key: "games";
-                        help: @tr("Whether games can see this pad beside a virtual one. The profile that is running with it decides, by its Real pads choice.");
+                        label: @tr("Visibility");
+                        key: "visibility";
+                        help: @tr("Whether games can see this pad beside a virtual one. The profile that is running with it decides, by its Visibility choice.");
                         VerticalLayout {
                             horizontal-stretch: 1;
                             alignment: center;
                             Text {
-                                text: root.pad.games;
+                                text: root.pad.visibility;
                                 color: Theme.text;
                                 font-size: Design.font-body;
-                                accessible-id: root.id-prefix + "pads-games";
+                                accessible-id: root.id-prefix + "pads-visibility";
                             }
                         }
                     }

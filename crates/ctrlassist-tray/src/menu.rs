@@ -1006,30 +1006,30 @@ default ✓ (Not set up) >
     ( ) Toggle
     ( ) Unicast
     ( ) Multicast
-  Rumble goes to: Both pads >
+  Rumble: Both pads >
     (o) Both pads
     ( ) Primary only
     ( ) Assist only
     ( ) Neither
-  Assist aims with: No button >
-    (o) No button
-    ( ) South
-    ( ) East
-    ( ) North
-    ( ) West
-    ( ) Left bumper
-    ( ) Right bumper
-    ( ) Select
-    ( ) Start
-    ( ) Mode
-    ( ) Left thumb
-    ( ) Right thumb
-    ( ) Dpad up
-    ( ) Dpad down
-    ( ) Dpad left
-    ( ) Dpad right
-    ( ) Touchpad
-  Real pads: Hidden >
+  Gyro: Primary only >
+    (o) Primary only
+    ( ) Assist on South
+    ( ) Assist on East
+    ( ) Assist on North
+    ( ) Assist on West
+    ( ) Assist on Left bumper
+    ( ) Assist on Right bumper
+    ( ) Assist on Select
+    ( ) Assist on Start
+    ( ) Assist on Mode
+    ( ) Assist on Left thumb
+    ( ) Assist on Right thumb
+    ( ) Assist on Dpad up
+    ( ) Assist on Dpad down
+    ( ) Assist on Dpad left
+    ( ) Assist on Dpad right
+    ( ) Assist on Touchpad
+  Visibility: Hidden >
     (o) Hidden
     ( ) Grabbed
     ( ) Visible
@@ -1064,7 +1064,7 @@ default ✓ (Not set up) >
             "{desk}"
         );
         assert!(
-            desk.contains("  Virtual pads: 2 >\n    ( ) 1\n    (o) 2\n"),
+            desk.contains("  Outputs: 2 >\n    ( ) 1\n    (o) 2\n"),
             "{desk}"
         );
         assert!(!desk.contains("Rumble"), "{desk}");

@@ -96,6 +96,8 @@ pub struct Parts {
     pub tray: ServiceHealth,
     /// Its release, when one is connected.
     pub tray_version: String,
+    /// The file it keeps its settings in; empty when it hasn't said.
+    pub tray_config: String,
     /// The release of the `ctrlassist` on PATH; empty for none found.
     pub cli_version: String,
 }
@@ -113,6 +115,7 @@ impl Parts {
             hider_version: app.get_hider_version().to_string(),
             tray: app.get_tray_health(),
             tray_version: app.get_tray_version().to_string(),
+            tray_config: app.global::<crate::Tray>().get_config_path().to_string(),
             cli_version: app.get_cli_version().to_string(),
         }
     }
@@ -161,7 +164,16 @@ pub fn rows(parts: &Parts) -> Vec<AboutComponentRow> {
             (true, "") => "—".to_string(),
             (true, version) => format!("v{version}"),
         },
-        tip: release_tip(parts.daemon, &parts.daemon_version),
+        // A row's description is one line; what the kernel refused is
+        // said where the chip is asked about.
+        tip: if online(parts.daemon) && !parts.daemon_realtime {
+            format!(
+                "{}. Without real-time scheduling, which the kernel refused it: latency under load isn't dependable",
+                release_tip(parts.daemon, &parts.daemon_version)
+            )
+        } else {
+            release_tip(parts.daemon, &parts.daemon_version)
+        },
         config_path: parts.daemon_config.clone(),
     };
     // The hiding service is the daemon's to report, being its only
@@ -213,7 +225,7 @@ pub fn rows(parts: &Parts) -> Vec<AboutComponentRow> {
             (false, _) => "Only the daemon can say, and it isn't running".to_string(),
             (true, _) => release_tip(parts.tray, &parts.tray_version),
         },
-        config_path: String::new(),
+        config_path: parts.tray_config.clone(),
     };
     let window = Cells {
         version: GUI_VERSION.to_string(),
@@ -247,53 +259,59 @@ pub fn rows(parts: &Parts) -> Vec<AboutComponentRow> {
         },
         config_path: String::new(),
     };
-    let realtime = if online(parts.daemon) && !parts.daemon_realtime {
-        " Without real-time scheduling, which the kernel refused it: latency under load isn't dependable."
-    } else {
-        ""
-    };
     [
         (
             "daemon",
             "Daemon",
             ctrlassist_protocol::keys::daemon_alive(),
-            format!("Reads the pads, runs the setups and keeps the profiles.{realtime}"),
+            "Pads, setups and profiles.",
+            true,
             daemon,
         ),
         (
             "hider",
             "Hiding",
-            String::new(),
-            "Runs as its own system user, with no special capabilities, to make a setup's pads absent to games.".to_string(),
+            // Not on the session: the daemon reaches it at its socket,
+            // and it keeps no files of the user's.
+            ctrlassist_daemon::Paths::default_for_user()
+                .hider
+                .display()
+                .to_string(),
+            "Hides a setup's pads from games.",
+            false,
             hider,
         ),
         (
             "tray",
             "Tray",
-            String::new(),
-            "The tray icon, its menu and the notifications.".to_string(),
+            ctrlassist_protocol::keys::tray_alive(),
+            "Tray icon, menu and notifications.",
+            true,
             tray,
         ),
         (
             "gui",
             "GUI",
             crate::APP_ID.to_string(),
-            "This window.".to_string(),
+            "Graphical interface for CtrlAssist.",
+            true,
             window,
         ),
         (
             "cli",
             "CLI",
-            // Nothing in parens: the row then has no folder button, and
-            // the command has no files of its own to show.
+            // Nothing in parens: the command is on no bus and has no
+            // files of its own to show.
             String::new(),
-            "Everything here, from a terminal or a script.".to_string(),
+            "Command-line interface for CtrlAssist.",
+            false,
             cli,
         ),
     ]
     .into_iter()
     .map(
-        |(name, friendly, identity, description, cells)| AboutComponentRow {
+        |(name, friendly, identity, description, files, cells)| AboutComponentRow {
+            files,
             name: SharedString::from(name),
             friendly_name: SharedString::from(friendly),
             bus_address: SharedString::from(if identity.is_empty() {

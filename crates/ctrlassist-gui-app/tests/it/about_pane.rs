@@ -24,6 +24,17 @@ fn with_nothing_running_every_part_but_the_window_is_absent() {
     assert_eq!(daemon.health, ServiceHealth::Offline);
     assert_eq!((daemon.chip.as_str(), daemon.online), ("offline", false));
     assert_eq!(daemon.bus_address, "(ctrlassist/alive/daemon)");
+    // Each part that is somewhere says where: the tray on the session
+    // as the daemon is, the hiding service at its socket.
+    assert_eq!(row(&rows, "tray").bus_address, "(ctrlassist/alive/tray)");
+    assert_eq!(
+        row(&rows, "hider").bus_address,
+        "(/run/ctrlassist/hider.sock)"
+    );
+    assert_eq!(row(&rows, "cli").bus_address, "");
+    // A folder button only for a part with files of the user's.
+    let files: Vec<bool> = rows.iter().map(|row| row.files).collect();
+    assert_eq!(files, [true, false, true, true, false]);
     assert_eq!(daemon.config_path, "");
     // Only the daemon can say how the hiding service is.
     assert_eq!(row(&rows, "hider").chip, "unknown");
@@ -54,6 +65,7 @@ fn a_running_daemon_says_its_release_its_files_and_how_pads_are_hidden() {
         hider_version: VERSION.to_string(),
         tray: ServiceHealth::Ok,
         tray_version: VERSION.to_string(),
+        tray_config: String::new(),
         cli_version: VERSION.to_string(),
     };
     let all = rows(&parts);
@@ -61,7 +73,8 @@ fn a_running_daemon_says_its_release_its_files_and_how_pads_are_hidden() {
     assert_eq!(daemon.chip.as_str(), format!("v{VERSION}"));
     assert_eq!(daemon.tip, "Same release as this window");
     assert_eq!(daemon.config_path, "/home/someone/.config/ctrlassist");
-    assert!(!daemon.description.contains("real-time"));
+    assert!(!daemon.tip.contains("real-time"));
+    assert_eq!(daemon.description, "Pads, setups and profiles.");
     assert_eq!(row(&all, "hider").chip.as_str(), format!("v{VERSION}"));
     assert_eq!(row(&all, "hider").friendly_name, "Hiding");
     assert_eq!(row(&all, "gui").friendly_name, "GUI");
@@ -109,7 +122,7 @@ fn a_running_daemon_says_its_release_its_files_and_how_pads_are_hidden() {
         ..parts
     });
     assert!(row(&worse, "daemon").tip.contains("can't talk"));
-    assert!(row(&worse, "daemon").description.contains("real-time"));
+    assert!(row(&worse, "daemon").tip.contains("real-time"));
     assert_eq!(row(&worse, "hider").chip, "offline");
     assert_eq!(row(&worse, "tray").chip, "offline");
     assert!(row(&worse, "hider").tip.contains("only grabbed"));
@@ -136,6 +149,10 @@ fn the_pane_shows_the_rows_the_window_holds() {
     ] {
         assert!(find_by_accessible_id(&app, id).is_some(), "{id}");
     }
+    // A card's "i" fits the band its title has with or without one, so
+    // a card with help starts no lower than one without.
+    let help = find_by_accessible_id(&app, "about-help-components").unwrap();
+    assert!(help.size().height <= 24.0, "{:?}", help.size());
     use slint::Model as _;
     assert_eq!(app.get_about_components().row_count(), 5);
 
