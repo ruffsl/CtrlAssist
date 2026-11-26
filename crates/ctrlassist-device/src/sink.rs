@@ -581,6 +581,37 @@ impl AsFd for VirtualPad {
 mod tests {
     use super::*;
 
+    /// A plain virtual pad writes the standard gamepad's controls and
+    /// nothing past them: no back button, capacitive touch or touchpad
+    /// click reaches a game through it, and it has no touchpad.
+    #[test]
+    fn nothing_past_the_standard_gamepad_is_written() {
+        let written: Vec<Control> = BUTTONS
+            .iter()
+            .map(|(_, control)| *control)
+            .chain(STICKS.iter().map(|(_, control)| *control))
+            .chain(TRIGGERS.iter().map(|(_, control)| *control))
+            .chain(
+                HATS.iter()
+                    .flat_map(|(_, negative, positive)| [*negative, *positive]),
+            )
+            .collect();
+        for control in [
+            gamepad::PADDLE_1,
+            gamepad::PADDLE_2,
+            gamepad::PADDLE_3,
+            gamepad::PADDLE_4,
+            gamepad::LEFT_STICK_TOUCH,
+            gamepad::RIGHT_STICK_TOUCH,
+            gamepad::LEFT_GRIP_TOUCH,
+            gamepad::RIGHT_GRIP_TOUCH,
+            gamepad::TOUCHPAD,
+            gamepad::SECOND_TOUCHPAD,
+        ] {
+            assert!(!written.contains(&control), "{control:?}");
+        }
+    }
+
     #[test]
     fn a_stick_keeps_its_rest_and_its_ends() {
         assert_eq!(stick(0.0), 0);

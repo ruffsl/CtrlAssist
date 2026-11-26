@@ -105,7 +105,7 @@ impl std::error::Error for GraphError {}
 
 /// One control changing on one virtual pad.
 ///
-/// Motion and the touchpad's contacts are not controls and change by no
+/// Motion and the touchpads' contacts are not controls and change by no
 /// `Change`: a virtual pad that carries them is written its whole state,
 /// from [`Graph::sink`].
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -119,7 +119,9 @@ pub struct Change {
 }
 
 enum Node {
-    Mux(Mux),
+    /// Boxed, as a mux holds much more than a demux; built once, with the
+    /// graph, so stepping still allocates nothing.
+    Mux(Box<Mux>),
     Demux(Demux),
 }
 
@@ -270,7 +272,9 @@ impl Graph {
             .nodes
             .into_iter()
             .map(|node| match node {
-                NodeSpec::Mux { inputs, config } => Node::Mux(Mux::new(config, inputs.len())),
+                NodeSpec::Mux { inputs, config } => {
+                    Node::Mux(Box::new(Mux::new(config, inputs.len())))
+                }
                 NodeSpec::Demux { config, .. } => Node::Demux(Demux::new(config)),
             })
             .collect();

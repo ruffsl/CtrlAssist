@@ -9,7 +9,9 @@ use ctrlassist_core::{
     DemuxConfig, DemuxMode, Graph, GraphSpec, Input, Kind, Layout, Mode, MuxConfig, MuxFeedback,
     NodeId, NodeSpec, Rule, SourceId, SourceSpec, Switch, gamepad,
 };
-use ctrlassist_protocol::profile::{Hide, Identity, PadRef, Plan, Profile, ProfileError};
+use ctrlassist_protocol::profile::{
+    Hide, Identity, PadRef, Plan, Profile, ProfileError, button_names,
+};
 
 fn plan(text: &str) -> Result<Plan, ProfileError> {
     Profile::from_toml(text)?.plan()
@@ -185,6 +187,11 @@ fn a_switch_is_a_button_by_name_on_any_input_or_one_or_none() {
     assert_eq!(
         node("switch = { button = \"start\", input = \"a\" }"),
         Ok(on(Some(0), gamepad::START))
+    );
+    assert_eq!(
+        node("switch = { button = \"paddle-4\", input = \"b\" }"),
+        Ok(on(Some(1), gamepad::PADDLE_4)),
+        "a back button"
     );
     assert_eq!(node("switch = false"), Ok(None));
     let error = node("switch = \"sideways\"").unwrap_err();
@@ -655,6 +662,27 @@ fn a_preset_names_the_assists_button_that_takes_the_motion() {
             .map(|gyro| gyro.button),
         Some(gamepad::TOUCHPAD)
     );
+    // So are the back buttons, in SDL's order, and capacitive touch is
+    // not.
+    for (name, paddle) in [
+        ("paddle-1", gamepad::PADDLE_1),
+        ("paddle-2", gamepad::PADDLE_2),
+        ("paddle-3", gamepad::PADDLE_3),
+        ("paddle-4", gamepad::PADDLE_4),
+    ] {
+        assert_eq!(
+            mux_of(&preset("average", &format!("assist-gyro = \"{name}\"\n")))
+                .gyro
+                .map(|gyro| gyro.button),
+            Some(paddle),
+            "{name}"
+        );
+    }
+    assert!(
+        !button_names().any(|name| name.contains("touch") && name != "touchpad"),
+        "{:?}",
+        button_names().collect::<Vec<_>>()
+    );
 
     let said = |text: &str, want_at: &str, want: &str| {
         let (at, problem) = refusal(text);
@@ -704,6 +732,18 @@ fn the_full_form_names_a_muxs_button_that_hands_motion_over() {
             input: Some(0),
             button: gamepad::SOUTH,
         })
+    );
+    assert_eq!(
+        mux_of(&full(
+            "priority",
+            "gyro = { button = \"paddle-2\", input = \"b\" }\n"
+        ))
+        .gyro,
+        Some(Switch {
+            input: Some(1),
+            button: gamepad::PADDLE_2,
+        }),
+        "a back button"
     );
     let said = |text: &str, want_at: &str, want: &str| {
         let (at, problem) = refusal(text);
@@ -1046,6 +1086,44 @@ mod form {
         assert!(toml.contains("outputs = 3\n"), "{toml}");
         assert!(toml.contains("managed = true\n"), "{toml}");
         Profile::check(&toml).unwrap();
+    }
+
+    /// The Gyro field offers every button a profile can name, the back
+    /// buttons among them, each read under "Assist holds".
+    #[test]
+    fn the_gyro_field_offers_the_back_buttons() {
+        let fields = form::fields();
+        let gyro = fields
+            .iter()
+            .find(|field| field.key == "assist-gyro")
+            .unwrap();
+        let Kind::Choice { choices } = &gyro.kind else {
+            panic!("{gyro:?}");
+        };
+        let read: Vec<(&str, &str, &str, &str)> = choices
+            .iter()
+            .map(|choice| {
+                (
+                    choice.value.as_str(),
+                    choice.label.as_str(),
+                    choice.caption.as_str(),
+                    choice.brief.as_str(),
+                )
+            })
+            .collect();
+        // After no button and the sixteen there were before them, last.
+        assert_eq!(read.len(), 21, "{read:?}");
+        assert_eq!(read[0].0, "none");
+        assert_eq!(read[16].0, "touchpad");
+        assert_eq!(
+            read[17..],
+            [
+                ("paddle-1", "Assist · Paddle 1", "Assist holds", "Paddle 1"),
+                ("paddle-2", "Assist · Paddle 2", "Assist holds", "Paddle 2"),
+                ("paddle-3", "Assist · Paddle 3", "Assist holds", "Paddle 3"),
+                ("paddle-4", "Assist · Paddle 4", "Assist holds", "Paddle 4"),
+            ]
+        );
     }
 
     #[test]
