@@ -1,0 +1,11 @@
+# A throwaway: does the kernel's hid-steam take a Steam Controller (2026)
+# made through uhid, and what does it present? Run only in the virtual
+# machine of test.nix, never on a desktop: a made-up controller there
+# could be opened by Steam or an SDL program, and could type or point.
+[workspace]
+
+[package]
+name = "steam-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
