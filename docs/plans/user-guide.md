@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** drafted, its first questions answered and the README added to it (see Decided). The capture was spiked while the maintainer read the plan (see Spike: drawing the window off screen). Nothing in the book or the README has been changed.
-- **Next action:** the maintainer's review of the spike's finding and their go-ahead on the plan as a whole; then step 1.
+- **Status:** approved by the maintainer on 2026-11-25, after the capture was spiked (see Spike: drawing the window off screen). Building.
+- **Next action:** step 1, then step 2 and its stop.
 - **Branch:** `docs/user-guide`, from `main` at `39c1b4c`.
 
 ## Goal
@@ -55,12 +55,13 @@ By the maintainer, 2026-11-25:
 Later the same day, on the questions this plan first left open:
 
 - **Dark for every shot, and one in light,** as TisVlay's are: dark Breeze with its default accent, and one page again in light to show the window follows the desktop.
-- **At the size the window opens at,** at a scale of one.
+- **At the size the window opens at.** First at a scale of one; after the spike, at a scale of two: 1440 by 960, as TisVlay's are. A pad's name cut short at that size is what a user first sees.
 - **The made-up state as proposed:** a DualSense and an Xbox pad connected, an 8BitDo remembered, `couch` running and `desk` stopped.
 - **The README takes TisVlay's stanzas,** as a step of this plan (see The README below), with what is worth keeping of 0.4.0's README harvested into it and into the guide.
 - **Background goes to the FAQ:** who CtrlAssist is for, why not pass one controller around, why it was made, and the links to the consoles' own features. The README's opening keeps one sentence naming them.
 - **The modes' emojis and examples** from 0.4.0 go into the guide's Profiles page, rewritten for what each mode does now; the README names the modes in one feature bullet.
 - **A diagram of the parts, in mermaid,** in the README and so in the guide's introduction: mdbook-mermaid joins the dev shell, the docs job and Read the Docs.
+- **The capture tool is a second binary of the window's crate,** behind a feature that turns the software renderer on, so it reaches the window's icon loader and the shipped window is built without it. It sets the color scheme through Slint's internals, at the workspace's exact pin, and the window gains nothing for the tool's sake.
 - **No cookbook yet.** 0.4.0's recipes haven't been tried on the rewrite, a virtual pad as another setup's input least of all; filed as `docs/ideas/cookbook.md`, for after this plan.
 - **The FAQ's first questions** are of three kinds. Games, Steam and Proton: does the game need to support it, does it work with Steam Input and Proton, why does my game see two controllers. Controllers and latency: which controllers work, does it add latency, do the gyro and the touchpad carry over. Setup and safety: does it need root, where are my profiles kept, can two people each have a virtual controller. Nothing on coming from 0.4.0. Before them, the background above.
 
@@ -128,7 +129,7 @@ Everything from the banner to the end of Architecture is inside `<!-- ANCHOR: ov
 
 ## Screenshots
 
-**The tool.** A binary, `ctrlassist-screenshots`, in a crate of its own beside `ctrlassist-docgen` or as a second binary of it; step 2 decides which by what it costs the docs job to build. It links the window's library, builds an `AppWindow` on a platform of its own with Slint's software renderer, fills it as the window's tests fill theirs, and for each shot sets the page and the selection, renders to a buffer and writes a PNG. `just docs-screenshots` runs it and writes `docs/screenshots/`.
+**The tool.** A binary, `ctrlassist-screenshots`, of the window's crate, built only with its `screenshots` feature. It builds an `AppWindow` on a platform of its own with Slint's software renderer, fills it as the window's tests fill theirs, and for each shot sets the page and the selection, renders to a buffer and writes a PNG. `just docs-screenshots` runs it and writes `docs/screenshots/`.
 
 **Made-up state.** One set, in the tool, shared by every shot so the screenshots agree with each other: a DualSense and an Xbox pad connected, one more remembered, a `couch` profile running in priority with the DualSense hidden, a `desk` profile stopped, a virtual pad, every part of About at one release. No real serial, address or user name appears; the addresses are the tests' own.
 
@@ -146,11 +147,7 @@ Everything from the banner to the end of Architecture is inside `<!-- ANCHOR: ov
 | `couch_mode.png` | The window in its ten-foot layout |
 | `system_tray_menu.png`, `system_tray_hover.png` | The tray, last, by whatever means step 8 finds |
 
-**What isn't known yet,** and step 2 finds out before anything is built on it:
-
-- Whether the software renderer draws the window closely enough to the one on screen: its text, the icon theme's glyphs, shadows and rounded corners.
-- Which fonts and icon theme it finds in the dev shell, and so whether a screenshot made on another machine matches. They need not match byte for byte; they must not look like another application.
-- Whether the software renderer can be a feature only this tool turns on, so the shipped window is built as it is today.
+**What wasn't known** when this was first written is answered by the spike below: the software renderer draws the window as it is on screen, with the machine's fonts and icons, as a feature only the tool turns on.
 
 **Not a gate.** Pixels differ with the fonts installed, so nothing in CI compares or regenerates them. `just docs-links` already fails on a page that links a screenshot that isn't there.
 
@@ -177,14 +174,14 @@ Everything from the banner to the end of Architecture is inside `<!-- ANCHOR: ov
 - **At the size the window opens at, 720 by 480, a pad's name is cut short** in the list and the header, as it is on screen at that size.
 - **Fonts and icons are the machine's.** The captures used what the dev shell and the desktop gave: they are not the same bytes on another machine, as the plan expected.
 
-**So.** The capture tool is built as planned, at step 2. Left for the maintainer: the density and the size, since the answer "at a scale of one" was given before a capture at two could be seen beside it.
+**So.** The capture tool is built as planned, at step 2. The maintainer, having seen the three, chose a scale of two at the size the window opens at; the scheme through Slint's internals; and the tool as a second binary of the window's crate.
 
 ## Steps
 
 Each is one commit or a few, with `prek run -a --skip build --skip clippy --skip doc --skip test` and `just docs-links` before it, and the whole gates where Rust changes.
 
 1. **The reasons.** `docs/book/README.md` gains "Who the guide is for and why it is shaped this way" from the section above, loses "It isn't published anywhere yet", and gains the terminal-aside rule and, once step 2 has settled them, the screenshot rules. The same section goes into TisVlay's `docs/book/README.md` on `chore/from-ctrlassist`.
-2. **The capture tool, one shot.** The binary, the made-up state and `pads_pane.png` alone. **Stop:** the maintainer looks at it beside the real window and says whether the software renderer will do. If it won't, the fallback is the real window under a headless compositor, and this plan is revised before going on.
+2. **The capture tool, one shot.** The binary, the made-up state and `pads_pane.png` alone, and `spikes/screenshots` deleted. **Stop:** the maintainer looks at it beside the real window.
 3. **The rest of the window's shots,** `just docs-screenshots`, the links under `docs/book/src/docs/`, and a line in `docs/build.md` and `docs/testing.md`.
 4. **The new contents, without new prose.** `SUMMARY.md` in the order above; Command Line moves; `guide/tray.md` becomes `guide/gui-tray.md`; Profiles' file half moves to `guide/configuration.md`; every link and anchor re-pointed. The book reads as before, in a new order.
 5. **GUI & Tray, and Quick Start from the window.** The window's pages by their labels, with their screenshots; couch mode and navigating by keys and gamepad, from `docs/gui/`; the tray after. Quick Start leads with the window.
@@ -197,8 +194,7 @@ Each is one commit or a few, with `prek run -a --skip build --skip clippy --skip
 
 For the maintainer:
 
-1. **Density and size,** now that both can be seen: a scale of one (720 by 480) or of two (1440 by 960, as TisVlay's are), and whether the window should be captured larger than it opens, so a pad's name isn't cut short.
-2. **The capture tool for TisVlay** (after step 3). It would replace fourteen screenshots taken by hand there. Carried back as an idea, or as code?
+1. **The capture tool for TisVlay** (after step 3). It would replace fourteen screenshots taken by hand there. Carried back as an idea, or as code?
 
 ## Deviations
 
