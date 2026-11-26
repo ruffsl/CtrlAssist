@@ -891,55 +891,64 @@ fn a_paddle_held_by_the_assist_hands_the_motion_over() {
     assert!(pitch(&report) > 0, "the primary's again: {report:?}");
 }
 
-/// The settings frame that sets lizard mode off and asks for the motion
-/// sensors' raw readings, as SDL sends it.
-fn lizard_off() -> Received {
-    let mut frame = vec![0x01, 0x87, 0x06, 0x09, 0x00, 0x00, 0x30, 0x18, 0x00];
-    frame.resize(64, 0);
-    Received::SetFeature(frame)
+/// What a pad is asked as its raw node is taken, as the kernel's driver
+/// asks it: its mappings cleared, then lizard mode and the pad's watchdog
+/// off, with the motion sensors' raw readings asked for.
+fn taken_over() -> [Received; 2] {
+    let frame = |head: &[u8]| {
+        let mut frame = head.to_vec();
+        frame.resize(64, 0);
+        Received::SetFeature(frame)
+    };
+    [
+        frame(&[0x01, 0x81]),
+        frame(&[
+            0x01, 0x87, 0x09, 0x09, 0x00, 0x00, 0x47, 0x00, 0x00, 0x30, 0x18, 0x00,
+        ]),
+    ]
 }
 
-/// How many of `received` set lizard mode off.
-fn lizard_offs(received: &[Received]) -> usize {
-    let wanted = lizard_off();
-    received
-        .iter()
-        .filter(|received| **received == wanted)
-        .count()
-}
-
-/// Lizard mode is set off, with the motion sensors on, as the pad is
-/// given its raw node, with no setup reading it; and again once the pad's
-/// own interval of three seconds has passed, not in a burst before it.
-/// By the fake's own times, as its thread read each, which a busy test
-/// thread looking late moves neither of; the first read late only makes
-/// the two look closer, so the bound is well under three seconds. This
-/// waits for that interval.
+/// A pad is taken out of lizard mode as it is given its raw node, with no
+/// setup reading it, and asked once: by the time a level told after has
+/// reached it, it has had each request once and no settings besides.
 #[test]
-fn lizard_mode_is_set_off_at_once_and_again_after_the_pad_s_interval() {
-    const TEST: &str = "lizard_mode_is_set_off_at_once_and_again_after_the_pad_s_interval";
+fn lizard_mode_is_set_off_once_as_the_pad_is_taken() {
+    const TEST: &str = "lizard_mode_is_set_off_once_as_the_pad_is_taken";
     if !can_make_steam_pads(TEST) {
         return;
     }
     let fake = FakeSteamController::new().unwrap();
-    let Some(pad) = steam_pad(TEST, &fake) else {
+    let Some(mut pad) = steam_pad(TEST, &fake) else {
         return;
     };
+    let wanted = taken_over();
     assert!(
-        fake.wait_for(|received| lizard_offs(received) >= 2),
+        fake.wait_for(|received| wanted.iter().all(|wanted| received.contains(wanted))),
         "{:?}",
         fake.received()
     );
-    let wanted = lizard_off();
-    let at: Vec<Instant> = fake
-        .received_at()
+    let on = Level {
+        strong: 0x8000,
+        weak: 0,
+    };
+    pad.rumble(on).unwrap();
+    assert!(
+        fake.wait_for(|received| received.contains(&rumble(on))),
+        "{:?}",
+        fake.received()
+    );
+    let asked: Vec<Received> = fake
+        .received()
         .into_iter()
-        .filter(|(_, received)| *received == wanted)
-        .map(|(at, _)| at)
+        .filter(|received| {
+            // The kernel's driver asked the fake its serial and attributes
+            // and set lizard mode on as it bound it, before the pad was
+            // taken: those commands aside.
+            matches!(received, Received::SetFeature(report)
+                if matches!(report.get(1), Some(0x81 | 0x87)))
+        })
         .collect();
-    assert_eq!(at.len(), 2, "no burst: {at:?}");
-    let between = at[1] - at[0];
-    assert!(between >= Duration::from_secs(2), "again after {between:?}");
+    assert_eq!(asked, wanted, "each once, in order");
     drop(pad);
 }
 

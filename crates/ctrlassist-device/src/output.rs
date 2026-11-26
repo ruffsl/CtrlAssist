@@ -21,10 +21,10 @@
 //!
 //! A Steam Controller's writer also writes when nothing has changed, as
 //! the pad's protocol asks: lizard mode off, with its motion sensors on,
-//! as it starts and every [`steam::LIZARD_MODE_AGAIN`] after, and its
-//! rumble again every [`steam::RUMBLE_AGAIN`] while it is not at rest.
-//! It sleeps until the next of those is due, or something changes; the
-//! input thread knows nothing of them.
+//! once as it starts ([`steam::take_over`]), and its rumble again every
+//! [`steam::RUMBLE_AGAIN`] while it is not at rest. It sleeps until the
+//! rumble is next due, or something changes; the input thread knows
+//! nothing of either.
 
 use std::fs::File;
 use std::io::{self, Write};
@@ -386,30 +386,32 @@ impl SteamOut for File {
 /// A Steam Controller's raw node: the pad is sent its rumble level as
 /// output report `0x80`, and nothing a game sets beyond rumble.
 ///
-/// The pad's protocol asks two things of whoever holds the node, at
-/// intervals that are the pad's own and not CtrlAssist's (see
-/// `steam.rs`): its rumble again every [`steam::RUMBLE_AGAIN`] while it
-/// isn't at rest, since the pad stops by itself shortly after the last;
-/// and lizard mode off every [`steam::LIZARD_MODE_AGAIN`], since its own
-/// watchdog puts it back, the motion sensors asked for each time as SDL
-/// asks for them, since Steam turns them off when it has no use for them.
-/// The first is written as the writer starts. Each is counted from when
-/// the last write of its kind returned, so a pad slow or silent to them,
-/// whose request waits up to five seconds holding a lock every raw node
-/// on the machine needs, is asked again an interval later and never back
-/// to back. Nothing is written to put lizard mode back as the pad is let
-/// go: the raw node closed, as it is
-/// however the daemon ends, has the kernel's driver set the pad up as it
-/// was (`steam_work_connect_cb`, `hid-steam.c:1460-1484`), and the pad's
-/// own watchdog puts lizard mode back besides once nothing keeps it off.
+/// The pad's protocol asks two things of whoever holds the node (see
+/// `steam.rs`). Its rumble again every [`steam::RUMBLE_AGAIN`] while it
+/// isn't at rest, since the pad stops by itself shortly after the last:
+/// an interval that is the pad's own and not CtrlAssist's, counted from
+/// when the last rumble report returned. And lizard mode off, which is
+/// asked once, as the writer starts, the kernel's way
+/// ([`steam::take_over`]): the pad's keys and pointer cleared, lizard
+/// mode and the pad's watchdog off, and its motion sensors on. With the
+/// watchdog off there is nothing to say again, so no interval is kept
+/// for it, and the requests, each of which waits on the pad holding a
+/// lock every raw node on the machine needs (`minors_rwsem`, taken
+/// across `hidraw_ioctl`), are made as the pad is taken and not while it
+/// is played.
 ///
-/// The pad's mappings of its buttons to keys and its pointer are not
-/// cleared first, as the kernel's driver clears them as it turns lizard
-/// mode off (`clear_digital_mappings`): lizard mode is kept off SDL's
-/// way, its watchdog left on so that a daemon that hangs leaves the pad
-/// to type and point again, and SDL's driver, written for this pad,
-/// sends lizard mode off alone. Whether the pad types or points with
-/// lizard mode off and its mappings kept only a real pad can show.
+/// A request the pad refuses is not tried again by a clock. The kernel's
+/// driver tries a feature report again on `EPIPE`, up to 50 times 20 ms
+/// apart, because "the wireless controller fails with EPIPE"
+/// (`steam_send_report_id`, `hid-steam.c:549-562`); here the requests
+/// are made again, from the first, with the next level the pad is sent.
+/// Whether a pad behind a Puck or over Bluetooth refuses so only a real
+/// one can show.
+///
+/// Nothing is written to put lizard mode back as the pad is let go: the
+/// raw node closed, as it is however the daemon ends, has the kernel's
+/// driver set the pad up as it was, its watchdog with it
+/// (`steam_work_connect_cb`, `hid-steam.c:1460-1484`).
 ///
 /// Rumble is the plain level every pad is sent. The pad's richer haptics
 /// (a pulse on either trackpad, output report `0x81`, and the reports
@@ -423,11 +425,22 @@ struct SteamNode<O> {
     level: Level,
     /// When the rumble is due again: none while the motors are at rest.
     rumble_due: Option<Instant>,
-    /// When lizard mode off is due again.
-    lizard_due: Option<Instant>,
+    /// Whether the pad has been taken out of lizard mode.
+    taken: Taken,
     /// Whether the node has said the pad has gone (`ENODEV`): nothing
     /// written there will reach it again, so nothing is due.
     gone: bool,
+}
+
+/// How far a Steam Controller's node is with [`steam::take_over`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Taken {
+    /// Due, as the writer starts.
+    Due(Instant),
+    /// Asked and refused: asked again with the next level the pad is sent.
+    Refused,
+    /// Asked, and the pad took it.
+    Done,
 }
 
 impl<O: SteamOut> SteamNode<O> {
@@ -438,7 +451,7 @@ impl<O: SteamOut> SteamNode<O> {
             out,
             level: Level::default(),
             rumble_due: None,
-            lizard_due: Some(now),
+            taken: Taken::Due(now),
             gone: false,
         }
     }
@@ -452,11 +465,29 @@ impl<O: SteamOut> SteamNode<O> {
         }
     }
 
+    /// Takes the pad out of lizard mode: each request of
+    /// [`steam::take_over`] in turn, stopping at one the pad refuses.
+    fn take_over(&mut self) {
+        self.taken = Taken::Done;
+        for request in steam::take_over() {
+            let result = self.out.feature(&request);
+            self.heard(&result);
+            if result.is_err() {
+                self.taken = Taken::Refused;
+                return;
+            }
+        }
+    }
+
     /// Sends the motors `level` at `now`, if it isn't what they were last
-    /// sent.
+    /// sent. A pad that refused to be taken out of lizard mode is asked
+    /// again first.
     fn rumble_at(&mut self, level: Level, now: Instant) -> io::Result<()> {
         if level == self.level {
             return Ok(());
+        }
+        if self.taken == Taken::Refused && !self.gone {
+            self.take_over();
         }
         self.level = level;
         self.write_rumble(now)
@@ -468,7 +499,8 @@ impl<O: SteamOut> SteamNode<O> {
     fn write_rumble(&mut self, now: Instant) -> io::Result<()> {
         let result = self.out.output(&steam::rumble(self.level));
         self.heard(&result);
-        // From when the write returned, as lizard mode's (`keep_up`).
+        // From when the write returned, so that one the pad was slow to
+        // take is followed by a whole interval and not by another at once.
         let ended = self.out.ended().max(now);
         self.rumble_due = (self.level != Level::default())
             .then(|| ended.checked_add(steam::RUMBLE_AGAIN))
@@ -486,36 +518,16 @@ impl<O: SteamOut> Target for SteamNode<O> {
         if self.gone {
             return None;
         }
-        match (self.rumble_due, self.lizard_due) {
-            (Some(rumble), Some(lizard)) => Some(rumble.min(lizard)),
-            (rumble, lizard) => rumble.or(lizard),
+        match (self.rumble_due, self.taken) {
+            (Some(rumble), Taken::Due(taking)) => Some(rumble.min(taking)),
+            (None, Taken::Due(taking)) => Some(taking),
+            (rumble, Taken::Refused | Taken::Done) => rumble,
         }
     }
 
     fn keep_up(&mut self, now: Instant) {
-        if self.lizard_due.is_some_and(|due| due <= now) {
-            // One try, as SDL makes it, and the next an interval later. The
-            // kernel's driver tries a feature report again on `EPIPE`, up to
-            // 50 times 20 ms apart, because "the wireless controller fails
-            // with EPIPE" (`steam_send_report_id`, `hid-steam.c:549-562`):
-            // whether a pad behind a Puck or over Bluetooth needs that, so
-            // that lizard mode isn't left on for an interval, only a real
-            // one can show.
-            let result = self.out.feature(&steam::lizard_mode_off_motion_on());
-            self.heard(&result);
-            // From when the request returned, not from when it was due or
-            // made: one that waited on the pad, up to the five seconds a
-            // slow or silent pad is given, is followed by a whole interval
-            // and never by another at once. While it waits it holds the
-            // lock of every raw node on the machine for reading
-            // (`minors_rwsem`, taken across `hidraw_ioctl`), which every
-            // raw node's opening, closing, coming and going waits for:
-            // back to back, such requests would hold it nearly always.
-            self.lizard_due = self
-                .out
-                .ended()
-                .max(now)
-                .checked_add(steam::LIZARD_MODE_AGAIN);
+        if matches!(self.taken, Taken::Due(due) if due <= now) {
+            self.take_over();
         }
         if self.rumble_due.is_some_and(|due| due <= now) {
             let _ = self.write_rumble(now);
@@ -645,7 +657,7 @@ impl Output {
     }
 
     /// Takes a Steam Controller's raw node. Its writer sets lizard mode
-    /// off as it starts, and keeps it off.
+    /// off as it starts.
     pub(crate) fn steam(raw: OwnedFd) -> io::Result<Self> {
         let target = SteamNode::new(File::from(raw), Instant::now());
         let (output, _) = Self::start(target, To::Steam, "pad-output")?;
@@ -1611,31 +1623,35 @@ mod tests {
         (recorder, steam, refuse, ended)
     }
 
-    fn lizard_off() -> Steam {
-        Steam::Feature(steam::lizard_mode_off_motion_on().to_vec())
+    /// What the pad is asked as it is taken, in order.
+    fn taken_over() -> [Steam; 2] {
+        steam::take_over().map(|request| Steam::Feature(request.to_vec()))
+    }
+
+    /// The next two things written.
+    fn next_two(written: &mpsc::Receiver<Steam>) -> [Steam; 2] {
+        [written.try_recv().unwrap(), written.try_recv().unwrap()]
     }
 
     fn rumbled(level: Level) -> Steam {
         Steam::Output(steam::rumble(level).to_vec())
     }
 
-    /// By the pad's own clock, as the writer's is read: lizard mode off at
-    /// once and every interval of the pad's after, from when it was last
-    /// written; a level written as it changes and again every interval of
-    /// its own while it isn't at rest; at rest, written once and nothing
-    /// due but lizard mode.
+    /// By the pad's own clock, as the writer's is read: lizard mode off
+    /// once, at once, and never again; a level written as it changes and
+    /// again every interval of its own while it isn't at rest; at rest,
+    /// written once and nothing due at all.
     #[test]
-    fn a_steam_controller_s_node_is_kept_out_of_lizard_mode_and_its_rumble_going() {
+    fn a_steam_controller_s_node_is_taken_out_of_lizard_mode_once_and_its_rumble_kept_going() {
         let (recorder, written, _) = steam_recorder();
         let start = Instant::now();
         let at = |ms: u64| start + std::time::Duration::from_millis(ms);
         let mut node = SteamNode::new(recorder, start);
         assert_eq!(node.due(), Some(start), "lizard mode off at once");
         node.keep_up(start);
-        assert_eq!(written.try_recv().unwrap(), lizard_off());
-        assert_eq!(node.due(), Some(at(3000)));
-        // Nothing due is nothing written.
-        node.keep_up(at(2999));
+        assert_eq!(next_two(&written), taken_over());
+        assert_eq!(node.due(), None, "and nothing after");
+        node.keep_up(at(60_000));
         assert!(written.try_recv().is_err());
 
         let on = level(0x8000, 0x4000);
@@ -1652,29 +1668,45 @@ mod tests {
         node.rumble_at(other, at(1050)).unwrap();
         assert_eq!(written.try_recv().unwrap(), rumbled(other));
         assert_eq!(node.due(), Some(at(1090)));
-        // At rest: once, and only lizard mode is due.
+        // At rest: once, and nothing is due.
         node.rumble_at(Level::default(), at(1060)).unwrap();
         assert_eq!(written.try_recv().unwrap(), rumbled(Level::default()));
-        assert_eq!(node.due(), Some(at(3000)));
-        node.keep_up(at(2000));
+        assert_eq!(node.due(), None);
+        node.keep_up(at(60_000));
         assert!(written.try_recv().is_err());
-
-        // Both due at once: lizard mode first, then the rumble. A write
-        // made late is followed by a whole interval.
-        node.rumble_at(on, at(2990)).unwrap();
-        assert_eq!(written.try_recv().unwrap(), rumbled(on));
-        node.keep_up(at(3100));
-        assert_eq!(written.try_recv().unwrap(), lizard_off());
-        assert_eq!(written.try_recv().unwrap(), rumbled(on));
-        assert_eq!(node.due(), Some(at(3140)));
-        node.rumble_at(Level::default(), at(3110)).unwrap();
-        assert_eq!(written.try_recv().unwrap(), rumbled(Level::default()));
-        assert_eq!(node.due(), Some(at(6100)));
 
         // Let go, the motors are stopped, whatever they were at.
         node.rest();
         assert_eq!(written.try_recv().unwrap(), rumbled(Level::default()));
         assert!(written.try_recv().is_err());
+    }
+
+    /// A pad that refuses to be taken out of lizard mode is asked no more
+    /// by any clock: it is asked again, from the first request, with the
+    /// next level it is sent, and once it takes them never again.
+    #[test]
+    fn a_steam_controller_that_refuses_is_asked_again_with_its_next_level() {
+        let (recorder, written, refuse) = steam_recorder();
+        let start = Instant::now();
+        let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+        let mut node = SteamNode::new(recorder, start);
+        refuse.store(rustix::io::Errno::PIPE.raw_os_error(), Ordering::SeqCst);
+        node.keep_up(start);
+        let [first, _] = taken_over();
+        assert_eq!(written.try_recv().unwrap(), first, "the first, refused");
+        assert!(written.try_recv().is_err(), "and not the second after it");
+        assert_eq!(node.due(), None, "no clock asks again");
+        node.keep_up(at(60_000));
+        assert!(written.try_recv().is_err());
+
+        refuse.store(0, Ordering::SeqCst);
+        let on = level(0x8000, 0);
+        node.rumble_at(on, at(60_010)).unwrap();
+        assert_eq!(next_two(&written), taken_over());
+        assert_eq!(written.try_recv().unwrap(), rumbled(on));
+        node.rumble_at(Level::default(), at(60_020)).unwrap();
+        assert_eq!(written.try_recv().unwrap(), rumbled(Level::default()));
+        assert!(written.try_recv().is_err(), "taken, it is asked no more");
     }
 
     /// A write refused for a moment is tried again when next due; a pad
@@ -1685,9 +1717,9 @@ mod tests {
         let start = Instant::now();
         let at = |ms: u64| start + std::time::Duration::from_millis(ms);
         let mut node = SteamNode::new(recorder, start);
-        refuse.store(rustix::io::Errno::TIMEDOUT.raw_os_error(), Ordering::SeqCst);
         node.keep_up(start);
-        assert_eq!(written.try_recv().unwrap(), lizard_off());
+        assert_eq!(next_two(&written), taken_over());
+        refuse.store(rustix::io::Errno::TIMEDOUT.raw_os_error(), Ordering::SeqCst);
         let on = level(0x8000, 0);
         let refused = node.rumble_at(on, at(10)).unwrap_err();
         assert_eq!(
@@ -1707,8 +1739,8 @@ mod tests {
 
     /// The writer itself: lizard mode off as it starts, with nothing told;
     /// a level, and the same level again, unbidden, while it runs; once at
-    /// rest, nothing until lizard mode is next due; the motors stopped as
-    /// it is let go; and nothing a game sets beyond rumble.
+    /// rest, nothing more; the motors stopped as it is let go; and nothing
+    /// a game sets beyond rumble.
     #[test]
     fn a_steam_controller_s_writer_writes_what_its_protocol_asks_unbidden() {
         let (recorder, written, _) = steam_recorder();
@@ -1716,7 +1748,10 @@ mod tests {
         let (mut output, writer) = Output::start(target, To::Steam, "pad-output").unwrap();
         assert!(output.is_raw() && !output.takes_reports());
         assert_eq!(output.rested().writes(), Writes::Reports);
-        assert_eq!(written.recv().unwrap(), lizard_off());
+        assert_eq!(
+            [written.recv().unwrap(), written.recv().unwrap()],
+            taken_over()
+        );
 
         output.pass(&lights(0x11)).unwrap();
         let on = level(0x8000, 0x4000);
@@ -1733,8 +1768,8 @@ mod tests {
             stopped = written.recv().unwrap();
         }
         assert_eq!(stopped, rumbled(Level::default()));
-        // At rest, nothing is due for the next three seconds; a writer
-        // that went on rumbling would have by now.
+        // At rest, nothing is due; a writer that went on rumbling would
+        // have written by now.
         assert!(
             written
                 .recv_timeout(std::time::Duration::from_millis(200))
@@ -1809,80 +1844,21 @@ mod tests {
         writer.join().unwrap();
     }
 
-    /// By the pad's own clock: a request that waited on the pad longer
-    /// than the interval is followed by a whole interval from when it
-    /// returned, not by another at once; and so is a rumble report.
+    /// By the pad's own clock: a rumble report the pad was slow to take
+    /// is followed by a whole interval from when it returned, not by
+    /// another at once.
     #[test]
-    fn the_next_write_is_counted_from_when_the_last_returned() {
+    fn the_next_rumble_is_counted_from_when_the_last_returned() {
         let (recorder, written, _, ended) = clocked_recorder();
         let start = Instant::now();
         let at = |ms: u64| start + std::time::Duration::from_millis(ms);
         let mut node = SteamNode::new(recorder, start);
-        // Lizard mode off, made at the start, returns five seconds later.
-        *ended.lock().unwrap() = at(5000);
         node.keep_up(start);
-        assert_eq!(written.try_recv().unwrap(), lizard_off());
-        assert_eq!(node.due(), Some(at(8000)), "not at three seconds");
-        node.keep_up(at(5000));
-        assert!(written.try_recv().is_err(), "nothing at once");
+        assert_eq!(next_two(&written), taken_over());
         // A rumble report that takes 100 ms is due 40 ms after it returns.
         *ended.lock().unwrap() = at(5100);
         node.rumble_at(level(0x8000, 0), at(5000)).unwrap();
         assert_eq!(written.try_recv().unwrap(), rumbled(level(0x8000, 0)));
         assert_eq!(node.due(), Some(at(5140)));
-    }
-
-    /// Stands in for a Steam Controller's node whose feature requests
-    /// wait until the test lets each go, as a slow or silent pad's do,
-    /// and says when each was made.
-    struct Silent {
-        asked: mpsc::Sender<Instant>,
-        gate: mpsc::Receiver<()>,
-    }
-
-    impl SteamOut for Silent {
-        fn output(&mut self, _: &[u8]) -> io::Result<()> {
-            Ok(())
-        }
-
-        fn feature(&mut self, _: &[u8]) -> io::Result<()> {
-            self.asked.send(Instant::now()).unwrap();
-            self.gate.recv().unwrap();
-            Ok(())
-        }
-    }
-
-    /// The writer itself, against a pad that holds its lizard mode request
-    /// longer than the interval: the next request comes a whole interval
-    /// after that one returned, and not back to back with it. This holds
-    /// the first request for the interval and waits another.
-    #[test]
-    fn a_request_that_waits_longer_than_the_interval_is_not_followed_at_once() {
-        let (asked_by, asked) = mpsc::channel();
-        let (open, gate) = mpsc::channel();
-        let target = SteamNode::new(
-            Silent {
-                asked: asked_by,
-                gate,
-            },
-            Instant::now(),
-        );
-        let (output, writer) = Output::start(target, To::Steam, "pad-output").unwrap();
-        let first = asked.recv().unwrap();
-        // Held past the interval, as a pad given five seconds might hold it.
-        while first.elapsed() <= steam::LIZARD_MODE_AGAIN {
-            std::thread::sleep(steam::LIZARD_MODE_AGAIN.saturating_sub(first.elapsed()));
-        }
-        let returned = Instant::now();
-        open.send(()).unwrap();
-        let next = asked.recv().unwrap();
-        assert!(
-            next.duration_since(returned) >= steam::LIZARD_MODE_AGAIN,
-            "the next came {:?} after the last returned",
-            next.duration_since(returned)
-        );
-        drop(output);
-        open.send(()).unwrap();
-        writer.join().unwrap();
     }
 }

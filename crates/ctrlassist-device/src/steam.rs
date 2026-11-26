@@ -12,8 +12,8 @@
 //! holds that node open the kernel's driver removes the pad's gamepad and
 //! motion devices, whose readers get `ENODEV`, and sends the pad nothing
 //! itself (`steam_client_ll_open` and `steam_work_connect_cb`,
-//! `hid-steam.c:1460-1484, 1651-1660`): so whoever holds it keeps lizard
-//! mode off, by [`LIZARD_MODE_AGAIN`], and sends the rumble again, by
+//! `hid-steam.c:1460-1484, 1651-1660`): so whoever holds it turns lizard
+//! mode off, by [`take_over`], and sends the rumble again, by
 //! [`RUMBLE_AGAIN`]. The pad's writer does both (`output.rs`).
 //!
 //! What the pad state has no place for is not carried: a trackpad's
@@ -183,26 +183,6 @@ pub(crate) const FEATURE_SIZE: usize = 64;
 /// the pad's protocol, not a choice of CtrlAssist's. The kernel sends it
 /// every 50 ms instead (`HZ / 20`, `hid-steam.c:855-856`).
 pub(crate) const RUMBLE_AGAIN: Duration = Duration::from_millis(40);
-/// How often lizard mode is turned off again: the pad turns it back on
-/// by a watchdog of its own (SDL's comment at
-/// `SDL_hidapi_steam_triton.c:704`), and SDL turns it off every 3 s
-/// (`SDL_hidapi_steam_triton.c:502-505`), sending [`lizard_mode_off`] or
-/// [`lizard_mode_off_motion_on`]. This is the pad's protocol, not a
-/// choice of CtrlAssist's; how long the watchdog waits is published
-/// nowhere.
-///
-/// The kernel does otherwise: it turns the watchdog off as it turns
-/// lizard mode off, once, and sends nothing again
-/// (`steam_set_lizard_mode`, `hid-steam.c:894-900`). That is not done
-/// here, and no frame for it is offered: with the watchdog off, a daemon
-/// that hangs with the pad's raw node held would leave the pad out of
-/// lizard mode, neither typing nor pointing for the player, for as long
-/// as it hung. One that crashes doesn't: its raw node is closed, and the
-/// kernel's driver sets the pad up again itself (`steam_work_connect_cb`,
-/// `steam_register` and its `steam_set_lizard_mode`, `hid-steam.c:1406`).
-/// With the watchdog on, the pad falls back to lizard mode by itself once
-/// nothing sends this, the node held or not.
-pub(crate) const LIZARD_MODE_AGAIN: Duration = Duration::from_secs(3);
 
 /// The commands a feature report carries, by their first byte
 /// (`hid-steam.c:91-144`; `controller_constants.h`).
@@ -213,10 +193,14 @@ const LOAD_DEFAULT_SETTINGS: u8 = 0x8e;
 
 /// The settings this file writes, by number: the kernel's and SDL's
 /// enums agree, each counting from 0 (`hid-steam.c:147-247`, these at
-/// 158 and 205; `controller_constants.h`). The watchdog's, 71, is left
-/// out on purpose: see [`LIZARD_MODE_AGAIN`].
+/// 158, 205 and 234; `controller_constants.h`).
 const SETTING_LIZARD_MODE: u8 = 9;
 const SETTING_IMU_MODE: u8 = 48;
+/// The pad's watchdog: on, the pad puts lizard mode back by itself a
+/// while after it was last turned off, for a Steam that has gone. How
+/// long it waits is published nowhere.
+const SETTING_STEAM_WATCHDOG_ENABLE: u8 = 71;
+const WATCHDOG_OFF: u16 = 0;
 /// Lizard mode off (`steam_set_lizard_mode`, `hid-steam.c:897`;
 /// `LIZARD_MODE_OFF`).
 const LIZARD_MODE_OFF: u16 = 0;
@@ -1174,13 +1158,6 @@ pub(crate) fn rumble(level: Level) -> [u8; RUMBLE_SIZE] {
 /// its number, the command, and nothing after, as the kernel sends one
 /// (`steam_send_report_byte`, `hid-steam.c:588-591`, through
 /// `steam_send_report_id`, 517-571, whose buffer `hid_alloc_report_buf` zeroes).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "built for the kernel's commands below, which this sends none of"
-    )
-)]
 fn command(id: u8) -> [u8; FEATURE_SIZE] {
     let mut frame = [0; FEATURE_SIZE];
     if let Some(head) = frame.first_chunk_mut::<2>() {
@@ -1213,29 +1190,53 @@ fn settings<const N: usize>(writes: [(u8, u16); N]) -> [u8; FEATURE_SIZE] {
     frame
 }
 
-/// Lizard mode off, as SDL keeps it off every [`LIZARD_MODE_AGAIN`] while
-/// it doesn't want the motion sensors (`MaintainTritonState`,
-/// `SDL_hidapi_steam_triton.c:130-155`).
+/// Lizard mode off alone, as SDL sends it every three seconds while it
+/// doesn't want the motion sensors (`MaintainTritonState`,
+/// `SDL_hidapi_steam_triton.c:130-155`, called at 502-505). SDL leaves
+/// the pad's watchdog on and so must say it again; this is not sent.
 #[cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the pad is always asked for its motion too, by `lizard_mode_off_motion_on`"
+        reason = "not sent: the pad is taken over the kernel's way, by `take_over`"
     )
 )]
 pub(crate) fn lizard_mode_off() -> [u8; FEATURE_SIZE] {
     settings([(SETTING_LIZARD_MODE, LIZARD_MODE_OFF)])
 }
 
-/// Lizard mode off and the motion sensors on, in one write, as SDL keeps
-/// them every [`LIZARD_MODE_AGAIN`] while it wants the sensors
-/// (`MaintainTritonState`, `SDL_hidapi_steam_triton.c:143-147`): Steam
-/// turns the sensors off when it has no use for them.
-pub(crate) fn lizard_mode_off_motion_on() -> [u8; FEATURE_SIZE] {
-    settings([
-        (SETTING_LIZARD_MODE, LIZARD_MODE_OFF),
-        (SETTING_IMU_MODE, IMU_MODE_RAW),
-    ])
+/// What a pad is sent, once, as its raw node is taken: its own keys and
+/// pointer cleared, then lizard mode off with the pad's watchdog off, as
+/// the kernel's driver sends them (`steam_set_lizard_mode`,
+/// `hid-steam.c:891-900`), and in the same settings write the motion
+/// sensors asked for their raw readings, as the driver asks when its
+/// motion device is opened (`steam_sensor_open`, `hid-steam.c:948-960`).
+///
+/// With the watchdog off the pad stays so until it is told otherwise, and
+/// nothing is sent again: there is no interval to keep. SDL does
+/// otherwise, leaving the watchdog on and sending lizard mode off every
+/// three seconds (`SDL_hidapi_steam_triton.c:502-505`); each such request
+/// waits on the pad holding a lock every raw node on the machine needs,
+/// which one request as the pad is taken does once and a repeated one
+/// would for as long as a pad were slow or silent. What the watchdog
+/// would have mended needs no mending here: a daemon that crashes or
+/// lets the pad go closes the raw node, and the kernel's driver then
+/// sets the pad up again itself, lizard mode and its settings' defaults
+/// with it (`steam_work_connect_cb`, `steam_register` and its
+/// `steam_set_lizard_mode`, `hid-steam.c:1406`); one that hangs holds
+/// the pad grabbed or hidden, so its keys and pointer would reach
+/// nothing anyway. What isn't mended is another program's write to the
+/// same pad: Steam turns the motion sensors off when it has no use for
+/// them, and they stay off until the pad is taken again.
+pub(crate) fn take_over() -> [[u8; FEATURE_SIZE]; 2] {
+    [
+        command(CLEAR_DIGITAL_MAPPINGS),
+        settings([
+            (SETTING_LIZARD_MODE, LIZARD_MODE_OFF),
+            (SETTING_STEAM_WATCHDOG_ENABLE, WATCHDOG_OFF),
+            (SETTING_IMU_MODE, IMU_MODE_RAW),
+        ]),
+    ]
 }
 
 /// The motion sensors on, sending their raw readings, or off, as the
@@ -1246,7 +1247,7 @@ pub(crate) fn lizard_mode_off_motion_on() -> [u8; FEATURE_SIZE] {
     not(test),
     expect(
         dead_code,
-        reason = "the motion sensors are asked for with lizard mode off, and never turned off"
+        reason = "the motion sensors are asked for as the pad is taken, and never turned off"
     )
 )]
 pub(crate) fn motion_sensors(on: bool) -> [u8; FEATURE_SIZE] {
@@ -1254,23 +1255,6 @@ pub(crate) fn motion_sensors(on: bool) -> [u8; FEATURE_SIZE] {
         SETTING_IMU_MODE,
         if on { IMU_MODE_RAW } else { IMU_MODE_OFF },
     )])
-}
-
-/// The pad's own keys and pointer turned off: the kernel sends it before
-/// it writes lizard mode off (`ID_CLEAR_DIGITAL_MAPPINGS`,
-/// `steam_set_lizard_mode`, `hid-steam.c:891-892`), and SDL never sends
-/// it, relying on lizard mode off alone. It isn't sent: lizard mode is
-/// kept off SDL's way (`output.rs`'s `SteamNode`). What it adds over
-/// lizard mode off only a real pad can show.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "not sent: lizard mode is kept off SDL's way, which doesn't send it"
-    )
-)]
-pub(crate) fn clear_digital_mappings() -> [u8; FEATURE_SIZE] {
-    command(CLEAR_DIGITAL_MAPPINGS)
 }
 
 /// Lizard mode back on, as the kernel puts it back: the pad's keys and
@@ -1764,14 +1748,22 @@ mod tests {
 
     #[test]
     fn the_settings_frames_are_what_sdl_and_the_kernel_send() {
-        // SDL's `MaintainTritonState`, without the sensors and with.
+        // SDL's `MaintainTritonState`, without the sensors.
         assert_eq!(
             lizard_mode_off(),
             frame(&[0x01, 0x87, 0x03, 0x09, 0x00, 0x00])
         );
+        // The kernel's `steam_set_lizard_mode(steam, false)`: the
+        // mappings cleared, then lizard mode and the watchdog off, here
+        // with its `steam_sensor_open` in the same write.
         assert_eq!(
-            lizard_mode_off_motion_on(),
-            frame(&[0x01, 0x87, 0x06, 0x09, 0x00, 0x00, 0x30, 0x18, 0x00])
+            take_over(),
+            [
+                frame(&[0x01, 0x81]),
+                frame(&[
+                    0x01, 0x87, 0x09, 0x09, 0x00, 0x00, 0x47, 0x00, 0x00, 0x30, 0x18, 0x00
+                ]),
+            ]
         );
         // The kernel's `steam_sensor_open` and `steam_sensor_close`, and
         // SDL's `HIDAPI_DriverSteamTriton_SetSensorsEnabled`.
@@ -1783,10 +1775,7 @@ mod tests {
             motion_sensors(false),
             frame(&[0x01, 0x87, 0x03, 0x30, 0x00, 0x00])
         );
-        // What the kernel's `steam_set_lizard_mode(steam, false)` sends
-        // first: the mappings cleared.
-        assert_eq!(clear_digital_mappings(), frame(&[0x01, 0x81]));
-        // And `steam_set_lizard_mode(steam, true)`.
+        // The kernel's `steam_set_lizard_mode(steam, true)`.
         assert_eq!(
             lizard_mode_on(),
             [frame(&[0x01, 0x85]), frame(&[0x01, 0x8e])]
@@ -1823,7 +1812,6 @@ mod tests {
             [0x1302, 0x1303, 0x1304, 0x1305]
         );
         assert_eq!(RUMBLE_AGAIN, Duration::from_millis(40));
-        assert_eq!(LIZARD_MODE_AGAIN, Duration::from_secs(3));
     }
 
     /// The pad state after `raw`, sent as `id`, taken by a reading that

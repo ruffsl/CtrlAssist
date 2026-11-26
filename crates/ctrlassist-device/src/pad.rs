@@ -519,8 +519,7 @@ impl Pad {
     /// before now are read away here, and again as the input thread first
     /// listens to it, so that none from before the setup runs is played.
     /// Its thread sets lizard mode off, with the motion sensors
-    /// on, as it starts and again as the pad's protocol asks, and sends
-    /// its rumble again while it runs; dropping the pad has it stop the
+    /// on, once as it starts, and sends its rumble again while it runs; dropping the pad has it stop the
     /// motors, and the raw node closed then gives the pad back to its
     /// driver, which puts it back in lizard mode. It is sent nothing of
     /// what [`pass`](Self::pass) is given: a virtual DualSense's lights

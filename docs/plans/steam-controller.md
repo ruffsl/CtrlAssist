@@ -3,8 +3,8 @@
 ## State
 
 - **Status:** drafted with the maintainer on 2026-11-25, who then stepped away for the night with the coordinator left to build through the stops. The research is in, and the design it left to decide is under For review. Building.
-- **Next action:** the maintainer's reading of For review, 1 to 12. Steps 1 to 6, 8 and 10 are done: the controller behind each identity is tested, the window, the tray and the guide say what is true of it, and what only hardware can settle is filed as concerns, each with its check. Left: step 7 (the Puck and Bluetooth beyond what works already, and a controller Steam holds, now [an idea](../ideas/steam-controller-held-by-steam.md)) and step 9 (the identity, [an idea](../ideas/virtual-steam-controller.md)), the first resting on guesses without hardware, the second on a decision that is theirs; and the plan's retirement, once the maintainer has read it.
-- **Branch:** `feat/steam-controller`, from `docs/user-guide` at `383c798`, so the new user guide is there for the agents to read. Nothing is pushed until the maintainer has looked. When the guide's pull request (#63) has merged, this branch's own goes to `main`.
+- **Next action:** the hiding service taking a Steam Controller, then the identity, both the coordinator's alone, as the maintainer chose on 2026-11-26 after reading For review ([Decided on review](#decided-on-review)). Steps 1 to 6, 8 and 10 are done. Left besides: step 7 (the Puck and Bluetooth beyond what works already, and a controller Steam holds, now [an idea](../ideas/steam-controller-held-by-steam.md)), and, for the identity, the rules still under discussion there.
+- **Branch:** `feat/steam-controller`, from `docs/user-guide` at `383c798`, so the new user guide is there for the agents to read. Pushed on 2026-11-26 at the maintainer's word, with no pull request; later commits are pushed only when asked. When the guide's pull request (#63) has merged, this branch's own goes to `main`.
 
 ## Goal
 
@@ -234,7 +234,18 @@ After its review, mended the same day:
 
 Found that the earlier steps had wrong, and mended: the book's rumble above; the architecture's motion section saying only a hidden pad gives motion, and its control side saying `full` and `grab` take the pad alike when `full` also writes Steam's blacklist; the guide's Identity section saying the same of the touchpad and motion; the setup payload's `reason` documented as a failed setup's alone. Found and not mended: three of the SDK's tests with no Steam Controller in them each failed once under the whole suite's load and passed five times alone (`setups::another_pad_is_taken_as_the_setup_runs_and_the_one_given_up_is_shown_again`, which reads the setup's mirror straight after the update's answer; `setups::with_the_hiding_service_a_setup_s_pads_are_hidden_reopened_and_restored`; `setups::a_game_s_lights_reach_a_dualsense_behind_a_virtual_one`); and the guide's introduction gives "pad" as its word where the guide's rules say "controller".
 
+## Decided on review
+
+The maintainer's answers on 2026-11-26, to what For review had left open.
+
+- **Lizard mode is turned off the kernel's way** (For review 3): once as the pad is taken, with the pad's watchdog off, and nothing again. The three-second interval is gone; the 40 ms of the rumble stays, being the pad's own. Built.
+- **The hiding service may take a Steam Controller** (For review 4): an exception for this pad's products to the rule that refuses what could type or point. Its keyboard and pointer go with it while a profile runs. To build.
+- **The identity is to be built,** by the coordinator alone, after hiding.
+- **Under discussion for the identity,** proposed and not yet agreed: both trackpads owned as a touchpad is today and never blended; the stick and grip touches following whichever pad gives the motion, with a touch nameable as the Gyro button and not withheld from the game; haptics following the Rumble field, a field of their own left as an idea; Steam's settings writes answered by the stand-in and never passed to a real pad.
+
 ## Deviations
+
+- **Lizard mode off is asked once, not every three seconds** (2026-11-26, the maintainer's choice): For review 3 and 10 describe SDL's way, which was built first. A request the pad refuses is made again with the next level the pad is sent and not by a clock, which is the coordinator's choice and in [the concern](../concerns/steam-controller-lizard-mode.md).
 
 - **Two virtual machine checks failed on the merged branch, each from two steps meeting** (2026-11-26, found by the coordinator running them after the last merge, and mended): the `device` check still asserted that the seat user can't open the fake's raw node, which the rule the daemon's step packaged now gives them; and the `daemon` check expected a refusal to name the rule's file, where a later step had reworded the refusal for a person to read. Each agent had run the check on its own branch; none had run both on all of it. Both pass now, with every gate, on the merged branch.
 - **The steps were redrawn from the research** (2026-11-26): a spike of the kernel's driver first, the controller read from its raw report and not the driver's input devices, hiding left as it is, and the identity's own spike mostly answered by other projects. For review has each.

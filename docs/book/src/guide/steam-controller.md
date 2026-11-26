@@ -40,7 +40,7 @@ While Steam runs, it holds the controller's raw interface too, and that has thre
 
 - **Steam sees the real controller** beside the virtual one, as above, and a game played through Steam may take each press twice.
 - **CtrlAssist can't take the controller again** while Steam holds it: a controller plugged in while Steam runs isn't listed at all, and one a profile let go of, as the profile stopped or a managed one restarted, can't be taken again until Steam is closed.
-- **Steam writes its own settings to the controller** while both hold it. It turns the motion sensors off when it has no use for them, which CtrlAssist puts right only every few seconds, so the motion behind a virtual DualSense may drop out for a moment.
+- **Steam writes its own settings to the controller** while both hold it. It turns the motion sensors off when it has no use for them, and CtrlAssist asks for them only as a profile starts, so the motion behind a virtual DualSense may stop until the profile is started again.
 
 What you can do today is little: start the profile before Steam, or close Steam while you play a game started some other way. Whether CtrlAssist should hide this controller properly is an open question.
 
