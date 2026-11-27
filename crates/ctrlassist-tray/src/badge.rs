@@ -10,13 +10,16 @@
 //! Nothing is rendered here. Each theme file is read by usvg, which
 //! takes what a theme may ship (compressed files, colors said by a
 //! stylesheet, by `currentColor` or outright) and writes it back as
-//! plain shapes, the glyph in the state's color; what it wrote of the
-//! two is then joined as text, each under a group with its own scale.
+//! plain shapes, each with its color on it. The glyph's are then set to
+//! the state's, and what usvg wrote of the two is joined as text, each
+//! under a group with its own scale.
 
 use std::fmt::Write as _;
+use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 
 use ctrlassist_icons::Variant;
+use tracing::debug;
 
 use crate::menu::{self, Icon};
 
@@ -93,17 +96,12 @@ struct Drawing {
     side: f32,
 }
 
-/// Reads an icon file as a drawing, every shape of it restyled by
-/// `style` where there is one, and the ids in it starting `prefix`, so
+/// Reads an icon file as a drawing, the ids in it starting `prefix`, so
 /// that two drawings joined into one file don't share any. `None` for
 /// what usvg can't read, a bitmap among them, and for a drawing with
 /// nothing in it.
-fn drawing(file: &[u8], style: Option<String>, prefix: &str) -> Option<Drawing> {
-    let options = usvg::Options {
-        style_sheet: style,
-        ..usvg::Options::default()
-    };
-    let tree = usvg::Tree::from_data(file, &options).ok()?;
+fn drawing(file: &[u8], prefix: &str) -> Option<Drawing> {
+    let tree = usvg::Tree::from_data(file, &usvg::Options::default()).ok()?;
     let side = tree.size().width().max(tree.size().height());
     let written = tree.to_string(&usvg::WriteOptions {
         id_prefix: Some(prefix.to_string()),
@@ -119,32 +117,89 @@ fn drawing(file: &[u8], style: Option<String>, prefix: &str) -> Option<Drawing> 
     })
 }
 
+/// The value of attribute `name` in a tag usvg wrote, and where it is.
+fn value<'a>(tag: &'a str, name: &str) -> Option<(std::ops::Range<usize>, &'a str)> {
+    let opening = format!(" {name}=\"");
+    let start = tag.find(&opening)?.checked_add(opening.len())?;
+    let end = start.checked_add(tag.get(start..)?.find('"')?)?;
+    Some((start..end, tag.get(start..end)?))
+}
+
+/// A tag with every fill and stroke it has in `color`. What it leaves
+/// unfilled stays so: a theme's glyph may carry a box of no fill around
+/// it, which would come out a solid square. With `edge`, a shape that is
+/// filled and has no stroke gets one that wide, for the dark edge under
+/// a badge.
+fn recolored_tag(tag: &str, color: &str, edge: Option<f32>) -> String {
+    let mut tag = tag.to_string();
+    let filled = value(&tag, "fill").is_some_and(|(_, fill)| fill != "none");
+    if let (true, Some((place, _))) = (filled, value(&tag, "fill")) {
+        tag.replace_range(place, color);
+    }
+    match (value(&tag, "stroke"), edge) {
+        (Some((_, "none")), Some(width)) if filled => {
+            tag = tag.replacen(
+                " stroke=\"none\"",
+                &format!(" stroke=\"{color}\" stroke-width=\"{width}\" stroke-linejoin=\"round\""),
+                1,
+            );
+        }
+        (Some((_, "none")) | None, _) => {}
+        (Some((place, _)), _) => tag.replace_range(place, color),
+    }
+    tag
+}
+
+/// A drawing usvg wrote, with every fill and stroke in `color`, whatever
+/// way the theme colored it: usvg has written each as a plain value on
+/// its shape by then. What is inside a mask is left as it is, a mask's
+/// colors being what it lets through and not what is seen.
+fn recolored(body: &str, color: &str, edge: Option<f32>) -> String {
+    let mut out = String::with_capacity(body.len().saturating_add(128));
+    let mut rest = body;
+    let mut masks = 0usize;
+    while let Some(open) = rest.find('<') {
+        let (before, tag_on) = rest.split_at(open);
+        out.push_str(before);
+        let Some(close) = tag_on.find('>') else {
+            out.push_str(tag_on);
+            return out;
+        };
+        let (tag, after) = tag_on.split_at(close.saturating_add(1));
+        if tag.starts_with("</mask") {
+            masks = masks.saturating_sub(1);
+        }
+        if masks == 0 && !tag.starts_with("</") {
+            out.push_str(&recolored_tag(tag, color, edge));
+        } else {
+            out.push_str(tag);
+        }
+        if tag.starts_with("<mask") && !tag.ends_with("/>") {
+            masks = masks.saturating_add(1);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The pad with `badge`'s glyph at its lower right, as one SVG file:
 /// `None` if either file isn't a drawing to join.
 pub(crate) fn compose(pad: &[u8], glyph: &[u8], badge: Badge) -> Option<String> {
-    let pad = drawing(pad, None, "pad-")?;
-    // The glyph in the badge's color, whatever the theme drew it in: a
-    // rule over every shape, and over a color the shape itself says.
-    let color = badge.color();
-    let tinted = drawing(
-        glyph,
-        Some(format!(
-            "* {{ fill: {color} !important; color: {color} !important }}"
-        )),
-        "glyph-",
-    )?;
+    let pad = drawing(pad, "pad-")?;
+    // The glyph twice, each with ids of its own: in the badge's color,
+    // and under that once more, wider and dark, as its edge.
+    let tinted = drawing(glyph, "glyph-")?;
+    let under = drawing(glyph, "edge-")?;
     let scale = BADGE / tinted.side;
-    // And once more, wider and dark, to go under it as its edge.
-    let edged = drawing(
-        glyph,
-        Some(format!(
-            "* {{ fill: {EDGE_COLOR} !important; color: {EDGE_COLOR} !important; \
-             stroke: {EDGE_COLOR} !important; stroke-width: {width} !important; \
-             stroke-linejoin: round !important }}",
-            width = EDGE / scale,
-        )),
-        "edge-",
-    )?;
+    let tinted = Drawing {
+        body: recolored(&tinted.body, badge.color(), None),
+        side: tinted.side,
+    };
+    let edged = Drawing {
+        body: recolored(&under.body, EDGE_COLOR, Some(EDGE / scale)),
+        side: under.side,
+    };
     let at = SIDE - BADGE;
     let mut svg = String::new();
     // Writing to a String can't fail.
@@ -178,11 +233,28 @@ pub(crate) struct Icons {
 
 impl Icons {
     /// Composes an icon for each badge from the desktop theme's files
-    /// into `dir`, which is made if it isn't there. A badge whose glyph
-    /// the theme hasn't, or whose file can't be joined or written, is
-    /// left out, and the tray shows the plain pad for it.
+    /// into `dir`, which is made if it isn't there, for this user alone.
+    /// A badge whose glyph the theme hasn't, or whose file can't be
+    /// joined or written, is left out, and the tray shows the plain pad
+    /// for it.
+    ///
+    /// A theme with the pad in symbolic form alone gets none: a desktop
+    /// draws that in its panel's own color, light on a dark panel, and
+    /// joined into a file here it would keep the one color its theme
+    /// wrote it in, dark on that panel beside a bright badge.
     pub(crate) fn make(dir: &Path) -> Self {
-        let pad = ctrlassist_icons::resolve(menu::icon::PAD, Variant::Color);
+        let pad = ctrlassist_icons::resolve(menu::icon::PAD, Variant::Color).filter(|path| {
+            let symbolic = path
+                .file_stem()
+                .is_some_and(|stem| stem.to_string_lossy().ends_with("-symbolic"));
+            if symbolic {
+                debug!(
+                    pad = %path.display(),
+                    "the theme has the pad in symbolic form alone, so the tray's icon is the plain pad in every state"
+                );
+            }
+            !symbolic
+        });
         Self::from(dir, pad.as_deref(), |badge| {
             ctrlassist_icons::resolve(badge.glyph(), Variant::Symbolic)
         })
@@ -190,23 +262,45 @@ impl Icons {
 
     /// As [`make`](Self::make), from the pad's file and each glyph's.
     fn from(dir: &Path, pad: Option<&Path>, glyph: impl Fn(Badge) -> Option<PathBuf>) -> Self {
+        // Whole, since a desktop reads the path from where it is itself.
+        let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
         let mut icons = Self {
-            dir: dir.to_path_buf(),
+            dir,
             made: [false; Badge::ALL.len()],
         };
         let Some(pad) = pad.and_then(|path| std::fs::read(path).ok()) else {
+            debug!(
+                "the theme has no pad to draw a state into, so the tray's icon is the plain pad"
+            );
             return icons;
         };
-        if std::fs::create_dir_all(dir).is_err() {
+        // The user's alone, as the daemon makes the directory above it,
+        // which this may be the first to make.
+        let made = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&icons.dir);
+        if let Err(error) = made {
+            debug!(dir = %icons.dir.display(), %error, "the tray's icons have nowhere to be kept");
             return icons;
         }
         for badge in Badge::ALL {
             let composed = glyph(badge)
                 .and_then(|path| std::fs::read(path).ok())
                 .and_then(|glyph| compose(&pad, &glyph, badge));
+            // Written beside its name and moved onto it, so that a
+            // desktop never reads half a file.
+            let name = icons.dir.join(format!("{}.svg", badge.name()));
+            let draft = icons.dir.join(format!("{}.svg.new", badge.name()));
             let written = composed.is_some_and(|svg| {
-                std::fs::write(dir.join(format!("{}.svg", badge.name())), svg).is_ok()
+                std::fs::write(&draft, svg).is_ok() && std::fs::rename(&draft, &name).is_ok()
             });
+            if !written {
+                debug!(
+                    badge = badge.name(),
+                    "this state's icon couldn't be made, and is the plain pad"
+                );
+            }
             if let Some(made) = icons.made.get_mut(badge.place()) {
                 *made = written;
             }
@@ -302,13 +396,68 @@ mod tests {
         }
     }
 
+    /// A glyph's unfilled box stays unfilled, its strokes take the
+    /// badge's color, what is in a mask is left alone, and ids two files
+    /// share are told apart in the one they are joined into.
+    #[test]
+    fn a_glyph_is_recolored_shape_by_shape_and_ids_are_kept_apart() {
+        const BOXED: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="none"/><path fill="#2e3436" d="M2 2v12l12-6z"/><path fill="none" stroke="#2e3436" stroke-width="2" d="M1 15h14"/></svg>"##;
+        let svg = compose(PAD, BOXED, Badge::Running).unwrap();
+        // The pad's gray, the edge's dark and the badge's green: the
+        // theme's own color is gone from fills and strokes alike.
+        let mut expected = vec!["#888888", EDGE_COLOR, Badge::Running.color()];
+        expected.sort_unstable();
+        assert_eq!(colors(&svg), expected, "{svg}");
+        // The box and the line are unfilled still, in each of the
+        // glyph's two copies, and one shape of each copy is filled.
+        assert_eq!(svg.matches(r#"fill="none""#).count(), 4, "{svg}");
+        let green = format!(r#"fill="{}""#, Badge::Running.color());
+        assert_eq!(svg.matches(green.as_str()).count(), 1, "{svg}");
+
+        let masked = recolored(
+            r##"<mask id="m"><path fill="#ffffff" d="M0 0"/></mask><path fill="#222222" stroke="none" d="M1 1"/>"##,
+            "#00ff00",
+            None,
+        );
+        assert_eq!(
+            masked,
+            r##"<mask id="m"><path fill="#ffffff" d="M0 0"/></mask><path fill="#00ff00" stroke="none" d="M1 1"/>"##
+        );
+        let edged = recolored(
+            r##"<path fill="#222222" stroke="none" d="M1 1"/>"##,
+            "#000000",
+            Some(1.5),
+        );
+        assert_eq!(
+            edged,
+            r##"<path fill="#000000" stroke="#000000" stroke-width="1.5" stroke-linejoin="round" d="M1 1"/>"##
+        );
+
+        // A pad and a glyph that each name a gradient `a`.
+        const SHADED: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><linearGradient id="a"><stop offset="0" stop-color="#111"/><stop offset="1" stop-color="#eee"/></linearGradient><path fill="url(#a)" d="M0 0h16v16H0z"/></svg>"##;
+        let svg = compose(SHADED, SHADED, Badge::Held).unwrap();
+        let mut ids: Vec<&str> = svg
+            .match_indices(" id=\"")
+            .filter_map(|(at, opening)| {
+                let id = svg.get(at + opening.len()..)?;
+                id.get(..id.find('"')?)
+            })
+            .collect();
+        assert!(ids.iter().any(|id| id.starts_with("pad-")), "{ids:?}");
+        let all = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), all, "an id is used twice: {svg}");
+        assert!(svg.contains("url(#pad-"), "{svg}");
+    }
+
     /// What isn't an SVG drawing, or has nothing drawn in it, joins
     /// nothing.
     #[test]
     fn a_drawing_is_read_from_an_svg_file_or_not_at_all() {
-        assert!(drawing(PAD, None, "").is_some_and(|read| read.side == 32.0));
+        assert!(drawing(PAD, "").is_some_and(|read| read.side == 32.0));
         let sized = br#"<svg height="22px" width="22px" xmlns="http://www.w3.org/2000/svg"><path d="M0 0h4v4z"/></svg>"#;
-        assert!(drawing(sized, None, "").is_some_and(|read| read.side == 22.0));
+        assert!(drawing(sized, "").is_some_and(|read| read.side == 22.0));
         for not in [
             &b""[..],
             b"\x89PNG\r\n\x1a\n",
@@ -316,7 +465,7 @@ mod tests {
             br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"></svg>"#,
             br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path"#,
         ] {
-            assert!(drawing(not, None, "").is_none(), "{not:?}");
+            assert!(drawing(not, "").is_none(), "{not:?}");
             assert!(compose(not, GLYPH, Badge::Running).is_none());
             assert!(compose(PAD, not, Badge::Running).is_none());
         }

@@ -88,6 +88,9 @@ pub struct PadTray {
 
     /// The icon with each state drawn into it, where they were made.
     icons: Icons,
+    /// Whether a view has been taken yet: until one has, nothing is
+    /// known of the daemon, and nothing is said of it.
+    heard: bool,
 
     /// The profile last started, stopped or scrolled to: what a middle
     /// click on the icon acts on, while it can be.
@@ -137,6 +140,7 @@ impl PadTray {
         Self {
             view: View::default(),
             icons: Icons::default(),
+            heard: false,
 
             target: None,
             picked: BTreeMap::new(),
@@ -150,6 +154,7 @@ impl PadTray {
     /// Takes a new view. A setup that came or went since the last is the
     /// profile last used, whoever started or stopped it.
     pub fn see(&mut self, mut view: View) {
+        self.heard = true;
         // A profile picked at here is shown as picked until the daemon
         // publishes the last pick: a view read before it did would undo
         // the picks, and the next would be built on the profile without
@@ -356,9 +361,14 @@ impl PadTray {
 
     /// The theme's own icon for the tray: the colored pad glyph. The
     /// menu's rows are the symbolic ones.
-    fn glyph(&self) -> (menu::Icon, Variant) {
-        let _ = self;
+    const fn glyph() -> (menu::Icon, Variant) {
         (menu::icon::PAD, Variant::Color)
+    }
+
+    /// Whether the daemon is known to be away, or another release: not
+    /// before the first view is taken, when nothing is known of it yet.
+    fn unavailable(&self) -> bool {
+        self.heard && (!self.view.alive || self.view.mismatch.is_some())
     }
 
     /// What is drawn into the tray's icon for the worst of what the
@@ -366,7 +376,7 @@ impl PadTray {
     /// A daemon that isn't there, or is another release, comes before
     /// any of it.
     fn badge(&self) -> Option<Badge> {
-        if !self.view.alive || self.view.mismatch.is_some() {
+        if self.unavailable() {
             return Some(Badge::Unavailable);
         }
         match self.worst() {
@@ -532,7 +542,7 @@ impl Tray for PadTray {
         if let Some(name) = self.badge().and_then(|badge| self.icons.name(badge)) {
             return name.to_string();
         }
-        let (name, variant) = self.glyph();
+        let (name, variant) = Self::glyph();
         themed(name, variant)
     }
 
@@ -540,13 +550,17 @@ impl Tray for PadTray {
         self.icons.dir().to_string_lossy().into_owned()
     }
 
-    /// Never one that asks for attention, which a desktop may animate,
-    /// as Plasma does by pulsing the icon: the icon itself says a setup
-    /// is held or failed, and stays still.
+    /// Active while something runs, and while the daemon is away or
+    /// another release, so that a desktop that tucks passive items out
+    /// of sight keeps the icon and its mark in view then. Never one that
+    /// asks for attention, which a desktop may animate, as Plasma does
+    /// by pulsing the icon: the icon itself says a setup is held or
+    /// failed, and stays still.
     fn status(&self) -> ksni::Status {
-        match self.worst() {
-            Some(_) => ksni::Status::Active,
-            None => ksni::Status::Passive,
+        if self.unavailable() || self.worst().is_some() {
+            ksni::Status::Active
+        } else {
+            ksni::Status::Passive
         }
     }
 
@@ -576,6 +590,7 @@ mod tests {
         let (actions, clicked) = mpsc::unbounded_channel();
         let mut tray = PadTray::new(actions);
         tray.view = view(phase, Hiding::Service);
+        tray.heard = true;
         (tray, clicked)
     }
 
@@ -705,7 +720,7 @@ mod tests {
         let said = |phase| {
             let (tray, _clicked) = tray(phase);
             // The pad stays the icon whatever runs.
-            let (name, variant) = tray.glyph();
+            let (name, variant) = PadTray::glyph();
             assert!(matches!(variant, Variant::Color));
             assert_eq!(name[0], "applications-games");
             (tray.title(), tray.tool_tip().description)
@@ -766,8 +781,25 @@ mod tests {
         other.view.mismatch = Some("9.0.0".to_string());
         assert_eq!(other.title(), "CtrlAssist [version mismatch]");
         assert!(other.tool_tip().description.starts_with("Version mismatch"));
-        assert!(matches!(other.status(), ksni::Status::Passive));
         assert_eq!(other.badge(), Some(Badge::Unavailable));
+        // Either is in view with its mark though nothing runs, where a
+        // desktop keeps passive items out of sight.
+        assert!(matches!(other.status(), ksni::Status::Active));
+        let (mut gone, _clicked) = tray(None);
+        gone.view.alive = false;
+        assert_eq!(gone.badge(), Some(Badge::Unavailable));
+        assert!(matches!(gone.status(), ksni::Status::Active));
+        // Before the first view is taken nothing is known of the daemon,
+        // and nothing is said of it: no mark comes and goes as the tray
+        // starts.
+        let (actions, _clicked) = mpsc::unbounded_channel();
+        let mut fresh = PadTray::new(actions);
+        assert_eq!(fresh.badge(), None);
+        assert!(matches!(fresh.status(), ksni::Status::Passive));
+        assert!(!fresh.icon_name().starts_with("ctrlassist-"));
+        fresh.see(View::default());
+        assert_eq!(fresh.badge(), Some(Badge::Unavailable));
+        assert!(matches!(fresh.status(), ksni::Status::Active));
         assert_eq!(other.id(), "ctrlassist");
     }
 

@@ -1120,7 +1120,7 @@ default ✓ (Not set up) >
     /// pad that left its setup is said so, and can't be handed to.
     #[test]
     fn a_running_profile_s_menu_has_stop_control_and_its_fields() {
-        let menu = outline(&menu(&with_default(Some(Phase::Held))));
+        let menu = outline(&whole(&with_default(Some(Phase::Held)), true));
         let couch = of(&menu, "couch (Held) >");
         assert!(
             couch.starts_with(
@@ -1166,7 +1166,7 @@ default ✓ (Not set up) >
     /// pad is buzzed by its own name, and a pick names its profile.
     #[test]
     fn rows_carry_their_icons_and_their_commands() {
-        let entries = menu(&with_default(Some(Phase::Held)));
+        let entries = whole(&with_default(Some(Phase::Held)), true);
         let top: Vec<(&str, Icon)> = entries
             .iter()
             .filter_map(|entry| match entry {
@@ -1370,8 +1370,8 @@ default ✓ (Not set up) >
             Some(&action(icon::SETTINGS, "Settings", Command::Settings))
         );
         assert_eq!(with[..with.len() - 1], without[..]);
-        // This is such a build, as any that runs its tests is.
-        assert_eq!(menu(&view), with);
+        // And the menu is the one of the two this build is for.
+        assert_eq!(menu(&view), whole(&view, QUIT));
     }
 
     #[test]
@@ -1379,7 +1379,7 @@ default ✓ (Not set up) >
         let mut down = view(None, Hiding::Service);
         down.alive = false;
         assert_eq!(
-            outline(&menu(&down)),
+            outline(&whole(&down, true)),
             "- The CtrlAssist daemon isn't running\n---\nSettings\nQuit tray\n"
         );
         let mut arriving = view(None, Hiding::Service);
