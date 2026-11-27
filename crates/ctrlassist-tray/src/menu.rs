@@ -97,6 +97,8 @@ pub mod icon {
     pub const MODE: Icon = &["media-playlist-shuffle"];
     /// Rumble, and a buzz.
     pub const RUMBLE: Icon = &["notification-active", "preferences-desktop-notification"];
+    /// Whose motion sensors a virtual pad carries.
+    pub const GYRO: Icon = &["rotation-allowed", "object-rotate-right"];
     /// Whether the real pads are hidden.
     pub const HIDE: Icon = &["view-visible"];
     /// What a virtual pad presents itself as.
@@ -541,6 +543,7 @@ fn choice_entry(
     let icon = match field.key.as_str() {
         PRESET => icon::MODE,
         "rumble" => icon::RUMBLE,
+        "assist-gyro" => icon::GYRO,
         "hide" => icon::HIDE,
         "identity" => icon::IDENTITY,
         _ => icon::NONE,
@@ -1066,7 +1069,24 @@ default ✓ (Not set up) >
             unset: vec!["primary".to_string(), "assist".to_string()],
             ..profile("default", None)
         });
-        let menu = outline(&menu(&view));
+        let entries = menu(&view);
+        // Each row that says a choice of the profile's has a glyph.
+        let glyph = |label: &str| {
+            entries.iter().find_map(|entry| match entry {
+                Entry::Sub { entries, .. } => entries.iter().find_map(|entry| match entry {
+                    Entry::Sub {
+                        icon, label: found, ..
+                    } if found.starts_with(label) => Some(*icon),
+                    _ => None,
+                }),
+                _ => None,
+            })
+        };
+        assert_eq!(glyph("Gyro"), Some(icon::GYRO));
+        for label in ["Mode", "Rumble", "Gyro", "Visibility", "Identity"] {
+            assert!(glyph(label).is_some_and(|icon| !icon.is_empty()), "{label}");
+        }
+        let menu = outline(&entries);
         assert!(
             menu.contains(
                 "  Gyro: Assist · Right bumper >\n    ( ) Primary only\n    - Assist holds\n    ( ) South\n"

@@ -355,6 +355,43 @@ docs-links: docs-build
 docs-screenshots:
     cargo run --package ctrlassist-gui-app --features screenshots --bin ctrlassist-screenshots -- docs/screenshots
 
+# The tray's menu is drawn by the desktop, so its pictures are taken by
+# hand. This sets the scene for them with nothing of the machine's own in
+# it: a daemon of its own, with its own socket, state and profiles under
+# target/tray-stage, two made-up pads, and a profile named `couch`
+# running on them, with a second, `desk`, that isn't. The pads are
+# grabbed, not hidden: no hiding service is asked. The daemon lists every
+# pad on the machine, so unplug real ones to keep them out of the
+# picture, and look for a second tray icon beside the dev stack's own.
+# Ctrl-C ends it all.
+#
+# Set the scene for the tray's screenshots, to take by hand
+[group('docs')]
+docs-tray-stage:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    stage="{{ justfile_directory() }}/target/tray-stage"
+    socket="$stage/zenoh.sock"
+    rm -rf "$stage"
+    mkdir -p "$stage"
+    cargo build --quiet --package ctrlassist-cli --package ctrlassist-test
+    trap 'kill $(jobs -p) 2> /dev/null || true' EXIT
+    target/debug/ctrlassist-fixture fake-dualsense --real > /dev/null &
+    target/debug/ctrlassist-fixture fake-pad --name "Xbox Wireless Controller" \
+        --vendor 045e --product 0b13 > /dev/null &
+    target/debug/ctrlassist service daemon --socket "$socket" \
+        --state-dir "$stage/state" --config-dir "$stage/config" \
+        --hider-socket "$stage/no-hider.sock" 2> "$stage/daemon.log" &
+    until target/debug/ctrlassist status --socket "$socket" > /dev/null 2>&1; do sleep 0.1; done
+    printf '%s\n' 'mode = "priority"' 'primary = "model:045e:0b13"' 'assist = "model:054c:0ce6"' \
+        'identity = "dualsense"' 'assist-gyro = "right-bumper"' > "$stage/couch.toml"
+    printf '%s\n' 'mode = "multicast"' 'pad = "model:045e:0b13"' 'outputs = 2' > "$stage/desk.toml"
+    target/debug/ctrlassist profile put "$stage/couch.toml" --socket "$socket"
+    target/debug/ctrlassist profile put "$stage/desk.toml" --socket "$socket"
+    until target/debug/ctrlassist start couch --socket "$socket"; do sleep 0.2; done
+    echo "The tray is staged: open its menu, and Ctrl-C here when the pictures are taken."
+    target/debug/ctrlassist service tray --socket "$socket"
+
 # Serve the user guide with live reload at http://localhost:3000
 [group('docs')]
 docs-serve:
