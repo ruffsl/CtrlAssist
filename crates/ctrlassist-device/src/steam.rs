@@ -2392,4 +2392,26 @@ mod tests {
             let _ = parse(&bytes);
         }
     }
+
+    /// A reader is made over a duplicate of the node it is given, with
+    /// what the node kept until then read away, and what it kept until
+    /// the input thread first listens read away once.
+    #[test]
+    fn a_reader_starts_from_now() {
+        use std::os::unix::net::UnixDatagram;
+        let (node, pad) = UnixDatagram::pair().unwrap();
+        pad.send(&[STATE; STATE_SIZE]).unwrap();
+        let mut reader = Reader::new(node.as_fd()).unwrap();
+        let mut left = [0u8; STATE_SIZE];
+        node.set_nonblocking(true).unwrap();
+        assert!(node.recv(&mut left).is_err());
+        pad.send(&[STATE; STATE_SIZE]).unwrap();
+        reader.begin();
+        assert!(node.recv(&mut left).is_err());
+        // Listened to anew, it loses nothing.
+        pad.send(&[STATE; STATE_SIZE]).unwrap();
+        reader.begin();
+        assert_eq!(node.recv(&mut left).unwrap(), STATE_SIZE);
+        assert!(format!("{reader:?}").starts_with("Reader"));
+    }
 }

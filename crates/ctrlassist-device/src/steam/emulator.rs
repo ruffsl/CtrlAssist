@@ -596,6 +596,11 @@ impl AsFd for Emulator {
 
 #[cfg(test)]
 mod tests {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixDatagram;
+
+    use ctrlassist_core::gamepad;
+
     use super::*;
 
     fn command(bytes: &[u8]) -> [u8; FEATURE_SIZE] {
@@ -704,5 +709,267 @@ mod tests {
         assert_eq!(descriptor.iter().filter(|byte| **byte == 0xa1).count(), 1);
         assert_eq!(descriptor[..3], [0x06, 0x00, 0xff]);
         assert_eq!(descriptor.last(), Some(&0xc0));
+    }
+
+    /// An emulator whose uhid is one end of a socket pair, and the other
+    /// end, which plays the kernel: a datagram each way is an event, as
+    /// a read and a write of uhid are.
+    fn stand_in() -> (Emulator, UnixDatagram) {
+        let (ours, kernel) = UnixDatagram::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        kernel.set_nonblocking(true).unwrap();
+        let pad = Emulator {
+            uhid: File::from(OwnedFd::from(ours)),
+            raw_node: PathBuf::from("/dev/hidraw-stand-in"),
+            serial: "FAVIRTUAL0001".to_string(),
+            firmware: KNOWN_FIRMWARE,
+            sent: None,
+            sequence: 0,
+            time: 0,
+            readings: 0,
+            command: None,
+            level: Level::default(),
+            stopped: false,
+            haptics: Box::new([None; HAPTICS_KEPT]),
+            first: 0,
+            kept: 0,
+            event: Box::new([0; UHID_EVENT]),
+        };
+        (pad, kernel)
+    }
+
+    /// `UHID_OUTPUT` as the kernel sends one: the report, then its size.
+    fn output(report: &[u8]) -> Vec<u8> {
+        let mut event = UHID_OUTPUT.to_ne_bytes().to_vec();
+        event.extend_from_slice(report);
+        event.resize(4 + UHID_DATA, 0);
+        event.extend_from_slice(&u16::try_from(report.len()).unwrap().to_ne_bytes());
+        event
+    }
+
+    /// `UHID_GET_REPORT` for report `number`, as request `id`.
+    fn get(id: u32, number: u8) -> Vec<u8> {
+        let mut event = UHID_GET_REPORT.to_ne_bytes().to_vec();
+        event.extend_from_slice(&id.to_ne_bytes());
+        event.push(number);
+        event
+    }
+
+    /// `UHID_SET_REPORT` of `report` on report `number`, as request `id`.
+    fn set(id: u32, number: u8, report: &[u8]) -> Vec<u8> {
+        let mut event = UHID_SET_REPORT.to_ne_bytes().to_vec();
+        event.extend_from_slice(&id.to_ne_bytes());
+        event.extend_from_slice(&[number, 0]);
+        event.extend_from_slice(&u16::try_from(report.len()).unwrap().to_ne_bytes());
+        event.extend_from_slice(report);
+        event
+    }
+
+    /// What the emulator wrote back, an event at a time.
+    fn written(kernel: &UnixDatagram) -> Vec<Vec<u8>> {
+        let mut events = Vec::new();
+        let mut event = [0u8; UHID_EVENT];
+        while let Ok(size) = kernel.recv(&mut event) {
+            events.push(event[..size].to_vec());
+        }
+        events
+    }
+
+    /// Serves what waits, and says what was passed on.
+    fn served(pad: &mut Emulator) -> Vec<Request> {
+        let mut requests = Vec::new();
+        pad.serve(|request| {
+            requests.push(request);
+            Ok(())
+        })
+        .unwrap();
+        requests
+    }
+
+    /// The pad's node is its raw node, and it is polled by its uhid.
+    #[test]
+    fn the_pad_is_pointed_to_by_its_raw_node() {
+        let (pad, _kernel) = stand_in();
+        assert_eq!(pad.node(), Path::new("/dev/hidraw-stand-in"));
+        let _ = pad.as_fd();
+    }
+
+    /// Rumble comes out of an output report as a level, once per change,
+    /// and a haptic report is kept whole for whoever takes it; a report
+    /// that is neither, an event of no known kind and the driver letting
+    /// go pass nothing on.
+    #[test]
+    fn output_reports_are_read_as_rumble_and_haptics() {
+        let (mut pad, kernel) = stand_in();
+        assert!(served(&mut pad).is_empty());
+
+        let level = Level {
+            strong: 0x1234,
+            weak: 0x0042,
+        };
+        let pulse = [0x81, 1, 0x10, 0x27, 0, 0, 1, 0];
+        kernel.send(&output(&crate::steam::rumble(level))).unwrap();
+        // Sent again every 40 ms while it lasts, and no new level.
+        kernel.send(&output(&crate::steam::rumble(level))).unwrap();
+        kernel.send(&output(&pulse)).unwrap();
+        kernel.send(&output(&[0x42, 0, 0])).unwrap();
+        kernel.send(&0xffff_u32.to_ne_bytes()).unwrap();
+        assert_eq!(served(&mut pad), [Request::Level(level)]);
+        assert!(!pad.stopped);
+        assert_eq!(pad.take_haptic().unwrap().as_bytes(), pulse);
+        assert!(pad.take_haptic().is_none());
+
+        kernel
+            .send(&output(&crate::steam::rumble(Level::default())))
+            .unwrap();
+        kernel.send(&UHID_STOP.to_ne_bytes()).unwrap();
+        assert_eq!(served(&mut pad), [Request::Level(Level::default())]);
+        assert!(pad.stopped);
+        assert!(written(&kernel).is_empty());
+    }
+
+    /// Past what is kept, the oldest haptic report is the one let go, and
+    /// the rest come out in the order they were written.
+    #[test]
+    fn the_oldest_haptic_is_let_go_when_there_is_no_room() {
+        let (mut pad, _kernel) = stand_in();
+        let most = u8::try_from(HAPTICS_KEPT).unwrap();
+        for number in 0..most + 8 {
+            pad.keep(Haptic::of(&[0x81, number]).unwrap());
+        }
+        for number in 8..most + 8 {
+            assert_eq!(pad.take_haptic().unwrap().as_bytes(), [0x81, number]);
+        }
+        assert!(pad.take_haptic().is_none());
+        // And it goes round again from wherever it stopped.
+        pad.keep(Haptic::of(&[0x82, 7]).unwrap());
+        assert_eq!(pad.take_haptic().unwrap().as_bytes(), [0x82, 7]);
+    }
+
+    /// A command set on the commands' feature report is acknowledged, and
+    /// the next GET of it answered from the command; a GET before any
+    /// command, or of another report, is refused.
+    #[test]
+    fn a_command_is_acknowledged_and_the_next_get_answers_it() {
+        let (mut pad, kernel) = stand_in();
+        kernel.send(&get(7, FEATURE_PAD)).unwrap();
+        kernel
+            .send(&set(8, FEATURE_PAD, &[1, 0xae, 0x16, 0x01]))
+            .unwrap();
+        kernel.send(&get(9, FEATURE_PAD)).unwrap();
+        kernel.send(&get(10, 3)).unwrap();
+        kernel.send(&set(11, 3, &[3, 1])).unwrap();
+        let feature = |number, set, answered| Request::Feature {
+            number,
+            set,
+            answered,
+        };
+        assert_eq!(
+            served(&mut pad),
+            [
+                feature(FEATURE_PAD, false, false),
+                feature(FEATURE_PAD, true, true),
+                feature(FEATURE_PAD, false, true),
+                feature(3, false, false),
+                feature(3, true, true),
+            ]
+        );
+
+        let replies = written(&kernel);
+        let refused = |id: u32| {
+            let mut reply = UHID_GET_REPORT_REPLY.to_ne_bytes().to_vec();
+            reply.extend_from_slice(&id.to_ne_bytes());
+            reply.extend_from_slice(&EIO.to_ne_bytes());
+            reply.extend_from_slice(&[0, 0]);
+            reply
+        };
+        let acknowledged = |id: u32| {
+            let mut reply = UHID_SET_REPORT_REPLY.to_ne_bytes().to_vec();
+            reply.extend_from_slice(&id.to_ne_bytes());
+            reply.extend_from_slice(&[0, 0]);
+            reply
+        };
+        assert_eq!(replies.len(), 5);
+        assert_eq!(replies[0], refused(7));
+        assert_eq!(replies[1], acknowledged(8));
+        assert_eq!(replies[2].len(), 12 + FEATURE_SIZE);
+        assert_eq!(replies[2][..4], UHID_GET_REPORT_REPLY.to_ne_bytes());
+        assert_eq!(replies[2][4..8], 9u32.to_ne_bytes());
+        assert_eq!(replies[2][8..10], [0, 0]);
+        assert_eq!(replies[2][10..12], FEATURE_LENGTH.to_ne_bytes());
+        assert_eq!(replies[2][12..16], [1, 0xae, 0x15, 0x01]);
+        assert_eq!(&replies[2][16..29], b"FAVIRTUAL0001");
+        assert_eq!(replies[3], refused(10));
+        assert_eq!(replies[4], acknowledged(11));
+    }
+
+    /// A state is sent as one state report, numbered in turn, and a
+    /// state that changes nothing a report says sends none, unless its
+    /// motion is a fresh reading, which moves the sensor clock on.
+    #[test]
+    fn a_report_is_sent_as_the_state_changes_and_not_otherwise() {
+        let (mut pad, kernel) = stand_in();
+        let mut state = PadState::NEUTRAL;
+        pad.write(&state).unwrap();
+        pad.write(&state).unwrap();
+        state.set(gamepad::SOUTH, 1.0);
+        pad.write(&state).unwrap();
+        pad.write(&state).unwrap();
+
+        let reports = written(&kernel);
+        assert_eq!(reports.len(), 2);
+        for (report, sequence) in reports.iter().zip(1u8..) {
+            assert_eq!(report.len(), 6 + STATE_SIZE);
+            assert_eq!(report[..4], UHID_INPUT2.to_ne_bytes());
+            assert_eq!(report[4..6], STATE_LENGTH.to_ne_bytes());
+            assert_eq!(report[6], STATE);
+            assert_eq!(report[7], sequence);
+        }
+        assert_ne!(reports[0][8..], reports[1][8..]);
+        // What was sent is the state's report, its number aside.
+        let mut expected = crate::steam::report(&state, 0, 0);
+        expected[1] = 2;
+        assert_eq!(reports[1][6..], expected);
+    }
+
+    /// Whatever the kernel hangs up with is the caller's to hear of.
+    #[test]
+    fn an_error_from_uhid_is_passed_on() {
+        let (mut pad, kernel) = stand_in();
+        drop(kernel);
+        // Nothing waits and the far end is gone: no events, and no error.
+        assert!(served(&mut pad).is_empty());
+        assert!(pad.write(&PadState::NEUTRAL).is_err());
+    }
+
+    /// The pad is made as a Steam Controller on its cable is: its name,
+    /// where it is plugged and its serial each in a field of their own,
+    /// then the descriptor's size, the bus and what it is, and the
+    /// descriptor.
+    #[test]
+    fn the_pad_is_made_as_one_on_its_cable() {
+        let descriptor = descriptor();
+        let event = create2("somewhere", "FAVIRTUAL0001", &descriptor);
+        assert_eq!(event.len(), UHID_EVENT);
+        assert_eq!(event[..4], UHID_CREATE2.to_ne_bytes());
+        let text = |at: usize, text: &str| {
+            let field = &event[at..at + text.len() + 1];
+            assert_eq!(&field[..text.len()], text.as_bytes());
+            assert_eq!(field[text.len()], 0);
+        };
+        text(4, NAME);
+        text(4 + 128, "somewhere");
+        text(4 + 128 + 64, "FAVIRTUAL0001");
+        let at = 4 + 128 + 64 + 64;
+        assert_eq!(usize::from(u16_at(&event, at)), descriptor.len());
+        assert_eq!(u16_at(&event, at + 2), BUS_USB);
+        assert_eq!(u32_at(&event, at + 4), 0x28de);
+        assert_eq!(u32_at(&event, at + 8), 0x1302);
+        assert_eq!(u32_at(&event, at + 12), VERSION);
+        assert_eq!(event[at + 20..at + 20 + descriptor.len()], descriptor);
+        // A place too long for its field is cut, and still ends.
+        let long = create2(&"p".repeat(100), "", &descriptor);
+        assert_eq!(long[4 + 128..4 + 128 + 63], [b'p'; 63]);
+        assert_eq!(long[4 + 128 + 63], 0);
     }
 }

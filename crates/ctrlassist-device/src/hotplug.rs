@@ -699,4 +699,35 @@ mod tests {
             assert_eq!((passed, left), (Vec::new(), 1));
         }
     }
+
+    /// Why a Steam Controller's raw node wasn't found is said in a
+    /// person's words, with the error underneath where there is one.
+    #[test]
+    fn why_a_raw_node_wasn_t_found_is_said() {
+        use std::error::Error as _;
+        let missing = SteamRawError::Missing(io::Error::other("gone"));
+        assert_eq!(missing.to_string(), "its raw node isn't there: gone");
+        assert!(missing.source().is_some());
+        let ambiguous = SteamRawError::Ambiguous {
+            hid: PathBuf::from("/sys/devices/somewhere"),
+        };
+        assert_eq!(
+            ambiguous.to_string(),
+            "more than one raw node of hid-steam could be that of /sys/devices/somewhere, and which is can't be told"
+        );
+        assert!(ambiguous.source().is_none());
+    }
+
+    /// A node that is no pad's has no raw node beside it, and one that
+    /// is still there hasn't gone.
+    #[test]
+    fn a_node_that_is_no_pad_s_has_no_raw_node() {
+        use std::os::fd::AsFd as _;
+        let null = File::open("/dev/null").unwrap();
+        assert!(matches!(
+            steam_raw_node(null.as_fd()),
+            Err(SteamRawError::Missing(_))
+        ));
+        assert!(!event_node_gone(null.as_fd()));
+    }
 }
