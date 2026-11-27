@@ -149,6 +149,21 @@ component StatusItem inherits Focusable {
     hover-changed(hovering) => {
         tip.set-hover(hovering);
     }
+    // The state in words comes to a row that has focus too, where no
+    // pointer is: by keys and a remote the glyph would be all of it.
+    property <bool> focus-tip: root.focused && Nav.focus-visible;
+    changed focus-tip => {
+        tip.set-hover(root.focus-tip);
+    }
+    /// The shell asks a row to take focus by bumping `focus-tick` with
+    /// `focus-wanted` set on the one it means, as a list does.
+    in property <int> focus-tick;
+    in property <bool> focus-wanted;
+    changed focus-tick => {
+        if (root.focus-wanted) {
+            root.focus();
+        }
+    }
 
     HorizontalLayout {
         width: 100%;
@@ -321,17 +336,35 @@ export component AppWindow inherits Window {
     }
     // The running profiles' rows sit on the rail between the last pane
     // and Reload. They are made from a model, so the shell can't name
-    // one to focus it: it says which, and the row that is takes focus.
+    // one to focus it: it says which, by its profile's name, and the row
+    // that is takes focus.
     property <int> status-count: Setups.rows.length;
-    property <int> status-target: -1;
+    property <string> status-wanted;
     property <int> status-tick: 0;
     // The row that has focus; -1 for none. Read only after the panes'
     // items and Reload, which say for themselves whether they have it:
     // a row that went with its setup can't say it lost it.
     property <int> status-focused: -1;
+    // The one row of them Tab stops at, as a list has one: the row last
+    // focused, or the last there is if that one has gone.
+    property <int> status-stop: 0;
+    // The profile whose row has focus. The rows are made again when a
+    // setup comes or goes, and the one made for it takes focus back.
+    property <string> status-held;
     function focus-status(index: int) {
-        root.status-target = index;
-        root.status-tick += 1;
+        if (index >= 0 && index < root.status-count) {
+            root.status-wanted = Setups.rows[index].name;
+            root.status-tick += 1;
+        }
+    }
+    status-again := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.status-wanted = root.status-held;
+            root.status-tick += 1;
+        }
     }
     function rail-step(forward: bool) -> bool {
         if (reload.focused) {
@@ -693,7 +726,10 @@ export component AppWindow inherits Window {
                         status := Flickable {
                             property <length> row-height: 24px;
                             vertical-stretch: 1;
-                            min-height: self.row-height;
+                            // None of its own: in the least window couch
+                            // mode has, the services under it keep their
+                            // room and the rows scroll in what is left.
+                            min-height: 0px;
                             content-height: root.status-count * self.row-height;
                             VerticalLayout {
                                 alignment: start;
@@ -701,15 +737,22 @@ export component AppWindow inherits Window {
                                     name: setup.name;
                                     phase: setup.phase;
                                     accessible-id: "sidebar-status-" + setup.name;
-                                    property <int> tick: root.status-tick;
-                                    changed tick => {
-                                        if (root.status-target == index) {
-                                            self.focus();
+                                    focus-tick: root.status-tick;
+                                    focus-wanted: setup.name == root.status-wanted;
+                                    tab-stop: index == min(root.status-stop, root.status-count - 1);
+                                    // Made again while its profile's row
+                                    // had focus: it takes it back, a tick
+                                    // later, when it can be found.
+                                    init => {
+                                        if (setup.name == root.status-held) {
+                                            status-again.running = true;
                                         }
                                     }
                                     changed focused => {
                                         if (self.focused) {
                                             root.status-focused = index;
+                                            root.status-stop = index;
+                                            root.status-held = setup.name;
                                             if (index * status.row-height < -status.content-y) {
                                                 status.content-y = -index * status.row-height;
                                             } else if ((index + 1) * status.row-height > status.height - status.content-y) {
@@ -717,6 +760,7 @@ export component AppWindow inherits Window {
                                             }
                                         } else if (root.status-focused == index) {
                                             root.status-focused = -1;
+                                            root.status-held = "";
                                         }
                                     }
                                     activated => {

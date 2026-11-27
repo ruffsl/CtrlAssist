@@ -9,6 +9,7 @@ Things the design depends on that have not been observed, or risks accepted for 
 - [`pad-identity-across-transports.md`](pad-identity-across-transports.md) — a pad's identifier is unverified across transports.
 - [`suspend-and-reconnect.md`](suspend-and-reconnect.md) — suspend, resume and a Bluetooth drop are untested.
 - [`realtime-refused.md`](realtime-refused.md) — without real-time scheduling the latency tail is not dependable under load.
+- [`slide-text-right-to-left.md`](slide-text-right-to-left.md) — a name too long for its place slides the wrong way in a right-to-left script.
 - [`identity-unverified-input.md`](identity-unverified-input.md) — virtual pad identities were detected, not played.
 - [`lz4-flex-advisory.md`](lz4-flex-advisory.md) — zenoh pins an lz4_flex with a decompression advisory, unreachable while compression is off.
 - [`slint-unstable-winit-030.md`](slint-unstable-winit-030.md) — the window reaches winit through a Slint feature outside its stability promise, so Slint is pinned exactly. After TisVlay's.

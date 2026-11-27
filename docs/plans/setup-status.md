@@ -67,6 +67,9 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
 ## Deviations
 
 - **From the review of the pull request,** by three reviewers each given a part of it:
+  - A running profile's rows are one Tab stop among them, the row of a profile takes focus back when the rows are made again, and a row with focus says its state in words as one under a pointer does. The way to them by the arrow keys is as built, past About, at the maintainer's choice.
+  - A tip and a sliding name wait one length of time, 0.7 s by a token, and a control that can't be used says why to a pointer over it.
+  - The rows have no least height of their own, for the least window couch mode has. A name in a right-to-left script would slide the wrong way: a concern, `slide-text-right-to-left.md`.
   - The tray is active while the daemon is away or another release, where a desktop hid a passive one and the mark with it, and says nothing of the daemon until its first view is taken.
   - A theme with the pad in symbolic form alone gets no composed icons, its one color being dark on a dark panel once written into a file.
   - A glyph is recolored in what usvg wrote of it, each fill and stroke that is one; the rule over every shape filled a box left unfilled, kept a stroke's color and filled what a mask cuts with.

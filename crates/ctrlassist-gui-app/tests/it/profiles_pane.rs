@@ -1461,6 +1461,50 @@ fn a_running_profile_s_row_in_the_sidebar_says_its_state_and_opens_it() {
         .name;
     assert_eq!(shown, "couch");
 
+    // Back on the sidebar: Tab stops at one row of them, the one last
+    // focused, on its way from the active item to Reload.
+    find_by_accessible_id(&app, "sidebar-about")
+        .unwrap()
+        .invoke_accessible_default_action();
+    settle();
+    app.invoke_focus_active_sidebar_item();
+    settle();
+    let mut tabbed = Vec::new();
+    for _ in 0..2 {
+        press(&app, Key::Tab);
+        settle();
+        tabbed.push(focus());
+    }
+    assert_eq!(tabbed, ["sidebar-status-couch", "sidebar-reload"]);
+
+    // The state in words comes to a row with focus, as to one under a
+    // pointer, once focus has rested on it.
+    press(&app, Key::UpArrow);
+    settle();
+    assert_eq!(focus(), format!("sidebar-status-{LONG}"));
+    press(&app, Key::UpArrow);
+    settle();
+    assert_eq!(focus(), "sidebar-status-quick");
+    let help = app.global::<ctrlassist_gui::Help>();
+    assert!(!help.get_shown());
+    elapse(800);
+    assert!(help.get_shown());
+    assert_eq!(help.get_text(), "quick: running");
+
+    // Another profile starts while a row has focus, and the rows are
+    // made again: the row of the same profile has focus still.
+    let mut more = self::known().setups;
+    more.push(Setup {
+        name: "attic".to_string(),
+        ..more[0].clone()
+    });
+    setups::show(&app, setups::rows(&more, &kept));
+    for _ in 0..4 {
+        settle();
+    }
+    assert_eq!(label("attic").as_deref(), Some("attic: running"));
+    assert_eq!(focus(), "sidebar-status-quick");
+
     // A setup that failed and one still starting say so too, and the
     // rows go as their setups do.
     let state = |name: &str, phase: Phase| Setup {

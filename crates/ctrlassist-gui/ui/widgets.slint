@@ -202,6 +202,15 @@ export component Focusable inherits Rectangle {
             root.hover-changed(self.has-hover);
         }
     }
+
+    // A control that can't be used still says why to a pointer over it:
+    // its own hit area is off with it, and would never report one.
+    TouchArea {
+        enabled: !root.enabled;
+        changed has-hover => {
+            root.hover-changed(self.has-hover);
+        }
+    }
 }
 
 // =============================================================================
@@ -262,7 +271,7 @@ export component SlideText inherits Rectangle {
             along: 1;
             in {
                 animate along {
-                    delay: 900ms;
+                    delay: Design.dwell;
                     duration: root.overrun / 40px * 1s;
                 }
             }
