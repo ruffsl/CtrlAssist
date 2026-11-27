@@ -227,18 +227,18 @@ export component TickerText inherits Rectangle {
     in property <bool> running;
     /// How far the line is longer than its width; 0 where it fits.
     out property <length> overrun: max(0px, measure.preferred-width - self.width);
-    out property <bool> travelling: self.running && self.overrun > 0px;
+    out property <bool> traveling: self.running && self.overrun > 0px;
 
     // The rest at each end, and the speed between them.
     property <duration> rest: 900ms;
     property <duration> travel: self.overrun / 40px * 1s;
     property <duration> began;
-    changed travelling => {
+    changed traveling => {
         self.began = animation-tick();
     }
     // Where in a there-and-back the line is: resting at its start,
     // going, resting at its end, coming back.
-    property <duration> at: self.travelling
+    property <duration> at: self.traveling
         ? Math.mod((animation-tick() - self.began) / 1ms, (2 * self.rest + 2 * self.travel) / 1ms) * 1ms
         : 0ms;
     property <float> along: self.at < self.rest ? 0
@@ -261,15 +261,15 @@ export component TickerText inherits Rectangle {
     }
 
     label := Text {
-        x: root.travelling ? -root.overrun * root.along : 0px;
-        width: root.travelling ? measure.preferred-width : root.width;
+        x: root.traveling ? -root.overrun * root.along : 0px;
+        width: root.traveling ? measure.preferred-width : root.width;
         height: root.height;
         text: root.text;
         color: root.text-color;
         font-size: root.font-size;
         font-weight: root.font-weight;
         vertical-alignment: center;
-        overflow: root.travelling ? clip : elide;
+        overflow: root.traveling ? clip : elide;
     }
 }
 

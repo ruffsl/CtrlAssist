@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** the tray's icon and the sidebar's block are built; the guide is next.
-- **Next action:** the maintainer's look at the sidebar's rows and a travelling name in the running window; then the same for the lists and titles, and step 4, the guide and its screenshots.
+- **Next action:** the maintainer's look at the sidebar's rows and a traveling name in the running window; then the same for the lists and titles, and step 4, the guide and its screenshots.
 
 ## Goal
 
