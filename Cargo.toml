@@ -90,7 +90,7 @@ png = "0.18"
 # The system's monospace family for the window (the font library Slint
 # uses; kept on the version Slint pins so the graph holds one copy).
 # TisVlay's pin.
-fontique = "0.12"
+fontique = "0.13"
 
 # Freedesktop icon-theme lookup, a name to a file's path, through
 # ctrlassist-icons. TisVlay's pin.
