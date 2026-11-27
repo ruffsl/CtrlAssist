@@ -530,56 +530,64 @@ component ProfileDetailHeader inherits Rectangle {
                 // Beside its mode and not its name, which they left
                 // little room, and close together, so that the row fits
                 // the window at its least width.
-                if root.profile.kept: HorizontalLayout {
-                    spacing: 0px;
-                    VerticalLayout {
-                        alignment: center;
-                        IconBtn {
-                            nav-row: root.nav-row;
-                            source: Icons.edit;
-                            // The default profile keeps its name.
-                            enabled: root.daemon-available && root.profile.setup-index < 0 && !root.profile.is-default;
-                            accessible-label: @tr("Rename profile");
-                            tip: root.profile.is-default ? @tr("The default profile keeps its name")
-                                : root.profile.setup-index < 0 ? @tr("Rename profile") : @tr("Stop it to rename it");
-                            accessible-id: root.id-prefix + "profiles-rename";
-                            clicked => { root.request-rename(); }
+                // In a box of the line's own height, which they stand
+                // a little taller than, so that the header is as tall as
+                // a pad's and the two panes' lines stay level.
+                if root.profile.kept: Rectangle {
+                    width: buttons.preferred-width;
+                    buttons := HorizontalLayout {
+                        y: (parent.height - self.height) / 2;
+                        height: self.preferred-height;
+                        spacing: 0px;
+                        VerticalLayout {
+                            alignment: center;
+                            IconBtn {
+                                nav-row: root.nav-row;
+                                source: Icons.edit;
+                                // The default profile keeps its name.
+                                enabled: root.daemon-available && root.profile.setup-index < 0 && !root.profile.is-default;
+                                accessible-label: @tr("Rename profile");
+                                tip: root.profile.is-default ? @tr("The default profile keeps its name")
+                                    : root.profile.setup-index < 0 ? @tr("Rename profile") : @tr("Stop it to rename it");
+                                accessible-id: root.id-prefix + "profiles-rename";
+                                clicked => { root.request-rename(); }
+                            }
                         }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        IconBtn {
-                            nav-row: root.nav-row;
-                            source: Icons.copy;
-                            enabled: root.daemon-available;
-                            accessible-label: @tr("Duplicate profile");
-                            tip: @tr("Duplicate profile");
-                            accessible-id: root.id-prefix + "profiles-duplicate";
-                            clicked => { root.request-duplicate(); }
+                        VerticalLayout {
+                            alignment: center;
+                            IconBtn {
+                                nav-row: root.nav-row;
+                                source: Icons.copy;
+                                enabled: root.daemon-available;
+                                accessible-label: @tr("Duplicate profile");
+                                tip: @tr("Duplicate profile");
+                                accessible-id: root.id-prefix + "profiles-duplicate";
+                                clicked => { root.request-duplicate(); }
+                            }
                         }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        IconBtn {
-                            nav-row: root.nav-row;
-                            source: Icons.folder_open;
-                            accessible-label: @tr("Show its file");
-                            tip: @tr("Show its file");
-                            accessible-id: root.id-prefix + "profiles-reveal";
-                            clicked => { Profiles.reveal(root.profile.name); }
+                        VerticalLayout {
+                            alignment: center;
+                            IconBtn {
+                                nav-row: root.nav-row;
+                                source: Icons.folder_open;
+                                accessible-label: @tr("Show its file");
+                                tip: @tr("Show its file");
+                                accessible-id: root.id-prefix + "profiles-reveal";
+                                clicked => { Profiles.reveal(root.profile.name); }
+                            }
                         }
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        IconBtn {
-                            nav-row: root.nav-row;
-                            source: Icons.delete;
-                            // The daemon always keeps the default profile.
-                            enabled: root.daemon-available && !root.profile.is-default;
-                            accessible-label: @tr("Delete profile");
-                            tip: root.profile.is-default ? @tr("The default profile is always kept") : @tr("Delete profile");
-                            accessible-id: root.id-prefix + "profiles-delete";
-                            clicked => { root.request-delete(); }
+                        VerticalLayout {
+                            alignment: center;
+                            IconBtn {
+                                nav-row: root.nav-row;
+                                source: Icons.delete;
+                                // The daemon always keeps the default profile.
+                                enabled: root.daemon-available && !root.profile.is-default;
+                                accessible-label: @tr("Delete profile");
+                                tip: root.profile.is-default ? @tr("The default profile is always kept") : @tr("Delete profile");
+                                accessible-id: root.id-prefix + "profiles-delete";
+                                clicked => { root.request-delete(); }
+                            }
                         }
                     }
                 }
