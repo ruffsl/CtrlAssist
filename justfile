@@ -355,8 +355,20 @@ docs-links: docs-build
 docs-screenshots:
     cargo run --package ctrlassist-gui-app --features screenshots --bin ctrlassist-screenshots -- docs/screenshots
 
-# The tray's menu is drawn by the desktop, so its pictures are taken by
-# hand. This sets the scene for them apart from the machine's own: a
+# The tray's icon, tip and menu are drawn by the desktop, so their
+# pictures come from a Plasma session in a virtual machine
+# (packaging/nix/shots-tray.nix), which wants KVM.
+#
+# Make the user guide's screenshots of the tray
+[group('docs')]
+docs-tray-shots:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shots="$(nix build --no-link --print-out-paths .#tray-shots)"
+    install -m 644 "$shots"/system_tray_{hover,menu}.png docs/screenshots/
+
+# The same scene on this machine's own desktop, to look at by hand. It is
+# set apart from the machine's own: a
 # daemon and a tray of their own, with their own socket, state, profiles
 # and settings under target/tray-stage, two made-up pads, and a profile named `couch`
 # running on them, with a second, `desk`, that isn't. The pads are
@@ -366,7 +378,7 @@ docs-screenshots:
 # Ctrl-C ends it all. `just docs-tray-stage held` takes the assist's pad
 # away once the profile runs, which leaves its setup held.
 #
-# Set the scene for the tray's screenshots, to take by hand
+# Set the tray's scene on this desktop, to look at by hand
 [group('docs')]
 docs-tray-stage state="running":
     #!/usr/bin/env bash

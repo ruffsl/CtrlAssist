@@ -83,7 +83,11 @@ The tray starts with your graphical session. Its icon says what is going on at a
 
 A **middle click** on the icon starts or stops one profile without opening the menu: the one marked ► in that list. That is the profile you last started or stopped, and scrolling the **mouse wheel** over the icon moves the mark to another. The icon and the menu's icons come from your desktop's icon theme. The menu's are in its flat single-color style where the theme has one, so they follow a light or dark panel; the tray's own icon is the theme's controller in color, with its mark.
 
+![The tray's icon with a profile running, and the tip the desktop shows over it](../docs/screenshots/system_tray_hover.png)
+
 ### The menu
+
+![The tray's menu, open on a running profile](../docs/screenshots/system_tray_menu.png)
 
 **Profiles** come first: each one you have kept, and anything running. **default ✓** is first: CtrlAssist always keeps it, so there is always a profile to fill in, and it can't be deleted or renamed.
 

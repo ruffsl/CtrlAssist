@@ -147,7 +147,7 @@ Everything from the banner to the end of Architecture is inside `<!-- ANCHOR: ov
 | `about_pane.png` | The parts and their releases |
 | `pads_pane_light.png` | The Pads page again, in the light theme |
 | `couch_mode.png` | The window in its ten-foot layout |
-| `system_tray_menu.png`, `system_tray_hover.png` | The tray, last, taken by hand at step 8 |
+| `system_tray_menu.png`, `system_tray_hover.png` | The tray, last, made by `just docs-tray-shots` in a virtual machine where step 8 had them taken by hand |
 
 **What wasn't known** when this was first written is answered by the spike below: the software renderer draws the window as it is on screen, with the machine's fonts and icons, as a feature only the tool turns on.
 

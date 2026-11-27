@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** built, the guide's page and its screenshots with it; in review.
-- **Next action:** the maintainer's look at the tray's pictures from the virtual machine, and their word on going on to the menu's, which wants a way to open it there.
+- **Next action:** the maintainer's look at the tray's two pictures in the guide (`just docs-tray-shots`), and their word on the plug.
 
 ## Goal
 
@@ -68,7 +68,10 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
   - It works, and is quick once built: the session, the stack and the four pictures take 43 seconds of the machine's time. Building it the first time fetched some 850 MB and built CtrlAssist in its release profile.
   - What Plasma 6 draws, on its default light panel at a scale of 1: nothing in the panel with nothing running, the tray being passive and tucked away; the pad with its green play for a setup running; with its blue pause for one held; and with its amber plug once the daemon was stopped, in the panel still. That is the first look at a panel since the pad became `applications-games`, and the first at all for the amber plug and for a tray kept in view without its daemon.
   - At that size the plug is small and pale on a light panel; the play and the pause read well.
-  - Not tried: a failed setup, which nothing in the machine makes fail yet; a dark panel; and opening the tray's menu, which wants a click or keys sent into the session and is the uncertain part.
+  - The tip and the menu are captured there too, on Breeze Dark at a scale of 2. The pointer is a tablet the machine is given, placed and clicked over the machine's QMP channel; the icon is found on the screen by its badge's green, and the menu's first row by where the wallpaper ends above it. A right click held for a second opened nothing, a quick one opens the menu. Arrow keys didn't reach the menu, and the pointer resting on a profile's row only lit it, so the row is clicked, which opens its rows beside it.
+  - The pictures are cut out of a wallpaper of one key color, as TisVlay's were by hand: the session's wallpaper is magenta, the pictures are cropped to the screen's corner at TisVlay's size, and the key color is taken out of each pixel by how far its red and blue stand above its green. Plasma draws the tip see-through with the compositor's blur off as well as on; what was mostly solid is left solid, as over a black desktop, which leaves the tip a shade bluer than the panel. The tray's notifications are switched off in its own file for the run, so none is in a picture.
+  - On the dark panel the amber plug reads better than on the light one, though it is still the smallest of the four marks.
+  - Not tried: a failed setup, which nothing in the machine makes fail yet; a light panel at this scale; and text without the colored edges of subpixel smoothing, which the session's default gives.
 
 ## Deviations
 
