@@ -25,7 +25,7 @@ component ProfileListRow inherits ListRow {
 
     accessible-label: root.profile.is-default ? @tr("{}, default profile", root.profile.name) : root.profile.name;
     accessible-id: "profiles-row-" + root.profile.name;
-    height: 64px;
+    height: Design.size-list-row;
 
     HorizontalLayout {
         width: 100%;
@@ -279,7 +279,7 @@ component ProfileList inherits Rectangle {
         // the running, and have a caption only where some are running.
         if Profiles.rows.length > 0: area := Rectangle {
             vertical-stretch: 1;
-            property <length> row-height: 64px;
+            property <length> row-height: Design.size-list-row;
             property <int> rest-count: Profiles.rows.length - Profiles.running-count;
             property <length> caption: Profiles.running-count > 0 && self.rest-count > 0 ? 40px : 0px;
             property <length> room: max(0px, self.height - self.caption);

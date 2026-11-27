@@ -25,7 +25,7 @@ component PadListRow inherits ListRow {
 
     accessible-label: root.pad.name;
     accessible-id: "pads-row-" + root.pad.key;
-    height: 64px;
+    height: Design.size-list-row;
 
     HorizontalLayout {
         width: 100%;
@@ -247,7 +247,7 @@ component PadList inherits Rectangle {
         // (`Share`). The virtual pads start at the count of the real.
         if Pads.rows.length > 0: area := Rectangle {
             vertical-stretch: 1;
-            property <length> row-height: 64px;
+            property <length> row-height: Design.size-list-row;
             property <int> virtual-count: Pads.rows.length - Pads.real-count;
             property <length> caption: self.virtual-count > 0 ? 40px : 0px;
             property <length> room: max(0px, self.height - self.caption);
