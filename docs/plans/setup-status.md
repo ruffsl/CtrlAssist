@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** planned; nothing built.
-- **Next action:** the maintainer's read of this plan, then step 1.
+- **Status:** step 1 built.
+- **Next action:** the maintainer's look at the overlay on their Plasma (`just docs-tray-stage`, and `just docs-tray-stage held`), which decides between the overlay and pre-drawn icons.
 
 ## Goal
 
@@ -22,7 +22,7 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
   | None running | none | passive |
   | Starting | none | active |
   | Running | play, green | active |
-  | Held, waiting for a pad | pause, blue | needs attention |
+  | Held, waiting for a pad | pause, blue | active |
   | Failed | error, red | needs attention |
   | The daemon isn't running, or is another release | unavailable, gray | passive |
 
@@ -45,6 +45,10 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
 3. **The sidebar's status block.** Rows from the setups the window already mirrors, the link through the callback the Pads page already opens a profile with, the dot removed. Verified by the window's tests (rows for each state, the link's target, focus order) and a screenshot from `just docs-screenshots`.
 4. **The guide.** GUI & Tray says what the icon's overlays and the block's rows mean; the screenshots are made again.
 
+## Found
+
+- **Step 1, read from the staged tray over the session bus:** the icon is `input-gaming` running and held alike; the overlay is `media-playback-start` while the setup runs and `emblem-pause` once its assist's pad is taken away, with the status going from active to needs attention, as it then was. What Plasma draws of them hasn't been looked at.
+
 ## Deviations
 
-None yet.
+- **A held setup no longer asks for attention.** Plasma pulses the icon of a tray item that does, and the maintainer found the motion too distracting for a setup that is only waiting. A failed one still asks.

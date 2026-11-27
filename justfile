@@ -363,11 +363,12 @@ docs-screenshots:
 # grabbed, not hidden: no hiding service is asked. The daemon lists every
 # pad on the machine, so unplug real ones to keep them out of the
 # picture, and look for a second tray icon beside the dev stack's own.
-# Ctrl-C ends it all.
+# Ctrl-C ends it all. `just docs-tray-stage held` takes the assist's pad
+# away once the profile runs, which leaves its setup held.
 #
 # Set the scene for the tray's screenshots, to take by hand
 [group('docs')]
-docs-tray-stage:
+docs-tray-stage state="running":
     #!/usr/bin/env bash
     set -euo pipefail
     stage="{{ justfile_directory() }}/target/tray-stage"
@@ -377,6 +378,7 @@ docs-tray-stage:
     cargo build --quiet --package ctrlassist-cli --package ctrlassist-test
     trap 'kill $(jobs -p) 2> /dev/null || true' EXIT
     target/debug/ctrlassist-fixture fake-dualsense --real > /dev/null &
+    assist=$!
     target/debug/ctrlassist-fixture fake-pad --name "Xbox Wireless Controller" \
         --vendor 045e --product 0b13 > /dev/null &
     target/debug/ctrlassist service daemon --socket "$socket" \
@@ -389,6 +391,7 @@ docs-tray-stage:
     target/debug/ctrlassist profile put "$stage/couch.toml" --socket "$socket"
     target/debug/ctrlassist profile put "$stage/desk.toml" --socket "$socket"
     until target/debug/ctrlassist start couch --socket "$socket"; do sleep 0.2; done
+    if [ "{{ state }}" = "held" ]; then kill "$assist"; fi
     echo "The tray is staged: open its menu, and Ctrl-C here when the pictures are taken."
     target/debug/ctrlassist service tray --socket "$socket"
 

@@ -341,15 +341,27 @@ impl PadTray {
         menu::menu(&self.view)
     }
 
-    /// The tray's own icon, and which form of it: the colored pad glyph
-    /// whether or not something runs, with a warning or an error in its
-    /// place for a setup held or failed. The menu's rows are the
-    /// symbolic ones.
+    /// The tray's own icon, and which form of it: the colored pad glyph,
+    /// whatever runs. The menu's rows are the symbolic ones.
     fn glyph(&self) -> (menu::Icon, Variant) {
+        let _ = self;
+        (menu::icon::PAD, Variant::Color)
+    }
+
+    /// What is drawn over the tray's icon, at its corner, for the worst
+    /// of what the setups are in: nothing while none runs or one is
+    /// still starting. A daemon that isn't there, or is another release,
+    /// comes before any of it. A host that draws no overlays shows the
+    /// pad alone, and the title and the tooltip still say the rest.
+    fn overlay(&self) -> menu::Icon {
+        if !self.view.alive || self.view.mismatch.is_some() {
+            return overlay::UNAVAILABLE;
+        }
         match self.worst() {
-            Some(Phase::Failed) => (menu::icon::FAILED, Variant::Color),
-            Some(Phase::Held) => (menu::icon::WRONG, Variant::Color),
-            Some(_) | None => (menu::icon::PAD, Variant::Color),
+            Some(Phase::Failed) => overlay::FAILED,
+            Some(Phase::Held) => overlay::HELD,
+            Some(Phase::Running) => overlay::RUNNING,
+            Some(_) | None => menu::icon::NONE,
         }
     }
 
@@ -359,6 +371,22 @@ impl PadTray {
             .into_iter()
             .find(|phase| self.view.setups.iter().any(|setup| setup.phase == *phase))
     }
+}
+
+/// What is drawn over the tray's icon for a state, by the names a
+/// desktop's icon theme may have for it, an emblem first where there is
+/// one: emblems are drawn to sit at another icon's corner.
+mod overlay {
+    use crate::menu::Icon;
+
+    /// A setup runs.
+    pub(super) const RUNNING: Icon = &["media-playback-start"];
+    /// A setup is held for a pad.
+    pub(super) const HELD: Icon = &["emblem-pause", "media-playback-pause"];
+    /// A setup failed.
+    pub(super) const FAILED: Icon = &["emblem-error", "dialog-error"];
+    /// The daemon isn't running, or is another release.
+    pub(super) const UNAVAILABLE: Icon = &["emblem-unavailable", "dialog-question"];
 }
 
 /// Resolves `names` to the one the desktop's icon theme has, so the
@@ -507,9 +535,21 @@ impl Tray for PadTray {
         themed(name, variant)
     }
 
+    fn overlay_icon_name(&self) -> String {
+        let names = self.overlay();
+        if names.is_empty() {
+            String::new()
+        } else {
+            themed(names, Variant::Color)
+        }
+    }
+
+    /// A failed setup alone asks for attention, which a desktop may
+    /// animate, as Plasma does by pulsing the icon: a held one is
+    /// waiting for a pad, and its overlay says so without moving.
     fn status(&self) -> ksni::Status {
         match self.worst() {
-            Some(Phase::Failed | Phase::Held) => ksni::Status::NeedsAttention,
+            Some(Phase::Failed) => ksni::Status::NeedsAttention,
             Some(_) => ksni::Status::Active,
             None => ksni::Status::Passive,
         }
@@ -669,38 +709,54 @@ mod tests {
     fn the_icon_title_and_tooltip_say_the_worst_of_what_runs() {
         let said = |phase| {
             let (tray, _clicked) = tray(phase);
-            // The glyph and its form, before the desktop's theme is
-            // asked which name it has for it.
+            // The glyph and what is drawn over it, before the desktop's
+            // theme is asked which name it has for each.
             let (name, variant) = tray.glyph();
-            let flat = matches!(variant, Variant::Symbolic);
-            (tray.title(), (name[0], flat), tray.tool_tip().description)
+            assert!(matches!(variant, Variant::Color));
+            assert_eq!(name[0], "input-gaming");
+            (
+                tray.title(),
+                tray.overlay().first().copied(),
+                tray.tool_tip().description,
+            )
         };
         assert_eq!(
             said(None),
             (
                 "CtrlAssist".to_string(),
-                ("input-gaming", false),
+                None,
                 "Nothing is running\n3 of 3 pads connected".to_string()
             )
         );
-        assert_eq!(said(Some(Phase::Running)).1, ("input-gaming", false));
+        // The pad stays the icon whatever runs, and the state is over it.
+        assert_eq!(said(Some(Phase::Starting)).1, None);
+        assert_eq!(said(Some(Phase::Running)).1, Some("media-playback-start"));
         assert_eq!(said(Some(Phase::Held)).0, "CtrlAssist [held]");
-        assert_eq!(said(Some(Phase::Held)).1, ("dialog-warning", false));
-        assert_eq!(said(Some(Phase::Failed)).1, ("dialog-error", false));
+        assert_eq!(said(Some(Phase::Held)).1, Some("emblem-pause"));
+        assert_eq!(said(Some(Phase::Failed)).1, Some("emblem-error"));
         assert_eq!(
             said(Some(Phase::Failed)).2,
             "► couch: Failed · Toggle\n    a virtual pad refused a write"
         );
+        let (idle, _clicked) = tray(None);
+        assert_eq!(idle.overlay_icon_name(), "");
+        let (held, _clicked) = tray(Some(Phase::Held));
+        assert!(!held.overlay_icon_name().is_empty());
+        assert!(matches!(held.status(), ksni::Status::Active));
+        let (failed, _clicked) = tray(Some(Phase::Failed));
+        assert!(matches!(failed.status(), ksni::Status::NeedsAttention));
 
         let (mut down, _clicked) = tray(Some(Phase::Running));
         down.view.alive = false;
         assert_eq!(down.title(), "CtrlAssist [daemon not running]");
         assert_eq!(down.tool_tip().description, "The daemon isn't running");
+        assert_eq!(down.overlay().first(), Some(&"emblem-unavailable"));
         let (mut other, _clicked) = tray(None);
         other.view.mismatch = Some("9.0.0".to_string());
         assert_eq!(other.title(), "CtrlAssist [version mismatch]");
         assert!(other.tool_tip().description.starts_with("Version mismatch"));
         assert!(matches!(other.status(), ksni::Status::Passive));
+        assert_eq!(other.overlay().first(), Some(&"emblem-unavailable"));
         assert_eq!(other.id(), "ctrlassist");
     }
 
