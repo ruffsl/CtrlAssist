@@ -15,7 +15,7 @@
 let
   width = 2560;
   height = 1600;
-  key = "#ff00ff";
+  key = "#000000";
   # The pictures' size, measured from the screen's bottom right corner.
   crop = "1440x1016";
 
@@ -84,8 +84,8 @@ let
 
       ENV = "XDG_RUNTIME_DIR=/run/user/1000"
       WIDTH, HEIGHT = ${toString width}, ${toString height}
-      # The wallpaper is one color nothing else on the screen has, which
-      # the pictures are cut out of afterwards.
+      # The wallpaper is one flat color, which the pictures are cut out
+      # of afterwards.
       KEY = "${key}"
       # The green of the badge a running profile puts on the tray's icon.
       RUNNING = (0x2E, 0xB8, 0x5C)
@@ -246,28 +246,19 @@ let
   };
 in
 # Each picture is cut to the corner the tray is in, and the wallpaper is
-# taken out of it. How much of the key color a pixel holds is how far its
-# red and blue both stand above its green, which is all of them for the
-# wallpaper and some for what it shows through: a shadow, the soft edge
-# of a corner, a tip the desktop draws see-through. That much is taken
-# out. What was mostly the wallpaper is left as see-through as that; what
-# was mostly something else is left solid, as it is over a black desktop.
+# taken out of it: the black that reaches the picture's top left corner,
+# and no other, so what is black within the panel's icons stays. What the
+# desktop draws see-through, the tip, is as it looks over a black desktop.
 pkgs.runCommand "ctrlassist-tray-shots"
   {
     nativeBuildInputs = [ pkgs.imagemagick ];
     passthru = { inherit scene; };
-    keyed = "(min(u.r,u.b)-u.g>0.02 && abs(u.r-u.b)<0.1)";
-    key = "(min(u.r,u.b)-u.g)";
   }
   ''
     mkdir -p $out
-    solid="($keyed ? 1-$key : 1)"
     for picture in ${scene}/tray_*.png; do
       magick "$picture" -gravity SouthEast -crop ${crop}+0+0 +repage \
-        \( +clone -fx "$solid>=0.5 ? 1 : $solid" \) \
-        \( -clone 0 -channel RB -fx "$keyed ? (u-$key)/($solid>=0.5 ? 1 : $solid+0.0001) : u" \
-          -channel G -fx "$solid>=0.5 ? u : u/($solid+0.0001)" +channel \) \
-        -delete 0 +swap -alpha off -compose CopyOpacity -composite \
+        -alpha set -fill none -draw "alpha 0,0 floodfill" \
         "$out/system_$(basename "$picture")"
     done
   ''
