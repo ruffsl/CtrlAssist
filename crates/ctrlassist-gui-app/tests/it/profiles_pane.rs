@@ -411,10 +411,10 @@ fn app() -> AppWindow {
 }
 
 /// A profile's name too long for the header at the window's least width
-/// wraps, whole, rather than being cut short where only a pointer could
-/// show the rest: keys and couch mode read it as it is.
+/// is one line cut short, as a pad's title is, and leaves the header's
+/// buttons their room: it slides to show its end under the pointer.
 #[test]
-fn a_long_name_wraps_whole_in_the_header_at_the_least_width() {
+fn a_long_name_is_one_line_cut_short_in_the_header_at_the_least_width() {
     const LONG: &str = "abcdefghijklmnopqrstuvwxyz-01234";
     let app = app();
     let mut known_now = known();
@@ -422,16 +422,24 @@ fn a_long_name_wraps_whole_in_the_header_at_the_least_width() {
     profiles::show(&app, known_now);
     app.window()
         .set_size(slint::LogicalSize::new(720.0, 1600.0));
-    let height_of = |app: &AppWindow, name: &str| {
+    let shown = |app: &AppWindow, name: &str| {
         app.global::<Profiles>().invoke_select(name.into());
         settle();
         let shown = find_by_accessible_id(app, "profiles-name").expect("the header's name");
         assert_eq!(shown.accessible_label().unwrap_or_default(), name);
-        shown.size().height
+        (shown.size(), shown.absolute_position().x)
     };
-    let short = height_of(&app, "couch");
-    let long = height_of(&app, LONG);
-    assert!(long > short, "the long name wraps: {long} against {short}");
+    let (short, _) = shown(&app, "couch");
+    let (long, left) = shown(&app, LONG);
+    assert!(
+        (long.height - short.height).abs() < 0.5,
+        "one line: {} against {}",
+        long.height,
+        short.height
+    );
+    assert!(long.width > short.width, "it takes the room there is");
+    // Short of the window's edge by the buttons and chips beside it.
+    assert!(left + long.width < 720.0 - 100.0, "{left} + {}", long.width);
 }
 
 #[test]

@@ -249,7 +249,10 @@ export component SlideText inherits Rectangle {
 
     clip: true;
     horizontal-stretch: 1;
+    // As wide as the line where there is room, and as narrow as it has
+    // to be where there isn't.
     min-width: 0px;
+    preferred-width: measure.preferred-width;
     height: measure.preferred-height;
 
     // The line at its natural size, never shown: what the one that is

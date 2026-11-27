@@ -499,18 +499,17 @@ component ProfileDetailHeader inherits Rectangle {
                 spacing: Design.gap-form;
                 alignment: start;
                 // The name alone: the default profile's mark is its
-                // row's in the list, and here it left the name cut short.
-                // A long one wraps at the window's smallest, so the whole
-                // name is there to read without a pointer, by keys and
-                // across the room as well.
-                Text {
-                    min-width: Design.font-title-3;
+                // row's in the list. One too long for the header is cut
+                // short, and slides to show its end while the pointer
+                // is over it, as a pad's title does.
+                SlideText {
                     text: root.profile.name;
-                    color: Theme.text;
+                    text-color: Theme.text;
                     font-size: Design.font-title-3;
                     font-weight: 700;
-                    wrap: char-wrap;
-                    vertical-alignment: center;
+                    hover-self: true;
+                    accessible-role: text;
+                    accessible-label: root.profile.name;
                     accessible-id: root.id-prefix + "profiles-name";
                 }
                 if root.profile.kept: VerticalLayout {
