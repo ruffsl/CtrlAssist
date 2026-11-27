@@ -205,6 +205,75 @@ export component Focusable inherits Rectangle {
 }
 
 // =============================================================================
+// TickerText — one line of text that travels when it doesn't fit.
+// =============================================================================
+//
+// Cut off with an ellipsis like any other line while `running` is
+// false. While it is true, as its row is hovered or has focus, a line
+// too long for its width travels to its end and back, resting at each,
+// so the whole of it can be read; a line that fits stays still. The
+// motion is asked for by pointing at the row, never shown unasked.
+//
+// The offset is read from the animation clock only while the line
+// travels, so a still one costs no redraws.
+
+export component TickerText inherits Rectangle {
+    in property <string> text;
+    in property <brush> text-color;
+    in property <length> font-size: Design.font-body;
+    in property <int> font-weight: 400;
+    /// Whether a line that doesn't fit travels: its row is hovered or
+    /// has focus.
+    in property <bool> running;
+    /// How far the line is longer than its width; 0 where it fits.
+    out property <length> overrun: max(0px, measure.preferred-width - self.width);
+    out property <bool> travelling: self.running && self.overrun > 0px;
+
+    // The rest at each end, and the speed between them.
+    property <duration> rest: 900ms;
+    property <duration> travel: self.overrun / 40px * 1s;
+    property <duration> began;
+    changed travelling => {
+        self.began = animation-tick();
+    }
+    // Where in a there-and-back the line is: resting at its start,
+    // going, resting at its end, coming back.
+    property <duration> at: self.travelling
+        ? Math.mod((animation-tick() - self.began) / 1ms, (2 * self.rest + 2 * self.travel) / 1ms) * 1ms
+        : 0ms;
+    property <float> along: self.at < self.rest ? 0
+        : self.at < self.rest + self.travel ? (self.at - self.rest) / self.travel
+        : self.at < 2 * self.rest + self.travel ? 1
+        : 1 - (self.at - 2 * self.rest - self.travel) / self.travel;
+
+    clip: true;
+    horizontal-stretch: 1;
+    min-width: 0px;
+    height: measure.preferred-height;
+
+    // The line at its natural size, never shown: what the one that is
+    // shown is measured against, whichever way that one is cut.
+    measure := Text {
+        visible: false;
+        text: root.text;
+        font-size: root.font-size;
+        font-weight: root.font-weight;
+    }
+
+    label := Text {
+        x: root.travelling ? -root.overrun * root.along : 0px;
+        width: root.travelling ? measure.preferred-width : root.width;
+        height: root.height;
+        text: root.text;
+        color: root.text-color;
+        font-size: root.font-size;
+        font-weight: root.font-weight;
+        vertical-alignment: center;
+        overflow: root.travelling ? clip : elide;
+    }
+}
+
+// =============================================================================
 // Chip — small status pill (Connected, Managed, Unmanaged, etc.).
 // =============================================================================
 //

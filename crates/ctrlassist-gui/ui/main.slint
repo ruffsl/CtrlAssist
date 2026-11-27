@@ -12,7 +12,7 @@
 import { VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
-import { Focusable, InlineError } from "widgets.slint";
+import { Focusable, InlineError, TickerText } from "widgets.slint";
 import { Daemon } from "globals/daemon.slint";
 import { Clipboard } from "globals/clipboard.slint";
 import { Errors } from "globals/errors.slint";
@@ -119,9 +119,11 @@ component SidebarItem inherits Focusable {
 }
 
 // A running profile in the sidebar, seen from every pane: what its
-// setup is in, as a glyph in the state's color, its name, and the state
-// in words where it isn't plainly running. Activating it opens the
-// profile. The glyphs and colors are the tray icon's.
+// setup is in, as a glyph in the state's color, and its name, which
+// travels while the row is hovered or has focus if it is too long to
+// show whole. The state in words is the row's tip and its accessible
+// label. Activating it opens the profile. The glyphs and colors are the
+// tray icon's.
 component StatusItem inherits Focusable {
     in property <string> name;
     // "starting", "running", "held" or "failed".
@@ -131,17 +133,20 @@ component StatusItem inherits Focusable {
         : root.phase == "held" ? Theme.info
         : root.phase == "running" ? Theme.success
         : Theme.sidebar-text-dim;
-    property <string> word: root.phase == "failed" ? @tr("Failed")
-        : root.phase == "held" ? @tr("Held")
-        : root.phase == "starting" ? @tr("Starting")
-        : "";
+    property <string> said: root.phase == "failed" ? @tr("{}: failed", root.name)
+        : root.phase == "held" ? @tr("{}: held, waiting for a pad", root.name)
+        : root.phase == "starting" ? @tr("{}: starting", root.name)
+        : @tr("{}: running", root.name);
 
     column: 0;
-    accessible-label: root.word == "" ? @tr("{}: running", root.name) : root.name + ": " + root.word;
+    accessible-label: root.said;
     height: 24px;
     border-radius: 5px;
     background: root.hovered ? Theme.sidebar-hover : transparent;
     animate background { duration: 150ms; }
+    hover-changed(hovering) => {
+        tip.set-hover(hovering);
+    }
 
     HorizontalLayout {
         width: 100%;
@@ -164,21 +169,19 @@ component StatusItem inherits Focusable {
         VerticalLayout {
             alignment: center;
             horizontal-stretch: 1;
-            Text {
+            TickerText {
                 text: root.name;
-                color: Theme.sidebar-text;
+                text-color: Theme.sidebar-text;
                 font-size: Design.font-caption;
-                overflow: elide;
+                running: root.hovered || (root.focused && Nav.focus-visible);
             }
         }
-        if root.word != "": VerticalLayout {
-            alignment: center;
-            Text {
-                text: root.word;
-                color: root.tone;
-                font-size: Design.font-caption;
-            }
-        }
+    }
+
+    tip := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.said;
     }
 }
 
@@ -664,44 +667,65 @@ export component AppWindow inherits Window {
                         clicked => { root.navigate(Pane.about); }
                     }
 
-                    // Spacer pushes status to bottom
-                    Rectangle { vertical-stretch: 1; }
+                    // With nothing running, a spacer pushes Reload and
+                    // the services to the bottom.
+                    if root.status-count == 0: Rectangle {
+                        vertical-stretch: 1;
+                    }
 
                     // The running profiles, seen from every pane: a
-                    // row each, which opens its profile. At most four
-                    // show at once; the rest scroll, a row coming into
-                    // view as it takes focus.
-                    if root.status-count > 0: status := Flickable {
-                        property <length> row-height: 24px;
-                        height: min(root.status-count, 4) * self.row-height;
-                        content-height: root.status-count * self.row-height;
-                        VerticalLayout {
-                            for setup[index] in Setups.rows: StatusItem {
-                                name: setup.name;
-                                phase: setup.phase;
-                                accessible-id: "sidebar-status-" + setup.name;
-                                property <int> tick: root.status-tick;
-                                changed tick => {
-                                    if (root.status-target == index) {
-                                        self.focus();
-                                    }
-                                }
-                                changed focused => {
-                                    if (self.focused) {
-                                        root.status-focused = index;
-                                        if (index * status.row-height < -status.content-y) {
-                                            status.content-y = -index * status.row-height;
-                                        } else if ((index + 1) * status.row-height > status.height - status.content-y) {
-                                            status.content-y = status.height - (index + 1) * status.row-height;
+                    // row each, which opens its profile, between two
+                    // lines that set them apart from the panes above
+                    // and the services below. They take the room
+                    // between the two, and scroll past it, a row
+                    // coming into view as it takes focus.
+                    if root.status-count > 0: VerticalLayout {
+                        vertical-stretch: 1;
+                        spacing: 4px;
+                        padding-top: 4px;
+                        padding-bottom: 4px;
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.border;
+                        }
+                        status := Flickable {
+                            property <length> row-height: 24px;
+                            vertical-stretch: 1;
+                            min-height: self.row-height;
+                            content-height: root.status-count * self.row-height;
+                            VerticalLayout {
+                                alignment: start;
+                                for setup[index] in Setups.rows: StatusItem {
+                                    name: setup.name;
+                                    phase: setup.phase;
+                                    accessible-id: "sidebar-status-" + setup.name;
+                                    property <int> tick: root.status-tick;
+                                    changed tick => {
+                                        if (root.status-target == index) {
+                                            self.focus();
                                         }
-                                    } else if (root.status-focused == index) {
-                                        root.status-focused = -1;
                                     }
-                                }
-                                activated => {
-                                    Setups.open(setup.name);
+                                    changed focused => {
+                                        if (self.focused) {
+                                            root.status-focused = index;
+                                            if (index * status.row-height < -status.content-y) {
+                                                status.content-y = -index * status.row-height;
+                                            } else if ((index + 1) * status.row-height > status.height - status.content-y) {
+                                                status.content-y = status.height - (index + 1) * status.row-height;
+                                            }
+                                        } else if (root.status-focused == index) {
+                                            root.status-focused = -1;
+                                        }
+                                    }
+                                    activated => {
+                                        Setups.open(setup.name);
+                                    }
                                 }
                             }
+                        }
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.border;
                         }
                     }
 

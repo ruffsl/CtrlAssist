@@ -1251,7 +1251,10 @@ fn a_running_profile_s_row_in_the_sidebar_says_its_state_and_opens_it() {
     use ctrlassist_gui::Nav;
     use slint::platform::Key;
 
-    use crate::support::press;
+    use crate::support::{elapse, press};
+
+    /// A name too long for the sidebar to show whole.
+    const LONG: &str = "zz-a-profile-name-far-too-long";
 
     i_slint_backend_testing::init_no_event_loop();
     profiles::forget_held();
@@ -1274,6 +1277,11 @@ fn a_running_profile_s_row_in_the_sidebar_says_its_state_and_opens_it() {
         ..known.setups[0].clone()
     };
     known.setups.push(held);
+    let long = Setup {
+        name: LONG.to_string(),
+        ..known.setups[0].clone()
+    };
+    known.setups.push(long);
     let kept: Vec<String> = known
         .profiles
         .iter()
@@ -1288,7 +1296,10 @@ fn a_running_profile_s_row_in_the_sidebar_says_its_state_and_opens_it() {
             .map(|label| label.to_string())
     };
     assert_eq!(label("quick").as_deref(), Some("quick: running"));
-    assert_eq!(label("couch").as_deref(), Some("couch: Held"));
+    assert_eq!(
+        label("couch").as_deref(),
+        Some("couch: held, waiting for a pad")
+    );
 
     // Down the rail from the last pane: each row in name order, then
     // Reload, and back up the same way.
@@ -1306,6 +1317,8 @@ fn a_running_profile_s_row_in_the_sidebar_says_its_state_and_opens_it() {
         Key::DownArrow,
         Key::DownArrow,
         Key::DownArrow,
+        Key::DownArrow,
+        Key::UpArrow,
         Key::UpArrow,
         Key::UpArrow,
         Key::UpArrow,
@@ -1319,8 +1332,10 @@ fn a_running_profile_s_row_in_the_sidebar_says_its_state_and_opens_it() {
         [
             "sidebar-status-couch",
             "sidebar-status-quick",
+            &format!("sidebar-status-{LONG}"),
             "sidebar-reload",
             "sidebar-reload",
+            &format!("sidebar-status-{LONG}"),
             "sidebar-status-quick",
             "sidebar-status-couch",
             "sidebar-about",
@@ -1328,6 +1343,31 @@ fn a_running_profile_s_row_in_the_sidebar_says_its_state_and_opens_it() {
     );
     // The pane didn't follow focus onto a row.
     assert_eq!(app.get_active_pane(), Pane::About);
+
+    // A name too long to show whole travels while its row has focus,
+    // and is still, cut short, when it hasn't; one that fits never moves.
+    let left_of = |name: &str| {
+        i_slint_backend_testing::ElementHandle::find_by_accessible_label(&app, name)
+            .filter(|text| text.size().width > 0.0)
+            .map(|text| text.absolute_position().x)
+            .fold(f32::INFINITY, f32::min)
+    };
+    let (still, fits) = (left_of(LONG), left_of("couch"));
+    for _ in 0..3 {
+        press(&app, Key::DownArrow);
+        settle();
+    }
+    assert_eq!(focus(), format!("sidebar-status-{LONG}"));
+    assert_eq!(left_of(LONG), still, "it rests before it sets off");
+    elapse(1500);
+    assert!(left_of(LONG) < still, "it travels toward its end");
+    for _ in 0..3 {
+        press(&app, Key::UpArrow);
+        settle();
+    }
+    elapse(1500);
+    assert_eq!(left_of(LONG), still, "it is back, and still");
+    assert_eq!(left_of("couch"), fits);
 
     // Return on a row opens its profile.
     press(&app, Key::DownArrow);

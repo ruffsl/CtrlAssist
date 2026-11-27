@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** the tray's icon and the sidebar's block are built; the guide is next.
-- **Next action:** the maintainer's look at the sidebar's block; then step 4, the guide and its screenshots.
+- **Next action:** the maintainer's look at the sidebar's rows and a travelling name in the running window; then the same for the lists and titles, and step 4, the guide and its screenshots.
 
 ## Goal
 
@@ -36,7 +36,7 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
 ## Open
 
 - **Which theme names the overlays are.** Breeze has `emblem-pause`, `emblem-error`, `emblem-warning`, `emblem-unavailable` and `emblem-checked` among its emblems, and no play emblem; `media-playback-start` is the play glyph both Breeze and Adwaita have, in the theme's one color. Step 1 tries them and writes down what each theme and host shows.
-- **More setups than the block has room for.** Built as proposed: four rows show, the rest scroll, and a row comes into view as it takes focus. Not yet looked at with more than two.
+- **More setups than the block has room for.** The rows scroll within the room they have, and one comes into view as it takes focus. Not yet looked at with more than fit.
 
 ## Steps
 
@@ -65,6 +65,8 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
   - Not tried then: what a desktop draws of a file usvg wrote, and any theme but these two.
 
 ## Deviations
+
+- **The sidebar's rows, after the maintainer's look:** they take the room between the last pane and Reload, between two thin lines, and scroll past it, in place of four rows dropped above Reload. A row says its state by its glyph alone; the words are its tip and its accessible label. A name too long to show whole travels to its end and back while its row is hovered or has focus, by a text widget made to be shared: the lists of pads and of profiles, and the titles over their details, are to take it next, once it has been seen moving.
 
 - **The theme's files are read with usvg,** as the maintainer chose after what was found of it: each written back as plain shapes, the glyph in the state's color by a rule over every shape, then joined as text. An icon made that way is drawn sharp by Plasma, looked at for a running setup. The stop square marks a failed setup and an amber disconnected plug a daemon that isn't there, the gray first tried being lost on the pad.
 
