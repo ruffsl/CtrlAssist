@@ -78,6 +78,11 @@ pub(crate) fn load(app: &AppWindow) {
         "preferences-desktop-notification-bell",
         "audio-volume-high",
     ]));
+    // A profile's tile. Breeze's names and no other's: a theme without
+    // them leaves the tile bare.
+    icons.set_join(load_symbolic_icon(&["kr_combine"]));
+    icons.set_split(load_symbolic_icon(&["split"]));
+    icons.set_written(load_symbolic_icon(&["view-list-text"]));
     app.global::<Clipboard>()
         .set_copy_icon(load_symbolic_icon(&["edit-copy"]));
 }

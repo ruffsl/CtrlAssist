@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** built, the guide's page and its screenshots with it; in review.
-- **Next action:** the maintainer's word to push the tray's pictures and their harness.
+- **Next action:** the maintainer's review of the pull request.
 
 ## Goal
 
@@ -75,6 +75,8 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
   - Not tried: a failed setup, which nothing in the machine makes fail yet; a light panel at this scale; and text without the colored edges of subpixel smoothing, which the session's default gives.
 
 ## Deviations
+
+- **A profile's tile is the theme's glyph,** as the maintainer chose from a sheet of Breeze's: `kr_combine` for pads joined, `split` for a pad shared out, `view-list-text` for a profile written by hand, where the window drew curves of its own that matched no theme's line work. They are Breeze's names with no others behind them, so a theme without them leaves the tile bare; carrying copies is kept as an idea (`docs/ideas/bundled-tile-glyphs.md`).
 
 - **The plug is half as large again as the other marks,** 45 of the icon's 64 where they are 30, after the maintainer's look at it on a dark panel: it is a thin drawing, and the smallest of the four at their size.
 

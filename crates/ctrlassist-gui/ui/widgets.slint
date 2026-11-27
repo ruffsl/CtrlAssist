@@ -2284,10 +2284,11 @@ export component PadTile inherits Rectangle {
     }
 }
 
-// A profile's tile: its arrangement's shape. Two lines joining into one
-// for a preset that merges two pads, one line splitting into two for a
-// preset that shares one pad out; a profile that is neither, written by
-// hand, gets a plain mark.
+// A profile's tile: its arrangement's shape, in the desktop theme's own
+// glyphs. Two lines joining into one for a preset that merges two pads,
+// one line splitting into two for a preset that shares one pad out, and
+// lines of text for a profile that is neither, written by hand. A theme
+// without a glyph leaves the tile bare.
 export component ProfileTile inherits Rectangle {
     // "merge", "split", or anything else for neither.
     in property <string> shape;
@@ -2300,19 +2301,16 @@ export component ProfileTile inherits Rectangle {
     border-width: Design.border-thin;
     border-color: Theme.border;
 
-    Path {
-        width: root.tile-size * 0.62;
-        height: root.tile-size * 0.62;
+    Image {
+        source: root.shape == "merge" ? Icons.join
+            : root.shape == "split" ? Icons.split
+            : Icons.written;
+        width: root.tile-size * 0.7;
+        height: root.tile-size * 0.7;
         x: (root.tile-size - self.width) / 2;
         y: (root.tile-size - self.height) / 2;
-        viewbox-width: 24;
-        viewbox-height: 24;
-        stroke: Theme.chip-text;
-        stroke-width: 2px;
-        fill: transparent;
-        commands: root.shape == "merge" ? "M 3 6 C 10 6 10 12 14 12 L 21 12 M 3 18 C 10 18 10 12 14 12"
-            : root.shape == "split" ? "M 3 12 L 10 12 C 14 12 14 6 21 6 M 10 12 C 14 12 14 18 21 18"
-            : "M 4 7 L 20 7 M 4 12 L 20 12 M 4 17 L 14 17";
+        image-fit: contain;
+        colorize: Theme.chip-text;
     }
 }
 
