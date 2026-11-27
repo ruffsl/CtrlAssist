@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** the tray's icon and the sidebar's block are built; the guide is next.
-- **Next action:** the maintainer's look at the sidebar's rows and a sliding name in the running window; then step 4, the guide and its screenshots.
+- **Status:** built, the guide's page and its screenshots with it; in review.
+- **Next action:** the review of the pull request (#65); then the tray's icons looked at on a panel for a failed setup and for no daemon, and on a desktop other than Plasma.
 
 ## Goal
 

@@ -6,15 +6,15 @@ CtrlAssist has two faces on a desktop. The **window** shows every controller and
 
 Open it from your application menu, or with **Settings** in the tray's menu, or a left click on the tray's icon. A second launch brings the open window to the front.
 
-A sidebar on the left has the window's four pages. Under them, **Reload** has the daemon read its profiles again, and the tray its settings, for when a file was edited outside the window. The three dots at the bottom say whether the **Daemon**, the **Hiding** service and the **Tray** are running; [About](#about) says more of each.
+A sidebar on the left has the window's four pages. Under them, each profile that is running has a line of its own, whichever page is open: a green ▶ while it runs, a blue ⏸ while it waits for a controller that left, a red ■ if it failed. Click one to open that profile. Under those, **Reload** has the daemon read its profiles again, and the tray its settings, for when a file was edited outside the window. The three dots at the bottom say whether the **Daemon**, the **Hiding** service and the **Tray** are running; [About](#about) says more of each.
 
-The window follows your desktop's light or dark theme and its accent color. An **ⓘ** beside a section's title or at the end of a row explains it.
+The window follows your desktop's light or dark theme and its accent color. An **ⓘ** beside a section's title or at the end of a row explains it. A name too long for its place is cut short with an ellipsis; point at it, or move to it with the keys, and it slides to show the rest.
 
 ### Pads
 
 ![The Pads page, on a controller that a running profile is using](../docs/screenshots/pads_pane.png)
 
-Every controller CtrlAssist knows is listed, the connected ones and those it remembers from before, and under **VIRTUAL** the virtual controllers that exist now. Pick one to see it.
+Every controller CtrlAssist knows is listed, the connected ones and those it remembers from before, and under **VIRTUAL** the virtual controllers that exist now. The two lists scroll apart, so a long first never hides the second. Pick one to see it.
 
 - The chips at the top say how it is: **Connected** or **Disconnected**; **In couch**, with the name of the running profile that is using it; **Free**; **Remembered**; or **Virtual**.
 - **Identify** buzzes the controller for a moment, so you can tell two apart. On a virtual controller it rumbles it as a game would, so the controllers behind it buzz the way its profile passes rumble on.
@@ -79,7 +79,7 @@ Under Plasma Bigscreen, a gamepad's D-pad, Cross and Circle are the arrows, OK a
 
 ## The tray
 
-The tray starts with your graphical session. Its icon shows trouble at a glance: a warning when an arrangement is waiting for a controller, an error when one has failed. Hovering over it lists what runs: each arrangement with its mode, its controllers, a ● beside the one that has control, and its virtual controller. After them come the profiles that are ready to start, and when nothing runs, how many controllers are connected.
+The tray starts with your graphical session. Its icon says what is going on at a glance, by a mark at its corner: a green ▶ while an arrangement runs, a blue ⏸ while one waits for a controller that left, a red ■ if one has failed, and an amber plug when the daemon isn't running. With nothing running it is the plain controller. Hovering over it lists what runs: each arrangement with its mode, its controllers, a ● beside the one that has control, and its virtual controller. After them come the profiles that are ready to start, and when nothing runs, how many controllers are connected.
 
 A **middle click** on the icon starts or stops one profile without opening the menu: the one marked ► in that list. That is the profile you last started or stopped, and scrolling the **mouse wheel** over the icon moves the mark to another. The icon and the menu's icons come from your desktop's icon theme, in its flat single-color style where the theme has one, so they follow a light or dark panel.
 
