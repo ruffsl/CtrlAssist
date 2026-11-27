@@ -71,6 +71,7 @@ pub(crate) fn load(app: &AppWindow) {
     ]));
     icons.set_start(load_symbolic_icon(&["media-playback-start"]));
     icons.set_stop(load_symbolic_icon(&["media-playback-stop"]));
+    icons.set_pause(load_symbolic_icon(&["media-playback-pause"]));
     icons.set_identify(load_symbolic_icon(&[
         "notifications",
         "preferences-desktop-notification-bell",

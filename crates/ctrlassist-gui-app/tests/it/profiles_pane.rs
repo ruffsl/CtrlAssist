@@ -405,7 +405,7 @@ fn app() -> AppWindow {
         .iter()
         .map(|profile| profile.name.clone())
         .collect();
-    setups::show(&app, setups::rows(&known.setups, &kept), "");
+    setups::show(&app, setups::rows(&known.setups, &kept));
     profiles::show(&app, known);
     app
 }
@@ -709,7 +709,7 @@ fn a_profile_s_pad_and_a_pad_s_profile_are_a_click_apart_and_back_returns() {
         .iter()
         .map(|profile| profile.name.clone())
         .collect();
-    setups::show(&app, setups::rows(&known.setups, &kept), "");
+    setups::show(&app, setups::rows(&known.setups, &kept));
     pads::show(
         &app,
         pads::rows(&known.pads, &known.setups, &known.profiles, &[]),
@@ -1223,7 +1223,7 @@ fn a_running_profile_that_is_deleted_keeps_a_row_to_stop_it() {
         .iter()
         .map(|profile| profile.name.clone())
         .collect();
-    setups::show(&app, setups::rows(&known_now.setups, &kept), "");
+    setups::show(&app, setups::rows(&known_now.setups, &kept));
     profiles::show(&app, known_now);
     app.global::<Profiles>().invoke_select("quick".into());
     settle();
@@ -1241,4 +1241,105 @@ fn a_running_profile_that_is_deleted_keeps_a_row_to_stop_it() {
     }
     activate_shown(&app, "profiles-stop");
     assert_eq!(*stopped.borrow(), ["quick"]);
+}
+
+/// A running profile has a row in the sidebar, from every pane: what its
+/// setup is in, on the rail between the last pane and Reload, and a way
+/// to its profile.
+#[test]
+fn a_running_profile_s_row_in_the_sidebar_says_its_state_and_opens_it() {
+    use ctrlassist_gui::Nav;
+    use slint::platform::Key;
+
+    use crate::support::press;
+
+    i_slint_backend_testing::init_no_event_loop();
+    profiles::forget_held();
+    let app = AppWindow::new().expect("the window builds on the testing backend");
+    let handles = nav::wire(&app);
+    keys::bind_key_router(&app);
+    profiles::bind_local(&app, &handles);
+    setups::bind_links(&app, &handles);
+    app.set_daemon_available(true);
+    app.show().expect("the testing backend shows a window");
+    settle();
+
+    // Nothing runs: no rows.
+    assert!(find_by_accessible_id(&app, "sidebar-status-quick").is_none());
+
+    let mut known = known();
+    let held = Setup {
+        name: "couch".to_string(),
+        phase: Phase::Held,
+        ..known.setups[0].clone()
+    };
+    known.setups.push(held);
+    let kept: Vec<String> = known
+        .profiles
+        .iter()
+        .map(|profile| profile.name.clone())
+        .collect();
+    setups::show(&app, setups::rows(&known.setups, &kept));
+    profiles::show(&app, known);
+    settle();
+    let label = |name: &str| {
+        find_by_accessible_id(&app, &format!("sidebar-status-{name}"))
+            .and_then(|row| row.accessible_label())
+            .map(|label| label.to_string())
+    };
+    assert_eq!(label("quick").as_deref(), Some("quick: running"));
+    assert_eq!(label("couch").as_deref(), Some("couch: Held"));
+
+    // Down the rail from the last pane: each row in name order, then
+    // Reload, and back up the same way.
+    find_by_accessible_id(&app, "sidebar-about")
+        .unwrap()
+        .invoke_accessible_default_action();
+    settle();
+    app.invoke_focus_active_sidebar_item();
+    settle();
+    let focus = || app.global::<Nav>().get_focus_id().to_string();
+    assert_eq!(focus(), "sidebar-about");
+    let mut walked = Vec::new();
+    for key in [
+        Key::DownArrow,
+        Key::DownArrow,
+        Key::DownArrow,
+        Key::DownArrow,
+        Key::UpArrow,
+        Key::UpArrow,
+        Key::UpArrow,
+    ] {
+        press(&app, key);
+        settle();
+        walked.push(focus());
+    }
+    assert_eq!(
+        walked,
+        [
+            "sidebar-status-couch",
+            "sidebar-status-quick",
+            "sidebar-reload",
+            "sidebar-reload",
+            "sidebar-status-quick",
+            "sidebar-status-couch",
+            "sidebar-about",
+        ]
+    );
+    // The pane didn't follow focus onto a row.
+    assert_eq!(app.get_active_pane(), Pane::About);
+
+    // Return on a row opens its profile.
+    press(&app, Key::DownArrow);
+    settle();
+    press(&app, Key::Return);
+    settle();
+    assert_eq!(app.get_active_pane(), Pane::Profiles);
+    let pane = app.global::<Profiles>();
+    let shown = pane
+        .get_rows()
+        .row_data(usize::try_from(pane.get_selected_index()).unwrap())
+        .unwrap()
+        .name;
+    assert_eq!(shown, "couch");
 }

@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** the tray's icon is built, with the state composed into it; the sidebar's block is next.
-- **Next action:** step 3, the sidebar's status block.
+- **Status:** the tray's icon and the sidebar's block are built; the guide is next.
+- **Next action:** the maintainer's look at the sidebar's block; then step 4, the guide and its screenshots.
 
 ## Goal
 
@@ -36,7 +36,7 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
 ## Open
 
 - **Which theme names the overlays are.** Breeze has `emblem-pause`, `emblem-error`, `emblem-warning`, `emblem-unavailable` and `emblem-checked` among its emblems, and no play emblem; `media-playback-start` is the play glyph both Breeze and Adwaita have, in the theme's one color. Step 1 tries them and writes down what each theme and host shows.
-- **More setups than the block has room for.** A window at its smallest height fits a few rows above Reload. Proposed: the block scrolls past four; to be looked at in step 3.
+- **More setups than the block has room for.** Built as proposed: four rows show, the rest scroll, and a row comes into view as it takes focus. Not yet looked at with more than two.
 
 ## Steps
 
