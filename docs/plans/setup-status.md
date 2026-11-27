@@ -49,6 +49,11 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
 
 - **Step 1, read from the staged tray over the session bus:** the icon is `input-gaming` running and held alike; the overlay is `media-playback-start` while the setup runs and `emblem-pause` once its assist's pad is taken away, with the status going from active to needs attention, as it then was. What Plasma draws of them hasn't been looked at.
 
+- **What Plasma 6.8 draws of an overlay, looked at on the maintainer's panel at a scale of 2:**
+  - *By name* (`OverlayIconName`): nothing. The pad is drawn alone, though the name is one the theme has.
+  - *As pixels* (`OverlayIconPixmap`): the overlay is drawn at the icon's lower right, in the colors sent. But Plasma then paints the icon and the overlay together into bitmaps of 16, 22, 32 and 48 pixels, whatever the screen's scale (`StatusNotifierItemSource::overlayIcon`), and the panel stretches one: the pad comes out blurred beside the same pad without an overlay, which is drawn from its vector at the screen's own resolution. The overlay is 8 pixels a side at most sizes, and with a larger bitmap offered only its top left quarter is drawn at this scale; with the 8-pixel one alone it is whole, and blocky.
+  - So the protocol's overlay can't give a sharp icon here by either route. The state has to be part of the icon itself.
+
 ## Deviations
 
 - **A held setup no longer asks for attention.** Plasma pulses the icon of a tray item that does, and the maintainer found the motion too distracting for a setup that is only waiting. A failed one still asks.
