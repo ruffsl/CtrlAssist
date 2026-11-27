@@ -12,7 +12,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { ListRow, Group, Chip, ThemedButton, DangerBtn, CopyBtn, IconBtn, ConfirmDialog, InlineError, Focusable, PadTile, FormRow, ListCaption, ToneText, SlideText, Share } from "../widgets.slint";
+import { ListRow, Group, Chip, ThemedButton, CopyBtn, IconBtn, ConfirmDialog, InlineError, Focusable, PadTile, FormRow, ListCaption, ToneText, SlideText, Share } from "../widgets.slint";
 import { Icons } from "../globals/icons.slint";
 import { HelpScrollView } from "../globals/help.slint";
 import { Health, ServiceHealth } from "../globals/health.slint";
@@ -349,6 +349,13 @@ component LabeledRow {
 // it is connected and what it is doing.
 component PadDetailHeader inherits Rectangle {
     in property <PadRow> pad;
+    in property <string> id-prefix;
+    in property <bool> daemon-available;
+    /// The detail row Forget is a stop of.
+    in property <int> nav-row;
+    /// Forget takes focus as this changes.
+    in property <int> forget-focus-tick;
+    callback request-forget();
 
     height: header-layout.preferred-height;
     background: Theme.surface;
@@ -391,7 +398,6 @@ component PadDetailHeader inherits Rectangle {
             }
             HorizontalLayout {
                 spacing: Design.gap-meta;
-                alignment: start;
                 Text {
                     text: root.pad.model;
                     color: Theme.text-dim;
@@ -409,10 +415,35 @@ component PadDetailHeader inherits Rectangle {
                     vertical-alignment: center;
                 }
                 Text {
+                    horizontal-stretch: 1;
                     text: root.pad.connection == "" ? "—" : root.pad.connection;
                     color: Theme.text-dim;
                     font-size: Design.font-helper;
+                    overflow: elide;
                     vertical-alignment: center;
+                }
+                // Forget, at the row's far end as a profile's Delete is,
+                // for a real pad: one that is connected can't be
+                // forgotten, and says so. In a box of the line's own
+                // height, which the button stands a little taller than,
+                // so that the header is as tall as a profile's.
+                if !root.pad.is-virtual: Rectangle {
+                    width: forget.preferred-width;
+                    forget := IconBtn {
+                        y: (parent.height - self.height) / 2;
+                        height: self.preferred-height;
+                        property <int> focus-mirror: root.forget-focus-tick;
+                        changed focus-mirror => {
+                            self.focus();
+                        }
+                        nav-row: root.nav-row;
+                        source: Icons.delete;
+                        enabled: root.daemon-available && !root.pad.connected;
+                        accessible-label: @tr("Forget pad");
+                        tip: root.pad.connected ? @tr("A connected pad can't be forgotten") : @tr("Forget pad");
+                        accessible-id: root.id-prefix + "pads-forget";
+                        clicked => { root.request-forget(); }
+                    }
                 }
             }
         }
@@ -460,14 +491,14 @@ component PadDetail inherits Rectangle {
         }
     }
 
-    // Forget is only there for a pad that isn't connected, so it takes
-    // focus by a tick of its own.
+    // Forget, in the header, can be used only for a pad that isn't
+    // connected, and takes focus by a tick of its own.
     property <int> forget-focus-tick;
     property <int> status-row;
-    property <int> danger-row;
+    property <int> forget-row;
     init => {
         root.status-row = Nav.next-row-id();
-        root.danger-row = Nav.next-row-id();
+        root.forget-row = Nav.next-row-id();
     }
 
     background: Theme.surface-alt;
@@ -478,6 +509,11 @@ component PadDetail inherits Rectangle {
 
         PadDetailHeader {
             pad: root.pad;
+            id-prefix: root.id-prefix;
+            daemon-available: root.daemon-available;
+            nav-row: root.forget-row;
+            forget-focus-tick: root.forget-focus-tick;
+            request-forget => { root.request-forget(); }
         }
 
         HelpScrollView {
@@ -668,40 +704,6 @@ component PadDetail inherits Rectangle {
                         value: root.pad.address;
                         mono: true;
                         copyable: true;
-                    }
-                }
-
-                // -- DANGER ZONE --
-                //
-                // Only a pad that isn't connected can be forgotten.
-                if !root.pad.connected && !root.pad.is-virtual: Group {
-                    title: @tr("DANGER ZONE");
-                    HorizontalLayout {
-                        spacing: Design.gap-row;
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            Text {
-                                text: @tr("Drops this pad from the list. It is known again the next time it connects.");
-                                color: Theme.text-dim;
-                                font-size: Design.font-helper;
-                                wrap: word-wrap;
-                            }
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            forget := DangerBtn {
-                                property <int> focus-mirror: root.forget-focus-tick;
-                                changed focus-mirror => {
-                                    self.focus();
-                                }
-                                nav-row: root.danger-row;
-                                text: @tr("Forget pad");
-                                enabled: root.daemon-available;
-                                accessible-id: root.id-prefix + "pads-forget";
-                                clicked => { root.request-forget(); }
-                            }
-                        }
                     }
                 }
             }

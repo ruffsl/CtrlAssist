@@ -21,7 +21,7 @@ Every controller CtrlAssist knows is listed, the connected ones and those it rem
 - **Visibility** says whether games can see this controller beside a virtual one: **Hidden**, **Grabbed** or **Visible**. The profile that is running with it decides; see [Profiles](./profiles.md#visibility).
 - **PROFILES** lists every profile that names this controller, the part it plays there, and whether that profile is running. The pencil opens the profile.
 - **INFO** has what tells this controller from others, with a button to copy each. A profile names a controller by its **Pad ID**, for this one and no other, or by its **Model**, for any of that kind.
-- **Forget pad** drops a controller that isn't connected from the list.
+- The trash can in the page's header, **Forget pad**, drops a controller that isn't connected from the list, after asking. It is known again the next time it connects.
 
 ![The same page on a virtual controller](../docs/screenshots/pads_pane_virtual.png)
 
