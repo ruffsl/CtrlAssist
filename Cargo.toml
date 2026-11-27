@@ -101,7 +101,7 @@ freedesktop-icons = "0.4"
 # TisVlay's pins.
 webbrowser = "1"
 # The desktop's accent color, through the settings portal. On zbus 5, as the rest.
-ashpd = { version = "0.13", default-features = false, features = ["tokio", "settings"] }
+ashpd = { version = "0.14", default-features = false, features = ["tokio", "settings"] }
 futures-util = "0.3"
 # The Wayland clipboard, for the window's Copy buttons.
 wl-clipboard-rs = "0.9"
