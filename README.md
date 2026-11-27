@@ -59,6 +59,8 @@ The window and the tray follow your desktop's theme and accent color.
 | ![Profiles page on a running profile, with its Stop button and its two controllers](docs/screenshots/profiles_pane.png) | ![Profiles page on a running Toggle profile, with who has control](docs/screenshots/profiles_pane_running.png) |
 | **Virtual controller** — what games see | **Settings** — notifications and couch mode |
 | ![Pads page on the virtual DualSense a running profile makes](docs/screenshots/pads_pane_virtual.png) | ![Settings page with a switch for each kind of notification](docs/screenshots/settings_pane.png) |
+| **Tray tip** — what runs, at a glance | **Tray menu** — start, stop and change a profile |
+| ![Tray icon with a green mark for a running profile, and its tip listing the default profile running and the couch profile ready](docs/screenshots/system_tray_hover.png) | ![Tray menu open on the running default profile, with its controllers, mode, rumble, gyro and visibility](docs/screenshots/system_tray_menu.png) |
 | **About** — every part and its release | |
 | ![About page listing the daemon, the hiding service, the tray, the window and the command](docs/screenshots/about_pane.png) | |
 
