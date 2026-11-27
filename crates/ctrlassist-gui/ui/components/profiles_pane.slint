@@ -863,7 +863,11 @@ component ProfileDetail inherits Rectangle {
                         }
                     }
 
-                    if root.live: VerticalLayout {
+                    // Only where there is a node to choose with: a setup
+                    // with none, a Priority's say, would leave this an
+                    // empty row, and the card's spacing after Managed
+                    // with nothing under it.
+                    if root.live && root.setup.nodes.length > 0: VerticalLayout {
                         spacing: Design.gap-block;
                         for node in root.setup.nodes: node-row := FormRow {
                             id-prefix: root.id-prefix;
