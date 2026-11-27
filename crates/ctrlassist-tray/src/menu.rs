@@ -76,9 +76,12 @@ pub mod icon {
 
     /// No icon.
     pub const NONE: Icon = &[];
-    /// A pad, and the tray itself. Adwaita has the first name's
-    /// symbolic form and Breeze the second's.
-    pub const PAD: Icon = &["input-gaming", "input-gamepad"];
+    /// A pad, in a row of the menu: the outlined pad first, which sits
+    /// with the glyphs beside it. Breeze has no symbolic form of the
+    /// second name, and its form of the third is a heavier glyph.
+    pub const PAD: Icon = &["applications-games", "input-gaming", "input-gamepad"];
+    /// The tray itself, in color.
+    pub const TRAY: Icon = &["input-gaming", "input-gamepad"];
     /// Start, and a profile that runs.
     pub const START: Icon = &["media-playback-start"];
     /// Stop, and a profile that doesn't run.

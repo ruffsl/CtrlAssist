@@ -11,11 +11,13 @@ use crate::{AppWindow, Clipboard, Icons};
 
 /// Loads the sidebar's icons and the action glyphs the panes share.
 pub(crate) fn load(app: &AppWindow) {
-    // `input-gaming` is CtrlAssist's own icon, the tray's too.
+    // The outlined pad first: Breeze has no symbolic `input-gaming`, and
+    // its `input-gamepad` is a heavier glyph than the icons beside it.
+    // In color, `input-gaming` is CtrlAssist's own icon, the tray's too.
     app.set_pads_icon(load_symbolic_icon(&[
+        "applications-games",
         "input-gaming",
         "input-gamepad",
-        "applications-games",
     ]));
     app.set_profiles_icon(load_symbolic_icon(&[
         "view-list-details",
@@ -60,9 +62,9 @@ pub(crate) fn load(app: &AppWindow) {
         "applications-internet",
     ]));
     icons.set_gamepad(load_symbolic_icon(&[
+        "applications-games",
         "input-gaming",
         "input-gamepad",
-        "applications-games",
     ]));
     icons.set_reset(load_symbolic_icon(&[
         "edit-reset",

@@ -358,7 +358,7 @@ impl PadTray {
     /// menu's rows are the symbolic ones.
     fn glyph(&self) -> (menu::Icon, Variant) {
         let _ = self;
-        (menu::icon::PAD, Variant::Color)
+        (menu::icon::TRAY, Variant::Color)
     }
 
     /// What is drawn into the tray's icon for the worst of what the
@@ -554,7 +554,7 @@ impl Tray for PadTray {
         ToolTip {
             title: "CtrlAssist".into(),
             description: tip::description(&self.view, self.aimed()),
-            icon_name: themed(menu::icon::PAD, Variant::Color),
+            icon_name: themed(menu::icon::TRAY, Variant::Color),
             ..Default::default()
         }
     }
