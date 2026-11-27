@@ -64,7 +64,7 @@ let
       };
 
       # Nothing on the desktop is seen through: what is behind a tip or a
-      # menu in the pictures is the key color.
+      # menu in the pictures is the wallpaper.
       environment.etc."xdg/kwinrc".text = ''
         [Plugins]
         blurEnabled=false
@@ -217,7 +217,7 @@ let
 
       # The menu, and the running profile's own rows beside it: the
       # pointer clicks the menu's first row, which is found above the
-      # icon where the key color ends.
+      # icon where the wallpaper ends.
       click("right")
       machine.sleep(2)
       machine.screenshot("scene_menu")
@@ -247,7 +247,8 @@ let
 in
 # Each picture is cut to the corner the tray is in, and the wallpaper is
 # taken out of it: the black that reaches the picture's top left corner,
-# and no other, so what is black within the panel's icons stays. What the
+# and the near black of a shadow or a corner's soft edge against it, and
+# no other, so what is black within the panel's icons stays. What the
 # desktop draws see-through, the tip, is as it looks over a black desktop.
 pkgs.runCommand "ctrlassist-tray-shots"
   {
@@ -258,7 +259,7 @@ pkgs.runCommand "ctrlassist-tray-shots"
     mkdir -p $out
     for picture in ${scene}/tray_*.png; do
       magick "$picture" -gravity SouthEast -crop ${crop}+0+0 +repage \
-        -alpha set -fill none -draw "alpha 0,0 floodfill" \
+        -alpha set -fuzz 6% -fill none -draw "alpha 0,0 floodfill" \
         "$out/system_$(basename "$picture")"
     done
   ''
