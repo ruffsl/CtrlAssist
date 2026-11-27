@@ -2,7 +2,7 @@
 
 ## State
 
-- **Status:** step 1 built.
+- **Status:** step 1 built and its overlay given up; the composed icon is being tried.
 - **Next action:** the maintainer's look at the overlay on their Plasma (`just docs-tray-stage`, and `just docs-tray-stage held`), which decides between the overlay and pre-drawn icons.
 
 ## Goal
@@ -56,5 +56,7 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
   - So the protocol's overlay can't give a sharp icon here by either route. The state has to be part of the icon itself.
 
 ## Deviations
+
+- **The overlay is given up,** after the look at step 1 and what was found of Plasma: the tray sends none, and its icon is the pad in every state until the state is made part of the icon itself. That is tried next as one SVG composed at run time from the theme's own pad and a glyph of the theme's in the state's color, named to the tray as its icon, so that the desktop draws it from a vector. Pixels rendered here, and icon files drawn beforehand, are what is left if a desktop doesn't draw that well.
 
 - **A held setup no longer asks for attention.** Plasma pulses the icon of a tray item that does, and the maintainer found the motion too distracting for a setup that is only waiting. A failed one still asks.
