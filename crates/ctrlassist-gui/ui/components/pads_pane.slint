@@ -501,15 +501,23 @@ component PadDetail inherits Rectangle {
                     help: @tr("What the chips above say. Connected or Disconnected: whether it is plugged in or paired now. In couch, or In with another profile's name: that running profile is using it. Free: connected, and no running profile is using it. Remembered: seen before and away now; a profile can still name it. Virtual: made by a running profile for games to read. Identify buzzes the pad, to tell which one it is.");
                     help-id: root.id-prefix + "pads-help-status";
 
+                    // As tall in a pad's card as in a profile's, whether
+                    // what the button does is said in one line or two,
+                    // so that the rows under it are level across the
+                    // panes; and the button its own height in both.
                     HorizontalLayout {
+                        min-height: Design.size-card-action;
                         spacing: Design.gap-row;
-                        identify := ThemedButton {
-                            nav-row: root.status-row;
-                            text: @tr("Identify");
-                            icon: Icons.identify;
-                            enabled: root.daemon-available && root.pad.connected && !root.pad.without-rumble;
-                            accessible-id: root.id-prefix + "pads-identify";
-                            clicked => { Pads.identify(root.pad.id); }
+                        VerticalLayout {
+                            alignment: center;
+                            identify := ThemedButton {
+                                nav-row: root.status-row;
+                                text: @tr("Identify");
+                                icon: Icons.identify;
+                                enabled: root.daemon-available && root.pad.connected && !root.pad.without-rumble;
+                                accessible-id: root.id-prefix + "pads-identify";
+                                clicked => { Pads.identify(root.pad.id); }
+                            }
                         }
                         VerticalLayout {
                             horizontal-stretch: 1;

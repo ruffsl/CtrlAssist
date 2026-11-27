@@ -743,20 +743,28 @@ component ProfileDetail inherits Rectangle {
                     help: @tr("How the profile is, as its header says. Starting: on its way to running. Running: started, with its virtual pad there. Held: a pad it uses has left, and it waits for it. Failed: it stopped working, and Stop clears it. Ready: its pads are connected and free. Waiting: a pad it names is away or in use. Not set up: its pads are still to choose. Unfinished: a change made here isn't a profile yet, so it isn't kept. Wrong: the daemon can't run it as it is written.");
                     help-id: root.id-prefix + "profiles-help-status";
 
+                    // As tall in a pad's card as in a profile's, whether
+                    // what the button does is said in one line or two,
+                    // so that the rows under it are level across the
+                    // panes; and the button its own height in both.
                     HorizontalLayout {
+                        min-height: Design.size-card-action;
                         spacing: Design.gap-row;
-                        action := ThemedButton {
-                            nav-row: root.action-row;
-                            text: root.live ? @tr("Stop") : @tr("Start");
-                            icon: root.live ? Icons.stop : Icons.start;
-                            primary: !root.live;
-                            enabled: root.daemon-available && (root.live || root.profile.can-start);
-                            accessible-id: root.id-prefix + (root.live ? "profiles-stop" : "profiles-start");
-                            clicked => {
-                                if (root.live) {
-                                    root.request-stop();
-                                } else {
-                                    Profiles.start(root.profile.name);
+                        VerticalLayout {
+                            alignment: center;
+                            action := ThemedButton {
+                                nav-row: root.action-row;
+                                text: root.live ? @tr("Stop") : @tr("Start");
+                                icon: root.live ? Icons.stop : Icons.start;
+                                primary: !root.live;
+                                enabled: root.daemon-available && (root.live || root.profile.can-start);
+                                accessible-id: root.id-prefix + (root.live ? "profiles-stop" : "profiles-start");
+                                clicked => {
+                                    if (root.live) {
+                                        root.request-stop();
+                                    } else {
+                                        Profiles.start(root.profile.name);
+                                    }
                                 }
                             }
                         }
