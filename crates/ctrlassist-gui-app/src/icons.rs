@@ -11,9 +11,8 @@ use crate::{AppWindow, Clipboard, Icons};
 
 /// Loads the sidebar's icons and the action glyphs the panes share.
 pub(crate) fn load(app: &AppWindow) {
-    // The outlined pad first: Breeze has no symbolic `input-gaming`, and
-    // its `input-gamepad` is a heavier glyph than the icons beside it.
-    // In color, `input-gaming` is CtrlAssist's own icon, the tray's too.
+    // CtrlAssist's own icon, the tray's too: in Breeze one pad in color
+    // and symbolic, where the other two names' forms differ.
     app.set_pads_icon(load_symbolic_icon(&[
         "applications-games",
         "input-gaming",
@@ -33,7 +32,7 @@ pub(crate) fn load(app: &AppWindow) {
 
     // In color, for the About pane's header: the icon the desktop entry
     // and the tray carry.
-    app.set_app_logo(load_color_icon(&["input-gaming", "applications-games"]));
+    app.set_app_logo(load_color_icon(&["applications-games", "input-gaming"]));
 
     let icons = app.global::<Icons>();
     icons.set_shutdown(load_symbolic_icon(&["system-shutdown"]));

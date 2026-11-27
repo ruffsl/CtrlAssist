@@ -76,12 +76,12 @@ pub mod icon {
 
     /// No icon.
     pub const NONE: Icon = &[];
-    /// A pad, in a row of the menu: the outlined pad first, which sits
-    /// with the glyphs beside it. Breeze has no symbolic form of the
-    /// second name, and its form of the third is a heavier glyph.
+    /// A pad, and the tray itself. The first name's is one pad in
+    /// Breeze whether in color, as the tray's icon is, or symbolic, as a
+    /// row's is; the other two names' are a shaded pad in color and a
+    /// heavier glyph of another shape in symbolic form, where there is
+    /// one at all.
     pub const PAD: Icon = &["applications-games", "input-gaming", "input-gamepad"];
-    /// The tray itself, in color.
-    pub const TRAY: Icon = &["input-gaming", "input-gamepad"];
     /// Start, and a profile that runs.
     pub const START: Icon = &["media-playback-start"];
     /// Stop, and a profile that doesn't run.

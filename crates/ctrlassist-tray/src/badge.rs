@@ -182,7 +182,7 @@ impl Icons {
     /// the theme hasn't, or whose file can't be joined or written, is
     /// left out, and the tray shows the plain pad for it.
     pub(crate) fn make(dir: &Path) -> Self {
-        let pad = ctrlassist_icons::resolve(menu::icon::TRAY, Variant::Color);
+        let pad = ctrlassist_icons::resolve(menu::icon::PAD, Variant::Color);
         Self::from(dir, pad.as_deref(), |badge| {
             ctrlassist_icons::resolve(badge.glyph(), Variant::Symbolic)
         })
