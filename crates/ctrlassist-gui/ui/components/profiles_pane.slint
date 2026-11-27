@@ -588,21 +588,22 @@ component ProfileDetailHeader inherits Rectangle {
         VerticalLayout {
             alignment: center;
             spacing: Design.gap-tight;
-            // A profile that is gone says nothing of how it starts.
-            if root.profile.kind != "gone": HorizontalLayout {
-                alignment: end;
-                Chip {
-                    label: root.profile.managed ? @tr("Managed") : @tr("Unmanaged");
-                    tone: root.profile.managed ? "info" : "neutral";
-                    accessible-id: root.id-prefix + "profiles-managed-chip";
-                }
-            }
+            // How it is first, then how it starts, which a profile that
+            // is gone doesn't say.
             HorizontalLayout {
                 alignment: end;
                 Chip {
                     label: root.profile.word;
                     tone: root.profile.word-tone;
                     accessible-id: root.id-prefix + "profiles-word";
+                }
+            }
+            if root.profile.kind != "gone": HorizontalLayout {
+                alignment: end;
+                Chip {
+                    label: root.profile.managed ? @tr("Managed") : @tr("Unmanaged");
+                    tone: root.profile.managed ? "info" : "neutral";
+                    accessible-id: root.id-prefix + "profiles-managed-chip";
                 }
             }
         }
