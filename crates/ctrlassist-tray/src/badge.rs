@@ -26,9 +26,10 @@ pub(crate) enum Badge {
     Running,
     /// A setup is held for a pad: a blue pause.
     Held,
-    /// A setup failed: a red stop.
+    /// A setup failed: a red stop square.
     Failed,
-    /// The daemon isn't running, or is another release: a gray cancel.
+    /// The daemon isn't running, or is another release: a gray
+    /// disconnected plug.
     Unavailable,
 }
 
@@ -50,8 +51,8 @@ impl Badge {
         match self {
             Self::Running => &["media-playback-start"],
             Self::Held => &["media-playback-pause"],
-            Self::Failed => &["process-stop", "dialog-error"],
-            Self::Unavailable => &["dialog-cancel", "emblem-unavailable"],
+            Self::Failed => &["media-playback-stop", "process-stop"],
+            Self::Unavailable => &["network-disconnect", "network-offline", "dialog-cancel"],
         }
     }
 
