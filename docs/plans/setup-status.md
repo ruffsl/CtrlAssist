@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** the tray's icon is built, with the state composed into it; the sidebar's block is next.
-- **Next action:** the maintainer's look at the four badges, the failed and unavailable ones being thin at the tray's size; then step 3.
+- **Next action:** the maintainer's word on reading the theme's files with usvg; then step 3.
 
 ## Goal
 
@@ -56,6 +56,13 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
   - So the protocol's overlay can't give a sharp icon here by either route. The state has to be part of the icon itself.
 
 - **The composed icon, tried on the same panel:** one SVG written from the theme's `input-gaming` and its `media-playback-pause-symbolic`, the glyph in the state's blue with a dark edge at the pad's lower right, kept in a directory named to the tray as its icon theme path and named as its icon. Plasma draws it from the vector: the pad as sharp as the plain one beside it, the pause whole and in its color. The two files are joined as text, each one's contents under a group with its own scale, the glyph's color set on its group in place of the theme's stylesheet; nothing is rendered here. Looked at for a held setup; a running one's picture was missed, and no other desktop has been tried.
+
+- **Reading the theme's files with usvg, tried apart from the tray** (usvg 0.49, the release the window's toolkit already brings into the lockfile, with its `svgz` and `writer` features and none of its text ones: 30 crates, most of them there already):
+  - It reads every file tried, Breeze's and Adwaita's, a gzip-compressed one among them, and writes each back as plain SVG. Breeze's pad written back and rendered is the same picture as the original, pixel for pixel at 256.
+  - A stylesheet handed to it colors a glyph whatever way the theme colored it. Adwaita's symbolic glyphs carry their color as a literal `fill="#2e3436"`, not as Breeze's do through `currentColor`: joined as text, as the tray does now, an Adwaita glyph would stay dark gray on the pad, since nothing set on the group above it overrides a fill of its own. Through usvg with `* { fill: … }` it comes out in the state's color.
+  - That stylesheet doesn't reach a fill written in an element's own `style` attribute, which Breeze's disconnected plug has for its two colors; those stay as the theme drew them. And it would fill a shape the theme meant only to outline; none of the glyphs picked has one.
+  - It joins nothing: a tree read can't be put inside another, so the two files would still be joined as text, from what usvg wrote.
+  - Not tried: what a desktop draws of a file usvg wrote, and any theme but these two.
 
 ## Deviations
 
