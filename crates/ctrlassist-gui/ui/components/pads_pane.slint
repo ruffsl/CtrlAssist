@@ -210,7 +210,7 @@ component PadList inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     Text {
-                        text: @tr("{}/{} CONNECTED", Pads.connected-count, Pads.real-count);
+                        text: @tr("CONNECTED · {}/{}", Pads.connected-count, Pads.real-count);
                         color: Theme.text-dim;
                         font-size: Design.font-mini;
                         font-weight: 600;
