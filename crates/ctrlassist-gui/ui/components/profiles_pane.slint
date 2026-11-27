@@ -495,90 +495,93 @@ component ProfileDetailHeader inherits Rectangle {
             horizontal-stretch: 1;
             alignment: center;
             spacing: Design.gap-form;
-            HorizontalLayout {
-                spacing: Design.gap-form;
-                alignment: start;
-                // The name alone: the default profile's mark is its
-                // row's in the list. One too long for the header is cut
-                // short, and slides to show its end while the pointer
-                // is over it, as a pad's title does.
-                SlideText {
-                    text: root.profile.name;
-                    text-color: Theme.text;
-                    font-size: Design.font-title-3;
-                    font-weight: 700;
-                    hover-self: true;
-                    accessible-role: text;
-                    accessible-label: root.profile.name;
-                    accessible-id: root.id-prefix + "profiles-name";
-                }
-                if root.profile.kept: VerticalLayout {
-                    alignment: center;
-                    IconBtn {
-                        nav-row: root.nav-row;
-                        source: Icons.edit;
-                        // The default profile keeps its name.
-                        enabled: root.daemon-available && root.profile.setup-index < 0 && !root.profile.is-default;
-                        accessible-label: @tr("Rename profile");
-                        tip: root.profile.is-default ? @tr("The default profile keeps its name")
-                            : root.profile.setup-index < 0 ? @tr("Rename profile") : @tr("Stop it to rename it");
-                        accessible-id: root.id-prefix + "profiles-rename";
-                        clicked => { root.request-rename(); }
-                    }
-                }
-                if root.profile.kept: VerticalLayout {
-                    alignment: center;
-                    IconBtn {
-                        nav-row: root.nav-row;
-                        source: Icons.copy;
-                        enabled: root.daemon-available;
-                        accessible-label: @tr("Duplicate profile");
-                        tip: @tr("Duplicate profile");
-                        accessible-id: root.id-prefix + "profiles-duplicate";
-                        clicked => { root.request-duplicate(); }
-                    }
-                }
-                if root.profile.kept: VerticalLayout {
-                    alignment: center;
-                    IconBtn {
-                        nav-row: root.nav-row;
-                        source: Icons.folder_open;
-                        accessible-label: @tr("Show its file");
-                        tip: @tr("Show its file");
-                        accessible-id: root.id-prefix + "profiles-reveal";
-                        clicked => { Profiles.reveal(root.profile.name); }
-                    }
-                }
-                if root.profile.kept: VerticalLayout {
-                    alignment: center;
-                    IconBtn {
-                        nav-row: root.nav-row;
-                        source: Icons.delete;
-                        // The daemon always keeps the default profile.
-                        enabled: root.daemon-available && !root.profile.is-default;
-                        accessible-label: @tr("Delete profile");
-                        tip: root.profile.is-default ? @tr("The default profile is always kept") : @tr("Delete profile");
-                        accessible-id: root.id-prefix + "profiles-delete";
-                        clicked => { root.request-delete(); }
-                    }
-                }
+            // The name alone: the default profile's mark is its
+            // row's in the list. One too long for the header is cut
+            // short, and slides to show its end while the pointer
+            // is over it, as a pad's title does.
+            SlideText {
+                text: root.profile.name;
+                text-color: Theme.text;
+                font-size: Design.font-title-3;
+                font-weight: 700;
+                hover-self: true;
+                accessible-role: text;
+                accessible-label: root.profile.name;
+                accessible-id: root.id-prefix + "profiles-name";
             }
-            // What it is, in a word or two: its mode, or that it is
-            // written by hand. The pads it uses are its INPUTS card's.
+            // What it is, in a word: its mode, or Custom for one written
+            // by hand, with no caption before it, as a pad's line has
+            // none; a profile that is gone says nothing. Then what can
+            // be done with it, at the row's far end, so that the buttons
+            // are where they were whichever profile is shown. The pads
+            // it uses are its INPUTS card's.
             HorizontalLayout {
-                spacing: Design.gap-meta;
-                alignment: start;
+                spacing: Design.gap-tight;
                 Text {
-                    text: @tr("Mode:");
-                    color: Theme.text-dim;
-                    font-size: Design.font-helper;
-                }
-                Text {
-                    text: root.profile.mode-label == "" ? "—" : root.profile.mode-label;
+                    horizontal-stretch: 1;
+                    text: root.profile.mode-label;
                     color: Theme.text-dim;
                     font-size: Design.font-helper;
                     overflow: elide;
+                    vertical-alignment: center;
+                    accessible-label: root.profile.mode-label == "" ? "" : @tr("Mode: {}", root.profile.mode-label);
                     accessible-id: root.id-prefix + "profiles-mode";
+                }
+                // Beside its mode and not its name, which they left
+                // little room, and close together, so that the row fits
+                // the window at its least width.
+                if root.profile.kept: HorizontalLayout {
+                    spacing: 0px;
+                    VerticalLayout {
+                        alignment: center;
+                        IconBtn {
+                            nav-row: root.nav-row;
+                            source: Icons.edit;
+                            // The default profile keeps its name.
+                            enabled: root.daemon-available && root.profile.setup-index < 0 && !root.profile.is-default;
+                            accessible-label: @tr("Rename profile");
+                            tip: root.profile.is-default ? @tr("The default profile keeps its name")
+                                : root.profile.setup-index < 0 ? @tr("Rename profile") : @tr("Stop it to rename it");
+                            accessible-id: root.id-prefix + "profiles-rename";
+                            clicked => { root.request-rename(); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconBtn {
+                            nav-row: root.nav-row;
+                            source: Icons.copy;
+                            enabled: root.daemon-available;
+                            accessible-label: @tr("Duplicate profile");
+                            tip: @tr("Duplicate profile");
+                            accessible-id: root.id-prefix + "profiles-duplicate";
+                            clicked => { root.request-duplicate(); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconBtn {
+                            nav-row: root.nav-row;
+                            source: Icons.folder_open;
+                            accessible-label: @tr("Show its file");
+                            tip: @tr("Show its file");
+                            accessible-id: root.id-prefix + "profiles-reveal";
+                            clicked => { Profiles.reveal(root.profile.name); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconBtn {
+                            nav-row: root.nav-row;
+                            source: Icons.delete;
+                            // The daemon always keeps the default profile.
+                            enabled: root.daemon-available && !root.profile.is-default;
+                            accessible-label: @tr("Delete profile");
+                            tip: root.profile.is-default ? @tr("The default profile is always kept") : @tr("Delete profile");
+                            accessible-id: root.id-prefix + "profiles-delete";
+                            clicked => { root.request-delete(); }
+                        }
+                    }
                 }
             }
         }

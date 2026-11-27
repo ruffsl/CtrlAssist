@@ -341,6 +341,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     // of its text.
     assert_eq!(attic.shape, "merge", "it names more than one pad");
     assert_eq!(attic.word, "Waiting");
+    assert_eq!(attic.mode_label, "Custom");
     // What it names is listed, each pad with its connection.
     assert_eq!(attic.uses.row_count(), 3);
     assert!(attic.uses.iter().all(|used| !used.word.is_empty()));
@@ -437,9 +438,64 @@ fn a_long_name_is_one_line_cut_short_in_the_header_at_the_least_width() {
         long.height,
         short.height
     );
-    assert!(long.width > short.width, "it takes the room there is");
-    // Short of the window's edge by the buttons and chips beside it.
-    assert!(left + long.width < 720.0 - 100.0, "{left} + {}", long.width);
+    assert!(long.width >= short.width, "it has the row to itself");
+    // Short of the window's edge by the chips beside it.
+    assert!(left + long.width < 720.0 - 60.0, "{left} + {}", long.width);
+
+    // The header keeps to the window at its least width: its chips end
+    // inside it, the buttons beside the mode end short of the chips, and
+    // the mode is said whole.
+    let mode_width = |app: &AppWindow| {
+        find_by_accessible_id(app, "profiles-mode")
+            .expect("the header's mode")
+            .size()
+            .width
+    };
+    // Where the buttons start, for each profile shown.
+    let mut starts = Vec::new();
+    app.window().set_size(slint::LogicalSize::new(720.0, 480.0));
+    for name in ["couch", LONG] {
+        app.global::<Profiles>().invoke_select(name.into());
+        settle();
+        let edges = |id: &str| {
+            let found = find_by_accessible_id(&app, id).unwrap_or_else(|| panic!("{id}"));
+            let left = found.absolute_position().x;
+            (left, left + found.size().width)
+        };
+        let (chip_left, chip_right) = edges("profiles-managed-chip");
+        let (_, word_right) = edges("profiles-word");
+        let (_, delete_right) = edges("profiles-delete");
+        assert!(
+            chip_right <= 720.0 && word_right <= 720.0,
+            "{name}: {chip_right}, {word_right}"
+        );
+        assert!(
+            delete_right <= chip_left,
+            "{name}: {delete_right} against {chip_left}"
+        );
+        let mode = find_by_accessible_id(&app, "profiles-mode").unwrap();
+        assert_eq!(
+            mode.accessible_label().unwrap_or_default(),
+            "Mode: Priority"
+        );
+        assert!(mode_width(&app) > 0.0, "{name}: the mode has no room");
+        starts.push(edges("profiles-rename").0);
+    }
+    // One written by hand says Custom, a word of another length, and
+    // the buttons are where they were: they keep to the row's far end.
+    app.global::<Profiles>().invoke_select("attic".into());
+    settle();
+    let custom = find_by_accessible_id(&app, "profiles-mode").unwrap();
+    assert_eq!(
+        custom.accessible_label().unwrap_or_default(),
+        "Mode: Custom"
+    );
+    let rename = find_by_accessible_id(&app, "profiles-rename").unwrap();
+    starts.push(rename.absolute_position().x);
+    assert!(
+        starts.iter().all(|start| (start - starts[0]).abs() < 0.5),
+        "{starts:?}"
+    );
 }
 
 #[test]
@@ -648,7 +704,7 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
     let mode = find_by_accessible_id(&app, "profiles-mode")
         .and_then(|text| text.accessible_label())
         .unwrap_or_default();
-    assert_eq!(mode, "Priority");
+    assert_eq!(mode, "Mode: Priority");
 }
 
 /// A dropdown opens with its cursor on the current choice, the second

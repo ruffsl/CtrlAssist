@@ -481,7 +481,7 @@ pub fn rows(known: &Known, held: &BTreeMap<String, Values>) -> Vec<ProfileRow> {
             // The mode as the served field labels it.
             let mode_label = match &values {
                 None if gone => String::new(),
-                None => "Written by hand".to_string(),
+                None => "Custom".to_string(),
                 Some(_) => known
                     .fields
                     .iter()
