@@ -138,7 +138,7 @@ The tray reads the file when it starts, and again whenever the daemon comes back
 
 ## Starting and stopping the tray
 
-The tray starts with your graphical session. **Quit tray** in the menu closes it for this session; the daemon and anything running carry on.
+The tray starts with your graphical session, as a service of yours. Stopping it leaves the daemon and anything running as they are; its notifications stop with it.
 
 ```sh
 systemctl --user status ctrlassist-tray

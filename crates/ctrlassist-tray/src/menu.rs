@@ -776,9 +776,21 @@ fn pad_entries(view: &View) -> Vec<Entry> {
     }
     pads
 }
+/// Whether the menu ends with Quit: in a build for development, which
+/// is run from a terminal and wants a way to end it there. An installed
+/// tray is a user service, started with the session and stopped through
+/// the service manager; quit from its menu it would stay gone, and its
+/// notifications with it, until the next login. As TisVlay's tray.
+const QUIT: bool = cfg!(debug_assertions);
+
 /// The whole menu for what the daemon publishes now.
 #[must_use]
 pub fn menu(view: &View) -> Vec<Entry> {
+    whole(view, QUIT)
+}
+
+/// The menu, with Quit at its end or without.
+fn whole(view: &View, quit: bool) -> Vec<Entry> {
     let mut entries = Vec::new();
     if !view.alive {
         entries.push(said(icon::FAILED, "The CtrlAssist daemon isn't running"));
@@ -815,7 +827,9 @@ pub fn menu(view: &View) -> Vec<Entry> {
     // There whatever the daemon is doing: the window says more about a
     // daemon that isn't running than the menu can.
     entries.push(action(icon::SETTINGS, "Settings", Command::Settings));
-    entries.push(action(icon::QUIT, "Quit tray", Command::Quit));
+    if quit {
+        entries.push(action(icon::QUIT, "Quit tray", Command::Quit));
+    }
     entries
 }
 
@@ -1336,6 +1350,25 @@ default ✓ (Not set up) >
             line(Hiding::Looking),
             "- Hiding: looking for the service… · Real-time: yes"
         );
+    }
+
+    /// An installed tray's menu has no Quit: it ends with Settings, and
+    /// is the same before it. A build for development has it, last.
+    #[test]
+    fn quit_is_in_the_menu_of_a_build_for_development_only() {
+        let view = view(Some(Phase::Running), Hiding::Service);
+        let (with, without) = (whole(&view, true), whole(&view, false));
+        assert_eq!(
+            with.last(),
+            Some(&action(icon::QUIT, "Quit tray", Command::Quit))
+        );
+        assert_eq!(
+            without.last(),
+            Some(&action(icon::SETTINGS, "Settings", Command::Settings))
+        );
+        assert_eq!(with[..with.len() - 1], without[..]);
+        // This is such a build, as any that runs its tests is.
+        assert_eq!(menu(&view), with);
     }
 
     #[test]
