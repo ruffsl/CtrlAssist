@@ -84,7 +84,7 @@ rustPlatform.buildRustPackage {
       comment = "Several game controllers as one, or one as several";
       exec = "ctrlassist-gui";
       tryExec = "ctrlassist-gui";
-      icon = "input-gaming";
+      icon = "applications-games";
       categories = [
         "Settings"
         "HardwareSettings"
