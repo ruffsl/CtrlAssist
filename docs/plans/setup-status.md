@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** built, the guide's page and its screenshots with it; in review.
-- **Next action:** the rest of what the review of the pull request (#65) found. Then a look at a panel, where nothing has been looked at since the pad became `applications-games` and the glyphs were recolored shape by shape: every state's icon, and a desktop other than Plasma.
+- **Next action:** the maintainer's look at the tray's pictures from the virtual machine, and their word on going on to the menu's, which wants a way to open it there.
 
 ## Goal
 
@@ -63,6 +63,12 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
   - That stylesheet doesn't reach a fill written in an element's own `style` attribute, which Breeze's disconnected plug has for its two colors; those stay as the theme drew them. And it would fill a shape the theme meant only to outline; none of the glyphs picked has one. (As first built, a rule marked important did reach them. The review found what else a rule over every shape does, and the glyph is now recolored in what usvg wrote, shape by shape: see Deviations.)
   - It joins nothing: a tree read can't be put inside another, so the two files would still be joined as text, from what usvg wrote.
   - Not tried then: what a desktop draws of a file usvg wrote, and any theme but these two.
+
+- **The tray's pictures from a virtual machine, tried** (`packaging/nix/shots-tray.nix`, built as `.#tray-shots`): a NixOS machine with a Plasma session logged in for one user, CtrlAssist as its module installs it, two of the test crate's fake pads and a profile on them, and the machine's screen captured by the test driver in four states.
+  - It works, and is quick once built: the session, the stack and the four pictures take 43 seconds of the machine's time. Building it the first time fetched some 850 MB and built CtrlAssist in its release profile.
+  - What Plasma 6 draws, on its default light panel at a scale of 1: nothing in the panel with nothing running, the tray being passive and tucked away; the pad with its green play for a setup running; with its blue pause for one held; and with its amber plug once the daemon was stopped, in the panel still. That is the first look at a panel since the pad became `applications-games`, and the first at all for the amber plug and for a tray kept in view without its daemon.
+  - At that size the plug is small and pale on a light panel; the play and the pause read well.
+  - Not tried: a failed setup, which nothing in the machine makes fail yet; a dark panel; and opening the tray's menu, which wants a click or keys sent into the session and is the uncertain part.
 
 ## Deviations
 
