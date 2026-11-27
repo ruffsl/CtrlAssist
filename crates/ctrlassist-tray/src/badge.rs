@@ -7,10 +7,11 @@
 //! icon under one sent as pixels (KDE bug 520235). A file of the tray's
 //! own is drawn by the desktop from its vector, as sharp as any icon.
 //!
-//! Nothing is rendered here. The two files are joined as text: each
-//! one's contents under a group with its own scale, and the glyph's
-//! color set on its group in place of the theme's stylesheet, which a
-//! symbolic glyph takes its one color from.
+//! Nothing is rendered here. Each theme file is read by usvg, which
+//! takes what a theme may ship (compressed files, colors said by a
+//! stylesheet, by `currentColor` or outright) and writes it back as
+//! plain shapes, the glyph in the state's color; what it wrote of the
+//! two is then joined as text, each under a group with its own scale.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -28,7 +29,7 @@ pub(crate) enum Badge {
     Held,
     /// A setup failed: a red stop square.
     Failed,
-    /// The daemon isn't running, or is another release: a gray
+    /// The daemon isn't running, or is another release: an amber
     /// disconnected plug.
     Unavailable,
 }
@@ -62,7 +63,7 @@ impl Badge {
             Self::Running => "#2eb85c",
             Self::Held => "#3daee9",
             Self::Failed => "#da4453",
-            Self::Unavailable => "#9a9ea3",
+            Self::Unavailable => "#fdbc4b",
         }
     }
 
@@ -85,84 +86,66 @@ const BADGE: f32 = 30.0;
 const EDGE: f32 = 2.4;
 const EDGE_COLOR: &str = "#1b1e20";
 
-/// An SVG file's contents apart from its root element, and the side of
-/// the square its drawing fills.
-struct Drawing<'a> {
-    body: &'a str,
+/// A theme's file as usvg wrote it back: what is inside its root
+/// element, and the side of the square its drawing fills.
+struct Drawing {
+    body: String,
     side: f32,
 }
 
-/// The value of attribute `name` in a tag.
-fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let mut rest = tag;
-    loop {
-        let at = rest.find(name)?;
-        let (before, after) = rest.split_at(at);
-        let after = after.get(name.len()..)?;
-        let whole = before.ends_with(|c: char| c.is_whitespace());
-        if let (true, Some(value)) = (whole, after.trim_start().strip_prefix('=')) {
-            let value = value.trim_start();
-            let quote = value.chars().next().filter(|c| matches!(c, '"' | '\''))?;
-            let value = value.get(1..)?;
-            return value.get(..value.find(quote)?);
-        }
-        rest = after;
-    }
-}
-
-/// Reads an SVG file as a drawing: what is inside its root element, and
-/// its size from its view box, or its width where it has none. `None`
-/// for anything else, a bitmap or a compressed file among them.
-fn drawing(svg: &str) -> Option<Drawing<'_>> {
-    let open = svg.find("<svg")?;
-    let tag_end = open.checked_add(svg.get(open..)?.find('>')?)?;
-    let tag = svg.get(open..tag_end)?;
-    if tag.ends_with('/') {
-        return None;
-    }
-    let body = svg.get(tag_end.checked_add(1)?..svg.rfind("</svg>")?)?;
-    let side = attribute(tag, "viewBox")
-        .and_then(|view| {
-            view.split([' ', ','])
-                .filter(|part| !part.is_empty())
-                .nth(2)
-        })
-        .or_else(|| attribute(tag, "width"))
-        .and_then(|side| side.trim_end_matches("px").parse::<f32>().ok())
-        .filter(|side| side.is_finite() && *side > 0.0)?;
-    Some(Drawing { body, side })
-}
-
-/// `body` without its `<style>` elements: a symbolic glyph's stylesheet
-/// says the one color it is drawn in, which is set on its group instead.
-fn without_styles(body: &str) -> String {
-    let mut kept = String::with_capacity(body.len());
-    let mut rest = body;
-    while let Some(at) = rest.find("<style") {
-        let (before, style) = rest.split_at(at);
-        kept.push_str(before);
-        match style.find("</style>") {
-            Some(end) => {
-                rest = style
-                    .get(end.saturating_add("</style>".len())..)
-                    .unwrap_or("");
-            }
-            None => rest = "",
-        }
-    }
-    kept.push_str(rest);
-    kept
+/// Reads an icon file as a drawing, every shape of it restyled by
+/// `style` where there is one, and the ids in it starting `prefix`, so
+/// that two drawings joined into one file don't share any. `None` for
+/// what usvg can't read, a bitmap among them, and for a drawing with
+/// nothing in it.
+fn drawing(file: &[u8], style: Option<String>, prefix: &str) -> Option<Drawing> {
+    let options = usvg::Options {
+        style_sheet: style,
+        ..usvg::Options::default()
+    };
+    let tree = usvg::Tree::from_data(file, &options).ok()?;
+    let side = tree.size().width().max(tree.size().height());
+    let written = tree.to_string(&usvg::WriteOptions {
+        id_prefix: Some(prefix.to_string()),
+        ..usvg::WriteOptions::default()
+    });
+    // What usvg writes is one root element around the shapes.
+    let open = written.find("<svg")?;
+    let tag_end = open.checked_add(written.get(open..)?.find('>')?)?;
+    let body = written.get(tag_end.checked_add(1)?..written.rfind("</svg>")?)?;
+    (side.is_finite() && side > 0.0 && !body.trim().is_empty()).then(|| Drawing {
+        body: body.to_string(),
+        side,
+    })
 }
 
 /// The pad with `badge`'s glyph at its lower right, as one SVG file:
-/// `None` if either file isn't an SVG drawing to join.
-pub(crate) fn compose(pad: &str, glyph: &str, badge: Badge) -> Option<String> {
-    let pad = drawing(pad)?;
-    let glyph = drawing(glyph)?;
-    let glyph_body = without_styles(glyph.body);
-    let scale = BADGE / glyph.side;
-    let at = SIDE - BADGE;
+/// `None` if either file isn't a drawing to join.
+pub(crate) fn compose(pad: &[u8], glyph: &[u8], badge: Badge) -> Option<String> {
+    let pad = drawing(pad, None, "pad-")?;
+    // The glyph in the badge's color, whatever the theme drew it in: a
+    // rule over every shape, and over a color the shape itself says.
     let color = badge.color();
+    let tinted = drawing(
+        glyph,
+        Some(format!(
+            "* {{ fill: {color} !important; color: {color} !important }}"
+        )),
+        "glyph-",
+    )?;
+    let scale = BADGE / tinted.side;
+    // And once more, wider and dark, to go under it as its edge.
+    let edged = drawing(
+        glyph,
+        Some(format!(
+            "* {{ fill: {EDGE_COLOR} !important; color: {EDGE_COLOR} !important; \
+             stroke: {EDGE_COLOR} !important; stroke-width: {width} !important; \
+             stroke-linejoin: round !important }}",
+            width = EDGE / scale,
+        )),
+        "edge-",
+    )?;
+    let at = SIDE - BADGE;
     let mut svg = String::new();
     // Writing to a String can't fail.
     let _ = write!(
@@ -171,24 +154,16 @@ pub(crate) fn compose(pad: &str, glyph: &str, badge: Badge) -> Option<String> {
             r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" "#,
             r#"viewBox="0 0 {side} {side}" width="{side}" height="{side}">"#,
             r#"<g transform="scale({pad_scale})">{pad}</g>"#,
-            // The glyph twice: once wider and dark, for its edge, then
-            // itself over that. One element with a stroke would do where
-            // a renderer draws the stroke under the fill, and not every
-            // one can be told to.
-            r#"<g transform="translate({at},{at}) scale({scale})">"#,
-            r#"<g color="{edge}" fill="{edge}" stroke="{edge}" stroke-width="{width}" stroke-linejoin="round">{glyph}</g>"#,
-            r#"<g color="{color}" fill="{color}">{glyph}</g>"#,
-            "</g></svg>"
+            r#"<g transform="translate({at},{at}) scale({scale})">{edge}{glyph}</g>"#,
+            "</svg>"
         ),
         side = SIDE,
         pad_scale = SIDE / pad.side,
         pad = pad.body,
         at = at,
         scale = scale,
-        edge = EDGE_COLOR,
-        width = EDGE / scale,
-        glyph = glyph_body,
-        color = color,
+        edge = edged.body,
+        glyph = tinted.body,
     );
     Some(svg)
 }
@@ -219,7 +194,7 @@ impl Icons {
             dir: dir.to_path_buf(),
             made: [false; Badge::ALL.len()],
         };
-        let Some(pad) = pad.and_then(|path| std::fs::read_to_string(path).ok()) else {
+        let Some(pad) = pad.and_then(|path| std::fs::read(path).ok()) else {
             return icons;
         };
         if std::fs::create_dir_all(dir).is_err() {
@@ -227,7 +202,7 @@ impl Icons {
         }
         for badge in Badge::ALL {
             let composed = glyph(badge)
-                .and_then(|path| std::fs::read_to_string(path).ok())
+                .and_then(|path| std::fs::read(path).ok())
                 .and_then(|glyph| compose(&pad, &glyph, badge));
             let written = composed.is_some_and(|svg| {
                 std::fs::write(dir.join(format!("{}.svg", badge.name())), svg).is_ok()
@@ -263,68 +238,88 @@ impl Icons {
 mod tests {
     use super::*;
 
-    const PAD: &str = r##"<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><rect id="pad" width="32" height="16" fill="#888"/></svg>"##;
-    const GLYPH: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+    const PAD: &[u8] = br##"<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="16" fill="#888"/></svg>"##;
+    /// A glyph colored as Breeze colors one: by a stylesheet's class.
+    const GLYPH: &[u8] = br##"<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
     <style type="text/css" id="current-color-scheme">.ColorScheme-Text { color: #fcfcfc; } </style>
     <path d="m2 2v12h4v-12z" class="ColorScheme-Text" fill="currentColor"/>
 </svg>"##;
+    /// One colored as Adwaita colors one, outright, and one with a
+    /// color in a shape's own style, as Breeze has too.
+    const OUTRIGHT: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="16px" height="16px" viewBox="0 0 16 16"><path fill="#2e3436" d="M2 2v12l12-6z"/></svg>"##;
+    const STYLED: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><style>.Bad { color: #da4453; }</style><path style="fill:currentColor" class="Bad" d="M2 2v12l12-6z"/></svg>"##;
 
-    /// The pad fills the icon, and the glyph is at its lower right in
-    /// the badge's color over a dark edge, with no stylesheet left to
-    /// say another.
+    /// The fills and strokes a file names, apart from `none`.
+    fn colors(svg: &str) -> Vec<&str> {
+        let mut found: Vec<&str> = ["fill=\"", "stroke=\""]
+            .into_iter()
+            .flat_map(|attribute| {
+                svg.match_indices(attribute).filter_map(move |(at, _)| {
+                    let value = svg.get(at + attribute.len()..)?;
+                    value.get(..value.find('"')?)
+                })
+            })
+            .filter(|color| *color != "none")
+            .collect();
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    /// The pad fills the icon in its own colors, and the glyph is at
+    /// its lower right in the badge's color over a dark edge, however
+    /// the theme colored it. What is written is an SVG file again.
     #[test]
     fn the_pad_and_the_glyph_are_joined_into_one_file() {
-        let svg = compose(PAD, GLYPH, Badge::Held).unwrap();
-        assert!(svg.starts_with("<svg "));
-        assert!(svg.ends_with("</g></svg>"));
-        assert!(svg.contains(r#"viewBox="0 0 64 64""#));
-        // The pad at twice its size, whole.
-        assert!(svg.contains(
-            r##"<g transform="scale(2)"><rect id="pad" width="32" height="16" fill="#888"/></g>"##
-        ));
-        // The glyph at 30 of 64, from 34 across and down.
-        assert!(svg.contains(r#"<g transform="translate(34,34) scale(1.875)">"#));
-        assert!(svg.contains(r##"<g color="#3daee9" fill="#3daee9">"##));
-        assert!(svg.contains(r##"stroke="#1b1e20" stroke-width="1.28"##));
-        assert_eq!(svg.matches("m2 2v12h4v-12z").count(), 2);
-        assert!(!svg.contains("<style"));
-        assert!(!svg.contains("<?xml"));
-        assert_eq!(svg.matches("<svg").count(), 1);
-        // Each badge in its own color.
-        for badge in Badge::ALL {
-            let svg = compose(PAD, GLYPH, badge).unwrap();
-            assert!(svg.contains(&format!(r#"<g color="{0}" fill="{0}">"#, badge.color())));
+        for glyph in [GLYPH, OUTRIGHT, STYLED] {
+            for badge in Badge::ALL {
+                let svg = compose(PAD, glyph, badge).unwrap();
+                assert!(svg.starts_with("<svg "));
+                assert!(svg.ends_with("</g></svg>"));
+                assert_eq!(svg.matches("<svg").count(), 1);
+                assert!(!svg.contains("<style"));
+                assert!(svg.contains(r#"viewBox="0 0 64 64""#));
+                // The pad at twice its size, the glyph at 30 of 64.
+                assert!(svg.contains(r#"<g transform="scale(2)">"#));
+                assert!(svg.contains(r#"<g transform="translate(34,34) scale(1.875)">"#));
+                // The pad's gray, the edge's dark and the badge's color,
+                // and none of what the theme had the glyph in.
+                assert_eq!(
+                    colors(&svg),
+                    {
+                        let mut expected = vec!["#888888", EDGE_COLOR, badge.color()];
+                        expected.sort_unstable();
+                        expected
+                    },
+                    "{svg}"
+                );
+                assert!(svg.contains(&format!(r#"stroke="{EDGE_COLOR}""#)));
+                // Read back, it is a drawing of the icon's size.
+                let read = usvg::Tree::from_data(svg.as_bytes(), &usvg::Options::default());
+                assert!(read.is_ok_and(|tree| tree.size().width() == SIDE));
+            }
         }
     }
 
-    /// A file's size is its view box's, or its width's, and what isn't
-    /// an SVG drawing joins nothing.
+    /// What isn't an SVG drawing, or has nothing drawn in it, joins
+    /// nothing.
     #[test]
     fn a_drawing_is_read_from_an_svg_file_or_not_at_all() {
-        let sized = r#"<svg height="22px" width="22px" xmlns="x"><path d=""/></svg>"#;
-        assert!(drawing(sized).is_some_and(|read| read.side == 22.0));
-        let quoted = "<svg viewBox='0,0,24,24'><path/></svg>";
-        assert!(drawing(quoted).is_some_and(|read| read.side == 24.0 && read.body == "<path/>"));
+        assert!(drawing(PAD, None, "").is_some_and(|read| read.side == 32.0));
+        let sized = br#"<svg height="22px" width="22px" xmlns="http://www.w3.org/2000/svg"><path d="M0 0h4v4z"/></svg>"#;
+        assert!(drawing(sized, None, "").is_some_and(|read| read.side == 22.0));
         for not in [
-            "",
-            "\u{89}PNG\r\n",
-            "<svg/>",
-            "<svg><path/></svg>",
-            r#"<svg viewBox="0 0 0 0"><path/></svg>"#,
-            r#"<svg viewBox="0 0 x x"><path/></svg>"#,
-            r#"<svg viewBox="0 0 16 16"><path/>"#,
-            r#"<svg data-viewBox="0 0 16 16"><path/></svg>"#,
+            &b""[..],
+            b"\x89PNG\r\n\x1a\n",
+            b"<svg/>",
+            br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"></svg>"#,
+            br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path"#,
         ] {
-            assert!(drawing(not).is_none(), "{not}");
+            assert!(drawing(not, None, "").is_none(), "{not:?}");
             assert!(compose(not, GLYPH, Badge::Running).is_none());
             assert!(compose(PAD, not, Badge::Running).is_none());
         }
-        assert_eq!(
-            without_styles("a<style>b</style>c<style x>d</style>e"),
-            "ace"
-        );
-        assert_eq!(without_styles("a<style>b"), "a");
     }
 
     /// An icon is made for each badge whose glyph there is, in the

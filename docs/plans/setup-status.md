@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** the tray's icon is built, with the state composed into it; the sidebar's block is next.
-- **Next action:** the maintainer's word on reading the theme's files with usvg; then step 3.
+- **Next action:** step 3, the sidebar's status block.
 
 ## Goal
 
@@ -62,9 +62,11 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
   - A stylesheet handed to it colors a glyph whatever way the theme colored it. Adwaita's symbolic glyphs carry their color as a literal `fill="#2e3436"`, not as Breeze's do through `currentColor`: joined as text, as the tray does now, an Adwaita glyph would stay dark gray on the pad, since nothing set on the group above it overrides a fill of its own. Through usvg with `* { fill: … }` it comes out in the state's color.
   - That stylesheet doesn't reach a fill written in an element's own `style` attribute, which Breeze's disconnected plug has for its two colors; those stay as the theme drew them. And it would fill a shape the theme meant only to outline; none of the glyphs picked has one.
   - It joins nothing: a tree read can't be put inside another, so the two files would still be joined as text, from what usvg wrote.
-  - Not tried: what a desktop draws of a file usvg wrote, and any theme but these two.
+  - Not tried then: what a desktop draws of a file usvg wrote, and any theme but these two.
 
 ## Deviations
+
+- **The theme's files are read with usvg,** as the maintainer chose after what was found of it: each written back as plain shapes, the glyph in the state's color by a rule over every shape, then joined as text. An icon made that way is drawn sharp by Plasma, looked at for a running setup. The stop square marks a failed setup and an amber disconnected plug a daemon that isn't there, the gray first tried being lost on the pad.
 
 - **The composed icon is built in place of step 2,** and nothing in the tray asks for attention any more: a failed setup's icon says so by its badge and stays still, as the maintainer chose. The icons are made as the tray starts, beside the daemon's socket, from the theme the desktop has then; a theme changed while the tray runs is taken up at its next start.
 
