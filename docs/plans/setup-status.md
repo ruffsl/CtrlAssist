@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** step 1 built and its overlay given up; the composed icon is being tried.
-- **Next action:** the maintainer's look at the overlay on their Plasma (`just docs-tray-stage`, and `just docs-tray-stage held`), which decides between the overlay and pre-drawn icons.
+- **Status:** step 1 built and its overlay given up; the composed icon tried and found sharp on Plasma.
+- **Next action:** the maintainer's word on the composed icon, then building it in place of step 2.
 
 ## Goal
 
@@ -54,6 +54,8 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
   - *As pixels* (`OverlayIconPixmap`): the overlay is drawn at the icon's lower right, in the colors sent. But Plasma then paints the icon and the overlay together into bitmaps of 16, 22, 32 and 48 pixels, whatever the screen's scale (`StatusNotifierItemSource::overlayIcon`), and the panel stretches one: the pad comes out blurred beside the same pad without an overlay, which is drawn from its vector at the screen's own resolution. The overlay is 8 pixels a side at most sizes, and with a larger bitmap offered only its top left quarter is drawn at this scale; with the 8-pixel one alone it is whole, and blocky.
   - *Upstream:* the blur and the cut-off overlay are [KDE bug 520235](https://bugs.kde.org/show_bug.cgi?id=520235), confirmed, open since May 2026 and unassigned to a fix: Plasma's code and not this tray's. Its reporter finds an overlay by name drawn well, which this panel doesn't bear out: looked at twice, with `media-playback-start` and with `emblem-pause` over `input-gaming`, the name read back from the tray over the session bus each time, and no overlay drawn. The likely cause, from reading and not proven: Kirigami's icon item loads a named theme icon afresh by its name where Plasma's own theme is in use (`Icon::iconPixmap`, since kirigami `f673694e6f90`, August 2024), which leaves behind the overlay Plasma had put on it; the reporter's icon wasn't the theme's. No report of that was found.
   - So the protocol's overlay can't give a sharp icon here by either route. The state has to be part of the icon itself.
+
+- **The composed icon, tried on the same panel:** one SVG written from the theme's `input-gaming` and its `media-playback-pause-symbolic`, the glyph in the state's blue with a dark edge at the pad's lower right, kept in a directory named to the tray as its icon theme path and named as its icon. Plasma draws it from the vector: the pad as sharp as the plain one beside it, the pause whole and in its color. The two files are joined as text, each one's contents under a group with its own scale, the glyph's color set on its group in place of the theme's stylesheet; nothing is rendered here. Looked at for a held setup; a running one's picture was missed, and no other desktop has been tried.
 
 ## Deviations
 
