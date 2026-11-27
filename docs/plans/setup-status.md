@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** step 1 built and its overlay given up; the composed icon tried and found sharp on Plasma.
-- **Next action:** the maintainer's word on the composed icon, then building it in place of step 2.
+- **Status:** the tray's icon is built, with the state composed into it; the sidebar's block is next.
+- **Next action:** the maintainer's look at the four badges, the failed and unavailable ones being thin at the tray's size; then step 3.
 
 ## Goal
 
@@ -58,6 +58,8 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
 - **The composed icon, tried on the same panel:** one SVG written from the theme's `input-gaming` and its `media-playback-pause-symbolic`, the glyph in the state's blue with a dark edge at the pad's lower right, kept in a directory named to the tray as its icon theme path and named as its icon. Plasma draws it from the vector: the pad as sharp as the plain one beside it, the pause whole and in its color. The two files are joined as text, each one's contents under a group with its own scale, the glyph's color set on its group in place of the theme's stylesheet; nothing is rendered here. Looked at for a held setup; a running one's picture was missed, and no other desktop has been tried.
 
 ## Deviations
+
+- **The composed icon is built in place of step 2,** and nothing in the tray asks for attention any more: a failed setup's icon says so by its badge and stays still, as the maintainer chose. The icons are made as the tray starts, beside the daemon's socket, from the theme the desktop has then; a theme changed while the tray runs is taken up at its next start.
 
 - **The overlay is given up,** after the look at step 1 and what was found of Plasma: the tray sends none, and its icon is the pad in every state until the state is made part of the icon itself. That is tried next as one SVG composed at run time from the theme's own pad and a glyph of the theme's in the state's color, named to the tray as its icon, so that the desktop draws it from a vector. Pixels rendered here, and icon files drawn beforehand, are what is left if a desktop doesn't draw that well.
 

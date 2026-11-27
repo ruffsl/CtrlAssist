@@ -2,6 +2,7 @@
 //! mirror of the daemon, every click is an rpc, and what changes in the
 //! mirror that a person should know of becomes a notification.
 
+mod badge;
 mod desktop;
 mod lanes;
 pub mod menu;
