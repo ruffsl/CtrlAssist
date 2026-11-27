@@ -342,16 +342,22 @@ component PadDetailHeader inherits Rectangle {
                     color: Theme.text-dim;
                     font-size: Design.font-helper;
                     font-family: Theme.mono-font;
+                    // The monospace font's line isn't the height of the
+                    // one beside it: each is set by its middle, so the
+                    // letters of the three sit level.
+                    vertical-alignment: center;
                 }
                 Text {
                     text: "·";
                     color: Theme.text-dim;
                     font-size: Design.font-helper;
+                    vertical-alignment: center;
                 }
                 Text {
                     text: root.pad.connection == "" ? "—" : root.pad.connection;
                     color: Theme.text-dim;
                     font-size: Design.font-helper;
+                    vertical-alignment: center;
                 }
             }
         }
