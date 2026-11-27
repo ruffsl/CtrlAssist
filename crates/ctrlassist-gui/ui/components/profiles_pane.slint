@@ -10,7 +10,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { ListRow, Group, Chip, ThemedButton, IconBtn, ContextualHelpButton, ConfirmDialog, NameInputDialog, InlineError, ThemedSwitch, ThemedSpinBox, Focusable, ProfileTile, FormRow, ListCaption, ToneText, ToneDot } from "../widgets.slint";
+import { ListRow, Group, Chip, ThemedButton, IconBtn, ContextualHelpButton, ConfirmDialog, NameInputDialog, InlineError, ThemedSwitch, ThemedSpinBox, Focusable, ProfileTile, FormRow, ListCaption, ToneText, ToneDot, SlideText } from "../widgets.slint";
 import { Icons } from "../globals/icons.slint";
 import { Setups, SetupRow } from "../globals/setups.slint";
 import { ThemedSelect } from "../globals/select.slint";
@@ -49,13 +49,15 @@ component ProfileListRow inherits ListRow {
             alignment: center;
             spacing: 2px;
 
-            Text {
+            // A name too long for the list slides to show its end
+            // while its row is hovered or has focus.
+            SlideText {
                 // The default profile carries a check mark, as TisVlay's.
                 text: root.profile.is-default ? root.profile.name + "\u{00A0}\u{2713}" : root.profile.name;
-                color: root.title-color;
+                text-color: root.title-color;
                 font-size: Design.font-body;
                 font-weight: root.title-weight;
-                overflow: elide;
+                running: root.hovered || (root.focused && Nav.focus-visible);
             }
 
             HorizontalLayout {

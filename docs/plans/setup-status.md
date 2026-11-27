@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** the tray's icon and the sidebar's block are built; the guide is next.
-- **Next action:** the maintainer's look at the sidebar's rows and a traveling name in the running window; then the same for the lists and titles, and step 4, the guide and its screenshots.
+- **Next action:** the maintainer's look at the sidebar's rows and a sliding name in the running window; then step 4, the guide and its screenshots.
 
 ## Goal
 
@@ -65,6 +65,8 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
   - Not tried then: what a desktop draws of a file usvg wrote, and any theme but these two.
 
 ## Deviations
+
+- **A long name slides once and stays,** where it first went to its end and back for as long as its row was hovered or had focus. Looked into at the maintainer's asking: Chrome's guidance for a line cut short is this, on hover and focus; tvOS scrolls a focused item's label across; and motion that a hover or a focus starts and that goes on past five seconds wants a way to stop it (WCAG 2.2.2), which one that ends by itself doesn't. The widget is `SlideText`, and the names in the lists of pads and of profiles, and the title over a pad's details, take it too; a profile's title already wraps. The desktop's setting for less motion isn't read yet.
 
 - **The sidebar's rows, after the maintainer's look:** they take the room between the last pane and Reload, between two thin lines, and scroll past it, in place of four rows dropped above Reload. A row says its state by its glyph alone; the words are its tip and its accessible label. A name too long to show whole travels to its end and back while its row is hovered or has focus, by a text widget made to be shared: the lists of pads and of profiles, and the titles over their details, are to take it next, once it has been seen moving.
 

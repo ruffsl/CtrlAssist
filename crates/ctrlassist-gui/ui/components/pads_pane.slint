@@ -12,7 +12,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { ListRow, Group, Chip, ThemedButton, DangerBtn, CopyBtn, IconBtn, ConfirmDialog, InlineError, Focusable, PadTile, FormRow, ListCaption, ToneText } from "../widgets.slint";
+import { ListRow, Group, Chip, ThemedButton, DangerBtn, CopyBtn, IconBtn, ConfirmDialog, InlineError, Focusable, PadTile, FormRow, ListCaption, ToneText, SlideText } from "../widgets.slint";
 import { Icons } from "../globals/icons.slint";
 import { HelpScrollView } from "../globals/help.slint";
 import { Health, ServiceHealth } from "../globals/health.slint";
@@ -50,12 +50,14 @@ component PadListRow inherits ListRow {
             alignment: center;
             spacing: 2px;
 
-            Text {
+            // A name too long for the list slides to show its end
+            // while its row is hovered or has focus.
+            SlideText {
                 text: root.pad.name;
-                color: root.title-color;
+                text-color: root.title-color;
                 font-size: Design.font-body;
                 font-weight: root.title-weight;
-                overflow: elide;
+                running: root.hovered || (root.focused && Nav.focus-visible);
             }
 
             HorizontalLayout {
@@ -323,12 +325,14 @@ component PadDetailHeader inherits Rectangle {
             horizontal-stretch: 1;
             alignment: center;
             spacing: Design.gap-form;
-            Text {
+            // In no row to say when: it slides while the pointer is
+            // over the name itself.
+            SlideText {
                 text: root.pad.name;
-                color: Theme.text;
+                text-color: Theme.text;
                 font-size: Design.font-title-3;
                 font-weight: 700;
-                overflow: elide;
+                hover-self: true;
             }
             HorizontalLayout {
                 spacing: Design.gap-meta;

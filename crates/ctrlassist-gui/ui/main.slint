@@ -12,7 +12,7 @@
 import { VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
-import { Focusable, InlineError, TickerText } from "widgets.slint";
+import { Focusable, InlineError, SlideText } from "widgets.slint";
 import { Daemon } from "globals/daemon.slint";
 import { Clipboard } from "globals/clipboard.slint";
 import { Errors } from "globals/errors.slint";
@@ -120,8 +120,8 @@ component SidebarItem inherits Focusable {
 
 // A running profile in the sidebar, seen from every pane: what its
 // setup is in, as a glyph in the state's color, and its name, which
-// travels while the row is hovered or has focus if it is too long to
-// show whole. The state in words is the row's tip and its accessible
+// slides to show its end while the row is hovered or has focus if it is
+// too long to show whole. The state in words is the row's tip and its accessible
 // label. Activating it opens the profile. The glyphs and colors are the
 // tray icon's.
 component StatusItem inherits Focusable {
@@ -169,7 +169,7 @@ component StatusItem inherits Focusable {
         VerticalLayout {
             alignment: center;
             horizontal-stretch: 1;
-            TickerText {
+            SlideText {
                 text: root.name;
                 text-color: Theme.sidebar-text;
                 font-size: Design.font-caption;

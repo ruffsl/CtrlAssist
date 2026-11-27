@@ -205,46 +205,47 @@ export component Focusable inherits Rectangle {
 }
 
 // =============================================================================
-// TickerText — one line of text that travels when it doesn't fit.
+// SlideText — one line of text that slides to show its end.
 // =============================================================================
 //
 // Cut off with an ellipsis like any other line while `running` is
 // false. While it is true, as its row is hovered or has focus, a line
-// too long for its width travels to its end and back, resting at each,
-// so the whole of it can be read; a line that fits stays still. The
-// motion is asked for by pointing at the row, never shown unasked.
+// too long for its width waits a moment, slides until its end shows,
+// and stays there; it is back behind its ellipsis as soon as `running`
+// is false again. A line that fits never moves. The motion is asked for
+// by pointing at the row, ends by itself, and doesn't repeat.
 //
-// The offset is read from the animation clock only while the line
-// travels, so a still one costs no redraws.
+// `hover-self` has the line run while the pointer is over the line
+// itself, for one that is in no row to say so.
 
-export component TickerText inherits Rectangle {
+export component SlideText inherits Rectangle {
     in property <string> text;
     in property <brush> text-color;
     in property <length> font-size: Design.font-body;
     in property <int> font-weight: 400;
-    /// Whether a line that doesn't fit travels: its row is hovered or
+    /// Whether a line that doesn't fit slides: its row is hovered or
     /// has focus.
     in property <bool> running;
+    in property <bool> hover-self: false;
     /// How far the line is longer than its width; 0 where it fits.
     out property <length> overrun: max(0px, measure.preferred-width - self.width);
-    out property <bool> traveling: self.running && self.overrun > 0px;
+    out property <bool> sliding: (self.running || (self.hover-self && over.has-hover)) && self.overrun > 0px;
 
-    // The rest at each end, and the speed between them.
-    property <duration> rest: 900ms;
-    property <duration> travel: self.overrun / 40px * 1s;
-    property <duration> began;
-    changed traveling => {
-        self.began = animation-tick();
-    }
-    // Where in a there-and-back the line is: resting at its start,
-    // going, resting at its end, coming back.
-    property <duration> at: self.traveling
-        ? Math.mod((animation-tick() - self.began) / 1ms, (2 * self.rest + 2 * self.travel) / 1ms) * 1ms
-        : 0ms;
-    property <float> along: self.at < self.rest ? 0
-        : self.at < self.rest + self.travel ? (self.at - self.rest) / self.travel
-        : self.at < 2 * self.rest + self.travel ? 1
-        : 1 - (self.at - 2 * self.rest - self.travel) / self.travel;
+    // How far along the line is, from its start to its end. It waits
+    // before it sets off, so a pointer passing over moves nothing, and
+    // goes at one speed however long the line.
+    property <float> along: 0;
+    states [
+        slid when root.sliding: {
+            along: 1;
+            in {
+                animate along {
+                    delay: 900ms;
+                    duration: root.overrun / 40px * 1s;
+                }
+            }
+        }
+    ]
 
     clip: true;
     horizontal-stretch: 1;
@@ -261,15 +262,19 @@ export component TickerText inherits Rectangle {
     }
 
     label := Text {
-        x: root.traveling ? -root.overrun * root.along : 0px;
-        width: root.traveling ? measure.preferred-width : root.width;
+        x: -root.overrun * root.along;
+        width: root.sliding ? measure.preferred-width : root.width;
         height: root.height;
         text: root.text;
         color: root.text-color;
         font-size: root.font-size;
         font-weight: root.font-weight;
         vertical-alignment: center;
-        overflow: root.traveling ? clip : elide;
+        overflow: root.sliding ? clip : elide;
+    }
+
+    over := TouchArea {
+        enabled: root.hover-self;
     }
 }
 

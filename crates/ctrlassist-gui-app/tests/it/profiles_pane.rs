@@ -1344,8 +1344,9 @@ fn a_running_profile_s_row_in_the_sidebar_says_its_state_and_opens_it() {
     // The pane didn't follow focus onto a row.
     assert_eq!(app.get_active_pane(), Pane::About);
 
-    // A name too long to show whole travels while its row has focus,
-    // and is still, cut short, when it hasn't; one that fits never moves.
+    // A name too long to show whole slides to its end while its row has
+    // focus, once, and stays there; it is back, cut short, when the row
+    // hasn't. One that fits never moves.
     let left_of = |name: &str| {
         i_slint_backend_testing::ElementHandle::find_by_accessible_label(&app, name)
             .filter(|text| text.size().width > 0.0)
@@ -1358,15 +1359,21 @@ fn a_running_profile_s_row_in_the_sidebar_says_its_state_and_opens_it() {
         settle();
     }
     assert_eq!(focus(), format!("sidebar-status-{LONG}"));
-    assert_eq!(left_of(LONG), still, "it rests before it sets off");
-    elapse(1500);
-    assert!(left_of(LONG) < still, "it travels toward its end");
+    elapse(500);
+    assert_eq!(left_of(LONG), still, "it waits before it sets off");
+    elapse(1000);
+    let going = left_of(LONG);
+    assert!(going < still, "it slides toward its end");
+    elapse(60_000);
+    let there = left_of(LONG);
+    assert!(there <= going);
+    elapse(60_000);
+    assert_eq!(left_of(LONG), there, "and stays there");
     for _ in 0..3 {
         press(&app, Key::UpArrow);
         settle();
     }
-    elapse(1500);
-    assert_eq!(left_of(LONG), still, "it is back, and still");
+    assert_eq!(left_of(LONG), still, "it is back at once");
     assert_eq!(left_of("couch"), fits);
 
     // Return on a row opens its profile.
