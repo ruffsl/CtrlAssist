@@ -202,6 +202,114 @@ export component Focusable inherits Rectangle {
             root.hover-changed(self.has-hover);
         }
     }
+
+    // A control that can't be used still says why to a pointer over it:
+    // its own hit area is off with it, and would never report one.
+    TouchArea {
+        enabled: !root.enabled;
+        changed has-hover => {
+            root.hover-changed(self.has-hover);
+        }
+    }
+}
+
+// =============================================================================
+// Share — how two lists, one over the other, share a column's height.
+// =============================================================================
+//
+// A list of two sections scrolls each on its own, so that the second
+// can't be pushed out of sight by a long first. Each is as tall as its
+// rows where both fit. Where they don't, the shorter is shown whole, up
+// to half the room, and the longer has the rest and scrolls; two that
+// are each longer than half have half each. The rule is the same
+// whichever is the longer, so nothing jumps as rows come and go.
+
+export global Share {
+    /// The height of a section that needs `need`, beside one that needs
+    /// `other`, in `room`.
+    pure public function of(need: length, other: length, room: length) -> length {
+        return need + other <= room ? need
+            : need <= room / 2 ? need
+            : other <= room / 2 ? room - other
+            : room / 2;
+    }
+}
+
+// =============================================================================
+// SlideText — one line of text that slides to show its end.
+// =============================================================================
+//
+// Cut off with an ellipsis like any other line while `running` is
+// false. While it is true, as its row is hovered or has focus, a line
+// too long for its width waits a moment, slides until its end shows,
+// and stays there; it is back behind its ellipsis as soon as `running`
+// is false again. A line that fits never moves. The motion is asked for
+// by pointing at the row, ends by itself, and doesn't repeat.
+//
+// `hover-self` has the line run while the pointer is over the line
+// itself, for one that is in no row to say so.
+
+export component SlideText inherits Rectangle {
+    in property <string> text;
+    in property <brush> text-color;
+    in property <length> font-size: Design.font-body;
+    in property <int> font-weight: 400;
+    /// Whether a line that doesn't fit slides: its row is hovered or
+    /// has focus.
+    in property <bool> running;
+    in property <bool> hover-self: false;
+    /// How far the line is longer than its width; 0 where it fits.
+    out property <length> overrun: max(0px, measure.preferred-width - self.width);
+    out property <bool> sliding: (self.running || (self.hover-self && over.has-hover)) && self.overrun > 0px;
+
+    // How far along the line is, from its start to its end. It waits
+    // before it sets off, so a pointer passing over moves nothing, and
+    // goes at one speed however long the line.
+    property <float> along: 0;
+    states [
+        slid when root.sliding: {
+            along: 1;
+            in {
+                animate along {
+                    delay: Design.dwell;
+                    duration: root.overrun / 40px * 1s;
+                }
+            }
+        }
+    ]
+
+    clip: true;
+    horizontal-stretch: 1;
+    // As wide as the line where there is room, and as narrow as it has
+    // to be where there isn't.
+    min-width: 0px;
+    preferred-width: measure.preferred-width;
+    height: measure.preferred-height;
+
+    // The line at its natural size, never shown: what the one that is
+    // shown is measured against, whichever way that one is cut.
+    measure := Text {
+        visible: false;
+        text: root.text;
+        font-size: root.font-size;
+        font-weight: root.font-weight;
+    }
+
+    label := Text {
+        x: -root.overrun * root.along;
+        width: root.sliding ? measure.preferred-width : root.width;
+        height: root.height;
+        text: root.text;
+        color: root.text-color;
+        font-size: root.font-size;
+        font-weight: root.font-weight;
+        vertical-alignment: center;
+        overflow: root.sliding ? clip : elide;
+    }
+
+    over := TouchArea {
+        enabled: root.hover-self;
+    }
 }
 
 // =============================================================================
@@ -2176,10 +2284,11 @@ export component PadTile inherits Rectangle {
     }
 }
 
-// A profile's tile: its arrangement's shape. Two lines joining into one
-// for a preset that merges two pads, one line splitting into two for a
-// preset that shares one pad out; a profile that is neither, written by
-// hand, gets a plain mark.
+// A profile's tile: its arrangement's shape, in the desktop theme's own
+// glyphs. Two lines joining into one for a preset that merges two pads,
+// one line splitting into two for a preset that shares one pad out, and
+// lines of text for a profile that is neither, written by hand. A theme
+// without a glyph leaves the tile bare.
 export component ProfileTile inherits Rectangle {
     // "merge", "split", or anything else for neither.
     in property <string> shape;
@@ -2192,19 +2301,16 @@ export component ProfileTile inherits Rectangle {
     border-width: Design.border-thin;
     border-color: Theme.border;
 
-    Path {
-        width: root.tile-size * 0.62;
-        height: root.tile-size * 0.62;
+    Image {
+        source: root.shape == "merge" ? Icons.join
+            : root.shape == "split" ? Icons.split
+            : Icons.written;
+        width: root.tile-size * 0.7;
+        height: root.tile-size * 0.7;
         x: (root.tile-size - self.width) / 2;
         y: (root.tile-size - self.height) / 2;
-        viewbox-width: 24;
-        viewbox-height: 24;
-        stroke: Theme.chip-text;
-        stroke-width: 2px;
-        fill: transparent;
-        commands: root.shape == "merge" ? "M 3 6 C 10 6 10 12 14 12 L 21 12 M 3 18 C 10 18 10 12 14 12"
-            : root.shape == "split" ? "M 3 12 L 10 12 C 14 12 14 6 21 6 M 10 12 C 14 12 14 18 21 18"
-            : "M 4 7 L 20 7 M 4 12 L 20 12 M 4 17 L 14 17";
+        image-fit: contain;
+        colorize: Theme.chip-text;
     }
 }
 

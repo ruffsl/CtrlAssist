@@ -161,7 +161,7 @@ export global Help {
 // so a tip adds no stop of its own. The host reads `pinned-mine`.
 export component HelpTrigger inherits Rectangle {
     in property <string> text;
-    in property <duration> delay: 700ms;
+    in property <duration> delay: Design.dwell;
     // Is the live bubble ours? `active` for styling; `pinned-mine` for
     // the host's focus-out dismissal.
     out property <bool> active: Help.shown && Help.owner == root.id;

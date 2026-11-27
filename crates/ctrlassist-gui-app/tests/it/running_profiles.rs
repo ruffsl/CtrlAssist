@@ -62,9 +62,7 @@ fn rows_say_whether_each_setup_s_profile_is_kept_and_its_selections() {
     let attic = &rows[0];
     assert!(attic.stale && !attic.profile_kept, "its profile is gone");
 
-    // The badge is the worst of them.
-    assert_eq!(setups::trouble(&all), "danger");
-    assert_eq!(setups::trouble(&all[..2]), "warn");
-    assert_eq!(setups::trouble(&[setup("couch", Phase::Running)]), "");
-    assert_eq!(setups::trouble(&[]), "");
+    // Each says what its setup is in, for the sidebar's rows.
+    let phases: Vec<&str> = rows.iter().map(|row| row.phase.as_str()).collect();
+    assert_eq!(phases, ["held", "running", "failed"]);
 }

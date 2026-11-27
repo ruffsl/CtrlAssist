@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::info;
 
+use crate::badge::{Badge, Icons};
 use crate::menu::{self, Command, Entry};
 
 use crate::state::{Asked, View};
@@ -85,6 +86,12 @@ pub struct PadTray {
     /// What the daemon publishes, as last seen.
     pub view: View,
 
+    /// The icon with each state drawn into it, where they were made.
+    icons: Icons,
+    /// Whether a view has been taken yet: until one has, nothing is
+    /// known of the daemon, and nothing is said of it.
+    heard: bool,
+
     /// The profile last started, stopped or scrolled to: what a middle
     /// click on the icon acts on, while it can be.
     pub target: Option<String>,
@@ -132,6 +139,8 @@ impl PadTray {
     pub fn new(actions: mpsc::UnboundedSender<Action>) -> Self {
         Self {
             view: View::default(),
+            icons: Icons::default(),
+            heard: false,
 
             target: None,
             picked: BTreeMap::new(),
@@ -145,6 +154,7 @@ impl PadTray {
     /// Takes a new view. A setup that came or went since the last is the
     /// profile last used, whoever started or stopped it.
     pub fn see(&mut self, mut view: View) {
+        self.heard = true;
         // A profile picked at here is shown as picked until the daemon
         // publishes the last pick: a view read before it did would undo
         // the picks, and the next would be built on the profile without
@@ -335,21 +345,45 @@ impl PadTray {
         let _ = self.actions.send(action);
     }
 
+    /// Composes the tray's icons into `dir` from the desktop theme's
+    /// files: the pad with each state drawn into it. Without this, or
+    /// for a state whose icon couldn't be made, the icon is the theme's
+    /// pad alone.
+    pub fn compose_icons(&mut self, dir: &std::path::Path) {
+        self.icons = Icons::make(dir);
+    }
+
     /// The menu as it stands, as plain data.
     #[must_use]
     pub fn entries(&self) -> Vec<Entry> {
         menu::menu(&self.view)
     }
 
-    /// The tray's own icon, and which form of it: the colored pad glyph
-    /// whether or not something runs, with a warning or an error in its
-    /// place for a setup held or failed. The menu's rows are the
-    /// symbolic ones.
-    fn glyph(&self) -> (menu::Icon, Variant) {
+    /// The theme's own icon for the tray: the colored pad glyph. The
+    /// menu's rows are the symbolic ones.
+    const fn glyph() -> (menu::Icon, Variant) {
+        (menu::icon::PAD, Variant::Color)
+    }
+
+    /// Whether the daemon is known to be away, or another release: not
+    /// before the first view is taken, when nothing is known of it yet.
+    fn unavailable(&self) -> bool {
+        self.heard && (!self.view.alive || self.view.mismatch.is_some())
+    }
+
+    /// What is drawn into the tray's icon for the worst of what the
+    /// setups are in: nothing while none runs or one is still starting.
+    /// A daemon that isn't there, or is another release, comes before
+    /// any of it.
+    fn badge(&self) -> Option<Badge> {
+        if self.unavailable() {
+            return Some(Badge::Unavailable);
+        }
         match self.worst() {
-            Some(Phase::Failed) => (menu::icon::FAILED, Variant::Color),
-            Some(Phase::Held) => (menu::icon::WRONG, Variant::Color),
-            Some(_) | None => (menu::icon::PAD, Variant::Color),
+            Some(Phase::Failed) => Some(Badge::Failed),
+            Some(Phase::Held) => Some(Badge::Held),
+            Some(Phase::Running) => Some(Badge::Running),
+            Some(_) | None => None,
         }
     }
 
@@ -502,16 +536,31 @@ impl Tray for PadTray {
         }
     }
 
+    /// The pad with the state drawn into it, where that icon was made,
+    /// and the theme's pad alone otherwise.
     fn icon_name(&self) -> String {
-        let (name, variant) = self.glyph();
+        if let Some(name) = self.badge().and_then(|badge| self.icons.name(badge)) {
+            return name.to_string();
+        }
+        let (name, variant) = Self::glyph();
         themed(name, variant)
     }
 
+    fn icon_theme_path(&self) -> String {
+        self.icons.dir().to_string_lossy().into_owned()
+    }
+
+    /// Active while something runs, and while the daemon is away or
+    /// another release, so that a desktop that tucks passive items out
+    /// of sight keeps the icon and its mark in view then. Never one that
+    /// asks for attention, which a desktop may animate, as Plasma does
+    /// by pulsing the icon: the icon itself says a setup is held or
+    /// failed, and stays still.
     fn status(&self) -> ksni::Status {
-        match self.worst() {
-            Some(Phase::Failed | Phase::Held) => ksni::Status::NeedsAttention,
-            Some(_) => ksni::Status::Active,
-            None => ksni::Status::Passive,
+        if self.unavailable() || self.worst().is_some() {
+            ksni::Status::Active
+        } else {
+            ksni::Status::Passive
         }
     }
 
@@ -541,6 +590,7 @@ mod tests {
         let (actions, clicked) = mpsc::unbounded_channel();
         let mut tray = PadTray::new(actions);
         tray.view = view(phase, Hiding::Service);
+        tray.heard = true;
         (tray, clicked)
     }
 
@@ -669,38 +719,87 @@ mod tests {
     fn the_icon_title_and_tooltip_say_the_worst_of_what_runs() {
         let said = |phase| {
             let (tray, _clicked) = tray(phase);
-            // The glyph and its form, before the desktop's theme is
-            // asked which name it has for it.
-            let (name, variant) = tray.glyph();
-            let flat = matches!(variant, Variant::Symbolic);
-            (tray.title(), (name[0], flat), tray.tool_tip().description)
+            // The pad stays the icon whatever runs.
+            let (name, variant) = PadTray::glyph();
+            assert!(matches!(variant, Variant::Color));
+            assert_eq!(name[0], "applications-games");
+            (tray.title(), tray.tool_tip().description)
         };
         assert_eq!(
             said(None),
             (
                 "CtrlAssist".to_string(),
-                ("input-gaming", false),
                 "Nothing is running\n3 of 3 pads connected".to_string()
             )
         );
-        assert_eq!(said(Some(Phase::Running)).1, ("input-gaming", false));
+        assert_eq!(said(Some(Phase::Running)).0, "CtrlAssist [running]");
         assert_eq!(said(Some(Phase::Held)).0, "CtrlAssist [held]");
-        assert_eq!(said(Some(Phase::Held)).1, ("dialog-warning", false));
-        assert_eq!(said(Some(Phase::Failed)).1, ("dialog-error", false));
         assert_eq!(
-            said(Some(Phase::Failed)).2,
+            said(Some(Phase::Failed)).1,
             "► couch: Failed · Toggle\n    a virtual pad refused a write"
         );
+        // Nothing asks for attention, which a desktop may animate.
+        for phase in [Phase::Starting, Phase::Running, Phase::Held, Phase::Failed] {
+            let (tray, _clicked) = tray(Some(phase));
+            assert!(matches!(tray.status(), ksni::Status::Active), "{phase:?}");
+        }
+        let (idle, _clicked) = tray(None);
+        assert!(matches!(idle.status(), ksni::Status::Passive));
+        // The state that is drawn into the icon.
+        let badge = |phase| tray(phase).0.badge();
+        assert_eq!(badge(None), None);
+        assert_eq!(badge(Some(Phase::Starting)), None);
+        assert_eq!(badge(Some(Phase::Running)), Some(Badge::Running));
+        assert_eq!(badge(Some(Phase::Held)), Some(Badge::Held));
+        assert_eq!(badge(Some(Phase::Failed)), Some(Badge::Failed));
+        // Until its icons are made, the tray names the theme's pad and
+        // no path of its own.
+        let (mut held, _clicked) = tray(Some(Phase::Held));
+        assert_eq!(held.icon_theme_path(), "");
+        let plain = held.icon_name();
+        assert!(!plain.starts_with("ctrlassist-"));
+        // Made, it names the pad with the state in it wherever the
+        // theme had what that takes, and the pad alone for no state.
+        let dir = tempfile::tempdir().unwrap();
+        held.compose_icons(dir.path());
+        if dir.path().join("ctrlassist-held.svg").exists() {
+            assert_eq!(held.icon_name(), "ctrlassist-held");
+            assert_eq!(held.icon_theme_path(), dir.path().to_string_lossy());
+        } else {
+            assert_eq!(held.icon_name(), plain);
+        }
+        let (mut idle, _clicked) = tray(None);
+        idle.compose_icons(dir.path());
+        assert_eq!(idle.icon_name(), plain);
 
         let (mut down, _clicked) = tray(Some(Phase::Running));
         down.view.alive = false;
         assert_eq!(down.title(), "CtrlAssist [daemon not running]");
         assert_eq!(down.tool_tip().description, "The daemon isn't running");
+        assert_eq!(down.badge(), Some(Badge::Unavailable));
         let (mut other, _clicked) = tray(None);
         other.view.mismatch = Some("9.0.0".to_string());
         assert_eq!(other.title(), "CtrlAssist [version mismatch]");
         assert!(other.tool_tip().description.starts_with("Version mismatch"));
-        assert!(matches!(other.status(), ksni::Status::Passive));
+        assert_eq!(other.badge(), Some(Badge::Unavailable));
+        // Either is in view with its mark though nothing runs, where a
+        // desktop keeps passive items out of sight.
+        assert!(matches!(other.status(), ksni::Status::Active));
+        let (mut gone, _clicked) = tray(None);
+        gone.view.alive = false;
+        assert_eq!(gone.badge(), Some(Badge::Unavailable));
+        assert!(matches!(gone.status(), ksni::Status::Active));
+        // Before the first view is taken nothing is known of the daemon,
+        // and nothing is said of it: no mark comes and goes as the tray
+        // starts.
+        let (actions, _clicked) = mpsc::unbounded_channel();
+        let mut fresh = PadTray::new(actions);
+        assert_eq!(fresh.badge(), None);
+        assert!(matches!(fresh.status(), ksni::Status::Passive));
+        assert!(!fresh.icon_name().starts_with("ctrlassist-"));
+        fresh.see(View::default());
+        assert_eq!(fresh.badge(), Some(Badge::Unavailable));
+        assert!(matches!(fresh.status(), ksni::Status::Active));
         assert_eq!(other.id(), "ctrlassist");
     }
 

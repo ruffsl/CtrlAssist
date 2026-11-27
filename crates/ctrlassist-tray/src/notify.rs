@@ -95,7 +95,7 @@ impl Notifier {
             category: Category::Refused,
             summary: "Test notification".to_string(),
             body: "CtrlAssist's notifications are working.".to_string(),
-            icon: "input-gaming",
+            icon: "applications-games",
         });
     }
 }

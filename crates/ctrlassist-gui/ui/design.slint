@@ -30,8 +30,15 @@ export global Design {
 
     // -- Component sizing --
     out property <length> size-input: 32px;        // buttons, inputs, comboboxes
+    // How long a pointer or focus rests on something before what it
+    // asks for comes: a tip, or a long name sliding to show its end.
+    // One wait for both, so that the two begin together. Not a wait for
+    // anything to happen elsewhere: nothing says a pointer has settled.
+    out property <duration> dwell: 700ms;
+    out property <length> size-card-action: 36px;  // a card's first row: a button beside up to two lines of what it does
     out property <length> size-sidebar-item: 36px;
     out property <length> size-tile-sm: 28px;      // vendor tile in list rows
+    out property <length> size-list-row: 52px;     // a row of the pads' or profiles' list: a name over a status line
     out property <length> size-tile-md: 40px;      // vendor tile in detail header
     out property <length> size-status-dot: 6px;
     out property <length> size-glyph: 14px;         // action-icon glyph in buttons

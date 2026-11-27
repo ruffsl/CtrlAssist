@@ -12,7 +12,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { ListRow, Group, Chip, ThemedButton, DangerBtn, CopyBtn, IconBtn, ConfirmDialog, InlineError, Focusable, PadTile, FormRow, ListCaption, ToneText } from "../widgets.slint";
+import { ListRow, Group, Chip, ThemedButton, CopyBtn, IconBtn, ConfirmDialog, InlineError, Focusable, PadTile, FormRow, ListCaption, ToneText, SlideText, Share } from "../widgets.slint";
 import { Icons } from "../globals/icons.slint";
 import { HelpScrollView } from "../globals/help.slint";
 import { Health, ServiceHealth } from "../globals/health.slint";
@@ -25,7 +25,7 @@ component PadListRow inherits ListRow {
 
     accessible-label: root.pad.name;
     accessible-id: "pads-row-" + root.pad.key;
-    height: 64px;
+    height: Design.size-list-row;
 
     HorizontalLayout {
         width: 100%;
@@ -50,12 +50,14 @@ component PadListRow inherits ListRow {
             alignment: center;
             spacing: 2px;
 
-            Text {
+            // A name too long for the list slides to show its end
+            // while its row is hovered or has focus.
+            SlideText {
                 text: root.pad.name;
-                color: root.title-color;
+                text-color: root.title-color;
                 font-size: Design.font-body;
                 font-weight: root.title-weight;
-                overflow: elide;
+                running: root.hovered || (root.focused && Nav.focus-visible);
             }
 
             HorizontalLayout {
@@ -70,9 +72,12 @@ component PadListRow inherits ListRow {
                     background: root.pad.connected ? Theme.success : Theme.text-faint;
                 }
 
+                // Each set by its middle: the tag's monospace line isn't
+                // the height of the word's beside it.
                 ToneText {
                     text: root.pad.word;
                     tone: root.pad.tone;
+                    vertical-alignment: center;
                 }
 
                 if root.pad.tag != "": Text {
@@ -80,7 +85,45 @@ component PadListRow inherits ListRow {
                     color: Theme.text-faint;
                     font-size: Design.font-mini;
                     font-family: Theme.mono-font;
+                    vertical-alignment: center;
                 }
+            }
+        }
+    }
+}
+
+// The rows of one of the list's two sections: the real pads, or the
+// virtual ones, each row at its place among all of them.
+component PadRows inherits VerticalLayout {
+    in property <bool> virtual;
+    in property <bool> has-selection;
+    in property <int> focus-row-tick;
+    in property <string> focus-row-id;
+    callback activated();
+    /// Focus the row at this place among all the rows.
+    callback step-to(int);
+
+    alignment: start;
+    for pad[i] in Pads.rows: VerticalLayout {
+        if (i >= Pads.real-count) == root.virtual: PadListRow {
+            pad: pad;
+            selected: i == Pads.selected-index;
+            // The selected row is the list's one Tab stop; the
+            // first, with nothing selected.
+            tab-stop: root.has-selection ? i == Pads.selected-index : i == 0;
+            focus-tick: root.focus-row-tick;
+            focus-wanted: pad.id == root.focus-row-id;
+            // Focusing a row selects it, however focus got there.
+            focus-in => {
+                Pads.selected-index = i;
+            }
+            clicked => {
+                Pads.selected-index = i;
+                root.activated();
+            }
+            step(forward) => {
+                Nav.list-step-served = Nav.list-step-tick;
+                root.step-to(forward ? i + 1 : i - 1);
             }
         }
     }
@@ -167,7 +210,7 @@ component PadList inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     Text {
-                        text: @tr("{}/{} CONNECTED", Pads.connected-count, Pads.real-count);
+                        text: @tr("CONNECTED · {}/{}", Pads.connected-count, Pads.real-count);
                         color: Theme.text-dim;
                         font-size: Design.font-mini;
                         font-weight: 600;
@@ -198,38 +241,52 @@ component PadList inherits Rectangle {
             }
         }
 
-        ScrollView {
-            content-width: self.visible-width;
-            VerticalLayout {
-                alignment: start;
-                // The real pads come first, the connected ones and then
-                // the remembered, so the virtual pads start at the
-                // count of those.
-                for pad[i] in Pads.rows: VerticalLayout {
-                    if i == Pads.real-count: ListCaption {
-                        title: @tr("VIRTUAL");
-                    }
-                    PadListRow {
-                        pad: pad;
-                        selected: i == Pads.selected-index;
-                        // The selected row is the list's one Tab stop; the
-                        // first, with nothing selected.
-                        tab-stop: root.has-selection ? i == Pads.selected-index : i == 0;
-                        focus-tick: root.focus-row-tick;
-                        focus-wanted: pad.id == root.focus-row-id;
-                        // Focusing a row selects it, however focus got there.
-                        focus-in => {
-                            Pads.selected-index = i;
-                        }
-                        clicked => {
-                            Pads.selected-index = i;
-                            root.activated();
-                        }
-                        step(forward) => {
-                            Nav.list-step-served = Nav.list-step-tick;
-                            root.focus-slot(forward ? i + 1 : i - 1);
-                        }
-                    }
+        // The real pads, the connected ones and then the remembered,
+        // and under them the virtual ones, each list scrolling on its
+        // own so that a long first can't push the second out of sight
+        // (`Share`). The virtual pads start at the count of the real.
+        if Pads.rows.length > 0: area := Rectangle {
+            vertical-stretch: 1;
+            property <length> row-height: Design.size-list-row;
+            property <int> virtual-count: Pads.rows.length - Pads.real-count;
+            property <length> caption: self.virtual-count > 0 ? 40px : 0px;
+            property <length> room: max(0px, self.height - self.caption);
+            property <length> real-need: Pads.real-count * self.row-height;
+            property <length> virtual-need: self.virtual-count * self.row-height;
+            property <length> real-height: Share.of(self.real-need, self.virtual-need, self.room);
+            property <length> virtual-height: Share.of(self.virtual-need, self.real-need, self.room);
+
+            ScrollView {
+                y: 0px;
+                width: 100%;
+                height: area.real-height;
+                content-width: self.visible-width;
+                PadRows {
+                    virtual: false;
+                    has-selection: root.has-selection;
+                    focus-row-tick: root.focus-row-tick;
+                    focus-row-id: root.focus-row-id;
+                    activated => { root.activated(); }
+                    step-to(slot) => { root.focus-slot(slot); }
+                }
+            }
+            if area.virtual-count > 0: ListCaption {
+                y: area.real-height;
+                width: 100%;
+                title: @tr("VIRTUAL · {}", area.virtual-count);
+            }
+            ScrollView {
+                y: area.real-height + area.caption;
+                width: 100%;
+                height: area.virtual-height;
+                content-width: self.visible-width;
+                PadRows {
+                    virtual: true;
+                    has-selection: root.has-selection;
+                    focus-row-tick: root.focus-row-tick;
+                    focus-row-id: root.focus-row-id;
+                    activated => { root.activated(); }
+                    step-to(slot) => { root.focus-slot(slot); }
                 }
             }
         }
@@ -292,6 +349,13 @@ component LabeledRow {
 // it is connected and what it is doing.
 component PadDetailHeader inherits Rectangle {
     in property <PadRow> pad;
+    in property <string> id-prefix;
+    in property <bool> daemon-available;
+    /// The detail row Forget is a stop of.
+    in property <int> nav-row;
+    /// Forget takes focus as this changes.
+    in property <int> forget-focus-tick;
+    callback request-forget();
 
     height: header-layout.preferred-height;
     background: Theme.surface;
@@ -323,31 +387,63 @@ component PadDetailHeader inherits Rectangle {
             horizontal-stretch: 1;
             alignment: center;
             spacing: Design.gap-form;
-            Text {
+            // In no row to say when: it slides while the pointer is
+            // over the name itself.
+            SlideText {
                 text: root.pad.name;
-                color: Theme.text;
+                text-color: Theme.text;
                 font-size: Design.font-title-3;
                 font-weight: 700;
-                overflow: elide;
+                hover-self: true;
             }
             HorizontalLayout {
                 spacing: Design.gap-meta;
-                alignment: start;
                 Text {
                     text: root.pad.model;
                     color: Theme.text-dim;
                     font-size: Design.font-helper;
                     font-family: Theme.mono-font;
+                    // The monospace font's line isn't the height of the
+                    // one beside it: each is set by its middle, so the
+                    // letters of the three sit level.
+                    vertical-alignment: center;
                 }
                 Text {
                     text: "·";
                     color: Theme.text-dim;
                     font-size: Design.font-helper;
+                    vertical-alignment: center;
                 }
                 Text {
+                    horizontal-stretch: 1;
                     text: root.pad.connection == "" ? "—" : root.pad.connection;
                     color: Theme.text-dim;
                     font-size: Design.font-helper;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                // Forget, at the row's far end as a profile's Delete is,
+                // for a real pad: one that is connected can't be
+                // forgotten, and says so. In a box of the line's own
+                // height, which the button stands a little taller than,
+                // so that the header is as tall as a profile's.
+                if !root.pad.is-virtual: Rectangle {
+                    width: forget.preferred-width;
+                    forget := IconBtn {
+                        y: (parent.height - self.height) / 2;
+                        height: self.preferred-height;
+                        property <int> focus-mirror: root.forget-focus-tick;
+                        changed focus-mirror => {
+                            self.focus();
+                        }
+                        nav-row: root.nav-row;
+                        source: Icons.delete;
+                        enabled: root.daemon-available && !root.pad.connected;
+                        accessible-label: @tr("Forget pad");
+                        tip: root.pad.connected ? @tr("A connected pad can't be forgotten") : @tr("Forget pad");
+                        accessible-id: root.id-prefix + "pads-forget";
+                        clicked => { root.request-forget(); }
+                    }
                 }
             }
         }
@@ -395,14 +491,14 @@ component PadDetail inherits Rectangle {
         }
     }
 
-    // Forget is only there for a pad that isn't connected, so it takes
-    // focus by a tick of its own.
+    // Forget, in the header, can be used only for a pad that isn't
+    // connected, and takes focus by a tick of its own.
     property <int> forget-focus-tick;
     property <int> status-row;
-    property <int> danger-row;
+    property <int> forget-row;
     init => {
         root.status-row = Nav.next-row-id();
-        root.danger-row = Nav.next-row-id();
+        root.forget-row = Nav.next-row-id();
     }
 
     background: Theme.surface-alt;
@@ -413,6 +509,11 @@ component PadDetail inherits Rectangle {
 
         PadDetailHeader {
             pad: root.pad;
+            id-prefix: root.id-prefix;
+            daemon-available: root.daemon-available;
+            nav-row: root.forget-row;
+            forget-focus-tick: root.forget-focus-tick;
+            request-forget => { root.request-forget(); }
         }
 
         HelpScrollView {
@@ -436,15 +537,23 @@ component PadDetail inherits Rectangle {
                     help: @tr("What the chips above say. Connected or Disconnected: whether it is plugged in or paired now. In couch, or In with another profile's name: that running profile is using it. Free: connected, and no running profile is using it. Remembered: seen before and away now; a profile can still name it. Virtual: made by a running profile for games to read. Identify buzzes the pad, to tell which one it is.");
                     help-id: root.id-prefix + "pads-help-status";
 
+                    // As tall in a pad's card as in a profile's, whether
+                    // what the button does is said in one line or two,
+                    // so that the rows under it are level across the
+                    // panes; and the button its own height in both.
                     HorizontalLayout {
+                        min-height: Design.size-card-action;
                         spacing: Design.gap-row;
-                        identify := ThemedButton {
-                            nav-row: root.status-row;
-                            text: @tr("Identify");
-                            icon: Icons.identify;
-                            enabled: root.daemon-available && root.pad.connected && !root.pad.without-rumble;
-                            accessible-id: root.id-prefix + "pads-identify";
-                            clicked => { Pads.identify(root.pad.id); }
+                        VerticalLayout {
+                            alignment: center;
+                            identify := ThemedButton {
+                                nav-row: root.status-row;
+                                text: @tr("Identify");
+                                icon: Icons.identify;
+                                enabled: root.daemon-available && root.pad.connected && !root.pad.without-rumble;
+                                accessible-id: root.id-prefix + "pads-identify";
+                                clicked => { Pads.identify(root.pad.id); }
+                            }
                         }
                         VerticalLayout {
                             horizontal-stretch: 1;
@@ -595,40 +704,6 @@ component PadDetail inherits Rectangle {
                         value: root.pad.address;
                         mono: true;
                         copyable: true;
-                    }
-                }
-
-                // -- DANGER ZONE --
-                //
-                // Only a pad that isn't connected can be forgotten.
-                if !root.pad.connected && !root.pad.is-virtual: Group {
-                    title: @tr("DANGER ZONE");
-                    HorizontalLayout {
-                        spacing: Design.gap-row;
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            Text {
-                                text: @tr("Drops this pad from the list. It is known again the next time it connects.");
-                                color: Theme.text-dim;
-                                font-size: Design.font-helper;
-                                wrap: word-wrap;
-                            }
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            forget := DangerBtn {
-                                property <int> focus-mirror: root.forget-focus-tick;
-                                changed focus-mirror => {
-                                    self.focus();
-                                }
-                                nav-row: root.danger-row;
-                                text: @tr("Forget pad");
-                                enabled: root.daemon-available;
-                                accessible-id: root.id-prefix + "pads-forget";
-                                clicked => { root.request-forget(); }
-                            }
-                        }
                     }
                 }
             }

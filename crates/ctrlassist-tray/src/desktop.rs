@@ -111,6 +111,11 @@ pub async fn run(options: TrayOptions) -> Result<()> {
     // registers if a host appears later, and notifications work meanwhile.
     // Only a failure of the session bus itself ends up here.
     let mut tray = PadTray::new(actions);
+    // Beside the daemon's socket, in the user's runtime directory: made
+    // again at each start, from the theme the desktop has then.
+    if let Some(beside) = options.socket.parent() {
+        tray.compose_icons(&beside.join("tray-icons"));
+    }
     // The profile last used before this start, if it was kept.
     tray.target = notify::load_target(&options.config);
     let handle = match tray.assume_sni_available(true).spawn().await {

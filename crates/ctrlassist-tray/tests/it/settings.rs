@@ -39,7 +39,7 @@ fn toast(category: Category, summary: &str) -> Toast {
         category,
         summary: summary.to_string(),
         body: String::new(),
-        icon: "input-gaming",
+        icon: "applications-games",
     }
 }
 

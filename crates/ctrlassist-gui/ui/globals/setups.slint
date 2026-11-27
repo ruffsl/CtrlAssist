@@ -13,6 +13,9 @@ export struct SetupNodeRow {
 export struct SetupRow {
     // The setup's name: the profile it runs.
     name: string,
+    // What the setup is in: "starting", "running", "held" for a pad, or
+    // "failed".
+    phase: string,
     // The profile as kept is another than it runs, or gone.
     stale: bool,
     // Whether a profile of its name is kept at all.
@@ -22,15 +25,14 @@ export struct SetupRow {
 
 export global Setups {
     in property <[SetupRow]> rows;
-    // The worst of what the setups are in, for the sidebar's badge:
-    // "" for none, "warn" while one is held, "danger" while one failed.
-    in property <string> trouble;
     // An update waiting on its dialog: the setup, and what Rust found
     // it would cost ("seamless" or "restart"). Rust sets them once it
     // has asked the daemon; the dialog clears them.
     in-out property <string> pending-update;
     in-out property <string> pending-update-cost;
 
+    // Open the Profiles pane on the profile a setup runs.
+    callback open(string);
     callback stop(string);
     // Ask what an update would cost, then open its dialog.
     callback ask-update(string);

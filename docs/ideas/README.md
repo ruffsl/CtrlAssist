@@ -16,6 +16,7 @@ Deferred work and designs set aside, one file each. An entry says what the idea 
 
 - [`non-gamepad-pads.md`](non-gamepad-pads.md) — wheels, flight sticks and levers.
 - [`pad-nicknames.md`](pad-nicknames.md) — a name the user gives a pad.
+- [`bundled-tile-glyphs.md`](bundled-tile-glyphs.md) — the profile tiles' glyphs carried with the window, for themes without Breeze's.
 - [`profile-new.md`](profile-new.md) — a preset profile from command-line flags.
 - [`choice-descriptions.md`](choice-descriptions.md) — a choice's own sentence, where it is chosen.
 - [`restart-warning.md`](restart-warning.md) — saying that a game may need restarting after its virtual pad is replaced.

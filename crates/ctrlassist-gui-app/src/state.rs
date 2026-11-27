@@ -160,7 +160,6 @@ impl Snapshot {
                     .map(|profile| profile.name.clone())
                     .collect::<Vec<_>>(),
             ),
-            crate::setups::trouble(&self.setups),
         );
         crate::profiles::show(
             app,

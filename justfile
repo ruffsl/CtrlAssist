@@ -355,6 +355,84 @@ docs-links: docs-build
 docs-screenshots:
     cargo run --package ctrlassist-gui-app --features screenshots --bin ctrlassist-screenshots -- docs/screenshots
 
+# The tray's icon, tip and menu are drawn by the desktop, so their
+# pictures come from a Plasma session in a virtual machine
+# (packaging/nix/shots-tray.nix), which wants KVM.
+#
+# Make the user guide's screenshots of the tray
+[group('docs')]
+docs-tray-shots:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shots="$(nix build --no-link --print-out-paths .#tray-shots)"
+    install -m 644 "$shots"/system_tray_{hover,menu}.png docs/screenshots/
+
+# The same scene on this machine's own desktop, to look at by hand. It is
+# set apart from the machine's own: a
+# daemon and a tray of their own, with their own socket, state, profiles
+# and settings under target/tray-stage, two made-up pads, and a profile named `couch`
+# running on them, with a second, `desk`, that isn't. The pads are
+# grabbed, not hidden: no hiding service is asked. The daemon lists every
+# pad on the machine, so unplug real ones to keep them out of the
+# picture, and look for a second tray icon beside the dev stack's own.
+# Ctrl-C ends it all. `just docs-tray-stage held` takes the assist's pad
+# away once the profile runs, which leaves its setup held.
+#
+# Set the tray's scene on this desktop, to look at by hand
+[group('docs')]
+docs-tray-stage state="running":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{ state }}" in
+        running | held) ;;
+        *)
+            echo "docs-tray-stage: state is running or held, not '{{ state }}'" >&2
+            exit 2
+            ;;
+    esac
+    stage="{{ justfile_directory() }}/target/tray-stage"
+    socket="$stage/zenoh.sock"
+    rm -rf "$stage"
+    mkdir -p "$stage"
+    cargo build --quiet --package ctrlassist-cli --package ctrlassist-test
+    trap 'kill $(jobs -p) 2> /dev/null || true' EXIT
+    target/debug/ctrlassist-fixture fake-dualsense --real > /dev/null &
+    assist=$!
+    target/debug/ctrlassist-fixture fake-pad --name "Xbox Wireless Controller" \
+        --vendor 045e --product 0b13 > /dev/null &
+    target/debug/ctrlassist service daemon --socket "$socket" \
+        --state-dir "$stage/state" --config-dir "$stage/config" \
+        --hider-socket "$stage/no-hider.sock" --test-pads 2> "$stage/daemon.log" &
+    daemon=$!
+    # Until the daemon answers, or has gone, which its log says why.
+    until target/debug/ctrlassist status --socket "$socket" > /dev/null 2>&1; do
+        if ! kill -0 "$daemon" 2> /dev/null; then
+            echo "The staged daemon ended as it started; see $stage/daemon.log." >&2
+            exit 1
+        fi
+        sleep 0.1
+    done
+    printf '%s\n' 'mode = "priority"' 'primary = "model:045e:0b13"' 'assist = "02:ca:7e:00:00:01"' \
+        'identity = "dualsense"' 'assist-gyro = "right-bumper"' > "$stage/couch.toml"
+    printf '%s\n' 'mode = "multicast"' 'pad = "model:045e:0b13"' 'outputs = 2' > "$stage/desk.toml"
+    target/debug/ctrlassist profile put "$stage/couch.toml" --socket "$socket"
+    target/debug/ctrlassist profile put "$stage/desk.toml" --socket "$socket"
+    # The pads are there once udev is done with them: tried again for
+    # as long as both they and the daemon are.
+    until target/debug/ctrlassist start couch --socket "$socket" 2> "$stage/start.log"; do
+        if ! kill -0 "$daemon" 2> /dev/null || ! kill -0 "$assist" 2> /dev/null; then
+            echo "The staged profile can't start:" >&2
+            cat "$stage/start.log" >&2
+            exit 1
+        fi
+        sleep 0.2
+    done
+    if [ "{{ state }}" = "held" ]; then kill "$assist"; fi
+    echo "The tray is staged: open its menu, and Ctrl-C here when the pictures are taken."
+    # Its own file, so that the tray of the machine's own keeps its
+    # switches and the profile it last used.
+    target/debug/ctrlassist service tray --socket "$socket" --config "$stage/tray.toml"
+
 # Serve the user guide with live reload at http://localhost:3000
 [group('docs')]
 docs-serve:
