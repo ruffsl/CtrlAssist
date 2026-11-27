@@ -325,12 +325,62 @@ fn virtual_pads_follow_the_real_ones() {
     let caption = |title: &'static str| {
         i_slint_backend_testing::ElementQuery::from_root(&app)
             .match_descendants()
-            .match_predicate(move |element| element.accessible_label().as_deref() == Some(title))
+            .match_predicate(move |element| {
+                element
+                    .accessible_label()
+                    .is_some_and(|label| label.starts_with(title))
+            })
             .find_first()
             .is_some()
     };
-    assert!(caption("VIRTUAL"));
+    // With how many there are, since its list scrolls on its own.
+    assert!(caption("VIRTUAL · 1"));
     assert!(!caption("REMEMBERED"), "remembered pads are among the real");
+
+    // In a window too short for all of them, the real pads scroll and the
+    // virtual ones stay in sight under their caption: the shorter list
+    // is shown whole, and the longer has the rest of the room.
+    let in_sight = |height: f32| {
+        app.window()
+            .set_size(slint::LogicalSize::new(720.0, height));
+        settle();
+        let query = || i_slint_backend_testing::ElementQuery::from_root(&app).match_descendants();
+        let caption = query()
+            .match_predicate(|element| {
+                element
+                    .accessible_label()
+                    .is_some_and(|label| label.starts_with("VIRTUAL"))
+            })
+            .find_first()
+            .expect("the caption");
+        let caption_bottom = caption.absolute_position().y + caption.size().height;
+        // A row's id is found on more than one of its elements: each
+        // row once, by where it ends.
+        let mut below: Vec<f32> = query()
+            .match_predicate(|element| {
+                element
+                    .accessible_id()
+                    .is_some_and(|id| id.starts_with("pads-row-"))
+            })
+            .find_all()
+            .into_iter()
+            .map(|row| (row.absolute_position().y, row.size().height))
+            .filter(|(top, _)| *top >= caption_bottom - 0.5)
+            .map(|(top, height)| top + height)
+            .collect();
+        below.sort_by(f32::total_cmp);
+        below.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+        (caption_bottom, below)
+    };
+    for height in [1600.0, 480.0, 400.0] {
+        let (caption_bottom, below) = in_sight(height);
+        assert!(caption_bottom < height, "{height}: {caption_bottom}");
+        assert_eq!(below.len(), 1, "{height}: the one virtual pad");
+        assert!(below[0] <= height + 0.5, "{height}: {below:?}");
+    }
+    app.window()
+        .set_size(slint::LogicalSize::new(720.0, 1600.0));
+    settle();
 
     let opened: Rc<RefCell<Vec<String>>> = Rc::default();
     let seen = opened.clone();

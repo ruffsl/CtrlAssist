@@ -12,7 +12,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { ListRow, Group, Chip, ThemedButton, DangerBtn, CopyBtn, IconBtn, ConfirmDialog, InlineError, Focusable, PadTile, FormRow, ListCaption, ToneText, SlideText } from "../widgets.slint";
+import { ListRow, Group, Chip, ThemedButton, DangerBtn, CopyBtn, IconBtn, ConfirmDialog, InlineError, Focusable, PadTile, FormRow, ListCaption, ToneText, SlideText, Share } from "../widgets.slint";
 import { Icons } from "../globals/icons.slint";
 import { HelpScrollView } from "../globals/help.slint";
 import { Health, ServiceHealth } from "../globals/health.slint";
@@ -87,6 +87,43 @@ component PadListRow inherits ListRow {
                     font-family: Theme.mono-font;
                     vertical-alignment: center;
                 }
+            }
+        }
+    }
+}
+
+// The rows of one of the list's two sections: the real pads, or the
+// virtual ones, each row at its place among all of them.
+component PadRows inherits VerticalLayout {
+    in property <bool> virtual;
+    in property <bool> has-selection;
+    in property <int> focus-row-tick;
+    in property <string> focus-row-id;
+    callback activated();
+    /// Focus the row at this place among all the rows.
+    callback step-to(int);
+
+    alignment: start;
+    for pad[i] in Pads.rows: VerticalLayout {
+        if (i >= Pads.real-count) == root.virtual: PadListRow {
+            pad: pad;
+            selected: i == Pads.selected-index;
+            // The selected row is the list's one Tab stop; the
+            // first, with nothing selected.
+            tab-stop: root.has-selection ? i == Pads.selected-index : i == 0;
+            focus-tick: root.focus-row-tick;
+            focus-wanted: pad.id == root.focus-row-id;
+            // Focusing a row selects it, however focus got there.
+            focus-in => {
+                Pads.selected-index = i;
+            }
+            clicked => {
+                Pads.selected-index = i;
+                root.activated();
+            }
+            step(forward) => {
+                Nav.list-step-served = Nav.list-step-tick;
+                root.step-to(forward ? i + 1 : i - 1);
             }
         }
     }
@@ -204,38 +241,52 @@ component PadList inherits Rectangle {
             }
         }
 
-        ScrollView {
-            content-width: self.visible-width;
-            VerticalLayout {
-                alignment: start;
-                // The real pads come first, the connected ones and then
-                // the remembered, so the virtual pads start at the
-                // count of those.
-                for pad[i] in Pads.rows: VerticalLayout {
-                    if i == Pads.real-count: ListCaption {
-                        title: @tr("VIRTUAL");
-                    }
-                    PadListRow {
-                        pad: pad;
-                        selected: i == Pads.selected-index;
-                        // The selected row is the list's one Tab stop; the
-                        // first, with nothing selected.
-                        tab-stop: root.has-selection ? i == Pads.selected-index : i == 0;
-                        focus-tick: root.focus-row-tick;
-                        focus-wanted: pad.id == root.focus-row-id;
-                        // Focusing a row selects it, however focus got there.
-                        focus-in => {
-                            Pads.selected-index = i;
-                        }
-                        clicked => {
-                            Pads.selected-index = i;
-                            root.activated();
-                        }
-                        step(forward) => {
-                            Nav.list-step-served = Nav.list-step-tick;
-                            root.focus-slot(forward ? i + 1 : i - 1);
-                        }
-                    }
+        // The real pads, the connected ones and then the remembered,
+        // and under them the virtual ones, each list scrolling on its
+        // own so that a long first can't push the second out of sight
+        // (`Share`). The virtual pads start at the count of the real.
+        if Pads.rows.length > 0: area := Rectangle {
+            vertical-stretch: 1;
+            property <length> row-height: 64px;
+            property <int> virtual-count: Pads.rows.length - Pads.real-count;
+            property <length> caption: self.virtual-count > 0 ? 40px : 0px;
+            property <length> room: max(0px, self.height - self.caption);
+            property <length> real-need: Pads.real-count * self.row-height;
+            property <length> virtual-need: self.virtual-count * self.row-height;
+            property <length> real-height: Share.of(self.real-need, self.virtual-need, self.room);
+            property <length> virtual-height: Share.of(self.virtual-need, self.real-need, self.room);
+
+            ScrollView {
+                y: 0px;
+                width: 100%;
+                height: area.real-height;
+                content-width: self.visible-width;
+                PadRows {
+                    virtual: false;
+                    has-selection: root.has-selection;
+                    focus-row-tick: root.focus-row-tick;
+                    focus-row-id: root.focus-row-id;
+                    activated => { root.activated(); }
+                    step-to(slot) => { root.focus-slot(slot); }
+                }
+            }
+            if area.virtual-count > 0: ListCaption {
+                y: area.real-height;
+                width: 100%;
+                title: @tr("VIRTUAL · {}", area.virtual-count);
+            }
+            ScrollView {
+                y: area.real-height + area.caption;
+                width: 100%;
+                height: area.virtual-height;
+                content-width: self.visible-width;
+                PadRows {
+                    virtual: true;
+                    has-selection: root.has-selection;
+                    focus-row-tick: root.focus-row-tick;
+                    focus-row-id: root.focus-row-id;
+                    activated => { root.activated(); }
+                    step-to(slot) => { root.focus-slot(slot); }
                 }
             }
         }

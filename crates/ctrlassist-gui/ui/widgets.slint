@@ -205,6 +205,28 @@ export component Focusable inherits Rectangle {
 }
 
 // =============================================================================
+// Share — how two lists, one over the other, share a column's height.
+// =============================================================================
+//
+// A list of two sections scrolls each on its own, so that the second
+// can't be pushed out of sight by a long first. Each is as tall as its
+// rows where both fit. Where they don't, the shorter is shown whole, up
+// to half the room, and the longer has the rest and scrolls; two that
+// are each longer than half have half each. The rule is the same
+// whichever is the longer, so nothing jumps as rows come and go.
+
+export global Share {
+    /// The height of a section that needs `need`, beside one that needs
+    /// `other`, in `room`.
+    pure public function of(need: length, other: length, room: length) -> length {
+        return need + other <= room ? need
+            : need <= room / 2 ? need
+            : other <= room / 2 ? room - other
+            : room / 2;
+    }
+}
+
+// =============================================================================
 // SlideText — one line of text that slides to show its end.
 // =============================================================================
 //

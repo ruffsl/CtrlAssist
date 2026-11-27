@@ -10,7 +10,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { ListRow, Group, Chip, ThemedButton, IconBtn, ContextualHelpButton, ConfirmDialog, NameInputDialog, InlineError, ThemedSwitch, ThemedSpinBox, Focusable, ProfileTile, FormRow, ListCaption, ToneText, ToneDot, SlideText } from "../widgets.slint";
+import { ListRow, Group, Chip, ThemedButton, IconBtn, ContextualHelpButton, ConfirmDialog, NameInputDialog, InlineError, ThemedSwitch, ThemedSpinBox, Focusable, ProfileTile, FormRow, ListCaption, ToneText, ToneDot, SlideText, Share } from "../widgets.slint";
 import { Icons } from "../globals/icons.slint";
 import { Setups, SetupRow } from "../globals/setups.slint";
 import { ThemedSelect } from "../globals/select.slint";
@@ -72,6 +72,43 @@ component ProfileListRow inherits ListRow {
                     text: root.profile.word;
                     tone: root.profile.word-tone;
                 }
+            }
+        }
+    }
+}
+
+// The rows of one of the list's two sections: the running profiles, or
+// the rest, each row at its place among all of them.
+component ProfileRows inherits VerticalLayout {
+    in property <bool> running;
+    in property <bool> has-selection;
+    in property <int> focus-row-tick;
+    in property <string> focus-row-name;
+    callback activated();
+    /// Focus the row at this place among all the rows.
+    callback step-to(int);
+
+    alignment: start;
+    for profile[i] in Profiles.rows: VerticalLayout {
+        if (i < Profiles.running-count) == root.running: ProfileListRow {
+            profile: profile;
+            selected: i == Profiles.selected-index;
+            // The selected row is the list's one Tab stop; the
+            // first, with nothing selected.
+            tab-stop: root.has-selection ? i == Profiles.selected-index : i == 0;
+            focus-tick: root.focus-row-tick;
+            focus-wanted: profile.name == root.focus-row-name;
+            // Focusing a row selects it, however focus got there.
+            focus-in => {
+                Profiles.selected-index = i;
+            }
+            clicked => {
+                Profiles.selected-index = i;
+                root.activated();
+            }
+            step(forward) => {
+                Nav.list-step-served = Nav.list-step-tick;
+                root.step-to(forward ? i + 1 : i - 1);
             }
         }
     }
@@ -236,37 +273,52 @@ component ProfileList inherits Rectangle {
             }
         }
 
-        ScrollView {
-            content-width: self.visible-width;
-            VerticalLayout {
-                alignment: start;
-                // The rows come running first, so the rest start at the
-                // count of those.
-                for profile[i] in Profiles.rows: VerticalLayout {
-                    if i == Profiles.running-count && i > 0: ListCaption {
-                        title: @tr("NOT RUNNING");
-                    }
-                    ProfileListRow {
-                        profile: profile;
-                        selected: i == Profiles.selected-index;
-                        // The selected row is the list's one Tab stop; the
-                        // first, with nothing selected.
-                        tab-stop: root.has-selection ? i == Profiles.selected-index : i == 0;
-                        focus-tick: root.focus-row-tick;
-                        focus-wanted: profile.name == root.focus-row-name;
-                        // Focusing a row selects it, however focus got there.
-                        focus-in => {
-                            Profiles.selected-index = i;
-                        }
-                        clicked => {
-                            Profiles.selected-index = i;
-                            root.activated();
-                        }
-                        step(forward) => {
-                            Nav.list-step-served = Nav.list-step-tick;
-                            root.focus-slot(forward ? i + 1 : i - 1);
-                        }
-                    }
+        // The running profiles, and under them the rest, each list
+        // scrolling on its own so that a long first can't push the
+        // second out of sight (`Share`). The rest start at the count of
+        // the running, and have a caption only where some are running.
+        if Profiles.rows.length > 0: area := Rectangle {
+            vertical-stretch: 1;
+            property <length> row-height: 64px;
+            property <int> rest-count: Profiles.rows.length - Profiles.running-count;
+            property <length> caption: Profiles.running-count > 0 && self.rest-count > 0 ? 40px : 0px;
+            property <length> room: max(0px, self.height - self.caption);
+            property <length> running-need: Profiles.running-count * self.row-height;
+            property <length> rest-need: self.rest-count * self.row-height;
+            property <length> running-height: Share.of(self.running-need, self.rest-need, self.room);
+            property <length> rest-height: Share.of(self.rest-need, self.running-need, self.room);
+
+            ScrollView {
+                y: 0px;
+                width: 100%;
+                height: area.running-height;
+                content-width: self.visible-width;
+                ProfileRows {
+                    running: true;
+                    has-selection: root.has-selection;
+                    focus-row-tick: root.focus-row-tick;
+                    focus-row-name: root.focus-row-name;
+                    activated => { root.activated(); }
+                    step-to(slot) => { root.focus-slot(slot); }
+                }
+            }
+            if area.caption > 0px: ListCaption {
+                y: area.running-height;
+                width: 100%;
+                title: @tr("NOT RUNNING · {}", area.rest-count);
+            }
+            ScrollView {
+                y: area.running-height + area.caption;
+                width: 100%;
+                height: area.rest-height;
+                content-width: self.visible-width;
+                ProfileRows {
+                    running: false;
+                    has-selection: root.has-selection;
+                    focus-row-tick: root.focus-row-tick;
+                    focus-row-name: root.focus-row-name;
+                    activated => { root.activated(); }
+                    step-to(slot) => { root.focus-slot(slot); }
                 }
             }
         }
