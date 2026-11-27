@@ -70,6 +70,15 @@ impl Badge {
         }
     }
 
+    /// The side of the badge on the icon, in the icon's units. The plug
+    /// is a thin drawing, hard to read at the size the others are.
+    const fn side(self) -> f32 {
+        match self {
+            Self::Running | Self::Held | Self::Failed => 30.0,
+            Self::Unavailable => 45.0,
+        }
+    }
+
     const fn place(self) -> usize {
         match self {
             Self::Running => 0,
@@ -82,8 +91,6 @@ impl Badge {
 
 /// The side of the composed icon, in its own units.
 const SIDE: f32 = 64.0;
-/// The side of the badge on it.
-const BADGE: f32 = 30.0;
 /// The width of the dark edge that keeps a badge apart from the pad
 /// under it, and its color.
 const EDGE: f32 = 2.4;
@@ -191,7 +198,7 @@ pub(crate) fn compose(pad: &[u8], glyph: &[u8], badge: Badge) -> Option<String> 
     // and under that once more, wider and dark, as its edge.
     let tinted = drawing(glyph, "glyph-")?;
     let under = drawing(glyph, "edge-")?;
-    let scale = BADGE / tinted.side;
+    let scale = badge.side() / tinted.side;
     let tinted = Drawing {
         body: recolored(&tinted.body, badge.color(), None),
         side: tinted.side,
@@ -200,7 +207,7 @@ pub(crate) fn compose(pad: &[u8], glyph: &[u8], badge: Badge) -> Option<String> 
         body: recolored(&under.body, EDGE_COLOR, Some(EDGE / scale)),
         side: under.side,
     };
-    let at = SIDE - BADGE;
+    let at = SIDE - badge.side();
     let mut svg = String::new();
     // Writing to a String can't fail.
     let _ = write!(
@@ -374,9 +381,15 @@ mod tests {
                 assert_eq!(svg.matches("<svg").count(), 1);
                 assert!(!svg.contains("<style"));
                 assert!(svg.contains(r#"viewBox="0 0 64 64""#));
-                // The pad at twice its size, the glyph at 30 of 64.
+                // The pad at twice its size, the glyph at 30 of 64, and
+                // the plug at 45.
                 assert!(svg.contains(r#"<g transform="scale(2)">"#));
-                assert!(svg.contains(r#"<g transform="translate(34,34) scale(1.875)">"#));
+                let placed = if badge == Badge::Unavailable {
+                    r#"<g transform="translate(19,19) scale(2.8125)">"#
+                } else {
+                    r#"<g transform="translate(34,34) scale(1.875)">"#
+                };
+                assert!(svg.contains(placed));
                 // The pad's gray, the edge's dark and the badge's color,
                 // and none of what the theme had the glyph in.
                 assert_eq!(

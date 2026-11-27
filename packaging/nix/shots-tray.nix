@@ -187,6 +187,23 @@ let
           " 'assist = \"02:ca:7e:00:00:01\"' 'identity = \"dualsense\"' > /tmp/default.toml"
       )
       cli("profile", "put", "/tmp/default.toml")
+      # A second profile, kept and not running, on two more pads of its
+      # own: one that could start has a line in the tip, and its pads
+      # are free only if no setup has them.
+      machine.succeed(
+          "systemd-run --unit=fake-couch-primary ctrlassist-fixture fake-pad"
+          " --name 'Nintendo Switch Pro Controller' --vendor 057e --product 2009"
+      )
+      machine.succeed(
+          "systemd-run --unit=fake-couch-assist ctrlassist-fixture fake-pad"
+          " --name '8BitDo Pro 2' --vendor 2dc8 --product 6003"
+      )
+      machine.succeed("udevadm settle")
+      machine.succeed(
+          "printf '%s\\n' 'mode = \"toggle\"' 'primary = \"model:057e:2009\"'"
+          " 'assist = \"model:2dc8:6003\"' > /tmp/couch.toml"
+      )
+      cli("profile", "put", "/tmp/couch.toml")
       machine.wait_until_succeeds(as_alice("ctrlassist start default"))
       machine.sleep(5)
       machine.screenshot("tray_running")
