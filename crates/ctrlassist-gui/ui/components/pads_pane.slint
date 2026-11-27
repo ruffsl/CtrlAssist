@@ -72,9 +72,12 @@ component PadListRow inherits ListRow {
                     background: root.pad.connected ? Theme.success : Theme.text-faint;
                 }
 
+                // Each set by its middle: the tag's monospace line isn't
+                // the height of the word's beside it.
                 ToneText {
                     text: root.pad.word;
                     tone: root.pad.tone;
+                    vertical-alignment: center;
                 }
 
                 if root.pad.tag != "": Text {
@@ -82,6 +85,7 @@ component PadListRow inherits ListRow {
                     color: Theme.text-faint;
                     font-size: Design.font-mini;
                     font-family: Theme.mono-font;
+                    vertical-alignment: center;
                 }
             }
         }
