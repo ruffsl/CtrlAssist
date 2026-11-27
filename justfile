@@ -381,9 +381,9 @@ docs-tray-stage:
         --vendor 045e --product 0b13 > /dev/null &
     target/debug/ctrlassist service daemon --socket "$socket" \
         --state-dir "$stage/state" --config-dir "$stage/config" \
-        --hider-socket "$stage/no-hider.sock" 2> "$stage/daemon.log" &
+        --hider-socket "$stage/no-hider.sock" --test-pads 2> "$stage/daemon.log" &
     until target/debug/ctrlassist status --socket "$socket" > /dev/null 2>&1; do sleep 0.1; done
-    printf '%s\n' 'mode = "priority"' 'primary = "model:045e:0b13"' 'assist = "model:054c:0ce6"' \
+    printf '%s\n' 'mode = "priority"' 'primary = "model:045e:0b13"' 'assist = "02:ca:7e:00:00:01"' \
         'identity = "dualsense"' 'assist-gyro = "right-bumper"' > "$stage/couch.toml"
     printf '%s\n' 'mode = "multicast"' 'pad = "model:045e:0b13"' 'outputs = 2' > "$stage/desk.toml"
     target/debug/ctrlassist profile put "$stage/couch.toml" --socket "$socket"
