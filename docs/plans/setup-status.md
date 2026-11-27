@@ -3,7 +3,7 @@
 ## State
 
 - **Status:** built, the guide's page and its screenshots with it; in review.
-- **Next action:** the review of the pull request (#65); then the tray's icons looked at on a panel for a failed setup and for no daemon, and on a desktop other than Plasma.
+- **Next action:** the rest of what the review of the pull request (#65) found. Then a look at a panel, where nothing has been looked at since the pad became `applications-games` and the glyphs were recolored shape by shape: every state's icon, and a desktop other than Plasma.
 
 ## Goal
 
@@ -35,7 +35,7 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
 
 ## Open
 
-- **Which theme names the overlays are.** Breeze has `emblem-pause`, `emblem-error`, `emblem-warning`, `emblem-unavailable` and `emblem-checked` among its emblems, and no play emblem; `media-playback-start` is the play glyph both Breeze and Adwaita have, in the theme's one color. Step 1 tries them and writes down what each theme and host shows.
+- **Which theme names the overlays are.** Moot: the overlay was given up, and the glyphs are named in `badge.rs`.
 - **More setups than the block has room for.** The rows scroll within the room they have, and one comes into view as it takes focus. Not yet looked at with more than fit.
 
 ## Steps
@@ -60,11 +60,21 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
 - **Reading the theme's files with usvg, tried apart from the tray** (usvg 0.49, the release the window's toolkit already brings into the lockfile, with its `svgz` and `writer` features and none of its text ones: 30 crates, most of them there already):
   - It reads every file tried, Breeze's and Adwaita's, a gzip-compressed one among them, and writes each back as plain SVG. Breeze's pad written back and rendered is the same picture as the original, pixel for pixel at 256.
   - A stylesheet handed to it colors a glyph whatever way the theme colored it. Adwaita's symbolic glyphs carry their color as a literal `fill="#2e3436"`, not as Breeze's do through `currentColor`: joined as text, as the tray does now, an Adwaita glyph would stay dark gray on the pad, since nothing set on the group above it overrides a fill of its own. Through usvg with `* { fill: … }` it comes out in the state's color.
-  - That stylesheet doesn't reach a fill written in an element's own `style` attribute, which Breeze's disconnected plug has for its two colors; those stay as the theme drew them. And it would fill a shape the theme meant only to outline; none of the glyphs picked has one.
+  - That stylesheet doesn't reach a fill written in an element's own `style` attribute, which Breeze's disconnected plug has for its two colors; those stay as the theme drew them. And it would fill a shape the theme meant only to outline; none of the glyphs picked has one. (As first built, a rule marked important did reach them. The review found what else a rule over every shape does, and the glyph is now recolored in what usvg wrote, shape by shape: see Deviations.)
   - It joins nothing: a tree read can't be put inside another, so the two files would still be joined as text, from what usvg wrote.
   - Not tried then: what a desktop draws of a file usvg wrote, and any theme but these two.
 
 ## Deviations
+
+- **From the review of the pull request,** by three reviewers each given a part of it:
+  - The tray is active while the daemon is away or another release, where a desktop hid a passive one and the mark with it, and says nothing of the daemon until its first view is taken.
+  - A theme with the pad in symbolic form alone gets no composed icons, its one color being dark on a dark panel once written into a file.
+  - A glyph is recolored in what usvg wrote of it, each fill and stroke that is one; the rule over every shape filled a box left unfilled, kept a stroke's color and filled what a mask cuts with.
+  - The icons' directory is made for the user alone, each file moved into place whole, and what can't be made is logged.
+  - The staged scene's tray has a settings file of its own; it read, and could have written, the machine's.
+  - The pad of the desktop entry and the Nix package is `applications-games` too.
+- **One pad, `applications-games`,** for the tray's icon, its notifications, the window's logo and every glyph of a pad, where the plan and the window's had `input-gaming`: Breeze draws the first alike in color and symbolic, and the other's two forms are a shaded pad and a heavier glyph of another shape. It is a theme's icon for games as a kind of program, and a theme may draw it as something other than a pad.
+- **Also from the maintainer's looks at the running window:** a list's rows are 52 high, by a token, for 64; its captions say what before how many; and the first row of a pad's STATUS card and a profile's is one height, so the rows under them are level across the panes.
 
 - **Beyond the plan, from the maintainer's looks at the running window,** and kept in this branch: a profile's header gives its name a row of its own, with its buttons at the end of the row beneath and its mode said without a caption (Custom for one written by hand), at a pad's header's height; how a profile is sits above how it starts; a pad's model and tag sit level with the words beside them; the lists of pads and of profiles scroll their two sections apart, so that the virtual pads, or the profiles not running, can't be pushed out of sight by a long first section, the shorter shown whole up to half the room; and an installed tray's menu has no Quit, as TisVlay's has none.
 
@@ -78,4 +88,4 @@ Today the tray's icon is the desktop theme's gamepad whether nothing runs, a set
 
 - **The overlay is given up,** after the look at step 1 and what was found of Plasma: the tray sends none, and its icon is the pad in every state until the state is made part of the icon itself. That is tried next as one SVG composed at run time from the theme's own pad and a glyph of the theme's in the state's color, named to the tray as its icon, so that the desktop draws it from a vector. Pixels rendered here, and icon files drawn beforehand, are what is left if a desktop doesn't draw that well.
 
-- **A held setup no longer asks for attention.** Plasma pulses the icon of a tray item that does, and the maintainer found the motion too distracting for a setup that is only waiting. A failed one still asks.
+- **A held setup no longer asks for attention.** Plasma pulses the icon of a tray item that does, and the maintainer found the motion too distracting for a setup that is only waiting. A failed one still asked then; it no longer does, by the entry under this one.

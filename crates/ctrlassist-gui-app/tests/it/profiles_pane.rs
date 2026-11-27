@@ -438,13 +438,16 @@ fn a_long_name_is_one_line_cut_short_in_the_header_at_the_least_width() {
         long.height,
         short.height
     );
-    assert!(long.width >= short.width, "it has the row to itself");
+    assert!(
+        long.width >= short.width,
+        "it has no less room than a short one"
+    );
     // Short of the window's edge by the chips beside it.
     assert!(left + long.width < 720.0 - 60.0, "{left} + {}", long.width);
 
     // The header keeps to the window at its least width: its chips end
     // inside it, the buttons beside the mode end short of the chips, and
-    // the mode is said whole.
+    // the mode has room left.
     let mode_width = |app: &AppWindow| {
         find_by_accessible_id(app, "profiles-mode")
             .expect("the header's mode")
@@ -1440,9 +1443,13 @@ fn a_running_profile_s_row_in_the_sidebar_says_its_state_and_opens_it() {
     assert_eq!(left_of(LONG), still, "it is back at once");
     assert_eq!(left_of("couch"), fits);
 
-    // Return on a row opens its profile.
+    // One that fits stays where it is with focus on its row, however
+    // long; and Return on a row opens its profile.
     press(&app, Key::DownArrow);
     settle();
+    assert_eq!(focus(), "sidebar-status-couch");
+    elapse(60_000);
+    assert_eq!(left_of("couch"), fits);
     press(&app, Key::Return);
     settle();
     assert_eq!(app.get_active_pane(), Pane::Profiles);
@@ -1453,4 +1460,27 @@ fn a_running_profile_s_row_in_the_sidebar_says_its_state_and_opens_it() {
         .unwrap()
         .name;
     assert_eq!(shown, "couch");
+
+    // A setup that failed and one still starting say so too, and the
+    // rows go as their setups do.
+    let state = |name: &str, phase: Phase| Setup {
+        name: name.to_string(),
+        phase,
+        ..self::known().setups[0].clone()
+    };
+    setups::show(
+        &app,
+        setups::rows(
+            &[state("den", Phase::Failed), state("nook", Phase::Starting)],
+            &kept,
+        ),
+    );
+    settle();
+    assert_eq!(label("den").as_deref(), Some("den: failed"));
+    assert_eq!(label("nook").as_deref(), Some("nook: starting"));
+    assert_eq!(label("couch"), None, "its setup ended");
+    setups::show(&app, Vec::new());
+    settle();
+    assert_eq!(label("den"), None);
+    assert_eq!(label("nook"), None);
 }

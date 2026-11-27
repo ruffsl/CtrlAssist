@@ -6,7 +6,7 @@ CtrlAssist has two faces on a desktop. The **window** shows every controller and
 
 Open it from your application menu, or with **Settings** in the tray's menu, or a left click on the tray's icon. A second launch brings the open window to the front.
 
-A sidebar on the left has the window's four pages. Under them, each profile that is running has a line of its own, whichever page is open: a green ▶ while it runs, a blue ⏸ while it waits for a controller that left, a red ■ if it failed. Click one to open that profile. Under those, **Reload** has the daemon read its profiles again, and the tray its settings, for when a file was edited outside the window. The three dots at the bottom say whether the **Daemon**, the **Hiding** service and the **Tray** are running; [About](#about) says more of each.
+A sidebar on the left has the window's four pages. Under them, each profile that is running has a line of its own, whichever page is open: a green ▶ while it runs, a blue ⏸ while it waits for a controller that left, a red ■ if it failed, and a dim ⟳ in the moment it is starting. Click one to open that profile. Under those, **Reload** has the daemon read its profiles again, and the tray its settings, for when a file was edited outside the window. The three dots at the bottom say whether the **Daemon**, the **Hiding** service and the **Tray** are running; [About](#about) says more of each.
 
 The window follows your desktop's light or dark theme and its accent color. An **ⓘ** beside a section's title or at the end of a row explains it. A name too long for its place is cut short with an ellipsis; point at it, or move to it with the keys, and it slides to show the rest.
 
@@ -31,7 +31,7 @@ A virtual controller is made by a profile while it runs, and games read it in pl
 
 ![The Profiles page, on a running profile](../docs/screenshots/profiles_pane.png)
 
-Profiles are listed with the running ones first. The **+** at the top makes a new one, and the buttons beside a profile's name rename it, duplicate it, show its file and delete it. **default ✓** is always there and can't be renamed or deleted.
+Profiles are listed with the running ones first. The **+** at the top makes a new one, and the buttons under a profile's name, beside its mode, rename it, duplicate it, show its file and delete it. **default ✓** is always there and can't be renamed or deleted.
 
 - **STATUS** has **Start** or **Stop**, with a line saying what games see. **Managed** has CtrlAssist start the profile itself whenever its controllers are connected.
 - **INPUTS** is who plays which part. A controller that is unplugged, or busy in another running profile, can't be picked. The pencil shows that controller on the Pads page.
@@ -79,9 +79,9 @@ Under Plasma Bigscreen, a gamepad's D-pad, Cross and Circle are the arrows, OK a
 
 ## The tray
 
-The tray starts with your graphical session. Its icon says what is going on at a glance, by a mark at its corner: a green ▶ while an arrangement runs, a blue ⏸ while one waits for a controller that left, a red ■ if one has failed, and an amber plug when the daemon isn't running. With nothing running it is the plain controller. Hovering over it lists what runs: each arrangement with its mode, its controllers, a ● beside the one that has control, and its virtual controller. After them come the profiles that are ready to start, and when nothing runs, how many controllers are connected.
+The tray starts with your graphical session. Its icon says what is going on at a glance, by a mark at its corner: a green ▶ while an arrangement runs, a blue ⏸ while one waits for a controller that left, a red ■ if one has failed, and an amber plug when the daemon isn't running or is another release than the tray. With several running it shows the one that most wants a look: failed before waiting, waiting before starting, which has no mark, and starting before running. With nothing running it is the plain controller. Hovering over it lists what runs: each arrangement with its mode, its controllers, a ● beside the one that has control, and its virtual controller. After them come the profiles that are ready to start, and when nothing runs, how many controllers are connected.
 
-A **middle click** on the icon starts or stops one profile without opening the menu: the one marked ► in that list. That is the profile you last started or stopped, and scrolling the **mouse wheel** over the icon moves the mark to another. The icon and the menu's icons come from your desktop's icon theme, in its flat single-color style where the theme has one, so they follow a light or dark panel.
+A **middle click** on the icon starts or stops one profile without opening the menu: the one marked ► in that list. That is the profile you last started or stopped, and scrolling the **mouse wheel** over the icon moves the mark to another. The icon and the menu's icons come from your desktop's icon theme. The menu's are in its flat single-color style where the theme has one, so they follow a light or dark panel; the tray's own icon is the theme's controller in color, with its mark.
 
 ### The menu
 

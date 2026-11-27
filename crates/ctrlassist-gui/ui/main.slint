@@ -139,6 +139,8 @@ component StatusItem inherits Focusable {
         : @tr("{}: running", root.name);
 
     column: 0;
+    // Inside the row: its list clips what is drawn past its edges.
+    ring-inside: true;
     accessible-label: root.said;
     height: 24px;
     border-radius: 5px;

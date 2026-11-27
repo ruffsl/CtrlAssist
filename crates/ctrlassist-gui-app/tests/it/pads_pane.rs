@@ -372,12 +372,22 @@ fn virtual_pads_follow_the_real_ones() {
         below.dedup_by(|a, b| (*a - *b).abs() < 0.5);
         (caption_bottom, below)
     };
-    for height in [1600.0, 480.0, 400.0] {
+    // The four real pads and the virtual one fit a window 480 high.
+    // At 300 and 260 they don't: in one scrolling list the caption and
+    // the virtual pad would lie past the window's lower edge there.
+    let mut captions = Vec::new();
+    for height in [1600.0, 480.0, 300.0, 260.0] {
         let (caption_bottom, below) = in_sight(height);
         assert!(caption_bottom < height, "{height}: {caption_bottom}");
         assert_eq!(below.len(), 1, "{height}: the one virtual pad");
         assert!(below[0] <= height + 0.5, "{height}: {below:?}");
+        captions.push(caption_bottom);
     }
+    // Where all fit the caption is under the last real pad; where they
+    // don't it is higher, the real pads having less than they need.
+    assert!((captions[0] - captions[1]).abs() < 0.5, "{captions:?}");
+    assert!(captions[2] < captions[1] - 1.0, "{captions:?}");
+    assert!(captions[3] < captions[2] - 1.0, "{captions:?}");
     app.window()
         .set_size(slint::LogicalSize::new(720.0, 1600.0));
     settle();

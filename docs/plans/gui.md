@@ -372,6 +372,6 @@ Each is a commit or a few, with the gates run and the TisVlay commit named. Orde
 ## Deviations
 
 - **A pad's detail has no DANGER ZONE:** Forget is a trash can at the end of its header's second line, as a profile's Delete is, with the same dialog before it. A card for one button was more than it wanted.
-
+- **Changed with the setups' status** (`setup-status.md`): CtrlAssist's icon is the theme's `applications-games`, for the window, the desktop entry, the About header and the glyph of a pad, where this plan has `input-gaming`; a list's rows are 52 high for 64; a profile's rename, duplicate, show and delete are at the end of the row under its name, and its mode is said there without a caption, Custom for one written by hand.
 - **The rebuild's third and fourth steps landed as one commit:** see "The rebuild" under For review.
 - **Build steps 1 and 2 landed as one commit.** The project's rule is that a tool joins in the commit that first gives it something to do, and the Slint tools in the flake have nothing to do before there is a `.slint` file.
