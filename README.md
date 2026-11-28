@@ -33,10 +33,10 @@
   - The other player carries on with the same virtual controller
   - A returning controller takes its place again
 - 🖱️ Graphical user interfaces
-  - A window for controllers, profiles and settings
+  - A GUI for controllers, profiles and settings
   - A system tray for quick start, stop and hand-over
 - 🛋️ Couch mode for the big screen
-  - Drive the window from a TV remote or a gamepad, no mouse needed
+  - Drive the GUI from a TV remote or a gamepad, no mouse needed
   - Scaled-up 10-foot layout, automatic under Plasma Bigscreen
 - ⌨️ Scriptable
   - A `ctrlassist` command for everything, with shell completions
@@ -72,7 +72,7 @@ Combine Primary and Assist controllers into one virtual gamepad.
   - All inputs forwarded from currently active controller
     - Touchpad and gyro included
     - Toggle Active controller via Mode button on Assist
-    - Or hand over from the window or the system tray
+    - Or hand over from the GUI or the system tray
   - Ideal when fine-grain conflict-free control is needed
     - E.g. Game menu navigation or precise interventions
 
@@ -104,7 +104,7 @@ GUI and system tray follow your desktop's theme and accent color.
 | **Profiles** — who plays which part | **Virtual controller** — what games see |
 | ![Profiles page on a running profile, with its Stop button and its two controllers](docs/screenshots/profiles_pane.png) | ![Pads page on the virtual DualSense a running profile makes](docs/screenshots/pads_pane_virtual.png) |
 | **Settings** — notifications and couch mode | **About** — component status and versions |
-| ![Settings page with a switch for each kind of notification](docs/screenshots/settings_pane.png) | ![About page listing the daemon, the hiding service, the tray, the window and the command](docs/screenshots/about_pane.png) |
+| ![Settings page with a switch for each kind of notification](docs/screenshots/settings_pane.png) | ![About page listing the daemon, the hiding service, the tray, GUI and CLI](docs/screenshots/about_pane.png) |
 | **Tray menu** — start, stop and change a profile | **Tray tip** — what runs, at a glance |
 | ![Tray menu open on the running default profile, with its controllers, mode, rumble, gyro and visibility](docs/screenshots/system_tray_menu.png) | ![Tray icon with a green mark for a running profile, and its tip listing the default profile running and the couch profile ready](docs/screenshots/system_tray_hover.png) |
 
