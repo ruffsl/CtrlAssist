@@ -57,7 +57,7 @@ Combine Primary and Assist controllers into one virtual gamepad.
     - Buttons: Pressed while either controller presses
     - Triggers: Prioritize largest value from either
   - Ideal for partial and asynchronous assistance
-    - E.g. Assist for movement while Primary for actions
+    - E.g. Assist for camera while Primary for actions
 - ⚖️ **Average**: Blend inputs from both controllers
   - Sticks: Averaged when both are active (exceed deadzone)
     - Buttons and D-pad: Logically OR'ed between controllers
