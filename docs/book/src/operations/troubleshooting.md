@@ -2,7 +2,7 @@
 
 ## Where to look first
 
-The window's **About** page says which parts of CtrlAssist are running and the release each runs, and its **Diagnostics** button copies a report to paste into a bug report. The dots at the foot of the window's sidebar say the same at a glance.
+The GUI's **About** page says which parts of CtrlAssist are running and the release each runs, and its **Diagnostics** button copies a report to paste into a bug report. The dots at the foot of the GUI's sidebar say the same at a glance.
 
 From a terminal, which is where the logs are:
 
@@ -57,7 +57,7 @@ A controller it needs isn't connected. `ctrlassist setups` says which. Reconnect
 
 On GNOME, install and enable the AppIndicator extension. The tray is still running without it, for notifications: `systemctl --user status ctrlassist-tray`.
 
-## The settings window doesn't open
+## The GUI doesn't open
 
 It needs a Wayland session, and doesn't open in an X11 one. Started from a terminal, `ctrlassist-gui` says why it couldn't open.
 

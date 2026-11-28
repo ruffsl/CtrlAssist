@@ -1,14 +1,14 @@
 # GUI & Tray
 
-CtrlAssist has two faces on a desktop. The **window** shows every controller and every profile, and is where a profile is made and changed. The **tray** is for the everyday: start, stop, hand over, and see what is running. Both only show what the daemon reports and pass on what you ask, so closing either changes nothing that runs.
+CtrlAssist has two faces on a desktop. The **GUI** shows every controller and every profile, and is where a profile is made and changed. The **tray** is for the everyday: start, stop, hand over, and see what is running. Both only show what the daemon reports and pass on what you ask, so closing either changes nothing that runs.
 
-## The CtrlAssist window
+## The CtrlAssist GUI
 
 Open it from your application menu, or with **Settings** in the tray's menu, or a left click on the tray's icon. A second launch brings the open window to the front.
 
-A sidebar on the left has the window's four pages. Under them, each profile that is running has a line of its own, whichever page is open: a green ▶ while it runs, a blue ⏸ while it waits for a controller that left, a red ■ if it failed, and a dim ⟳ in the moment it is starting. Click one to open that profile. Under those, **Reload** has the daemon read its profiles again, and the tray its settings, for when a file was edited outside the window. The three dots at the bottom say whether the **Daemon**, the **Hiding** service and the **Tray** are running; [About](#about) says more of each.
+A sidebar on the left has the GUI's four pages. Under them, each profile that is running has a line of its own, whichever page is open: a green ▶ while it runs, a blue ⏸ while it waits for a controller that left, a red ■ if it failed, and a dim ⟳ in the moment it is starting. Click one to open that profile. Under those, **Reload** has the daemon read its profiles again, and the tray its settings, for when a file was edited outside the GUI. The three dots at the bottom say whether the **Daemon**, the **Hiding** service and the **Tray** are running; [About](#about) says more of each.
 
-The window follows your desktop's light or dark theme and its accent color. An **ⓘ** beside a section's title or at the end of a row explains it. A name too long for its place is cut short with an ellipsis; point at it, or move to it with the keys, and it slides to show the rest.
+The GUI follows your desktop's light or dark theme and its accent color. An **ⓘ** beside a section's title or at the end of a row explains it. A name too long for its place is cut short with an ellipsis; point at it, or move to it with the keys, and it slides to show the rest.
 
 ### Pads
 
@@ -44,7 +44,7 @@ What you pick is kept at once. A profile that is running goes on as it was, and 
 
 A profile in **Toggle** mode adds **Has control** while it runs: who plays now, and a pick to hand over.
 
-A profile written by hand in the [full form](./configuration.md#the-full-form) shows none of these fields: the window lists it, starts and stops it, and shows its file.
+A profile written by hand in the [full form](./configuration.md#the-full-form) shows none of these fields: the GUI lists it, starts and stops it, and shows its file.
 
 ### Settings
 
@@ -52,17 +52,17 @@ A profile written by hand in the [full form](./configuration.md#the-full-form) s
 
 **NOTIFY ME WHEN** has a switch for each kind of [notification](#notifications), and **Send a test notification** shows one now, whatever the switches say, to see that your desktop shows notifications at all. These are the tray's settings, so the tray has to be running to change them.
 
-**COUCH MODE** is for using this window from across the room; see [below](#from-a-remote-or-a-gamepad).
+**COUCH MODE** is for using this GUI from across the room; see [below](#from-a-remote-or-a-gamepad).
 
 ### About
 
 ![The About page](../docs/screenshots/about_pane.png)
 
-Each part of CtrlAssist, whether it is running, and the release it runs. A chip that isn't green says that part runs another release than this window, usually one left running from before an upgrade: restart it. **Config** opens the folder where a part keeps its files. **Diagnostics** copies a report of the releases, the system, the controllers and the profiles, for a bug report; controller addresses in it are shortened.
+Each part of CtrlAssist, whether it is running, and the release it runs. A chip that isn't green says that part runs another release than this GUI, usually one left running from before an upgrade: restart it. **Config** opens the folder where a part keeps its files. **Diagnostics** copies a report of the releases, the system, the controllers and the profiles, for a bug report; controller addresses in it are shortened.
 
 ### From a remote or a gamepad
 
-The window can be driven without a mouse: from a keyboard, or from a TV remote or a gamepad under a TV shell that turns their buttons into keys, as Plasma Bigscreen does. An accent-colored ring marks the control the keys act on. It appears with the first key press and hides again when you use the mouse.
+The GUI can be driven without a mouse: from a keyboard, or from a TV remote or a gamepad under a TV shell that turns their buttons into keys, as Plasma Bigscreen does. An accent-colored ring marks the control the keys act on. It appears with the first key press and hides again when you use the mouse.
 
 | Key | What it does |
 |---|---|
@@ -75,7 +75,7 @@ The window can be driven without a mouse: from a keyboard, or from a TV remote o
 
 Under Plasma Bigscreen, a gamepad's D-pad, Cross and Circle are the arrows, OK and Back, Square is Menu, and the shoulder buttons are Tab and Shift+Tab. CtrlAssist itself doesn't read a gamepad to steer its window: a running profile may have hidden the very controller in your hands.
 
-**Couch mode.** On a TV across the room the window opens maximized and scaled up, and the keys are arranged for a remote: a text field or a number waits for OK before it takes the arrows, Tab and Shift+Tab step between the pages, and Back on the sidebar closes the window. It turns on by itself under Plasma Bigscreen. To use it on an ordinary desktop driving a TV, or to keep it off, set **Couch mode** on the Settings page; **Scale** makes everything larger or smaller on top of the display's own scale. It changes this window only: not the tray, and not what a profile does.
+**Couch mode.** On a TV across the room the GUI opens maximized and scaled up, and the keys are arranged for a remote: a text field or a number waits for OK before it takes the arrows, Tab and Shift+Tab step between the pages, and Back on the sidebar closes the GUI. It turns on by itself under Plasma Bigscreen. To use it on an ordinary desktop driving a TV, or to keep it off, set **Couch mode** on the Settings page; **Scale** makes everything larger or smaller on top of the display's own scale. It changes this GUI only: not the tray, and not what a profile does.
 
 ## The tray
 
@@ -94,7 +94,7 @@ A **middle click** on the icon starts or stops one profile without opening the m
 - A profile that isn't running offers **Start**. One whose controllers aren't chosen yet says so instead.
 - A running one shows its state in brackets and offers **Stop**, and for a toggle, **Has control**: who plays now, and a click to hand over. A controller that isn't connected can't be handed to.
 - One that has failed says why. **Stop** clears it.
-- Under those are the profile's settings, the same as the window's profile page: its controllers, what its virtual controller presents itself as, its mode, who feels rumble, how the real controllers are hidden, and whether it is managed. A profile written by hand in the full form has no settings here; while it runs its menu lists its controllers.
+- Under those are the profile's settings, the same as the GUI's profile page: its controllers, what its virtual controller presents itself as, its mode, who feels rumble, how the real controllers are hidden, and whether it is managed. A profile written by hand in the full form has no settings here; while it runs its menu lists its controllers.
 
 What you pick is kept at once. While the profile runs it also takes effect at once, without the game noticing: other controllers, a new mode, who feels rumble. A controller you swap out is given back to the system, and the new one is hidden. Picking another identity takes effect at once too, but needs a new virtual controller, which a game sees as its controller disconnecting and another connecting. A controller that is unplugged or busy in another arrangement can't be picked. Picking the one the other part has swaps the two, so the player and the helper change places in one click. The [Quick Start](../getting-started/quick-start.md) walks through it.
 
@@ -106,14 +106,14 @@ What you pick is kept at once. While the profile runs it also takes effect at on
 
 The line after it, just above **Settings**, says how controllers are being hidden (`service` or `grab`, or `looking for the service…` for a moment after the daemon starts, while it hasn't yet heard from the hiding service) and whether the daemon got real-time scheduling. [How It Works](../reference/how-it-works.md) explains both.
 
-**Settings** opens the [CtrlAssist window](#the-ctrlassist-window), or brings it to the front if it is open. A left click on the tray's icon does the same.
+**Settings** opens the [CtrlAssist GUI](#the-ctrlassist-gui), or brings it to the front if it is open. A left click on the tray's icon does the same.
 
 ## Notifications
 
 CtrlAssist tells you when:
 
-- an arrangement **started** or **stopped** without your asking for it from the tray: a managed one starting by itself, or one started or stopped from the window or the command line. What you start or stop from the tray you can already see there;
-- an arrangement **restarted** with a new virtual controller: because a change you picked needed one, or because it was restarted from the window or the command line;
+- an arrangement **started** or **stopped** without your asking for it from the tray: a managed one starting by itself, or one started or stopped from the GUI or the command line. What you start or stop from the tray you can already see there;
+- an arrangement **restarted** with a new virtual controller: because a change you picked needed one, or because it was restarted from the GUI or the command line;
 - an arrangement is **held** because a controller disconnected, and when it is **running again**;
 - an arrangement **failed**;
 - the **daemon stopped**, which removes every virtual controller, or came back;
@@ -121,7 +121,7 @@ CtrlAssist tells you when:
 - a controller that no arrangement uses **connected** or **disconnected**;
 - something you asked for from the menu **couldn't be done**, with the reason.
 
-Each kind can be turned off on the window's [Settings](#settings) page. The switches are kept in `tray.toml`, in `~/.config/ctrlassist` beside your profiles, and everything is on until you turn it off:
+Each kind can be turned off on the GUI's [Settings](#settings) page. The switches are kept in `tray.toml`, in `~/.config/ctrlassist` beside your profiles, and everything is on until you turn it off:
 
 ```toml
 schema = 1
@@ -138,7 +138,7 @@ refused = true
 - `refused`: something asked from the menu couldn't be done.
 - `target`: the profile a middle click acts on, which the tray keeps there itself as the mark moves, so it is where it was after the tray restarts.
 
-The tray reads the file when it starts, and again whenever the daemon comes back. After editing it by hand, **Reload** in the window takes the edit up, or says what is wrong with the file; until then the tray leaves a file it can't read as it is. The tray writes the file plain, so comments in it don't last.
+The tray reads the file when it starts, and again whenever the daemon comes back. After editing it by hand, **Reload** in the GUI takes the edit up, or says what is wrong with the file; until then the tray leaves a file it can't read as it is. The tray writes the file plain, so comments in it don't last.
 
 ## Starting and stopping the tray
 
