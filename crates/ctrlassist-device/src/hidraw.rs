@@ -1,4 +1,5 @@
-//! Reading what a pad says of itself from its raw HID node.
+//! Reading what a pad says of itself from its raw HID node, and setting
+//! its feature reports.
 
 #![expect(
     unsafe_code,
@@ -94,6 +95,20 @@ pub(crate) fn feature(hidraw: BorrowedFd<'_>, id: u8, size: usize) -> io::Result
     Ok(report)
 }
 
+/// Sets one of the device's feature reports: `report` is its id, then its
+/// bytes. The request waits on the device: on USB for the transfer, up to
+/// the kernel's five seconds for a device that stalls.
+pub(crate) fn set_feature(hidraw: BorrowedFd<'_>, report: &[u8]) -> io::Result<()> {
+    // A copy the request may be handed as its own: it reads only.
+    let mut report = report.to_vec();
+    let number = request(READ | WRITE, 0x06, report.len());
+    // SAFETY: HIDIOCSFEATURE reads at most the length encoded in the
+    // request, which is the buffer's own; the buffer lives for the length
+    // of the call.
+    let result = unsafe { libc::ioctl(hidraw.as_raw_fd(), number as _, report.as_mut_ptr()) };
+    checked(result).map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +119,7 @@ mod tests {
         assert_eq!(request(READ, 0x01, 4), 0x8004_4801);
         assert_eq!(request(READ, 0x02, size_of::<Descriptor>()), 0x9004_4802);
         assert_eq!(request(READ, 0x03, size_of::<Info>()), 0x8008_4803);
+        assert_eq!(request(READ | WRITE, 0x06, 64), 0xc040_4806);
         assert_eq!(request(READ | WRITE, 0x07, 64), 0xc040_4807);
     }
 
@@ -114,5 +130,6 @@ mod tests {
         assert!(info(file.as_fd()).is_err());
         assert!(descriptor(file.as_fd()).is_err());
         assert!(feature(file.as_fd(), 0x20, 64).is_err());
+        assert!(set_feature(file.as_fd(), &[0x01; 64]).is_err());
     }
 }

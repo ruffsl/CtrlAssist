@@ -157,6 +157,7 @@ pub(crate) fn device_identity(identity: Identity) -> ctrlassist_device::Identity
         Identity::Generic => ctrlassist_device::Identity::Generic,
         Identity::Xbox => ctrlassist_device::Identity::Xbox,
         Identity::DualSense => ctrlassist_device::Identity::DualSense,
+        Identity::SteamController => ctrlassist_device::Identity::SteamController,
     }
 }
 
@@ -273,6 +274,9 @@ impl Daemon {
         // The pads remembered, then the pads connected now.
         let (changes, seen) = mpsc::unbounded_channel();
         let socket_changes = changes.clone();
+        // What says a pad's raw node is about to be held goes on the same
+        // queue as what udev says, ahead of what the holding causes.
+        let holds = hotplug::Holds::new(changes.clone());
         let state_dir = paths.state.clone();
         let (watch, now) = tokio::task::spawn_blocking(move || Watch::start(changes))
             .await
@@ -300,6 +304,7 @@ impl Daemon {
             database,
             hiding,
             copied,
+            holds,
         );
         reactor.test_pads = paths.test_pads;
         let (steam, state) = (paths.steam.clone(), paths.state.clone());

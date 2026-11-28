@@ -1,7 +1,8 @@
 //! The mux node: several pads in, one out.
 
 use crate::control::{
-    AXES, AxisBits, ButtonBits, Contact, Control, Group, Kind, Layout, PadState, Touchpad, gamepad,
+    AXES, AxisBits, ButtonBits, Contact, Control, Group, Kind, Layout, PadState, TOUCHPADS,
+    Touchpad, gamepad,
 };
 use crate::graph::GraphError;
 
@@ -45,10 +46,10 @@ impl Mode {
         }
     }
 
-    /// The rule this mode applies to the touchpad's contacts, as
+    /// The rule this mode applies to each touchpad's contacts, as
     /// [`MuxConfig::touchpad`] reads one: in priority the assist's
-    /// touchpad while they touch it, in average whoever touched first, in
-    /// toggle the selected pad's.
+    /// touchpad while they touch it, in average whoever touched it first,
+    /// in toggle the selected pad's.
     #[must_use]
     pub fn touchpad(self) -> Rule {
         match self {
@@ -85,7 +86,7 @@ pub enum MuxFeedback {
 ///
 /// Motion is no group's, and no rule covers it: a mux takes it whole from
 /// one input, the one selected if it [`selects`](Self::selects), as a
-/// toggle does, and otherwise its first, a preset's primary. The
+/// toggle does, and otherwise its first, a preset's primary. Each
 /// touchpad's contacts are taken whole from one input too, never a finger
 /// from each, by a [rule of their own](Self::touchpad).
 #[derive(Clone, PartialEq, Debug)]
@@ -104,6 +105,10 @@ pub struct MuxConfig {
     /// until it lifts. When the input changes with a finger down on both
     /// sides of the change, one step shows the fingers lifted, where they
     /// were, so that nothing reads the change as a finger's movement.
+    ///
+    /// The rule is both touchpads', and each follows it by itself: a
+    /// finger on one input's second touchpad never decides whose the
+    /// first is.
     pub touchpad: Rule,
     /// An input becomes active on a group at or above this.
     pub engage: f32,
@@ -166,6 +171,21 @@ impl MuxConfig {
     }
 }
 
+/// The capacitive touches, as bits of the button word: a thumb on either
+/// stick and a hand on either grip. They go with the motion.
+const TOUCHES: ButtonBits = bit_of(gamepad::LEFT_STICK_TOUCH)
+    | bit_of(gamepad::RIGHT_STICK_TOUCH)
+    | bit_of(gamepad::LEFT_GRIP_TOUCH)
+    | bit_of(gamepad::RIGHT_GRIP_TOUCH);
+
+/// A button's bit of the button word; nothing for an axis.
+const fn bit_of(control: Control) -> ButtonBits {
+    match control {
+        Control::Button(button) => (1 as ButtonBits) << button,
+        Control::Axis(_) => 0,
+    }
+}
+
 pub(crate) struct Mux {
     config: MuxConfig,
     inputs: usize,
@@ -182,15 +202,54 @@ pub(crate) struct Mux {
     /// Which inputs were present at the last step, as a mask.
     present: u32,
     switch_down: bool,
-    /// The input the touchpad's contacts were last taken from.
+    /// Each touchpad's own, the first then the second.
+    touchpads: [TouchpadOwner; TOUCHPADS],
+}
+
+/// Which input one of the touchpads is taken from, under the mux's
+/// touchpad rule. Each touchpad has one of its own, so a finger on one
+/// never decides whose the other is.
+#[derive(Clone, Copy)]
+struct TouchpadOwner {
+    /// The input the contacts were last taken from.
     touched: usize,
     /// The contacts last put out.
     contacts: Touchpad,
 }
 
-/// Whether a pad has a finger on its touchpad.
-fn touching(state: &PadState) -> bool {
-    state.touchpad().contacts().iter().any(Contact::down)
+impl TouchpadOwner {
+    const UNTOUCHED: Self = Self {
+        touched: 0,
+        contacts: Touchpad::UNTOUCHED,
+    };
+
+    /// The contacts to put out of each input's touchpad `which`, under
+    /// `rule`, with `selected` the input selected.
+    fn step(&mut self, rule: Rule, selected: usize, inputs: &[PadState], which: usize) -> Touchpad {
+        let touching = |state: &PadState| state.touchpads()[which].touched();
+        let from = match rule {
+            Rule::Switched => selected,
+            Rule::Owned => inputs.iter().rposition(touching).unwrap_or(0),
+            Rule::Largest | Rule::Blended if touching(&inputs[self.touched]) => self.touched,
+            Rule::Largest | Rule::Blended => {
+                inputs.iter().position(touching).unwrap_or(self.touched)
+            }
+        };
+        self.contacts =
+            if from != self.touched && self.contacts.touched() && touching(&inputs[from]) {
+                // One pad's finger gives way to another's: lifted first, where
+                // it was, and the other's is put down at the next step.
+                Touchpad::new(
+                    self.contacts
+                        .contacts()
+                        .map(|contact| Contact::new(false, contact.x(), contact.y())),
+                )
+            } else {
+                inputs[from].touchpads()[which]
+            };
+        self.touched = from;
+        self.contacts
+    }
 }
 
 fn copy_group(out: &mut PadState, from: &PadState, group: &Group) {
@@ -268,8 +327,7 @@ impl Mux {
             selected: 0,
             present: u32::MAX,
             switch_down: false,
-            touched: 0,
-            contacts: Touchpad::UNTOUCHED,
+            touchpads: [TouchpadOwner::UNTOUCHED; TOUCHPADS],
         }
     }
 
@@ -345,19 +403,12 @@ impl Mux {
             self.switch();
         }
 
-        // Buttons in no group, all at once.
-        *out = PadState::NEUTRAL;
-        let loose = if self.config.ungrouped_buttons == Rule::Switched {
-            inputs[self.selected].buttons()
-        } else {
-            inputs.iter().fold(0, |held, state| held | state.buttons())
-        };
-        *out.buttons_mut() = loose & self.loose_buttons;
-
         // Motion, whole from one input and never blended: a game sees
         // one pad's two sensors, which agree. The input that holds the
         // button that hands it over has it while it does, and the button
-        // is removed.
+        // is removed before any button is put out, so that one in no
+        // group is consumed as one in a group is. A capacitive touch that
+        // hands it over is not removed: it goes out with the motion.
         let mut carrier = self.carrier();
         if let Some(Switch {
             input: Some(input),
@@ -369,34 +420,29 @@ impl Mux {
             if state.buttons() & bit != 0 {
                 carrier = input;
             }
-            *state.buttons_mut() &= !bit;
+            *state.buttons_mut() &= !(bit & !TOUCHES);
         }
+        *out = PadState::NEUTRAL;
         out.set_motion(inputs[carrier].motion());
 
-        // The touchpad, whole from one input too.
-        let from = match self.config.touchpad {
-            Rule::Switched => self.selected,
-            Rule::Owned => inputs.iter().rposition(touching).unwrap_or(0),
-            Rule::Largest | Rule::Blended if touching(&inputs[self.touched]) => self.touched,
-            Rule::Largest | Rule::Blended => {
-                inputs.iter().position(touching).unwrap_or(self.touched)
-            }
-        };
-        let contacts = inputs[from].touchpad();
-        let was_down = self.contacts.contacts().iter().any(Contact::down);
-        self.contacts = if from != self.touched && was_down && touching(&inputs[from]) {
-            // One pad's finger gives way to another's: lifted first, where
-            // it was, and the other's is put down at the next step.
-            Touchpad::new(
-                self.contacts
-                    .contacts()
-                    .map(|contact| Contact::new(false, contact.x(), contact.y())),
-            )
+        // Buttons in no group, all at once. The capacitive touches are
+        // the motion's input's alone, whatever the rule: a game that
+        // aims by the gyroscope while a thumb rests on a stick, as Steam
+        // has a Steam Controller do, is then switched on by the thumb of
+        // whoever it is turned by, and by no one else's.
+        let loose = if self.config.ungrouped_buttons == Rule::Switched {
+            inputs[self.selected].buttons()
         } else {
-            contacts
+            inputs.iter().fold(0, |held, state| held | state.buttons())
         };
-        self.touched = from;
-        out.set_touchpad(self.contacts);
+        let loose = (loose & !TOUCHES) | (inputs[carrier].buttons() & TOUCHES);
+        *out.buttons_mut() = loose & self.loose_buttons;
+
+        // Each touchpad, whole from one input too, and each by itself.
+        for (which, owner) in self.touchpads.iter_mut().enumerate() {
+            out.touchpads_mut()[which] =
+                owner.step(self.config.touchpad, self.selected, inputs, which);
+        }
 
         for (index, (group, rule)) in self.rules.iter().enumerate() {
             let active = &mut self.active[index];

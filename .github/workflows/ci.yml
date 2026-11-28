@@ -128,7 +128,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libudev-dev libsystemd-dev libfontconfig1-dev pkg-config
+            libudev-dev libsystemd-dev libfontconfig1-dev libsdl3-dev pkg-config
 
       - name: Toolchain
         run: rustup component add llvm-tools-preview && rustup show
@@ -173,7 +173,13 @@ jobs:
       # machine, and make a test that still can't make a fake pad fail
       # instead of skipping. The PlayStation driver, which a fake DualSense
       # is bound by, is in the kernel's extra modules where the runner's
-      # image leaves them out.
+      # image leaves them out. Nothing is loaded for a fake Steam
+      # Controller: only Linux 7.3's hid-steam knows it, which the runner's
+      # kernel is older than, and its tests skip by the kernel's module
+      # aliases, required or not. On a newer image whose installed
+      # hid-steam knows it, udev loads the module for the first fake by
+      # its alias, as for a real pad. The device virtual machine check
+      # drives the fake through the fixture on 7.3 meanwhile.
       - name: Let the tests make fake pads
         run: |
           sudo modprobe uinput
@@ -249,7 +255,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libudev-dev libsystemd-dev libfontconfig1-dev pkg-config
+            libudev-dev libsystemd-dev libfontconfig1-dev libsdl3-dev pkg-config
 
       # The floor is read from Cargo.toml, padded to x.y.z for rustup.
       - name: Toolchain
@@ -282,7 +288,7 @@ jobs:
           persist-credentials: false
 
       - name: System libraries
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libudev-dev libsystemd-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libudev-dev libsystemd-dev libsdl3-dev pkg-config
 
       - name: Toolchain
         run: rustup show

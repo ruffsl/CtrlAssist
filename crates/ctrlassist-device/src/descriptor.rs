@@ -127,6 +127,20 @@ pub(crate) fn is_dualsense(descriptor: &[u8]) -> bool {
     })
 }
 
+/// Whether the kernel's parser takes `descriptor`, and it declares a Steam
+/// Controller's state report as an input report, with its orientation or
+/// without (`steam::STATE`, `steam::STATE_PLAIN`): Valve's collection,
+/// the pad's own, and not another interface the kernel's driver starts
+/// with the same numbers, a Puck's charging pins' among them, whose raw
+/// node the pad says nothing on.
+pub(crate) fn is_steam_controller(descriptor: &[u8]) -> bool {
+    parse(descriptor).is_some_and(|reports| {
+        [crate::steam::STATE, crate::steam::STATE_PLAIN]
+            .iter()
+            .any(|id| reports.declares(Kind::Input, *id))
+    })
+}
+
 /// The reports a descriptor declares, or `None` where the kernel's parser
 /// would refuse it, or might.
 fn parse(descriptor: &[u8]) -> Option<Box<Reports>> {
@@ -291,6 +305,45 @@ mod tests {
         let mut descriptor = STAND_IN[..46].to_vec();
         descriptor.extend_from_slice(items);
         descriptor
+    }
+
+    /// A Steam Controller's raw node is its own only where its descriptor
+    /// declares its state report as input: the test crate's fake's is
+    /// taken, with the newer report or without; a mouse's, a DualSense's,
+    /// and one with the state report's number on a feature report aren't.
+    #[test]
+    fn only_a_descriptor_with_a_steam_controller_s_state_report_is_one() {
+        let fake = ctrlassist_test::FakeSteamController::builder();
+        assert!(is_steam_controller(
+            &ctrlassist_test::FakeSteamController::descriptor(&fake)
+        ));
+        assert!(is_steam_controller(
+            &ctrlassist_test::FakeSteamController::descriptor(&fake.declaring_report_47())
+        ));
+        // A boot mouse: three buttons, x and y.
+        let mouse = [
+            0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x01, 0xa1, 0x00, 0x05, 0x09, 0x19, 0x01,
+            0x29, 0x03, 0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02, 0x95, 0x01,
+            0x75, 0x05, 0x81, 0x01, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7f,
+            0x75, 0x08, 0x95, 0x02, 0x81, 0x06, 0xc0, 0xc0,
+        ];
+        assert!(!is_steam_controller(&mouse));
+        assert!(!is_steam_controller(&shipped()));
+        assert!(!is_steam_controller(&STAND_IN));
+        // Valve's page with 0x42 and 0x45 as feature reports, and 0x43 as
+        // input: no state report.
+        let elsewhere = [
+            0x06, 0x00, 0xff, 0x09, 0x01, 0xa1, 0x01, 0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08,
+            0x85, 0x42, 0x95, 0x35, 0x09, 0x02, 0xb1, 0x02, 0x85, 0x45, 0x95, 0x2d, 0x09, 0x03,
+            0xb1, 0x02, 0x85, 0x43, 0x95, 0x0e, 0x09, 0x04, 0x81, 0x02, 0xc0,
+        ];
+        assert!(!is_steam_controller(&elsewhere));
+        // The same with 0x45 as input is one.
+        let mut plain = elsewhere;
+        assert_eq!(plain[28], 0xb1, "0x45's main item");
+        plain[28] = 0x81;
+        assert!(is_steam_controller(&plain));
+        assert!(!is_steam_controller(&[]));
     }
 
     #[test]

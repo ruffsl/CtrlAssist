@@ -1,5 +1,7 @@
 //! Pads connecting, going and returning.
 
+use std::io::Write as _;
+
 use ctrlassist_core::{Mode, PadState, gamepad};
 use ctrlassist_device::{
     Change, Command, Found, Identifiers, InputThread, Monitor, PadId, Report, Setup, connected,
@@ -222,4 +224,73 @@ fn a_returning_pad_with_no_empty_place_is_handed_back() {
             other => unreachable!("expected the pad back, got {other:?}"),
         }
     }
+}
+
+/// A Steam Controller is found once the raw node it is read through is
+/// there, and that node is found from its open event node: the client
+/// HID device's, which the fake's own finder names too, a second reading
+/// of the same thing.
+#[test]
+fn a_steam_controller_is_found_with_its_raw_node() {
+    const TEST: &str = "a_steam_controller_is_found_with_its_raw_node";
+    if !ctrlassist_test::can_make_steam_pads(TEST) {
+        return;
+    }
+    let fake = ctrlassist_test::FakeSteamController::new().unwrap();
+    let gamepad = fake.gamepad().expect("the driver makes the gamepad");
+    let raw = fake.raw_node().expect("the driver makes a raw node");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    let found = loop {
+        let listed = connected().unwrap();
+        if let Some(found) = listed.into_iter().find(|found| found.node == gamepad.event) {
+            break found;
+        }
+        assert!(std::time::Instant::now() < deadline, "never listed");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(found.identifiers.is_steam_controller(), "{found:?}");
+    assert_eq!(found.identifiers.address.as_deref(), Some(fake.serial()));
+    if !ctrlassist_test::may_open_once_udev_is_done(&gamepad.event, false) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED {TEST}: the fake's event node isn't this user's to open here"
+        );
+        return;
+    }
+    let event = std::fs::File::open(&gamepad.event).unwrap();
+    let steam = ctrlassist_device::steam_raw_node(std::os::fd::AsFd::as_fd(&event)).unwrap();
+    assert_eq!(steam.node, raw);
+    assert_eq!(steam.syspath, found.syspath);
+
+    // An event node open before the raw node is held has hung up once
+    // the driver took it away, and stays so after; one opened on the node
+    // made anew hasn't.
+    assert!(!ctrlassist_device::event_node_gone(
+        std::os::fd::AsFd::as_fd(&event)
+    ));
+    if !ctrlassist_test::may_open_once_udev_is_done(&raw, true) {
+        return;
+    }
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&raw)
+        .unwrap();
+    assert!(fake.inputs_gone());
+    assert!(ctrlassist_device::event_node_gone(
+        std::os::fd::AsFd::as_fd(&event)
+    ));
+    drop(held);
+    let again = fake.gamepad().expect("the driver makes the gamepad again");
+    assert!(ctrlassist_device::event_node_gone(
+        std::os::fd::AsFd::as_fd(&event)
+    ));
+    assert!(ctrlassist_test::may_open_once_udev_is_done(
+        &again.event,
+        false
+    ));
+    let anew = std::fs::File::open(&again.event).unwrap();
+    assert!(!ctrlassist_device::event_node_gone(
+        std::os::fd::AsFd::as_fd(&anew)
+    ));
 }

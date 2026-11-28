@@ -18,6 +18,9 @@ Inh = "Inh"
 # NixOS's option for a configuration within a configuration, and the
 # directory a switch to one is made from, which the daemon check uses.
 specialisation = "specialisation"
+# What Steam asks a Steam Controller's board serial to start with, as its
+# other prefix, MEDB, is.
+MEDA = "MEDA"
 
 [files]
 # Scan the dotted directories too: .claude/ holds the project instructions.
@@ -27,8 +30,6 @@ extend-exclude = [
     "target/",
     ".git/",
     ".direnv/",
-    # Carried as upstream wrote them; see vendor/README.md.
-    "vendor/",
     # Pad names as their makers and the community spelled them.
     "crates/ctrlassist-device/data/",
 ]

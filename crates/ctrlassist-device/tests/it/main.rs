@@ -6,6 +6,8 @@
 #![expect(clippy::unwrap_used, reason = "tests fail loudly")]
 
 mod hotplug;
+mod steam;
+mod steam_pad;
 mod thread;
 mod virtual_pad;
 
@@ -49,8 +51,18 @@ fn fake(test: &str) -> Option<FakePad> {
 }
 
 fn open(fake: &FakePad) -> Pad {
-    let node: OwnedFd = File::open(fake.event_node()).unwrap().into();
-    Pad::from_fd(node).unwrap()
+    Pad::from_fd(opened(fake.event_node())).unwrap()
+}
+
+/// A node just made, opened for reading once udev has given it to this
+/// user, which a busy machine shows comes after the node does.
+pub(crate) fn opened(node: &std::path::Path) -> OwnedFd {
+    assert!(
+        ctrlassist_test::may_open_once_udev_is_done(node, false),
+        "{} isn't this user's to open",
+        node.display()
+    );
+    File::open(node).unwrap().into()
 }
 
 /// Reads until `enough` says the frames so far are what was waited for,

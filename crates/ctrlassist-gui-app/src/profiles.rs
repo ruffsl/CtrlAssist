@@ -209,10 +209,17 @@ fn in_card(fields: &[ProfileFieldRow], belongs: impl Fn(&str) -> bool) -> ModelR
 /// A line of how a running profile is, beside its Stop.
 fn setup_note(setup: &Setup) -> String {
     match setup.phase {
-        ctrlassist::Phase::Held => {
-            "Held: a pad it needs is missing. Its virtual pad stays, and the rest plays on."
-                .to_string()
-        }
+        // A pad refused as it came back says why, which is what to do
+        // about it; otherwise one is only missing.
+        ctrlassist::Phase::Held => match &setup.reason {
+            Some(reason) => {
+                format!("Held: {reason}. Its virtual pad stays, and the rest plays on.")
+            }
+            None => {
+                "Held: a pad it needs is missing. Its virtual pad stays, and the rest plays on."
+                    .to_string()
+            }
+        },
         ctrlassist::Phase::Failed => format!(
             "Failed: {}. Stop it to clear it.",
             setup.reason.as_deref().unwrap_or("it stopped working")
@@ -1552,6 +1559,31 @@ mod tests {
     use super::*;
 
     const DEN: &str = "mode = \"toggle\"\nprimary = \"address:0a:1b:2c:3d:4e:14\"\nassist = \"address:1a:2b:3c:4d:5e:da\"\n";
+
+    /// A held setup's line says why a pad was refused where the daemon
+    /// said, and that a pad is missing where it didn't.
+    #[test]
+    fn a_held_setup_s_line_says_why_where_the_daemon_said() {
+        let held = Setup {
+            name: "den".to_string(),
+            start: 1,
+            phase: ctrlassist::Phase::Held,
+            reason: None,
+            sources: Vec::new(),
+            sinks: Vec::new(),
+            nodes: Vec::new(),
+            stale: false,
+        };
+        assert!(setup_note(&held).contains("a pad it needs is missing"));
+        let refused = Setup {
+            reason: Some("its raw interface can't be opened".to_string()),
+            ..held
+        };
+        assert_eq!(
+            setup_note(&refused),
+            "Held: its raw interface can't be opened. Its virtual pad stays, and the rest plays on."
+        );
+    }
 
     fn pad(id: &str, name: &str) -> Pad {
         Pad {

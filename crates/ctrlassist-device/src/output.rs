@@ -18,20 +18,31 @@
 //! gathered beside it until it is written. Every report written carries
 //! the latest rumble level, so a level and the games' settings that
 //! change together are written once, together.
+//!
+//! A Steam Controller's writer also writes when nothing has changed, as
+//! the pad's protocol asks: lizard mode off, with its motion sensors on,
+//! once as it starts ([`steam::take_over`]), and its rumble again every
+//! [`steam::RUMBLE_AGAIN`] while it is not at rest. It sleeps until the
+//! rumble is next due, or something changes; the input thread knows
+//! nothing of either.
 
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering, fence};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{JoinHandle, Thread};
+use std::time::Instant;
 
 use ctrlassist_core::Level;
 use evdev::{FFEffect, FFEffectData, FFEffectKind, FFReplay, FFTrigger};
 
 use crate::dualsense::{Composer, GAME_SIZE, Kind, Once};
+use crate::queue::{self, Receiver, Sender};
+use crate::steam::Haptic;
+use crate::{hidraw, steam};
 
 /// The mailbox's size in words: a game's report, then one for the level
 /// and the count of game reports.
@@ -203,6 +214,10 @@ pub enum Writes {
     /// that someone about to have the driver re-bound waits for. On USB,
     /// that write done is the pad at rest; over Bluetooth, only the rest
     /// on its way (see [`Rested`]).
+    ///
+    /// A Steam Controller given its raw node too: its rumble reports, the
+    /// last of them stopping its motors. Its raw node closed is what has
+    /// the kernel's driver give the pad its input devices back.
     Reports,
     /// Levels to the pad's one kernel effect. Its last act erases the
     /// effect, which the kernel stops first.
@@ -294,6 +309,22 @@ pub(crate) trait Target: Send + 'static {
     /// since they were last sent, and what is asked `once`.
     fn send(&mut self, game: Option<&[u8; GAME_SIZE]>, level: Level, once: Once) -> io::Result<()>;
 
+    /// When the pad next wants a write that nothing tells it, as its own
+    /// protocol asks: none while it wants nothing until it is told.
+    fn due(&self) -> Option<Instant> {
+        None
+    }
+
+    /// Writes what is due by `now`. A write the pad refuses is its own
+    /// business: it is tried again when next due, if the pad is still
+    /// there, and the input thread is told nothing of it.
+    fn keep_up(&mut self, _now: Instant) {}
+
+    /// Writes what has come for the pad by a way of its own, beside
+    /// what the mailbox holds: each time the writer looks. Nothing, for
+    /// a pad with no such way.
+    fn drain(&mut self) {}
+
     /// Leaves the pad as no game had it. The writer's last act on it.
     fn rest(self);
 }
@@ -332,6 +363,235 @@ impl<W: Write + Send + 'static> Target for RawNode<W> {
         let lights = self.kind.driver_lights(self.device.as_deref());
         let (rest, length) = self.composer.rest(lights);
         let _ = self.out.write_all(rest.get(..length).unwrap_or(&rest));
+    }
+}
+
+/// What a Steam Controller's raw node is written: output reports, and
+/// feature reports, which are requests on the node.
+pub(crate) trait SteamOut: Send + 'static {
+    /// Writes an output report, its number first.
+    fn output(&mut self, report: &[u8]) -> io::Result<()>;
+    /// Sets a feature report, its number first.
+    fn feature(&mut self, report: &[u8]) -> io::Result<()>;
+    /// The time, read as a write has returned: what the next write of
+    /// its kind is counted from.
+    fn ended(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+impl SteamOut for File {
+    fn output(&mut self, report: &[u8]) -> io::Result<()> {
+        self.write_all(report)
+    }
+
+    fn feature(&mut self, report: &[u8]) -> io::Result<()> {
+        hidraw::set_feature(self.as_fd(), report)
+    }
+}
+
+/// A Steam Controller's raw node: the pad is sent its rumble level as
+/// output report `0x80`, and nothing a game sets beyond rumble.
+///
+/// The pad's protocol asks two things of whoever holds the node (see
+/// `steam.rs`). Its rumble again every [`steam::RUMBLE_AGAIN`] while it
+/// isn't at rest, since the pad stops by itself shortly after the last:
+/// an interval that is the pad's own and not CtrlAssist's, counted from
+/// when the last rumble report returned. And lizard mode off, which is
+/// asked once, as the writer starts, the kernel's way
+/// ([`steam::take_over`]): the pad's keys and pointer cleared, lizard
+/// mode and the pad's watchdog off, and its motion sensors on. With the
+/// watchdog off there is nothing to say again, so no interval is kept
+/// for it, and the requests, each of which waits on the pad holding a
+/// lock every raw node on the machine needs (`minors_rwsem`, taken
+/// across `hidraw_ioctl`), are made as the pad is taken and not while it
+/// is played.
+///
+/// A request the pad refuses is not tried again by a clock. The kernel's
+/// driver tries a feature report again on `EPIPE`, up to 50 times 20 ms
+/// apart, because "the wireless controller fails with EPIPE"
+/// (`steam_send_report_id`, `hid-steam.c:549-562`); here the requests
+/// are made again, from the first, with the next level the pad is sent.
+/// Whether a pad behind a Puck or over Bluetooth refuses so only a real
+/// one can show.
+///
+/// Nothing is written to put lizard mode back as the pad is let go: the
+/// raw node closed, as it is however the daemon ends, has the kernel's
+/// driver set the pad up as it was, its watchdog with it
+/// (`steam_work_connect_cb`, `hid-steam.c:1460-1484`).
+///
+/// Rumble is the plain level every pad is sent. The pad's richer haptics
+/// ([`Haptic`]: a pulse on either trackpad, a tone, a built-in effect,
+/// sound for its actuators) come by a way of their own, from a virtual
+/// Steam Controller alone: a game's force feedback, the router's levels
+/// and a virtual DualSense's output report have nothing to carry them.
+/// They are events, each written once, whole, as it came
+/// ([`drain`](Target::drain)).
+struct SteamNode<O> {
+    out: O,
+    /// The level the motors were last sent.
+    level: Level,
+    /// When the rumble is due again: none while the motors are at rest.
+    rumble_due: Option<Instant>,
+    /// Whether the pad has been taken out of lizard mode.
+    taken: Taken,
+    /// Whether the node has said the pad has gone (`ENODEV`): nothing
+    /// written there will reach it again, so nothing is due.
+    gone: bool,
+    /// The haptic reports the pad is to be sent, from the input thread:
+    /// none for a node nothing sends any.
+    haptics: Option<Receiver<Haptic>>,
+}
+
+/// How many haptic reports wait between the input thread and a pad's
+/// writer, and how many of those the writer keeps to write when it finds
+/// more waiting than that: the newest, in their order. A hand should
+/// feel what was last asked, so a writer that was held up, by a pad slow
+/// to take a write, lets the oldest go. Past the first number the input
+/// thread, which never waits, has nowhere to put one more, and that one
+/// is lost instead.
+const HAPTICS_WAITING: usize = 64;
+const HAPTICS_WRITTEN: usize = 16;
+
+/// How far a Steam Controller's node is with [`steam::take_over`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Taken {
+    /// Due, as the writer starts.
+    Due(Instant),
+    /// Asked and refused: asked again with the next level the pad is sent.
+    Refused,
+    /// Asked, and the pad took it.
+    Done,
+}
+
+impl<O: SteamOut> SteamNode<O> {
+    /// The node of a pad starting to be held at `now`: lizard mode off is
+    /// due at once.
+    fn new(out: O, now: Instant) -> Self {
+        Self {
+            out,
+            level: Level::default(),
+            rumble_due: None,
+            taken: Taken::Due(now),
+            gone: false,
+            haptics: None,
+        }
+    }
+
+    /// The same node, sent the haptic reports that come by `haptics`.
+    fn with_haptics(mut self, haptics: Receiver<Haptic>) -> Self {
+        self.haptics = Some(haptics);
+        self
+    }
+
+    /// Notes what a write said of the pad.
+    fn heard(&mut self, result: &io::Result<()>) {
+        if let Err(error) = result
+            && error.raw_os_error() == Some(rustix::io::Errno::NODEV.raw_os_error())
+        {
+            self.gone = true;
+        }
+    }
+
+    /// Takes the pad out of lizard mode: each request of
+    /// [`steam::take_over`] in turn, stopping at one the pad refuses.
+    fn take_over(&mut self) {
+        self.taken = Taken::Done;
+        for request in steam::take_over() {
+            let result = self.out.feature(&request);
+            self.heard(&result);
+            if result.is_err() {
+                self.taken = Taken::Refused;
+                return;
+            }
+        }
+    }
+
+    /// Sends the motors `level` at `now`, if it isn't what they were last
+    /// sent. A pad that refused to be taken out of lizard mode is asked
+    /// again first.
+    fn rumble_at(&mut self, level: Level, now: Instant) -> io::Result<()> {
+        if level == self.level {
+            return Ok(());
+        }
+        if self.taken == Taken::Refused && !self.gone {
+            self.take_over();
+        }
+        self.level = level;
+        self.write_rumble(now)
+    }
+
+    /// Writes the level the motors are at, and has it due again while it
+    /// isn't at rest. A write refused is tried again when due, as a level
+    /// at rest needs no write again: the pad stops by itself.
+    fn write_rumble(&mut self, now: Instant) -> io::Result<()> {
+        let result = self.out.output(&steam::rumble(self.level));
+        self.heard(&result);
+        // From when the write returned, so that one the pad was slow to
+        // take is followed by a whole interval and not by another at once.
+        let ended = self.out.ended().max(now);
+        self.rumble_due = (self.level != Level::default())
+            .then(|| ended.checked_add(steam::RUMBLE_AGAIN))
+            .flatten();
+        result
+    }
+}
+
+impl<O: SteamOut> Target for SteamNode<O> {
+    fn send(&mut self, _: Option<&[u8; GAME_SIZE]>, level: Level, _: Once) -> io::Result<()> {
+        self.rumble_at(level, Instant::now())
+    }
+
+    fn due(&self) -> Option<Instant> {
+        if self.gone {
+            return None;
+        }
+        match (self.rumble_due, self.taken) {
+            (Some(rumble), Taken::Due(taking)) => Some(rumble.min(taking)),
+            (None, Taken::Due(taking)) => Some(taking),
+            (rumble, Taken::Refused | Taken::Done) => rumble,
+        }
+    }
+
+    fn keep_up(&mut self, now: Instant) {
+        if matches!(self.taken, Taken::Due(due) if due <= now) {
+            self.take_over();
+        }
+        if self.rumble_due.is_some_and(|due| due <= now) {
+            let _ = self.write_rumble(now);
+        }
+    }
+
+    fn drain(&mut self) {
+        let Some(haptics) = &self.haptics else {
+            return;
+        };
+        // All that wait, the newest kept where there are too many.
+        let mut kept = [None; HAPTICS_WRITTEN];
+        let mut count = 0usize;
+        while let Some(haptic) = haptics.try_recv() {
+            if let Some(place) = kept.get_mut(count % HAPTICS_WRITTEN) {
+                *place = Some(haptic);
+            }
+            count = count.wrapping_add(1);
+        }
+        let first = count.saturating_sub(HAPTICS_WRITTEN);
+        for at in first..count {
+            let Some(Some(haptic)) = kept.get(at % HAPTICS_WRITTEN) else {
+                continue;
+            };
+            if self.gone {
+                return;
+            }
+            let result = self.out.output(haptic.as_bytes());
+            self.heard(&result);
+        }
+    }
+
+    fn rest(mut self) {
+        if !self.gone {
+            let _ = self.out.output(&steam::rumble(Level::default()));
+        }
     }
 }
 
@@ -397,8 +657,9 @@ impl Target for KernelEffect {
 /// lights and trigger effects; a DualShock 4 gets the lightbar's color.
 /// Rumble then goes that way too, and not through the kernel's own
 /// effects, so every report written carries the level the pad should be
-/// at. Any other pad that can rumble is sent its level through its one
-/// kernel effect.
+/// at. A Steam Controller given its raw node is sent its level there, and
+/// nothing the games set beyond rumble (see [`SteamNode`]). Any other pad
+/// that can rumble is sent its level through its one kernel effect.
 ///
 /// The writes are made by a thread of the pad's own, at ordinary
 /// priority. Dropping this has it write what is left, then leave the pad
@@ -408,8 +669,8 @@ impl Target for KernelEffect {
 pub(crate) struct Output {
     shared: Arc<Shared>,
     writer: Thread,
-    /// The kind of pad whose raw node this writes to; none for an effect.
-    kind: Option<Kind>,
+    /// What this writes to.
+    to: To,
     wanted: Wanted,
     /// What was asked once and not yet put.
     once: Once,
@@ -417,6 +678,20 @@ pub(crate) struct Output {
     held: bool,
     /// Whether what is wanted changed while kept back.
     changed: bool,
+    /// Where a Steam Controller's haptic reports go to its writer.
+    haptics: Option<Sender<Haptic>>,
+}
+
+/// What a writer writes to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum To {
+    /// A pad's one kernel effect.
+    Effect,
+    /// The raw node of a PlayStation pad of this kind, sent whole output
+    /// reports.
+    Reports(Kind),
+    /// A Steam Controller's raw node, sent its rumble.
+    Steam,
 }
 
 impl Output {
@@ -433,8 +708,28 @@ impl Output {
             PathBuf::from(format!("/sys/dev/char/{major}:{minor}/device"))
         });
         let target = RawNode::new(File::from(raw), kind, device);
-        let (output, _) = Self::start(target, Some(kind), "pad-output")?;
+        let (output, _) = Self::start(target, To::Reports(kind), "pad-output")?;
         Ok(output)
+    }
+
+    /// Takes a Steam Controller's raw node. Its writer sets lizard mode
+    /// off as it starts.
+    pub(crate) fn steam(raw: OwnedFd) -> io::Result<Self> {
+        let (unbound, haptics) = queue::queue(HAPTICS_WAITING);
+        let target = SteamNode::new(File::from(raw), Instant::now()).with_haptics(haptics);
+        let (mut output, _) = Self::start(target, To::Steam, "pad-output")?;
+        output.haptics = Some(unbound.to(output.writer.clone()));
+        Ok(output)
+    }
+
+    /// Sends a Steam Controller a haptic report a reader wrote a virtual
+    /// one, whole, without waiting for the pad. A pad of another kind
+    /// ignores it, and so does one whose writer has more waiting than it
+    /// has room for.
+    pub(crate) fn haptic(&self, haptic: Haptic) {
+        if let Some(haptics) = &self.haptics {
+            let _ = haptics.send(haptic);
+        }
     }
 
     /// Takes a pad's one kernel effect, uploaded at rest.
@@ -443,18 +738,13 @@ impl Output {
             effect,
             level: Level::default(),
         };
-        let (output, _) = Self::start(target, None, "pad-rumble")?;
+        let (output, _) = Self::start(target, To::Effect, "pad-rumble")?;
         Ok(output)
     }
 
-    /// Starts a writer, named `name`, on `target`: a raw node of a pad of
-    /// `kind`, or an effect.
-    fn start<T: Target>(
-        target: T,
-        kind: Option<Kind>,
-        name: &str,
-    ) -> io::Result<(Self, JoinHandle<()>)> {
-        Self::start_with(target, kind, name, || {})
+    /// Starts a writer, named `name`, on `target`, which writes `to`.
+    fn start<T: Target>(target: T, to: To, name: &str) -> io::Result<(Self, JoinHandle<()>)> {
+        Self::start_with(target, to, name, || {})
     }
 
     /// As [`start`](Self::start), with `between` called by the writer between
@@ -462,7 +752,7 @@ impl Output {
     /// test to hold it there.
     fn start_with<T: Target>(
         mut target: T,
-        kind: Option<Kind>,
+        to: To,
         name: &str,
         between: impl Fn() + Send + 'static,
     ) -> io::Result<(Self, JoinHandle<()>)> {
@@ -515,7 +805,7 @@ impl Output {
         let output = Self {
             shared,
             writer: writer.thread().clone(),
-            kind,
+            to,
             wanted: Wanted {
                 game: [0; GAME_SIZE],
                 games: 0,
@@ -524,13 +814,20 @@ impl Output {
             once: Once::default(),
             held: false,
             changed: false,
+            haptics: None,
         };
         Ok((output, writer))
     }
 
-    /// Whether this writes whole output reports to a raw node.
+    /// Whether this writes to a raw node.
     pub(crate) fn is_raw(&self) -> bool {
-        self.kind.is_some()
+        self.to != To::Effect
+    }
+
+    /// Whether this writes whole output reports, which carry what the
+    /// games set on a virtual DualSense.
+    pub(crate) fn takes_reports(&self) -> bool {
+        matches!(self.to, To::Reports(_))
     }
 
     /// Says when the writer has left the pad at rest, after this is
@@ -563,11 +860,13 @@ impl Output {
     /// report's: the whole of it for a DualSense, with what it asks once,
     /// and for a DualShock 4 the lightbar's color, if it is set. The same
     /// settings again are nothing new, and so is anything for a pad that
-    /// is sent only its level.
+    /// is sent only its level: through a kernel effect, or a Steam
+    /// Controller, whose lights and triggers are nothing a DualSense's
+    /// report sets.
     ///
     /// Fails if the pad refused a write since a refusal was last said.
     pub(crate) fn pass(&mut self, report: &[u8]) -> io::Result<()> {
-        let Some(kind) = self.kind else {
+        let To::Reports(kind) = self.to else {
             return Ok(());
         };
         let mut game = [0u8; GAME_SIZE];
@@ -674,9 +973,10 @@ impl Drop for Output {
     }
 }
 
-/// The writer: sends what is wanted each time it changes, and sleeps
-/// between. Ends once the input thread's side is gone and what it left
-/// is sent.
+/// The writer: sends what is wanted each time it changes, and what the
+/// pad's protocol asks of it when that is due, and sleeps between. Ends
+/// once the input thread's side is gone and what it left is sent; what
+/// would have been due after that isn't written.
 ///
 /// What is asked once is written with its own settings or later ones,
 /// possibly in the report just after its own; never after settings put
@@ -716,6 +1016,7 @@ fn write_out<T: Target>(shared: &Shared, target: &mut T, between: &impl Fn()) {
         // Before the mailbox is looked in, so that what was put before
         // the stop is written.
         let stopping = shared.stop.load(Ordering::Acquire);
+        target.drain();
         let (sequence, words) = shared.mailbox.get();
         between();
         once = once.then(Once::from_bits(shared.once.swap(0, Ordering::AcqRel)));
@@ -743,13 +1044,31 @@ fn write_out<T: Target>(shared: &Shared, target: &mut T, between: &impl Fn()) {
                     }
                 }
             }
+            // What the pad's protocol has due goes before the next change:
+            // changes that come faster than writes are made would put it
+            // off for as long as they came.
+            let now = Instant::now();
+            if !stopping && target.due().is_some_and(|due| due <= now) {
+                target.keep_up(now);
+            }
             continue;
         }
         if stopping {
             return;
         }
         // Woken by every put; a wake with nothing new only looks again.
-        std::thread::park();
+        // A pad whose protocol asks for writes of its own is woken for
+        // the next of those too, which it then makes.
+        match target.due() {
+            None => std::thread::park(),
+            Some(due) => {
+                let now = Instant::now();
+                match due.checked_duration_since(now) {
+                    Some(wait) if !wait.is_zero() => std::thread::park_timeout(wait),
+                    _ => target.keep_up(now),
+                }
+            }
+        }
     }
 }
 
@@ -820,7 +1139,7 @@ mod tests {
             refuse,
         };
         let target = RawNode::new(recorder, USB, None);
-        let (output, writer) = Output::start(target, Some(USB), "pad-output").unwrap();
+        let (output, writer) = Output::start(target, To::Reports(USB), "pad-output").unwrap();
         (output, writer, reports, open)
     }
 
@@ -1036,7 +1355,7 @@ mod tests {
         };
         let target = RawNode::new(recorder, USB, None);
         let (mut output, writer) =
-            Output::start_with(target, Some(USB), "pad-output", between).unwrap();
+            Output::start_with(target, To::Reports(USB), "pad-output", between).unwrap();
         // The writer's first look, held between its two reads.
         held.recv().unwrap();
         let mut release = [0u8; GAME_SIZE];
@@ -1253,7 +1572,7 @@ mod tests {
         let target = Panicking {
             told: told_by.clone(),
         };
-        let (mut output, writer) = Output::start(target, None, "pad-rumble").unwrap();
+        let (mut output, writer) = Output::start(target, To::Effect, "pad-rumble").unwrap();
         let rested = output.rested();
         assert_eq!(rested.writes(), Writes::Effect);
         output.rumble(level(0x1000, 0)).unwrap();
@@ -1287,7 +1606,7 @@ mod tests {
             told: told_by.clone(),
             gate,
         };
-        let (mut output, writer) = Output::start(target, None, "pad-rumble").unwrap();
+        let (mut output, writer) = Output::start(target, To::Effect, "pad-rumble").unwrap();
         assert!(!output.is_raw());
         output.rumble(level(0x1000, 0)).unwrap();
         assert_eq!(told.recv().unwrap(), Told::Level(level(0x1000, 0)));
@@ -1306,5 +1625,363 @@ mod tests {
         assert_eq!(told.recv().unwrap(), Told::After);
         writer.join().unwrap();
         assert!(told.try_recv().is_err(), "nothing after");
+    }
+
+    /// What a Steam Controller's node was written.
+    #[derive(Clone, PartialEq, Debug)]
+    enum Steam {
+        Output(Vec<u8>),
+        Feature(Vec<u8>),
+    }
+
+    /// Stands in for a Steam Controller's raw node: says each write, and
+    /// refuses each with `refuse`, if set, as a node whose pad has gone
+    /// refuses them with `ENODEV`.
+    struct SteamRecorder {
+        written: mpsc::Sender<Steam>,
+        refuse: Arc<AtomicI32>,
+        /// When its last write returned, by the test's clock: as it was
+        /// made, before any time the test gives, unless the test says.
+        ended: Arc<Mutex<Instant>>,
+    }
+
+    impl SteamRecorder {
+        fn answer(&self) -> io::Result<()> {
+            match self.refuse.load(Ordering::SeqCst) {
+                0 => Ok(()),
+                errno => Err(io::Error::from_raw_os_error(errno)),
+            }
+        }
+    }
+
+    impl SteamOut for SteamRecorder {
+        fn output(&mut self, report: &[u8]) -> io::Result<()> {
+            self.written.send(Steam::Output(report.to_vec())).unwrap();
+            self.answer()
+        }
+
+        fn feature(&mut self, report: &[u8]) -> io::Result<()> {
+            self.written.send(Steam::Feature(report.to_vec())).unwrap();
+            self.answer()
+        }
+
+        fn ended(&self) -> Instant {
+            *self.ended.lock().unwrap()
+        }
+    }
+
+    fn steam_recorder() -> (SteamRecorder, mpsc::Receiver<Steam>, Arc<AtomicI32>) {
+        let (recorder, steam, refuse, _) = clocked_recorder();
+        (recorder, steam, refuse)
+    }
+
+    /// A recorder, and the time its writes return at, for the test to set.
+    fn clocked_recorder() -> (
+        SteamRecorder,
+        mpsc::Receiver<Steam>,
+        Arc<AtomicI32>,
+        Arc<Mutex<Instant>>,
+    ) {
+        let (written, steam) = mpsc::channel();
+        let refuse = Arc::new(AtomicI32::new(0));
+        let ended = Arc::new(Mutex::new(Instant::now()));
+        let recorder = SteamRecorder {
+            written,
+            refuse: Arc::clone(&refuse),
+            ended: Arc::clone(&ended),
+        };
+        (recorder, steam, refuse, ended)
+    }
+
+    /// What the pad is asked as it is taken, in order.
+    fn taken_over() -> [Steam; 2] {
+        steam::take_over().map(|request| Steam::Feature(request.to_vec()))
+    }
+
+    /// The next two things written.
+    fn next_two(written: &mpsc::Receiver<Steam>) -> [Steam; 2] {
+        [written.try_recv().unwrap(), written.try_recv().unwrap()]
+    }
+
+    fn rumbled(level: Level) -> Steam {
+        Steam::Output(steam::rumble(level).to_vec())
+    }
+
+    /// By the pad's own clock, as the writer's is read: lizard mode off
+    /// once, at once, and never again; a level written as it changes and
+    /// again every interval of its own while it isn't at rest; at rest,
+    /// written once and nothing due at all.
+    #[test]
+    fn a_steam_controller_s_node_is_taken_out_of_lizard_mode_once_and_its_rumble_kept_going() {
+        let (recorder, written, _) = steam_recorder();
+        let start = Instant::now();
+        let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+        let mut node = SteamNode::new(recorder, start);
+        assert_eq!(node.due(), Some(start), "lizard mode off at once");
+        node.keep_up(start);
+        assert_eq!(next_two(&written), taken_over());
+        assert_eq!(node.due(), None, "and nothing after");
+        node.keep_up(at(60_000));
+        assert!(written.try_recv().is_err());
+
+        let on = level(0x8000, 0x4000);
+        node.rumble_at(on, at(1000)).unwrap();
+        assert_eq!(written.try_recv().unwrap(), rumbled(on));
+        assert_eq!(node.due(), Some(at(1040)));
+        node.rumble_at(on, at(1010)).unwrap();
+        assert!(written.try_recv().is_err(), "the same level is nothing new");
+        node.keep_up(at(1040));
+        assert_eq!(written.try_recv().unwrap(), rumbled(on));
+        assert_eq!(node.due(), Some(at(1080)));
+        // A change is written at once, and due again from then.
+        let other = level(0x1000, 0);
+        node.rumble_at(other, at(1050)).unwrap();
+        assert_eq!(written.try_recv().unwrap(), rumbled(other));
+        assert_eq!(node.due(), Some(at(1090)));
+        // At rest: once, and nothing is due.
+        node.rumble_at(Level::default(), at(1060)).unwrap();
+        assert_eq!(written.try_recv().unwrap(), rumbled(Level::default()));
+        assert_eq!(node.due(), None);
+        node.keep_up(at(60_000));
+        assert!(written.try_recv().is_err());
+
+        // Let go, the motors are stopped, whatever they were at.
+        node.rest();
+        assert_eq!(written.try_recv().unwrap(), rumbled(Level::default()));
+        assert!(written.try_recv().is_err());
+    }
+
+    /// A pad that refuses to be taken out of lizard mode is asked no more
+    /// by any clock: it is asked again, from the first request, with the
+    /// next level it is sent, and once it takes them never again.
+    #[test]
+    fn a_steam_controller_that_refuses_is_asked_again_with_its_next_level() {
+        let (recorder, written, refuse) = steam_recorder();
+        let start = Instant::now();
+        let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+        let mut node = SteamNode::new(recorder, start);
+        refuse.store(rustix::io::Errno::PIPE.raw_os_error(), Ordering::SeqCst);
+        node.keep_up(start);
+        let [first, _] = taken_over();
+        assert_eq!(written.try_recv().unwrap(), first, "the first, refused");
+        assert!(written.try_recv().is_err(), "and not the second after it");
+        assert_eq!(node.due(), None, "no clock asks again");
+        node.keep_up(at(60_000));
+        assert!(written.try_recv().is_err());
+
+        refuse.store(0, Ordering::SeqCst);
+        let on = level(0x8000, 0);
+        node.rumble_at(on, at(60_010)).unwrap();
+        assert_eq!(next_two(&written), taken_over());
+        assert_eq!(written.try_recv().unwrap(), rumbled(on));
+        node.rumble_at(Level::default(), at(60_020)).unwrap();
+        assert_eq!(written.try_recv().unwrap(), rumbled(Level::default()));
+        assert!(written.try_recv().is_err(), "taken, it is asked no more");
+    }
+
+    /// A write refused for a moment is tried again when next due; a pad
+    /// that has gone is written nothing more, its node refusing all.
+    #[test]
+    fn a_steam_controller_that_has_gone_is_written_nothing_more() {
+        let (recorder, written, refuse) = steam_recorder();
+        let start = Instant::now();
+        let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+        let mut node = SteamNode::new(recorder, start);
+        node.keep_up(start);
+        assert_eq!(next_two(&written), taken_over());
+        refuse.store(rustix::io::Errno::TIMEDOUT.raw_os_error(), Ordering::SeqCst);
+        let on = level(0x8000, 0);
+        let refused = node.rumble_at(on, at(10)).unwrap_err();
+        assert_eq!(
+            refused.raw_os_error(),
+            Some(rustix::io::Errno::TIMEDOUT.raw_os_error())
+        );
+        assert_eq!(written.try_recv().unwrap(), rumbled(on));
+        assert_eq!(node.due(), Some(at(50)), "tried again when due");
+
+        refuse.store(rustix::io::Errno::NODEV.raw_os_error(), Ordering::SeqCst);
+        node.keep_up(at(50));
+        assert_eq!(written.try_recv().unwrap(), rumbled(on));
+        assert_eq!(node.due(), None, "nothing is due for a pad gone");
+        node.rest();
+        assert!(written.try_recv().is_err(), "nor is its rest written");
+    }
+
+    /// The writer itself: lizard mode off as it starts, with nothing told;
+    /// a level, and the same level again, unbidden, while it runs; once at
+    /// rest, nothing more; the motors stopped as it is let go; and nothing
+    /// a game sets beyond rumble.
+    #[test]
+    fn a_steam_controller_s_writer_writes_what_its_protocol_asks_unbidden() {
+        let (recorder, written, _) = steam_recorder();
+        let target = SteamNode::new(recorder, Instant::now());
+        let (mut output, writer) = Output::start(target, To::Steam, "pad-output").unwrap();
+        assert!(output.is_raw() && !output.takes_reports());
+        assert_eq!(output.rested().writes(), Writes::Reports);
+        assert_eq!(
+            [written.recv().unwrap(), written.recv().unwrap()],
+            taken_over()
+        );
+
+        output.pass(&lights(0x11)).unwrap();
+        let on = level(0x8000, 0x4000);
+        output.rumble(on).unwrap();
+        assert_eq!(written.recv().unwrap(), rumbled(on));
+        // Again, and again: the writer's own, told nothing new.
+        assert_eq!(written.recv().unwrap(), rumbled(on));
+        assert_eq!(written.recv().unwrap(), rumbled(on));
+        output.rumble(Level::default()).unwrap();
+        // Whatever was due just before is the level that ran; then the
+        // rest, once.
+        let mut stopped = written.recv().unwrap();
+        while stopped == rumbled(on) {
+            stopped = written.recv().unwrap();
+        }
+        assert_eq!(stopped, rumbled(Level::default()));
+        // At rest, nothing is due; a writer that went on rumbling would
+        // have written by now.
+        assert!(
+            written
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err()
+        );
+        drop(output);
+        writer.join().unwrap();
+        let rest: Vec<Steam> = written.try_iter().collect();
+        assert_eq!(rest, [rumbled(Level::default())]);
+    }
+
+    /// What a pad whose protocol asks for writes of its own was told.
+    #[derive(PartialEq, Debug)]
+    enum Done {
+        Sent(Level),
+        KeptUp,
+    }
+
+    /// Stands in for such a pad: something falls due as its first level
+    /// is being written, which is held until the test lets it finish.
+    struct Due {
+        told: mpsc::Sender<Done>,
+        gate: mpsc::Receiver<()>,
+        due: Option<Instant>,
+        sent: bool,
+    }
+
+    impl Target for Due {
+        fn send(&mut self, _: Option<&[u8; GAME_SIZE]>, level: Level, _: Once) -> io::Result<()> {
+            self.told.send(Done::Sent(level)).unwrap();
+            if !std::mem::replace(&mut self.sent, true) {
+                self.due = Some(Instant::now());
+                self.gate.recv().unwrap();
+            }
+            Ok(())
+        }
+
+        fn due(&self) -> Option<Instant> {
+            self.due
+        }
+
+        fn keep_up(&mut self, _: Instant) {
+            self.due = None;
+            self.told.send(Done::KeptUp).unwrap();
+        }
+
+        fn rest(self) {}
+    }
+
+    /// What falls due while a write is under way is written before the
+    /// level told meanwhile: levels told faster than they are written
+    /// can't put it off.
+    #[test]
+    fn what_falls_due_goes_before_the_next_change() {
+        let (told_by, told) = mpsc::channel();
+        let (open, gate) = mpsc::channel();
+        let target = Due {
+            told: told_by,
+            gate,
+            due: None,
+            sent: false,
+        };
+        let (mut output, writer) = Output::start(target, To::Steam, "pad-output").unwrap();
+        output.rumble(level(0x1000, 0)).unwrap();
+        assert_eq!(told.recv().unwrap(), Done::Sent(level(0x1000, 0)));
+        // The writer is held in that write, with something due.
+        output.rumble(level(0x2000, 0)).unwrap();
+        open.send(()).unwrap();
+        assert_eq!(told.recv().unwrap(), Done::KeptUp);
+        assert_eq!(told.recv().unwrap(), Done::Sent(level(0x2000, 0)));
+        drop(output);
+        writer.join().unwrap();
+    }
+
+    /// The haptic reports that come for a Steam Controller are written as
+    /// they came, whole and in order, each time the writer looks; where
+    /// more wait than the writer keeps, the newest are written and the
+    /// oldest let go; and a pad that has gone is written none.
+    #[test]
+    fn a_steam_controller_s_haptic_reports_are_written_in_order_the_newest_kept() {
+        let (recorder, written, refuse) = steam_recorder();
+        let (unbound, haptics) = queue::queue(HAPTICS_WAITING);
+        let sender = unbound.to(std::thread::current());
+        let mut node = SteamNode::new(recorder, Instant::now()).with_haptics(haptics);
+        let report = |number: u8| Haptic::of(&[0x81, number, 0, 0, 0, 0, 0, 0]).unwrap();
+        node.drain();
+        assert!(written.try_recv().is_err(), "nothing waits");
+
+        let sound = Haptic::of(&[0x87; 64]).unwrap();
+        sender.send(report(1)).unwrap();
+        sender.send(sound).unwrap();
+        node.drain();
+        assert_eq!(
+            written.try_recv().unwrap(),
+            Steam::Output(report(1).as_bytes().to_vec())
+        );
+        assert_eq!(written.try_recv().unwrap(), Steam::Output(vec![0x87; 64]));
+        assert!(written.try_recv().is_err());
+
+        // More than the writer keeps: the newest, in their order.
+        let many = u8::try_from(HAPTICS_WRITTEN + 4).unwrap();
+        for number in 0..many {
+            sender.send(report(number)).unwrap();
+        }
+        node.drain();
+        let wrote: Vec<Steam> = written.try_iter().collect();
+        let newest: Vec<Steam> = (4..many)
+            .map(|number| Steam::Output(report(number).as_bytes().to_vec()))
+            .collect();
+        assert_eq!(wrote, newest);
+
+        // Past what can wait, the sender is refused and never waits.
+        for _ in 0..HAPTICS_WAITING {
+            sender.send(report(0)).unwrap();
+        }
+        assert!(sender.send(report(1)).is_err());
+        node.drain();
+        assert_eq!(written.try_iter().count(), HAPTICS_WRITTEN);
+
+        // Gone: the first write says so, and nothing follows it.
+        refuse.store(rustix::io::Errno::NODEV.raw_os_error(), Ordering::SeqCst);
+        sender.send(report(1)).unwrap();
+        sender.send(report(2)).unwrap();
+        node.drain();
+        assert_eq!(written.try_iter().count(), 1);
+    }
+
+    /// By the pad's own clock: a rumble report the pad was slow to take
+    /// is followed by a whole interval from when it returned, not by
+    /// another at once.
+    #[test]
+    fn the_next_rumble_is_counted_from_when_the_last_returned() {
+        let (recorder, written, _, ended) = clocked_recorder();
+        let start = Instant::now();
+        let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+        let mut node = SteamNode::new(recorder, start);
+        node.keep_up(start);
+        assert_eq!(next_two(&written), taken_over());
+        // A rumble report that takes 100 ms is due 40 ms after it returns.
+        *ended.lock().unwrap() = at(5100);
+        node.rumble_at(level(0x8000, 0), at(5000)).unwrap();
+        assert_eq!(written.try_recv().unwrap(), rumbled(level(0x8000, 0)));
+        assert_eq!(node.due(), Some(at(5140)));
     }
 }

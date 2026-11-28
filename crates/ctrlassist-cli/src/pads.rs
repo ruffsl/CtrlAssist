@@ -71,6 +71,16 @@ fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
+/// Whether `pad` can be rumbled now, as the RUMBLE column says it: a
+/// Steam Controller its kernel driver gives none is rumbled by a running
+/// profile, through its raw node, and says so rather than `no`.
+fn rumble_word(pad: &ctrlassist::Pad) -> &'static str {
+    match pad.rumble {
+        Some(false) if pad.is_steam_controller() => "in a profile",
+        rumble => rumble.map_or("unknown", yes_no),
+    }
+}
+
 /// Writes rows as columns, each as wide as its widest cell.
 pub(crate) fn table<const N: usize>(headings: [&str; N], rows: &[[String; N]]) -> io::Result<()> {
     let mut widths = headings.map(|heading| heading.chars().count());
@@ -116,7 +126,7 @@ pub(crate) async fn pads(socket: &Path, json: bool) -> Result<()> {
                 printable(&pad.name),
                 format!("{:04x}:{:04x}", pad.vendor, pad.product),
                 yes_no(pad.connected).to_string(),
-                pad.rumble.map_or("unknown", yes_no).to_string(),
+                rumble_word(pad).to_string(),
             ]
         })
         .collect();
@@ -157,4 +167,31 @@ pub(crate) async fn forget(socket: &Path, pad: &str) -> Result<()> {
     let (client, _watcher) = connect(socket).await?;
     client.forget_pad(pad).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_free_steam_controller_without_rumble_says_when_it_has_it() {
+        let pad = |vendor, product, rumble| ctrlassist::Pad {
+            id: "address:FX12345678".to_string(),
+            name: "Pad".to_string(),
+            vendor,
+            product,
+            connected: true,
+            hidden: false,
+            setup: None,
+            rumble,
+            bus: None,
+        };
+        assert_eq!(
+            rumble_word(&pad(0x28de, 0x1302, Some(false))),
+            "in a profile"
+        );
+        assert_eq!(rumble_word(&pad(0x28de, 0x1302, Some(true))), "yes");
+        assert_eq!(rumble_word(&pad(0x054c, 0x0ce6, Some(false))), "no");
+        assert_eq!(rumble_word(&pad(0x054c, 0x0ce6, None)), "unknown");
+    }
 }

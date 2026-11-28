@@ -1,4 +1,5 @@
-//! A pad, read from an open descriptor on its event node.
+//! A pad, read from an open descriptor on its event node, or, for a
+//! Steam Controller, from its raw node.
 
 use crate::dualsense::Kind;
 use crate::output::{Output, Rested, endless};
@@ -11,7 +12,7 @@ use rustix::fs::fstat;
 
 use crate::database::Database;
 use crate::layout::{AxisRange, Mapping};
-use crate::motion;
+use crate::{descriptor, hidraw, motion, steam};
 
 /// Why a pad couldn't be opened or read.
 #[derive(Debug)]
@@ -147,6 +148,15 @@ impl Identifiers {
         };
         marked(&self.port, crate::TEST_MARKER) || marked(&self.address, crate::TEST_ADDRESS)
     }
+
+    /// Whether this is a Steam Controller, the 2026 one: on a cable, over
+    /// Bluetooth, or in a slot of a Puck or a Steam Machine's receiver.
+    /// Such a pad is read from its raw node and nothing else, and its
+    /// event node goes while that is open: see [`Pad::set_raw`].
+    #[must_use]
+    pub fn is_steam_controller(&self) -> bool {
+        steam::is_pad(self.bus, self.vendor, self.product)
+    }
 }
 
 fn nonempty(text: Option<&str>) -> Option<String> {
@@ -196,6 +206,25 @@ fn serial(device_number: u64) -> Option<String> {
     nonempty(device.property_value("ID_SERIAL_SHORT")?.to_str())
 }
 
+/// A pad's raw node, read on the input thread.
+enum Raw {
+    /// A DualSense's or a DualShock 4's, read for its motion, touchpad
+    /// and click beside its event node.
+    Beside(motion::Reader),
+    /// A Steam Controller's, read for everything: its event node has gone
+    /// for as long as this is open.
+    Whole(steam::Reader),
+}
+
+impl AsFd for Raw {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        match self {
+            Self::Beside(reader) => reader.as_fd(),
+            Self::Whole(reader) => reader.as_fd(),
+        }
+    }
+}
+
 /// A pad being read.
 ///
 /// Reading it is level-based, like the graph it feeds: [`read`](Self::read)
@@ -203,7 +232,9 @@ fn serial(device_number: u64) -> Option<String> {
 /// not the events that made the change.
 pub struct Pad {
     /// The pad's event node. Taken only as the pad is dropped, to go
-    /// with the thread that writes its effect.
+    /// with the thread that writes its effect. A Steam Controller's is
+    /// kept but never read once the pad is read from its raw node, which
+    /// takes it away.
     device: Option<Device>,
     mapping: Mapping,
     identifiers: Identifiers,
@@ -214,13 +245,15 @@ pub struct Pad {
     can_rumble: bool,
     /// What writes to the pad, off the input thread: the one effect kept
     /// on it, uploaded as it is opened, or its raw node, for a pad that
-    /// is sent whole output reports; or why nothing does.
+    /// is sent whole output reports or is a Steam Controller; or why
+    /// nothing does.
     output: Result<Output, NoEffect>,
-    /// The pad's raw node, read for its motion, touchpad and click.
-    motion: Option<motion::Reader>,
+    /// The pad's raw node, read for its motion, touchpad and click, or
+    /// for everything.
+    raw: Option<Raw>,
     /// That node, no longer read: kept to be closed as the pad is
     /// dropped, so that the input thread closes nothing.
-    unread: Option<motion::Reader>,
+    unread: Option<Raw>,
 }
 
 impl std::fmt::Debug for Pad {
@@ -350,9 +383,15 @@ impl Pad {
             pending: state,
             can_rumble,
             output,
-            motion: None,
+            raw: None,
             unread: None,
         })
+    }
+
+    /// Whether the pad is read from its raw node and nothing else: a
+    /// Steam Controller given its raw node.
+    fn is_wholly_raw(&self) -> bool {
+        matches!(self.raw, Some(Raw::Whole(_))) || matches!(self.unread, Some(Raw::Whole(_)))
     }
 
     /// What tells this pad from others.
@@ -398,11 +437,18 @@ impl Pad {
     /// time, the pad's true state is fetched again, so a release that
     /// was dropped can't leave a button held.
     ///
+    /// A pad read from its raw node alone, a Steam Controller given its
+    /// raw node, has nothing to read here: its event node has gone, and
+    /// [`set_raw`](Self::set_raw) says how it is read.
+    ///
     /// # Errors
     ///
     /// [`PadError::Gone`] when the pad has gone; the state then stays as
     /// it last was, and what that should mean is the caller's decision.
     pub fn read(&mut self, mut frame: impl FnMut(&PadState)) -> Result<(), PadError> {
+        if self.is_wholly_raw() {
+            return Ok(());
+        }
         let Some(device) = &mut self.device else {
             return Err(PadError::Gone);
         };
@@ -437,94 +483,179 @@ impl Pad {
 }
 
 impl Pad {
-    /// Whether the pad has rumble motors the kernel can drive.
+    /// Whether the pad has rumble motors the kernel can drive, or is a
+    /// Steam Controller given its raw node, which this drives itself.
     #[must_use]
     pub fn can_rumble(&self) -> bool {
         self.can_rumble
     }
 
     /// Gives the pad its raw HID node, where it has one this is able to
-    /// write to: a DualSense's or a DualShock 4's. From then on the pad's
-    /// rumble is written there, and so is what [`pass`](Self::pass) is
-    /// given, by a thread of the pad's own: a write to a pad on USB
-    /// waits for the pad. Dropping the pad has that thread write what is
-    /// left, leave the pad at rest with its driver's lights, and end.
+    /// write to: a DualSense's or a DualShock 4's, or a Steam
+    /// Controller's. From then on the pad's rumble is written there, by a
+    /// thread of the pad's own: a write to a pad on USB waits for the pad.
     ///
-    /// The raw node is read as well, on a duplicate of the
-    /// descriptor, for its motion sensors, its touchpad and its click,
-    /// which its driver reports on nodes of their own: the input thread
-    /// listens to it beside the pad's event node. Its calibration is read
-    /// here, the request waiting on the pad.
+    /// For a DualSense or a DualShock 4, so is what [`pass`](Self::pass)
+    /// is given, and dropping the pad has that thread write what is left,
+    /// leave the pad at rest with its driver's lights, and end. The raw
+    /// node is read as well, on a duplicate of the descriptor, for its
+    /// motion sensors, its touchpad and its click, which its driver
+    /// reports on nodes of their own: the input thread listens to it
+    /// beside the pad's event node. Its calibration is read here, the
+    /// request waiting on the pad.
+    ///
+    /// A Steam Controller is read from its raw node and nothing else,
+    /// every control, both trackpads and its motion (see `steam.rs`):
+    /// opening the raw node has the kernel's driver take the pad's
+    /// gamepad and motion devices away for as long as it is open. So the
+    /// pad is opened on its event node first, which says what it is, and
+    /// given this after; the event node it holds is never read or
+    /// listened to again, its `ENODEV` being no sign of the pad going, and
+    /// is closed as the pad is dropped. The node must be the pad's own,
+    /// whose report descriptor declares its state report: the driver
+    /// starts the HID device's other interfaces too, with the same numbers
+    /// and raw nodes of their own on which the pad says nothing. The pad's
+    /// state is at rest until its first report: the reports the node kept
+    /// before now are read away here, and again as the input thread first
+    /// listens to it, so that none from before the setup runs is played.
+    /// Its thread sets lizard mode off, with the motion sensors
+    /// on, once as it starts, and sends its rumble again while it runs; dropping the pad has it stop the
+    /// motors, and the raw node closed then gives the pad back to its
+    /// driver, which puts it back in lizard mode. It is sent nothing of
+    /// what [`pass`](Self::pass) is given: a virtual DualSense's lights
+    /// and trigger effects are nothing this pad has. Its haptics beyond
+    /// plain rumble are sent it by [`haptic`](Self::haptic) alone.
+    /// The pad's going is its raw node failing or hanging up, or, in a
+    /// receiver's slot, the slot saying its pad left.
     ///
     /// # Errors
     ///
     /// Fails, leaving the pad as it was, if the node isn't such a pad's,
     /// can't be read or duplicated, or the thread can't be started.
+    ///
+    /// For a Steam Controller "as it was" is a pad whose event node may
+    /// be gone: the caller opened the raw node, which had the driver take
+    /// the event node away, or will. So a failure means the pad must be
+    /// dropped and found again, its event node coming back once the raw
+    /// node is closed; with one exception, a node that isn't the pad's own,
+    /// refused with [`io::ErrorKind::InvalidInput`], whose opening took
+    /// nothing away. A pad that failed so and is run all the same is safe:
+    /// its event node, listened to, reads `ENODEV` and the pad is reported
+    /// gone; if the driver hadn't yet taken it away, it reads as the
+    /// driver's gamepad presents it, silent in lizard mode.
     pub fn set_raw(&mut self, raw: OwnedFd) -> io::Result<()> {
+        let (bus, vendor, product) = hidraw::info(raw.as_fd())?;
+        if steam::is_pad(bus, vendor, product) {
+            if !descriptor::is_steam_controller(&hidraw::descriptor(raw.as_fd())?) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a raw node of the Steam Controller's HID device that isn't the pad's own: its descriptor declares none of the pad's state reports",
+                ));
+            }
+            let reader = steam::Reader::new(raw.as_fd())?;
+            self.output = Ok(Output::steam(raw)?);
+            self.raw = Some(Raw::Whole(reader));
+            self.can_rumble = true;
+            self.state = PadState::NEUTRAL;
+            self.pending = PadState::NEUTRAL;
+            return Ok(());
+        }
         let kind = Kind::of(raw.as_fd())?;
         let make = match kind {
             Kind::DualSense { .. } => motion::Make::DualSense,
             Kind::DualShock4 { bluetooth } => motion::Make::DualShock4 { bluetooth },
         };
-        let motion = Some(motion::Reader::new(raw.as_fd(), make)?);
+        let reader = motion::Reader::new(raw.as_fd(), make)?;
         // The kernel's own effect, if one runs, ends here, stopped and
         // erased by the thread that wrote it.
         self.output = Ok(Output::raw(raw, kind)?);
-        self.motion = motion;
+        self.raw = Some(Raw::Beside(reader));
         Ok(())
     }
 
-    /// The raw node read for the pad's motion and touchpad, while it is
-    /// read.
-    pub(crate) fn motion_node(&self) -> Option<BorrowedFd<'_>> {
-        self.motion.as_ref().map(AsFd::as_fd)
+    /// The pad's event node, while it is read: none for a pad read from
+    /// its raw node alone, whose event node has gone.
+    pub(crate) fn event_node(&self) -> Option<BorrowedFd<'_>> {
+        if self.is_wholly_raw() {
+            return None;
+        }
+        self.device.as_ref().map(AsFd::as_fd)
+    }
+
+    /// The pad's raw node, while it is read.
+    pub(crate) fn raw_node(&self) -> Option<BorrowedFd<'_>> {
+        self.raw.as_ref().map(AsFd::as_fd)
+    }
+
+    /// Readies the pad to be listened to on the input thread: a Steam
+    /// Controller's raw node has what it kept since the pad was given it
+    /// read away, the first time. Waits for nothing and allocates
+    /// nothing.
+    pub(crate) fn begin(&mut self) {
+        if let Some(Raw::Whole(reader)) = &mut self.raw {
+            reader.begin();
+        }
     }
 
     /// Reads every report waiting on the raw node, and calls `frame` with
-    /// the pad's state after each input report, its motion, touchpad and
-    /// click as the report says, and its other controls as of the event
-    /// node's last frame. Returns when nothing is left to read; a pad
-    /// whose raw node isn't read has nothing to.
+    /// the pad's state after each input report. A DualSense's or a
+    /// DualShock 4's is its motion, touchpad and click as the report says,
+    /// and its other controls as of the event node's last frame; a Steam
+    /// Controller's is all the report's. Returns when nothing is left to
+    /// read; a pad whose raw node isn't read has nothing to.
     ///
     /// # Errors
     ///
-    /// [`PadError::Gone`] when the node has gone from under the pad;
-    /// [`PadError::Io`] when it can't be read, which
-    /// [`rest_motion`](Self::rest_motion) is for.
-    pub(crate) fn read_motion(&mut self, mut frame: impl FnMut(&PadState)) -> Result<(), PadError> {
+    /// [`PadError::Gone`] when the node has gone from under the pad, or,
+    /// for a Steam Controller, whose raw node is all there is of it, when
+    /// it can't be read or its receiver's slot says it left;
+    /// [`PadError::Io`] when a node read beside the event node can't be
+    /// read, which [`rest_motion`](Self::rest_motion) is for.
+    pub(crate) fn read_raw(&mut self, mut frame: impl FnMut(&PadState)) -> Result<(), PadError> {
         let Self {
-            motion,
+            raw,
             state,
             pending,
             ..
         } = self;
-        let Some(reader) = motion else {
-            return Ok(());
-        };
-        reader.read(|(motion, touchpad, click)| {
-            // Into the frame still arriving on the event node too, which
-            // would otherwise put back what it held.
-            for state in [&mut *pending, &mut *state] {
-                state.set_motion(motion);
-                state.set_touchpad(touchpad);
-                state.set(gamepad::TOUCHPAD, f32::from(u8::from(click)));
-            }
-            frame(state);
-        })
+        match raw {
+            None => Ok(()),
+            Some(Raw::Beside(reader)) => reader.read(|(motion, touchpad, click)| {
+                // Into the frame still arriving on the event node too,
+                // which would otherwise put back what it held.
+                for state in [&mut *pending, &mut *state] {
+                    state.set_motion(motion);
+                    state.set_touchpad(touchpad);
+                    state.set(gamepad::TOUCHPAD, f32::from(u8::from(click)));
+                }
+                frame(state);
+            }),
+            Some(Raw::Whole(reader)) => reader.read(|read| {
+                *state = *read;
+                *pending = *read;
+                frame(state);
+            }),
+        }
     }
 
-    /// Stops reading the raw node for motion, and leaves the pad's motion,
-    /// touchpad and click at rest for as long as it is held: for a raw
-    /// node that couldn't be read. The node is kept, and closed as the
-    /// pad is dropped, off the input thread.
+    /// Stops reading the raw node, and leaves what it was read for at rest
+    /// for as long as the pad is held: for a raw node that couldn't be
+    /// read. For a DualSense or a DualShock 4 that is its motion, touchpad
+    /// and click; for a Steam Controller, everything. The node is kept,
+    /// and closed as the pad is dropped, off the input thread.
     pub(crate) fn rest_motion(&mut self) {
-        if let Some(reader) = self.motion.take() {
+        let whole = self.is_wholly_raw();
+        if let Some(reader) = self.raw.take() {
             self.unread = Some(reader);
         }
         for state in [&mut self.pending, &mut self.state] {
-            state.set_motion(Motion::STILL);
-            state.set_touchpad(Touchpad::UNTOUCHED);
-            state.set(gamepad::TOUCHPAD, 0.0);
+            if whole {
+                *state = PadState::NEUTRAL;
+            } else {
+                state.set_motion(Motion::STILL);
+                state.set_touchpad(Touchpad::UNTOUCHED);
+                state.set(gamepad::TOUCHPAD, 0.0);
+            }
         }
     }
 
@@ -536,10 +667,12 @@ impl Pad {
         Kind::takes(ids.bus, ids.vendor, ids.product)
     }
 
-    /// Whether the pad is sent whole output reports.
+    /// Whether the pad is sent whole output reports, which carry what the
+    /// games set on a virtual DualSense: a DualSense or a DualShock 4
+    /// given its raw node, and not a Steam Controller.
     #[must_use]
     pub fn takes_output(&self) -> bool {
-        self.output.as_ref().is_ok_and(Output::is_raw)
+        self.output.as_ref().is_ok_and(Output::takes_reports)
     }
 
     /// Sends the pad an output report a game sent a virtual pad of its
@@ -555,6 +688,17 @@ impl Pad {
         match &mut self.output {
             Ok(output) => Ok(output.pass(report)?),
             Err(_) => Ok(()),
+        }
+    }
+
+    /// Sends the pad a haptic report a reader wrote a virtual Steam
+    /// Controller: a pulse, a tone, a built-in effect, sound for its
+    /// actuators, whole and as written. Only a Steam Controller read
+    /// through its raw node takes one; any other pad ignores it. It is
+    /// written without waiting for the pad.
+    pub fn haptic(&self, haptic: crate::Haptic) {
+        if let Ok(output) = &self.output {
+            output.haptic(haptic);
         }
     }
 
@@ -581,7 +725,8 @@ impl Pad {
     /// uploaded as the pad is opened and kept until it is dropped: a new
     /// level updates it in place, with no gap and no second slot, and a
     /// level of zero stops it. A pad sent whole output reports is sent
-    /// the level in them instead. Either way the level is sent by a
+    /// the level in them instead, and a Steam Controller given its raw
+    /// node in its own rumble report. Either way the level is sent by a
     /// thread of the pad's own, and this never waits for it: a newer
     /// level takes the place of one not yet sent.
     ///
@@ -629,6 +774,12 @@ impl Pad {
 
 impl Drop for Pad {
     fn drop(&mut self) {
+        // The raw node read is closed first, so that the writer's closing
+        // its own, after the pad's last report, is the node's last: what
+        // has a Steam Controller's driver take the pad back, and what
+        // anyone waiting for the writer to be done waits for.
+        drop(self.raw.take());
+        drop(self.unread.take());
         // A pad whose effect is written goes to the thread that writes
         // it, and is closed there after the effect is stopped and erased:
         // closing the pad, and taking back a grab, wait on the pad's node
@@ -645,6 +796,8 @@ impl Drop for Pad {
     }
 }
 
+/// The pad's event node: for a Steam Controller given its raw node, one
+/// that has gone.
 impl AsFd for Pad {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.device

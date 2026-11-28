@@ -733,7 +733,14 @@ fn pad_entries(view: &View) -> Vec<Entry> {
             let mut entries = vec![said(icon::NONE, pad.id.clone())];
             if pad.connected {
                 entries.push(if pad.rumble == Some(false) {
-                    said(icon::NONE, "No rumble to buzz with")
+                    said(
+                        icon::NONE,
+                        if pad.is_steam_controller() {
+                            "Buzzed only while a profile uses it"
+                        } else {
+                            "No rumble to buzz with"
+                        },
+                    )
                 } else {
                     action(
                         icon::RUMBLE,
@@ -1033,6 +1040,7 @@ default ✓ (Not set up) >
     (o) Generic
     ( ) Xbox
     ( ) DualSense
+    ( ) Steam Controller
   Mode: Priority >
     (o) Priority
     ( ) Average
@@ -1063,6 +1071,14 @@ default ✓ (Not set up) >
     ( ) Dpad left
     ( ) Dpad right
     ( ) Touchpad
+    ( ) Paddle 1
+    ( ) Paddle 2
+    ( ) Paddle 3
+    ( ) Paddle 4
+    ( ) Left stick touch
+    ( ) Right stick touch
+    ( ) Left grip touch
+    ( ) Right grip touch
   Visibility: Hidden >
     (o) Hidden
     ( ) Grabbed
@@ -1312,6 +1328,28 @@ default ✓ (Not set up) >
         let menu = outline(&menu(&unsaid));
         assert!(
             menu.starts_with("default ✓ (Not set up) >\n  - Choose its pads to start\ncouch >\n  Start\ndesk >\n  Start\n---\nPads"),
+            "{menu}"
+        );
+    }
+
+    /// A pad that can't be buzzed says why in place of Identify: one
+    /// with no rumble, and a Steam Controller whose kernel driver has
+    /// none, which can be buzzed once a profile uses it.
+    #[test]
+    fn a_pad_that_can_t_be_buzzed_says_why() {
+        let mut view = view(None, Hiding::Service);
+        let menu = outline(&menu(&view));
+        assert!(
+            menu.contains("  8BitDo Pro 2 >\n    - address:8bitdo\n    - No rumble to buzz with\n"),
+            "{menu}"
+        );
+        view.pads[1].name = "Steam Controller".to_string();
+        (view.pads[1].vendor, view.pads[1].product) = (0x28de, 0x1302);
+        let menu = outline(&super::menu(&view));
+        assert!(
+            menu.contains(
+                "  Steam Controller >\n    - address:8bitdo\n    - Buzzed only while a profile uses it\n"
+            ),
             "{menu}"
         );
     }

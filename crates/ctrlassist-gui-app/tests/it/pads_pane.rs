@@ -169,6 +169,20 @@ fn rows_put_connected_pads_first_and_say_what_each_is() {
     let row = &rows(&[still], &[], &[], &[])[0];
     assert!(row.without_rumble);
     assert_eq!(row.rumble, "No");
+    assert!(!row.steam_controller);
+
+    // A Steam Controller whose kernel driver has no rumble can be
+    // rumbled in a profile, and its row says so; Valve's mark.
+    let steam = Pad {
+        vendor: 0x28de,
+        product: 0x1302,
+        rumble: Some(false),
+        ..pad("address:FX12345678", "Steam Controller", true, None)
+    };
+    let row = &rows(&[steam], &[], &[], &[])[0];
+    assert!(row.steam_controller && row.without_rumble);
+    assert_eq!(row.rumble, "In a profile");
+    assert_eq!(row.maker, "valve");
 }
 
 fn app() -> AppWindow {

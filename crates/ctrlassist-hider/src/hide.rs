@@ -310,7 +310,7 @@ fn looked(
         return Progress::Waiting;
     }
     if let Leave::Hidden { group, ordinal } = leave {
-        for node in &nodes {
+        for node in nodes.iter().filter(|node| !pad::left_unhidden(node)) {
             if let Some(wrong) = pad::unhidden_node(node, group) {
                 error!(
                     device = %shown,
@@ -598,9 +598,9 @@ fn unnamed_of(
 /// event isn't the service's to send, its `uevent` file being root's; its
 /// HID device's is, for a pad's.
 ///
-/// A device with a keyboard or a pointer among its inputs is left as it
-/// is, until it is plugged in again: a hide refuses one, the re-bind
-/// cutting that off too. A marker no pad the service has carries, as a
+/// A device with a keyboard or a pointer among its inputs that isn't the
+/// pad's own is left as it is, until it is plugged in again: a hide
+/// refuses one, the re-bind cutting that off too. A marker no pad the service has carries, as a
 /// delete that failed leaves, is deleted first, so that the pad it names
 /// is among those shown; where it still can't be, that pad is left, the
 /// re-bind hiding it again and each sweep asking another for nothing.
@@ -611,7 +611,7 @@ fn unnamed_of(
 pub(crate) fn sweep(group: u32, held: &[&Path], markers: &BTreeSet<String>) {
     delete_stale(markers, Path::new(MARKERS));
     for device in unnamed(group, held, &naming(markers, Path::new(MARKERS))) {
-        if pad::shares_with_keyboard_or_pointer(&device.path) {
+        if pad::rebind_cuts_off_keyboard_or_pointer(&device.path) {
             warn!(
                 device = %device.path.display(),
                 "left hidden a pad no marker names, which has a keyboard or a pointer among its inputs: re-binding its driver would cut that off; it is shown again when plugged in again"

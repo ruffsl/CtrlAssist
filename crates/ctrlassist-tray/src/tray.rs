@@ -729,18 +729,20 @@ mod tests {
             assert_eq!(name[0], "applications-games");
             (tray.title(), tray.tool_tip().description)
         };
+        // `desk` names its pad by an address that is no MAC address, which
+        // a profile takes, and that pad is free: it could start.
         assert_eq!(
             said(None),
             (
                 "CtrlAssist".to_string(),
-                "Nothing is running\n3 of 3 pads connected".to_string()
+                "Nothing is running\n3 of 3 pads connected\n► desk: Ready".to_string()
             )
         );
         assert_eq!(said(Some(Phase::Running)).0, "CtrlAssist [running]");
         assert_eq!(said(Some(Phase::Held)).0, "CtrlAssist [held]");
         assert_eq!(
             said(Some(Phase::Failed)).1,
-            "► couch: Failed · Toggle\n    a virtual pad refused a write"
+            "► couch: Failed · Toggle\n    a virtual pad refused a write\n  desk: Ready"
         );
         // Nothing asks for attention, which a desktop may animate.
         for phase in [Phase::Starting, Phase::Running, Phase::Held, Phase::Failed] {

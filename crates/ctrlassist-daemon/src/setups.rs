@@ -16,12 +16,12 @@ use std::sync::{Arc, Mutex};
 use ctrlassist_core::{Graph, Input, Level, NodeId, NodeSpec, SourceId};
 use ctrlassist_device::{
     Command, Database, DualSenseData, Found, InputThread, NewGraph, Pad, Place, Report, Rested,
-    SendError, Setup, SetupId, VirtualPad, Writes, own_address,
+    SendError, Setup, SetupId, SteamRawError, VirtualPad, Writes, own_address,
 };
 use ctrlassist_protocol::endpoint::setup;
 use ctrlassist_protocol::error::{ErrorCode, WireError};
 use ctrlassist_protocol::payload::{self, Phase};
-use ctrlassist_protocol::profile::{Hide, Identity, PadRef, Plan, Profile};
+use ctrlassist_protocol::profile::{Hide, Identity, PadRef, Plan, Profile, ProfileError};
 use ctrlassist_protocol::serve::Responder;
 use ctrlassist_protocol::{keys, rpc};
 use tracing::{error, info, warn};
@@ -31,6 +31,7 @@ use crate::blacklist::Blacklist;
 use crate::book::Book;
 use crate::device_identity;
 use crate::hiding::{Errand, Hidden, Hiding, Reading, Token, Unhidden};
+use crate::hotplug::Holds;
 use crate::reactor::Reactor;
 
 /// One of a setup's pads.
@@ -53,6 +54,12 @@ struct Slot {
     again: bool,
     /// The hiding service's name for the pad, while it has it hidden.
     token: Option<Token>,
+    /// Why its pad, there, wasn't taken back as the profile asks, if it
+    /// wasn't: it isn't sent for again until it is plugged in afresh.
+    /// Taking a Steam Controller back can make its node go and come back
+    /// whether it is taken or not, which would send for it again for
+    /// ever.
+    refused: Option<String>,
 }
 
 impl Slot {
@@ -65,6 +72,7 @@ impl Slot {
             returning: false,
             again: false,
             token: None,
+            refused: None,
         }
     }
 }
@@ -237,6 +245,7 @@ fn rebind(
             Slot {
                 present: kept.is_some_and(|kept| kept.present),
                 token: kept.and_then(|kept| kept.token),
+                refused: kept.and_then(|kept| kept.refused.clone()),
                 ..Slot::new(source.name.clone(), source.pad.clone(), pad)
             }
         })
@@ -412,6 +421,16 @@ pub(crate) struct Setups {
 }
 
 impl Setups {
+    /// Whether a setup reads the pad `id` now: the input thread holds it
+    /// for one of its slots, which hasn't refused it.
+    pub(crate) fn reads(&self, id: &str) -> bool {
+        self.entries.values().any(|entry| {
+            entry.slots.iter().any(|slot| {
+                slot.present && slot.refused.is_none() && slot.pad.as_deref() == Some(id)
+            })
+        })
+    }
+
     fn name_of(&self, id: SetupId) -> Option<String> {
         self.entries
             .iter()
@@ -425,7 +444,12 @@ impl Setups {
             name: name.to_string(),
             start: entry.id.0,
             phase: entry.phase,
-            reason: entry.reason.clone(),
+            // Why it failed, or else why a pad it waits for, there, was
+            // refused.
+            reason: entry
+                .reason
+                .clone()
+                .or_else(|| entry.slots.iter().find_map(|slot| slot.refused.clone())),
             sources: entry
                 .slots
                 .iter()
@@ -579,6 +603,9 @@ pub(crate) enum Done {
         graph: Box<Graph>,
         ids: Vec<Option<String>>,
         pads: Vec<Option<(Pad, Option<Token>)>>,
+        /// Why a pad it brings, there, couldn't be taken as the profile
+        /// asks, if one couldn't: the change isn't made.
+        refused: Option<String>,
     },
     /// A graph the input thread replaced is gone, and the pads it had no
     /// place for are to be shown again: the update is answered.
@@ -601,6 +628,9 @@ pub(crate) enum Done {
         /// it hid it under just now; none for a pad only grabbed, or left
         /// as it is.
         token: Option<Token>,
+        /// Whether it was there and couldn't be taken back as the profile
+        /// asks: see [`Untaken::Refused`].
+        refused: Option<String>,
     },
     /// A pad a setup holds grabbed for want of the hiding service has
     /// been hidden now that the service is back, or couldn't be.
@@ -804,20 +834,227 @@ fn opened(wanted: &Wanted, database: &Database) -> Result<(OwnedFd, Pad), String
     Ok((fd, opened))
 }
 
+/// Why a pad wasn't taken.
+#[derive(Debug)]
+pub(crate) enum Untaken {
+    /// It isn't there to take, or its node is another pad's by now: the
+    /// setup goes on without it, and takes it when it comes back.
+    Missing(String),
+    /// It is there, and can't be taken as its setup's profile asks, for a
+    /// reason a person can act on: a setup doesn't start with it, and
+    /// doesn't send for it again until it is plugged in afresh.
+    Refused(String),
+}
+
+impl Untaken {
+    fn why(&self) -> &str {
+        match self {
+            Self::Missing(why) | Self::Refused(why) => why,
+        }
+    }
+}
+
+/// Who opens a Steam Controller's raw node for a setup.
+#[derive(Clone, Copy)]
+enum RawFrom<'a> {
+    /// The daemon, by the node's path: the pad isn't hidden, and the
+    /// packaged rule gives the seat its raw node.
+    Path,
+    /// The hiding service, which has hidden the pad under this name: the
+    /// node is the service's group's alone.
+    Service(Asking<'a>, Token),
+}
+
+/// Why a Steam Controller's raw node wasn't opened.
+enum Unopened {
+    /// By the system's own error.
+    Io(std::io::Error),
+    /// The hiding service, asked for it, gave none.
+    Service,
+}
+
+impl RawFrom<'_> {
+    fn open(self, node: &Path) -> Result<OwnedFd, Unopened> {
+        match self {
+            Self::Path => OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(node)
+                .map(OwnedFd::from)
+                .map_err(Unopened::Io),
+            Self::Service((hiding, errand), token) => {
+                hiding.raw_of(errand, token).ok_or(Unopened::Service)
+            }
+        }
+    }
+}
+
+/// Takes a Steam Controller opened on its event node for a setup: gives
+/// it its raw node, which it is read through. Its driver takes its event
+/// node away while that is open, which is told to the book first, through
+/// `holds`. Opened by the daemon itself, that is as games see it grabbed:
+/// those that read event nodes see nothing of it, and a program that
+/// reads its raw node, as Steam and SDL's own driver do, still does.
+/// Opened by the hiding service for a pad it has hidden, nothing else
+/// reads the pad at all. Either way nothing can leave the pad to games,
+/// so a profile that asks for that is refused.
+fn hold_raw(
+    mut pad: Pad,
+    id: &str,
+    hide: Hide,
+    holds: &Holds,
+    from: RawFrom<'_>,
+) -> Result<Pad, Untaken> {
+    if hide == Hide::None {
+        return Err(Untaken::Refused(cant_be_left(id)));
+    }
+    let raw = match ctrlassist_device::steam_raw_node(pad.as_fd()) {
+        Ok(raw) => raw,
+        // Gone as it was taken, or its raw node not made yet: the pad is
+        // taken as it comes.
+        Err(SteamRawError::Missing(error)) => {
+            return Err(Untaken::Missing(format!(
+                "{id}'s raw node isn't there: {error}"
+            )));
+        }
+        // What a person reads says what happened and what to do; the
+        // node, the device and the system's error go to the log.
+        Err(error) => {
+            warn!(pad = id, %error, "a Steam Controller's raw node can't be told");
+            let why = match error {
+                SteamRawError::Ambiguous { .. } => format!(
+                    "{id} is a Steam Controller that can't be told apart from another on the same Bluetooth adapter: connect one of them by its cable, or use one at a time"
+                ),
+                _ => format!(
+                    "{id} is a Steam Controller whose raw interface can't be found. Unplug it and plug it in again to have it tried once more"
+                ),
+            };
+            return Err(Untaken::Refused(why));
+        }
+    };
+    // Kept to ask, once the hold ends, whether it had any effect.
+    let event = pad
+        .as_fd()
+        .try_clone_to_owned()
+        .map_err(|error| Untaken::Missing(format!("{id}'s event node: {error}")))?;
+    holds.holding(&raw.syspath);
+    let file = match from.open(&raw.node) {
+        Ok(file) => file,
+        Err(Unopened::Service) => {
+            // Never opened, so its driver leaves its event node be.
+            holds.not_holding(&raw.syspath);
+            warn!(
+                pad = id,
+                "the hiding service gave no raw node for a Steam Controller it has hidden"
+            );
+            return Err(Untaken::Refused(format!(
+                "{id} is a Steam Controller the hiding service hid and then couldn't open the raw interface of. Unplug it and plug it in again to have it tried once more"
+            )));
+        }
+        Err(Unopened::Io(error)) => {
+            // Never opened, so its driver leaves its event node be.
+            holds.not_holding(&raw.syspath);
+            let gone = error.kind() == std::io::ErrorKind::NotFound
+                || error.raw_os_error() == Some(rustix::io::Errno::NODEV.raw_os_error());
+            if gone {
+                return Err(Untaken::Missing(format!(
+                    "{id}'s raw node went as it was opened: {error}"
+                )));
+            }
+            warn!(pad = id, node = %raw.node.display(), %error, "a Steam Controller's raw node can't be opened");
+            let why = if error.kind() == std::io::ErrorKind::PermissionDenied {
+                format!(
+                    "{id} is a Steam Controller whose raw interface isn't yours to open. CtrlAssist's udev rule gives it to the person at the machine, and comes with its packages and its NixOS module: with the rule installed, and you at the machine, unplug the controller and plug it in again"
+                )
+            } else {
+                format!(
+                    "{id} is a Steam Controller whose raw interface can't be opened. Unplug it and plug it in again to have it tried once more"
+                )
+            };
+            return Err(Untaken::Refused(why));
+        }
+    };
+    if let Err(error) = pad.set_raw(file) {
+        // A node that isn't the pad's own took nothing away. Any other
+        // was opened, and the driver may be taking the event node away:
+        // the pad holds a descriptor on a node that is going, and is let
+        // go, to come back as its node does, or to be seen not to.
+        if error.kind() == std::io::ErrorKind::InvalidInput {
+            holds.not_holding(&raw.syspath);
+        } else {
+            drop(pad);
+            hold_ended(&event, &raw.syspath, holds);
+        }
+        warn!(pad = id, node = %raw.node.display(), %error, "a Steam Controller's raw node can't be read");
+        return Err(Untaken::Refused(format!(
+            "{id} is a Steam Controller whose raw interface can't be read. Unplug it and plug it in again to have it tried once more"
+        )));
+    }
+    watch_the_hold(&pad, event, raw.syspath, holds.clone());
+    Ok(pad)
+}
+
+/// What a profile that asks for its pads to be left to games is told of
+/// a Steam Controller, `what` naming it.
+fn cant_be_left(what: &str) -> String {
+    format!(
+        "{what} is a Steam Controller, which CtrlAssist reads in a way that takes it from games, so it can't be left visible to them. Choose Hidden or Grabbed for Visibility (`hide = \"full\"` or `\"grab\"`)"
+    )
+}
+
+/// The hold of the raw node of the pad on the event node at `syspath`
+/// has ended, the raw node closed. If the pad's driver had taken the
+/// event node away for it, `event`, opened on that node before, has hung
+/// up, and the node's return is coming. If not, the hold had no effect,
+/// as when the raw node was closed before the driver's work ran, which
+/// looks at whether it is open only as it runs: no removal is coming, and
+/// the mark on the node goes now, or a going of it later, as the pad
+/// leaving a receiver's slot, would be taken for the hold's. What is left:
+/// a hold closed while the driver's work is between seeing it open and
+/// removing the node; the node's going is then taken for the pad's own,
+/// and its return for a plugging in.
+fn hold_ended(event: &OwnedFd, syspath: &Path, holds: &Holds) {
+    if !ctrlassist_device::event_node_gone(event.as_fd()) {
+        holds.not_holding(syspath);
+    }
+}
+
+/// Has a thread of its own wait for `pad`'s hold of its raw node to end,
+/// its writer done, which is once the pad is dropped and the raw node
+/// closed for good, and then see [whether it had effect](hold_ended).
+/// Nothing waits for the thread; a thread that can't be started leaves
+/// the mark to its node's going.
+fn watch_the_hold(pad: &Pad, event: OwnedFd, syspath: PathBuf, holds: Holds) {
+    let rested = pad.rested();
+    let started = std::thread::Builder::new()
+        .name("hold".into())
+        .spawn(move || {
+            rested.wait();
+            hold_ended(&event, &syspath, &holds);
+        });
+    if let Err(error) = started {
+        warn!(%error, "the end of a raw node's hold can't be watched; a pad whose node it never took may be taken for away when the node goes");
+    }
+}
+
 /// Takes a pad for a setup, keeping it from games as far as the setup's
 /// profile asks: hidden by the hiding service, which hands back the
 /// only descriptor left open on it, or else grabbed; grabbed only; or
-/// left as it is. Returns the daemon's name for the pad if the service
-/// hid it. A setup stopped meanwhile takes nothing more.
+/// left as it is. A Steam Controller is [read through its raw
+/// node](hold_raw) besides, which the service opens for one it has
+/// hidden; one it hasn't is as good as grabbed by that alone. Returns the
+/// daemon's name for the pad if the service hid it. A setup stopped
+/// meanwhile takes nothing more.
 fn take(
     wanted: &Wanted,
     database: &Database,
-    asking: Asking<'_>,
+    (asking, holds): (Asking<'_>, &Holds),
     hide: Hide,
-) -> Result<(Pad, Option<Token>), String> {
+) -> Result<(Pad, Option<Token>), Untaken> {
     let (hiding, errand) = asking;
     let node = wanted.node.as_path();
-    let (fd, opened) = opened(wanted, database)?;
+    let (fd, opened) = opened(wanted, database).map_err(Untaken::Missing)?;
+    let steam = opened.identifiers().is_steam_controller();
     // Holding the pad open is what shows the service it is ours to hide.
     if hide == Hide::Full {
         match hiding.hide(errand, &wanted.id, fd.as_fd()) {
@@ -826,16 +1063,24 @@ fn take(
                 drop(fd);
                 // Shown again, the hold dropped, should this fail or
                 // panic before it is kept.
-                let mut pad = read(event, node, database)?;
-                give_raw(&mut pad, hold.token(), asking);
+                let mut pad = read(event, node, database).map_err(Untaken::Missing)?;
+                if steam {
+                    let from = RawFrom::Service(asking, hold.token());
+                    pad = hold_raw(pad, &wanted.id, hide, holds, from)?;
+                } else {
+                    give_raw(&mut pad, hold.token(), asking);
+                }
                 return Ok((pad, Some(hold.keep())));
             }
-            Err(Unhidden::Ended) => return Err(STOPPED.to_string()),
+            Err(Unhidden::Ended) => return Err(Untaken::Missing(STOPPED.to_string())),
             // Grabbed instead.
             Err(Unhidden::Not) => {}
         }
     }
     drop(fd);
+    if steam {
+        return hold_raw(opened, &wanted.id, hide, holds, RawFrom::Path).map(|pad| (pad, None));
+    }
     let mut pad = opened;
     if hide != Hide::None
         && let Err(error) = pad.grab()
@@ -854,20 +1099,24 @@ fn retake(
     wanted: &Wanted,
     token: Option<Token>,
     database: &Database,
-    asking: Asking<'_>,
+    (asking, holds): (Asking<'_>, &Holds),
     hide: Hide,
-) -> Result<(Pad, Option<Token>), String> {
+) -> Result<(Pad, Option<Token>), Untaken> {
     let (hiding, errand) = asking;
     if let Some(token) = token
         && let Some(event) = hiding.reopen(errand, token)
     {
         // The service knows the pad by what it is, not by its node.
-        return read(event, &wanted.node, database).map(|mut pad| {
+        let mut pad = read(event, &wanted.node, database).map_err(Untaken::Missing)?;
+        if pad.identifiers().is_steam_controller() {
+            let from = RawFrom::Service(asking, token);
+            pad = hold_raw(pad, &wanted.id, hide, holds, from)?;
+        } else {
             give_raw(&mut pad, token, asking);
-            (pad, Some(token))
-        });
+        }
+        return Ok((pad, Some(token)));
     }
-    let taken = take(wanted, database, asking, hide);
+    let taken = take(wanted, database, (asking, holds), hide);
     // Taken, and not under the old name: hidden afresh, or grabbed. The
     // old name is given up, so that what it hid isn't left for the
     // connection's end to show again, nor the pad said to be hidden by
@@ -918,17 +1167,41 @@ fn address_of(home: &Path, setup: &str, sink: &str) -> [u8; 6] {
     own_address((number & 0x00ff_ffff) as u32)
 }
 
+/// The serial of the virtual Steam Controller `sink` of the setup
+/// `setup`: the same each time that setup runs, since Steam keeps what it
+/// knows of a pad by its serial, and another for every other sink and
+/// every other daemon, as [`address_of`] is. Thirteen characters, the
+/// most the kernel's driver can name the pad's battery by: a capital `F`,
+/// which Steam asks a pad's serial to start with, giving every pad whose
+/// serial doesn't one serial of its own making between them, and twelve
+/// hex digits.
+fn serial_of(home: &Path, setup: &str, sink: &str) -> String {
+    let hash = keys::pad_id(&format!("{}/{setup}/{sink}", home.display()));
+    let tail: String = hash.chars().take(12).collect();
+    format!("F{}", tail.to_uppercase())
+}
+
 /// Makes one virtual pad of a setup.
 fn make_sink(
     setup: &str,
     name: &str,
     identity: Identity,
     dualsense: &(PathBuf, DualSenseData),
+    steam: &[PathBuf],
 ) -> std::io::Result<VirtualPad> {
     let (home, data) = dualsense;
     match identity {
         Identity::DualSense => VirtualPad::dualsense(data, address_of(home, setup, name)),
-        identity => VirtualPad::create(device_identity(identity)),
+        Identity::SteamController => {
+            // What the installed Steam has for the pad, read as the pad
+            // is made, so that Steam has nothing to offer it.
+            let firmware = crate::blacklist::steam_controller_firmware(steam)
+                .unwrap_or(ctrlassist_device::STEAM_CONTROLLER_FIRMWARE);
+            VirtualPad::steam_controller(&serial_of(home, setup, name), firmware)
+        }
+        identity @ (Identity::Generic | Identity::Xbox) => {
+            VirtualPad::create(device_identity(identity))
+        }
     }
 }
 
@@ -938,7 +1211,7 @@ fn make(
     setup: &str,
     nodes: &[Option<Wanted>],
     database: &Database,
-    asking: Asking<'_>,
+    (asking, holds): (Asking<'_>, &Holds),
     dualsense: &(PathBuf, DualSenseData),
     blacklist: &Mutex<Blacklist>,
 ) -> Result<Made, Unmade> {
@@ -965,20 +1238,34 @@ fn make(
             return Err(undone(STOPPED.to_string(), &taken, pads));
         }
         // A pad that went between being chosen and being taken is one
-        // the setup starts without.
-        let pad = node.as_ref().and_then(|node| {
+        // the setup starts without; one there that can't be taken as the
+        // profile asks is one it doesn't start with at all.
+        let taking = node.as_ref().map(|node| {
             caught(
                 "taking a pad",
-                || take(node, database, asking, hide),
-                || Err("taking it panicked".to_string()),
+                || take(node, database, (asking, holds), hide),
+                || Err(Untaken::Missing("taking it panicked".to_string())),
             )
-            .inspect_err(|error| warn!(error, "a setup starts without a pad"))
-            .ok()
         });
+        let pad = match taking {
+            Some(Ok(pad)) => Some(pad),
+            Some(Err(Untaken::Refused(reason))) => {
+                return Err(undone(reason, &taken, pads));
+            }
+            Some(Err(Untaken::Missing(error))) => {
+                warn!(error, "a setup starts without a pad");
+                None
+            }
+            None => None,
+        };
         let (pad, token) = pad.unzip();
         taken.push((pad.is_some(), token.flatten()));
         pads.push(pad);
     }
+    let steam: Vec<PathBuf> = blacklist
+        .lock()
+        .map(|blacklist| blacklist.configs().to_vec())
+        .unwrap_or_default();
     let mut sinks = Vec::new();
     for sink in &plan.sinks {
         // Nor does one stopped as it makes its virtual pads, each of which
@@ -988,7 +1275,7 @@ fn make(
         }
         let made = caught(
             "making a virtual pad",
-            || make_sink(setup, &sink.name, sink.identity, dualsense),
+            || make_sink(setup, &sink.name, sink.identity, dualsense, &steam),
             || Err(std::io::Error::other("making it panicked")),
         );
         match made {
@@ -1242,6 +1529,19 @@ impl Reactor {
         if let Err(error) = outcome {
             warn!(setup = name, %error, "publishing a setup's state failed");
         }
+        // Whether a Steam Controller can be rumbled follows whether the
+        // setup reads it, which is what changed if anything did.
+        let steam: Vec<String> = self
+            .setups
+            .entries
+            .get(name)
+            .into_iter()
+            .flat_map(|entry| entry.slots.iter().filter_map(|slot| slot.pad.clone()))
+            .filter(|pad| self.book.is_steam_controller(pad))
+            .collect();
+        for pad in steam {
+            self.publish_pad_logged(&pad).await;
+        }
     }
 
     /// Gives up a setup's pads, and says so. Those it hid are to be shown
@@ -1258,6 +1558,45 @@ impl Reactor {
     async fn let_go(&mut self, pad: &str) {
         self.book.let_go(pad);
         self.publish_pad_logged(pad).await;
+    }
+
+    /// The profile `toml` checked, each pad it names exactly as the book
+    /// knows it: a serial typed in other capitals than its pad's driver
+    /// gives it is that pad.
+    fn checked(&self, toml: &str) -> Result<Plan, ProfileError> {
+        let mut plan = Profile::check(toml)?;
+        for source in &mut plan.sources {
+            if let PadRef::Exact(id) = &source.pad {
+                source.pad = PadRef::Exact(self.book.known_as(id));
+            }
+        }
+        Ok(plan)
+    }
+
+    /// Why `plan` can't be run as it asks, if it asks for its pads to be
+    /// left to games and one it names is a Steam Controller, connected or
+    /// remembered, or any pad of one of its models: reading such a pad
+    /// takes it from games. A pad that turns out to be one once it is
+    /// connected is refused as it is taken.
+    fn left_to_games(&self, plan: &Plan) -> Option<WireError> {
+        if plan.hide != Hide::None {
+            return None;
+        }
+        let source = plan.sources.iter().find(|source| match &source.pad {
+            PadRef::Exact(id) => self.book.is_steam_controller(id),
+            PadRef::Model(vendor, product) => {
+                ctrlassist_device::is_steam_controller_model(*vendor, *product)
+            }
+        })?;
+        Some(WireError::refusal(
+            ErrorCode::SetupFailed,
+            cant_be_left(&match &source.pad {
+                PadRef::Exact(id) => format!("The {}, {id},", source.name),
+                PadRef::Model(vendor, product) => {
+                    format!("The {}, model:{vendor:04x}:{product:04x},", source.name)
+                }
+            }),
+        ))
     }
 
     /// Finds a pad for each source of `plan`, and notes them as `name`'s:
@@ -1330,13 +1669,16 @@ impl Reactor {
             );
             return asker.err(&refusal).await;
         };
-        let plan = match Profile::check(&profile.toml) {
+        let plan = match self.checked(&profile.toml) {
             Ok(plan) => plan,
             Err(problem) => {
                 let refusal = WireError::refusal(ErrorCode::InvalidProfile, problem.to_string());
                 return asker.err(&refusal).await;
             }
         };
+        if let Some(refusal) = self.left_to_games(&plan) {
+            return asker.err(&refusal).await;
+        }
         let slots = match self.bind(&name, &plan) {
             Ok(slots) => slots,
             Err(refusal) => return asker.err(&refusal).await,
@@ -1391,11 +1733,12 @@ impl Reactor {
             self.copied.dualsense_or_shipped(),
         );
         let blacklist = Arc::clone(&self.blacklist);
+        let holds = self.holds.clone();
         self.work.spawn_blocking(move || {
             let outcome = caught(
                 "starting a setup",
                 || {
-                    let asking = (&*hiding, &errand);
+                    let asking = ((&*hiding, &errand), &holds);
                     make(
                         plan, &name, &nodes, &database, asking, &dualsense, &blacklist,
                     )
@@ -1634,13 +1977,13 @@ impl Reactor {
     /// Any other means stopping the setup and starting it again.
     async fn update(&mut self, request: rpc::UpdateRequest, responder: Updating) {
         let name = request.name;
-        let Some(entry) = self.setups.entries.get_mut(&name) else {
+        if !self.setups.entries.contains_key(&name) {
             return responder.err(&unknown(&name)).await;
-        };
+        }
         // What is kept now must be right before what runs is given up.
         let kept = self.profiles.profile(&name).map(|profile| profile.toml);
         let toml = kept.clone().unwrap_or_default();
-        let plan = match kept.map(|toml| Profile::check(&toml)) {
+        let plan = match kept.map(|toml| self.checked(&toml)) {
             None => {
                 let refusal = WireError::refusal(
                     ErrorCode::UnknownProfile,
@@ -1653,6 +1996,12 @@ impl Reactor {
                 return responder.err(&refusal).await;
             }
             Some(Ok(plan)) => plan,
+        };
+        if let Some(refusal) = self.left_to_games(&plan) {
+            return responder.err(&refusal).await;
+        }
+        let Some(entry) = self.setups.entries.get_mut(&name) else {
+            return responder.err(&unknown(&name)).await;
         };
         // Its pads are taken one way for as long as it runs: another
         // way is another start.
@@ -1738,29 +2087,40 @@ impl Reactor {
                 let hide = plan.hide;
                 let database = Arc::clone(&self.database);
                 let hiding = Arc::clone(&self.hiding);
+                let holds = self.holds.clone();
                 self.work.spawn_blocking(move || {
-                    let pads = fresh
-                        .iter()
-                        .map(|wanted| {
+                    // A pad there that can't be taken as the profile asks
+                    // is a change not made, and no more are taken for it.
+                    let mut refused = None;
+                    let mut pads = Vec::with_capacity(fresh.len());
+                    for wanted in &fresh {
+                        let taken = wanted.as_ref().filter(|_| refused.is_none()).map(|wanted| {
                             caught(
                                 "taking a pad",
-                                || {
-                                    take(wanted.as_ref()?, &database, (&hiding, &errand), hide)
-                                        .inspect_err(|error| {
-                                            warn!(error, "a setup changes without a pad");
-                                        })
-                                        .ok()
-                                },
-                                || None,
+                                || take(wanted, &database, ((&hiding, &errand), &holds), hide),
+                                || Err(Untaken::Missing("taking it panicked".to_string())),
                             )
-                        })
-                        .collect();
+                        });
+                        pads.push(match taken {
+                            Some(Ok(pad)) => Some(pad),
+                            Some(Err(Untaken::Refused(why))) => {
+                                refused = Some(why);
+                                None
+                            }
+                            Some(Err(Untaken::Missing(error))) => {
+                                warn!(error, "a setup changes without a pad");
+                                None
+                            }
+                            None => None,
+                        });
+                    }
                     Done::Retaken {
                         name,
                         setup,
                         graph: Box::new(graph),
                         ids,
                         pads,
+                        refused,
                     }
                 });
             }
@@ -1958,6 +2318,7 @@ impl Reactor {
                 slot.present = has.present;
                 slot.returning = has.returning;
                 slot.token = has.token;
+                slot.refused.clone_from(&has.refused);
                 continue;
             }
             // A source still without a pad takes one that came meanwhile.
@@ -2189,7 +2550,7 @@ impl Reactor {
             let Some(plan) = self
                 .profiles
                 .profile(&name)
-                .and_then(|profile| Profile::check(&profile.toml).ok())
+                .and_then(|profile| self.checked(&profile.toml).ok())
             else {
                 continue;
             };
@@ -2214,7 +2575,7 @@ impl Reactor {
         let plan = self
             .profiles
             .profile(name)
-            .and_then(|profile| Profile::check(&profile.toml).ok());
+            .and_then(|profile| self.checked(&profile.toml).ok());
         if let Some(plan) = plan
             && plan.managed
             && !self.setups.entries.contains_key(name)
@@ -2244,7 +2605,7 @@ impl Reactor {
         let Some(slot) = entry.slots.get_mut(source) else {
             return;
         };
-        if slot.present {
+        if slot.present || slot.refused.is_some() {
             return;
         }
         if slot.returning {
@@ -2270,15 +2631,31 @@ impl Reactor {
         let token = slot.token;
         let database = Arc::clone(&self.database);
         let hiding = Arc::clone(&self.hiding);
+        let holds = self.holds.clone();
         let name = name.to_string();
         self.work.spawn_blocking(move || {
             // A node from before the pad left doesn't open, or is some
             // other pad's by now; the pad's arrival will bring it back.
             let retaken = caught(
                 "taking a pad back",
-                || retake(&wanted, token, &database, (&hiding, &errand), hide),
-                || Err("taking it back panicked".to_string()),
+                || {
+                    let asking = ((&*hiding, &errand), &holds);
+                    retake(&wanted, token, &database, asking, hide)
+                },
+                || Err(Untaken::Missing("taking it back panicked".to_string())),
             );
+            let refused = match &retaken {
+                Err(Untaken::Refused(why)) => Some(why.clone()),
+                _ => None,
+            };
+            if let Err(untaken) = &retaken {
+                warn!(
+                    setup = name,
+                    pad = wanted.id,
+                    reason = untaken.why(),
+                    "a pad couldn't be taken back"
+                );
+            }
             let (pad, token) = retaken.ok().unzip();
             Done::Returned {
                 pad: pad.map(Box::new),
@@ -2286,6 +2663,7 @@ impl Reactor {
                 name,
                 setup,
                 id: wanted.id,
+                refused,
             }
         });
     }
@@ -2296,6 +2674,7 @@ impl Reactor {
         id: String,
         pad: Option<Box<Pad>>,
         token: Option<Token>,
+        refused: Option<String>,
     ) {
         // By the pad, not by where it was when it was sent for: a setup
         // that took a change since has its pads numbered anew. Only to
@@ -2325,10 +2704,18 @@ impl Reactor {
             return self.show_again(pad, shows);
         };
         slot.returning = false;
+        // Its setup says why it was refused, until it is taken.
+        let said = refused.is_some() || slot.refused.is_some();
+        let was_refused = refused.is_some();
+        slot.refused = refused;
         let again = std::mem::take(&mut slot.again);
         let Some(pad) = pad else {
-            // It may be back by now, where it wasn't when sent for.
-            if again {
+            if said {
+                self.publish_setup(&name).await;
+            }
+            // It may be back by now, where it wasn't when sent for; one
+            // there that was refused waits to be plugged in afresh.
+            if again && !was_refused {
                 self.bring_back(&name, source);
             }
             return;
@@ -2342,6 +2729,9 @@ impl Reactor {
             self.publish_pad_logged(&id).await;
         }
         if taking {
+            if said {
+                self.publish_setup(&name).await;
+            }
             // The input thread is about to number the setup's pads anew:
             // this one is let go, and brought back once it has.
             return self.drop_off(pad);
@@ -2476,8 +2866,30 @@ impl Reactor {
         }
     }
 
-    /// A pad connected: a setup waiting for it takes it.
-    pub(crate) async fn pad_arrived(&mut self, id: &str) {
+    /// The pad `id`'s raw node came, or udev handled it again: what may be
+    /// done with it may have changed, as a rule that gives it to the seat
+    /// installed makes it the user's to open. Each setup that refused the
+    /// pad as it came back sends for it again. A state, not a wait: udev
+    /// says so of the node when the rule is applied to it.
+    pub(crate) async fn try_refused_again(&mut self, id: &str) {
+        let mut again = Vec::new();
+        for (name, entry) in &mut self.setups.entries {
+            for (source, slot) in entry.slots.iter_mut().enumerate() {
+                if slot.pad.as_deref() == Some(id) && slot.refused.take().is_some() {
+                    again.push((name.clone(), source));
+                }
+            }
+        }
+        for (name, source) in again {
+            self.publish_setup(&name).await;
+            self.bring_back(&name, source);
+        }
+    }
+
+    /// A pad connected: a setup waiting for it takes it. One `plugged_in`,
+    /// not back from something the daemon did, is tried afresh where it
+    /// was refused before.
+    pub(crate) async fn pad_arrived(&mut self, id: &str, plugged_in: bool) {
         // One pad, one place: its own, in a setup that hasn't failed and
         // that no other setup's use of it comes before; or else the first
         // place it fits that has no pad yet, in a setup that runs. A
@@ -2511,10 +2923,14 @@ impl Reactor {
             .entries
             .get_mut(&name)
             .and_then(|entry| entry.slots.get_mut(source))
-            && slot.pad.is_none()
         {
-            slot.pad = Some(id.to_string());
-            placed = true;
+            if plugged_in && slot.refused.take().is_some() {
+                placed = true;
+            }
+            if slot.pad.is_none() {
+                slot.pad = Some(id.to_string());
+                placed = true;
+            }
         }
         // Noted as the setup's, if it wasn't: an exact pad never seen
         // before had nothing to note until now.
@@ -2557,7 +2973,8 @@ impl Reactor {
                 id,
                 pad,
                 token,
-            } => self.returned((name, setup), id, pad, token).await,
+                refused,
+            } => self.returned((name, setup), id, pad, token, refused).await,
             Done::Rehidden {
                 name,
                 setup,
@@ -2570,7 +2987,31 @@ impl Reactor {
                 graph,
                 ids,
                 pads,
+                refused: None,
             } => self.send_graph((name, setup), *graph, ids, pads).await,
+            Done::Retaken {
+                name,
+                setup,
+                ids,
+                pads,
+                refused: Some(why),
+                ..
+            } => {
+                // What it brought is let go, and shown again if hidden.
+                let hidden = pads
+                    .iter()
+                    .zip(ids)
+                    .filter_map(|(pad, id)| Some((id?, pad.as_ref()?.1?)))
+                    .collect();
+                warn!(setup = name, reason = why, "a setup couldn't take a change");
+                let refusal = WireError::refusal(
+                    ErrorCode::SetupFailed,
+                    format!("the change wasn't made: {why}"),
+                );
+                let rested = rested_of(pads.iter().flatten().map(|(pad, _)| pad));
+                self.abandon((&name, setup), (pads, rested), hidden, &refusal)
+                    .await;
+            }
             Done::Shown { pad } => {
                 // Published as hidden until now.
                 self.book.shown(&pad);
@@ -2775,6 +3216,17 @@ impl Reactor {
                 self.retire((name, id), setup, shows, stopping);
             }
             Report::PadGone { setup, source, pad } => {
+                // A pad read through its raw node has truly gone: that is
+                // all there is of it, and udev says nothing of it while it
+                // is held. Its raw node is closed as it is dropped, which
+                // is what lets its driver make its node again, should it
+                // be there still.
+                // Said on the hotplug watch's queue, behind the hold's mark
+                // and whatever udev has said of the pad so far, which this
+                // report, on a queue of its own, can overtake.
+                if pad.identifiers().is_steam_controller() {
+                    self.holds.lost(&pad.identifiers().id().to_string());
+                }
                 self.drop_off(pad);
                 let Some(name) = self.setups.name_of(setup) else {
                     return;
@@ -2922,6 +3374,7 @@ mod tests {
             Database::parse(""),
             Hiding::grab(),
             crate::copied::Copied::open(&dir.path().join("state")),
+            Holds::new(tokio::sync::mpsc::unbounded_channel().0),
         );
         let mut reactor = reactor;
         reactor.test_pads = true;
@@ -3287,6 +3740,7 @@ mod tests {
                 id: "address:0a:1b:2c:3d:4e:14".to_string(),
                 pad: None,
                 token: None,
+                refused: None,
             })
             .await;
         let slot = &rig.reactor.setups.entries["couch"].slots[1];
@@ -3299,6 +3753,7 @@ mod tests {
                 id: "address:0a:1b:2c:3d:4e:14".to_string(),
                 pad: None,
                 token: None,
+                refused: None,
             })
             .await;
         rig.reactor.done(Done::Dropped(Vec::new())).await;
@@ -3314,6 +3769,12 @@ mod tests {
             return None;
         }
         let fake = ctrlassist_test::FakePad::new(name, 0x1209, 0x8301).unwrap();
+        // Once udev has given the seat its node, which on a busy machine
+        // it hasn't yet as the node appears.
+        assert!(ctrlassist_test::may_open_once_udev_is_done(
+            fake.event_node(),
+            true
+        ));
         let pad = open(fake.event_node())
             .and_then(|fd| read(fd, fake.event_node(), &Database::parse("")))
             .unwrap();
@@ -3572,6 +4033,7 @@ mod tests {
                 id: pad.to_string(),
                 pad: None,
                 token: None,
+                refused: None,
             })
             .await;
 
@@ -3617,6 +4079,7 @@ mod tests {
                 id: pad.to_string(),
                 pad: None,
                 token: None,
+                refused: None,
             })
             .await;
         // A report of a graph nobody waits for is only a graph to drop.
@@ -3684,6 +4147,7 @@ mod tests {
                 graph: Box::new(graph),
                 ids: vec![None, None],
                 pads: vec![None, None],
+                refused: None,
             })
             .await;
         refused(updating.await.unwrap(), ErrorCode::SetupBusy);
@@ -3914,7 +4378,7 @@ mod tests {
         follow(&mut rig.reactor, 7, Phase::Starting);
         for (id, node) in [(PRIMARY, "/nowhere/event1"), (ASSIST, "/nowhere/event2")] {
             rig.reactor.book.arrived(&connecting(id, node));
-            rig.reactor.pad_arrived(id).await;
+            rig.reactor.pad_arrived(id, true).await;
         }
         // The sources go by name: the assist, then the primary.
         let entry = &rig.reactor.setups.entries["couch"];
@@ -3959,7 +4423,7 @@ mod tests {
         let primary = connecting(PRIMARY, "/nowhere/event1");
         rig.reactor.book.arrived(&primary);
         rig.reactor.bring_back("couch", 1);
-        rig.reactor.pad_arrived(PRIMARY).await;
+        rig.reactor.pad_arrived(PRIMARY, true).await;
         assert!(rig.reactor.setups.entries["couch"].slots[1].again);
 
         let first = rig.reactor.work.join_next().await.unwrap().unwrap();
@@ -3982,7 +4446,7 @@ mod tests {
             .await;
         for (id, node) in [(ASSIST, "/nowhere/event2"), (PRIMARY, "/nowhere/event1")] {
             rig.reactor.book.arrived(&connecting(id, node));
-            rig.reactor.pad_arrived(id).await;
+            rig.reactor.pad_arrived(id, true).await;
             assert_eq!(rig.reactor.book.user(id), None, "{id}");
         }
         let entry = &rig.reactor.setups.entries["couch"];
@@ -4030,6 +4494,7 @@ mod tests {
                 id: PRIMARY.to_string(),
                 pad: None,
                 token: None,
+                refused: None,
             })
             .await;
         assert!(rig.reactor.setups.entries["couch"].slots[1].returning);
@@ -4693,6 +5158,7 @@ mod tests {
                 id: PRIMARY.to_string(),
                 pad: Some(pad),
                 token: None,
+                refused: None,
             })
             .await;
         let failed = rig.reactor.setups.setup("couch").unwrap();
@@ -4769,6 +5235,7 @@ mod tests {
                 graph: Box::new(graph),
                 ids: vec![None, None],
                 pads: vec![None, None],
+                refused: None,
             })
             .await;
         let taking = rig.reactor.setups.entries["couch"].taking.as_ref();
@@ -4779,5 +5246,209 @@ mod tests {
             .await;
         finish(&mut rig.reactor).await;
         assert!(updating.await.unwrap().is_err());
+    }
+
+    /// The primary's pad refused as it came back, as a Steam Controller
+    /// whose raw node isn't the user's is.
+    async fn refuse_the_primary(rig: &mut Rig, why: &str) {
+        rig.reactor
+            .done(Done::Returned {
+                name: "couch".to_string(),
+                setup: SetupId(7),
+                id: PRIMARY.to_string(),
+                pad: None,
+                token: None,
+                refused: Some(why.to_string()),
+            })
+            .await;
+    }
+
+    fn primary_refused(rig: &Rig) -> Option<String> {
+        rig.reactor.setups.entries["couch"].slots[1].refused.clone()
+    }
+
+    /// A pad refused as it came back is said in its setup's reason, and
+    /// isn't sent for again until it is plugged in afresh, its node's
+    /// return from something the daemon did being no plugging in, nor
+    /// until its raw node changes, as a rule installed and applied to it
+    /// makes it; each clears the refusal and the reason.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pad_refused_as_it_comes_back_waits_for_what_could_change_that() {
+        let mut rig = rig().await;
+        follow(&mut rig.reactor, 7, Phase::Held);
+        refuse_the_primary(&mut rig, "no rule").await;
+        assert_eq!(
+            rig.reactor.setups.setup("couch").unwrap().reason.as_deref(),
+            Some("no rule")
+        );
+        rig.reactor.bring_back("couch", 1);
+        assert!(!rig.reactor.setups.entries["couch"].slots[1].returning);
+        rig.reactor.pad_arrived(PRIMARY, false).await;
+        assert!(primary_refused(&rig).is_some(), "back, not plugged in");
+
+        rig.reactor.pad_arrived(PRIMARY, true).await;
+        assert_eq!(primary_refused(&rig), None);
+        assert_eq!(rig.reactor.setups.setup("couch").unwrap().reason, None);
+
+        refuse_the_primary(&mut rig, "no rule").await;
+        rig.reactor.try_refused_again(ASSIST).await;
+        assert!(primary_refused(&rig).is_some(), "another pad's node");
+        rig.reactor.try_refused_again(PRIMARY).await;
+        assert_eq!(primary_refused(&rig), None);
+        assert_eq!(rig.reactor.setups.setup("couch").unwrap().reason, None);
+        finish(&mut rig.reactor).await;
+    }
+
+    /// A change taken as the setup runs keeps what became of a kept pad
+    /// meanwhile: a refusal cleared, as the pad was plugged in again, is
+    /// cleared still, and one made meanwhile is kept.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_change_taken_keeps_what_became_of_a_refusal_meanwhile() {
+        for refused_first in [true, false] {
+            let mut rig = rig().await;
+            rig.reactor.profiles.put("couch", TOGGLE).unwrap();
+            follow(&mut rig.reactor, 7, Phase::Held);
+            if refused_first {
+                refuse_the_primary(&mut rig, "no rule").await;
+            }
+            let updating = ask_update(&mut rig, true).await;
+            assert!(rig.reactor.setups.entries["couch"].taking.is_some());
+            if refused_first {
+                rig.reactor.pad_arrived(PRIMARY, true).await;
+            } else {
+                refuse_the_primary(&mut rig, "no rule").await;
+            }
+            rig.reactor
+                .reported(Report::GraphTaken {
+                    setup: SetupId(7),
+                    old: graph_of(PROFILE),
+                })
+                .await;
+            finish(&mut rig.reactor).await;
+            updating.await.unwrap().unwrap();
+            assert_eq!(
+                primary_refused(&rig).is_some(),
+                !refused_first,
+                "refused first: {refused_first}"
+            );
+        }
+    }
+
+    /// A change that brings a pad there that can't be taken as the
+    /// profile asks isn't made, and says why; the setup runs as it was.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_change_that_brings_a_pad_refused_is_not_made() {
+        let mut rig = rig().await;
+        rig.reactor.profiles.put("couch", TOGGLE).unwrap();
+        follow(&mut rig.reactor, 7, Phase::Running);
+        let updating = ask_update(&mut rig, true).await;
+        rig.reactor
+            .setups
+            .entries
+            .get_mut("couch")
+            .unwrap()
+            .taking
+            .as_mut()
+            .unwrap()
+            .sent = false;
+        let graph = Graph::build(Profile::check(TOGGLE).unwrap().graph).unwrap();
+        rig.reactor
+            .done(Done::Retaken {
+                name: "couch".to_string(),
+                setup: SetupId(7),
+                graph: Box::new(graph),
+                ids: vec![None, None],
+                pads: vec![None, None],
+                refused: Some("its raw interface can't be opened".to_string()),
+            })
+            .await;
+        let refusal = match updating.await.unwrap() {
+            Err(RpcError::Service(refusal)) => refusal,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(refusal.code, ErrorCode::SetupFailed);
+        assert!(refusal.message.contains("raw interface"), "{refusal:?}");
+        let entry = &rig.reactor.setups.entries["couch"];
+        assert!(entry.taking.is_none() && entry.phase == Phase::Running);
+        finish(&mut rig.reactor).await;
+    }
+
+    /// A Steam Controller the book knows, connected or not.
+    fn steam_controller(rig: &mut Rig, id: &str) {
+        let mut found = connecting(id, "/dev/input/event77");
+        (found.identifiers.vendor, found.identifiers.product) = (0x28de, 0x1302);
+        rig.reactor.book.arrived(&found);
+    }
+
+    /// A Steam Controller whose kernel driver has no rumble can be rumbled
+    /// only while a setup reads it, through its raw node: not while the
+    /// setup waits for it, nor once it refused it, though the setup names
+    /// it all along. Another pad without rumble has none either way.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_steam_controller_can_be_rumbled_only_while_a_setup_reads_it() {
+        let mut rig = rig().await;
+        steam_controller(&mut rig, PRIMARY);
+        let at = place(PRIMARY, "/dev/input/event77");
+        rig.reactor
+            .book
+            .learned(Path::new("/dev/input/event77"), &at, false);
+        follow(&mut rig.reactor, 7, Phase::Held);
+        assert_eq!(rig.reactor.book.user(PRIMARY), Some("couch"));
+        assert_eq!(rig.reactor.rumble_now(PRIMARY), Some(false), "waited for");
+
+        fn slot(rig: &mut Rig) -> &mut Slot {
+            &mut rig.reactor.setups.entries.get_mut("couch").unwrap().slots[1]
+        }
+        slot(&mut rig).present = true;
+        assert_eq!(rig.reactor.rumble_now(PRIMARY), Some(true), "read");
+        slot(&mut rig).refused = Some("its raw interface can't be opened".to_string());
+        assert_eq!(rig.reactor.rumble_now(PRIMARY), Some(false), "refused");
+
+        slot(&mut rig).refused = None;
+        let mut other = connecting(ASSIST, "/dev/input/event78");
+        other.identifiers.vendor = 0x054c;
+        rig.reactor.book.arrived(&other);
+        rig.reactor.book.learned(
+            Path::new("/dev/input/event78"),
+            &place(ASSIST, "/dev/input/event78"),
+            false,
+        );
+        rig.reactor.setups.entries.get_mut("couch").unwrap().slots[0].present = true;
+        assert_eq!(rig.reactor.rumble_now(ASSIST), Some(false), "no rumble");
+        finish(&mut rig.reactor).await;
+    }
+
+    /// A profile that asks for its pads to be left to games, with a Steam
+    /// Controller among them, connected or remembered or by its model, is
+    /// refused at a start and at a change, before anything is taken.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_steam_controller_left_to_games_is_refused_at_start_and_change() {
+        let mut rig = rig().await;
+        let steam = "address:CATEST0001";
+        steam_controller(&mut rig, steam);
+        rig.reactor.book.left(&place(steam, "/dev/input/event77"));
+        for named in [steam, "address:catest0001", "model:28de:1303"] {
+            let toml = format!("mode = \"unicast\"\npad = \"{named}\"\nhide = \"none\"\n");
+            rig.reactor.profiles.put("couch", &toml).unwrap();
+            let refused = refusal(ask(&mut rig, false).await.await.unwrap());
+            assert_eq!(refused.code, ErrorCode::SetupFailed, "{named}");
+            assert!(refused.message.contains("hide"), "{refused:?}");
+            assert!(rig.reactor.setups.entries.is_empty());
+        }
+
+        rig.reactor.profiles.put("couch", PROFILE).unwrap();
+        follow(&mut rig.reactor, 7, Phase::Held);
+        let toml = format!(
+            "mode = \"priority\"\nprimary = \"{steam}\"\nassist = \"model:054c:09cc\"\nhide = \"none\"\n"
+        );
+        rig.reactor.profiles.put("couch", &toml).unwrap();
+        let refused = match ask_update(&mut rig, true).await.await.unwrap() {
+            Err(RpcError::Service(refusal)) => refusal,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(refused.code, ErrorCode::SetupFailed);
+        let entry = &rig.reactor.setups.entries["couch"];
+        assert!(entry.taking.is_none() && entry.stopping.is_none());
+        finish(&mut rig.reactor).await;
     }
 }

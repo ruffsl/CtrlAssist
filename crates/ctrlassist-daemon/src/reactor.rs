@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::os::fd::OwnedFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,7 +34,7 @@ use crate::book::{Book, Changed};
 use crate::copied::Copied;
 use crate::device_identity;
 use crate::hiding::Hiding;
-use crate::hotplug::Seen;
+use crate::hotplug::{Holds, Seen};
 use crate::profiles::Profiles;
 use crate::setups::{Done, Owed, Owing, Setups, caught};
 use crate::store::Store;
@@ -114,6 +114,9 @@ pub(crate) struct Reactor {
     /// to be looked for again once that look is back.
     looking: bool,
     look_again: bool,
+    /// What says a pad's raw node is about to be held, ahead of what udev
+    /// says of that.
+    pub(crate) holds: Holds,
 }
 
 impl std::fmt::Debug for Reactor {
@@ -181,6 +184,7 @@ impl Reactor {
         database: Database,
         hiding: Hiding,
         copied: Copied,
+        holds: Holds,
     ) -> Self {
         Self {
             session,
@@ -204,6 +208,7 @@ impl Reactor {
             owings: 0,
             looking: false,
             look_again: false,
+            holds,
         }
     }
 
@@ -277,7 +282,8 @@ impl Reactor {
 
     /// Publishes what a virtual pad can present itself as, and whether
     /// each can be made now: through uinput, or for a DualSense through
-    /// uhid.
+    /// uhid, or for a Steam Controller through uhid with the kernel's
+    /// driver for it loaded.
     pub(crate) async fn publish_identities(&mut self) -> zenoh::Result<()> {
         let writable = |node: &str| OpenOptions::new().write(true).open(node).is_ok();
         let uinput = writable("/dev/uinput");
@@ -286,7 +292,10 @@ impl Reactor {
             let (vendor, product) = device.model();
             let available = match identity {
                 Identity::DualSense => writable("/dev/uhid"),
-                _ => uinput,
+                Identity::SteamController => {
+                    writable("/dev/uhid") && Path::new("/sys/bus/hid/drivers/hid-steam").exists()
+                }
+                Identity::Generic | Identity::Xbox => uinput,
             };
             let body = payload::Identity {
                 id: identity.as_str().to_string(),
@@ -344,8 +353,28 @@ impl Reactor {
 
     async fn publish_pad(&mut self, id: &str) -> zenoh::Result<()> {
         match self.book.pad(id) {
-            Some(pad) => self.publish(keys::pad(&keys::pad_id(id)), &pad).await,
+            Some(pad) => {
+                let pad = payload::Pad {
+                    rumble: self.rumble_now(id),
+                    ..pad
+                };
+                self.publish(keys::pad(&keys::pad_id(id)), &pad).await
+            }
             None => Ok(()),
+        }
+    }
+
+    /// Whether the pad can be rumbled now, which is what is published and
+    /// what `identify` goes by: what its event node said when last asked,
+    /// but for a Steam Controller a setup reads, which is rumbled through
+    /// its raw node whatever its kernel driver has. A setup that names it
+    /// and doesn't read it, waiting for it or having refused it, makes no
+    /// difference.
+    pub(crate) fn rumble_now(&self, id: &str) -> Option<bool> {
+        if self.book.is_steam_controller(id) && self.setups.reads(id) {
+            Some(true)
+        } else {
+            self.book.rumble(id)
         }
     }
 
@@ -489,6 +518,25 @@ impl Reactor {
                 self.gone(gone).await;
             }
             Seen::Rebinding { anchor, present } => self.book.rebinding(&anchor, &present),
+            // Said before the raw node is opened, so heard before the
+            // node it takes away is heard going.
+            Seen::Holding(syspath) => self.book.holding(&syspath),
+            Seen::NotHolding(syspath) => self.book.not_holding(&syspath),
+            Seen::Lost(id) => {
+                if self.book.lost(&id) {
+                    info!(pad = id, "a pad disconnected");
+                    self.publish_pad_logged(&id).await;
+                }
+            }
+            // Taken in as any arrival, and then what was refused for its
+            // raw node is tried again: what may be done with it may have
+            // changed, as when a rule that gives it to the seat is
+            // applied.
+            Seen::RawNodeChanged(found) => {
+                let id = found.identifiers.id().to_string();
+                self.took_in(found).await;
+                self.try_refused_again(&id).await;
+            }
             // Looked for unless it is there as far as the daemon knows: a
             // look would start a service nothing needs. A service gone
             // from under hidden pads is known gone as they come back.
@@ -535,6 +583,13 @@ impl Reactor {
             .last()
             .is_some_and(|pad| self.book.was_restored(&pad.id));
         match changed.last() {
+            // A pad read through its raw node is never re-bound: its node
+            // went because that was held, and is back as it was let go.
+            Some(pad) if restored && found.identifiers.is_steam_controller() => info!(
+                pad = pad.id,
+                name = found.identifiers.name,
+                "a pad is back from its raw node being held"
+            ),
             Some(pad) if restored => info!(
                 pad = pad.id,
                 name = found.identifiers.name,
@@ -556,7 +611,7 @@ impl Reactor {
         if let Some(Changed { id, .. }) = changed.last() {
             // One back from a re-bind prompts nothing: a setup stopped by
             // hand would otherwise start again at once.
-            self.pad_arrived(id).await;
+            self.pad_arrived(id, !restored).await;
             if !restored {
                 // A profile that was waiting for this pad may start now.
                 self.start_what_can(Some(id)).await;
@@ -674,18 +729,29 @@ impl Reactor {
             None if self.book.is_away(id) => {
                 return Err(WireError::refusal(
                     ErrorCode::PadRefused,
-                    format!("{id} is away for a moment, its driver being re-bound; try again"),
+                    format!(
+                        "{id} is away: its driver is being re-bound, which takes a moment, or another program holds its raw interface, as Steam does, and the controller is back once that program lets it go"
+                    ),
                 ));
             }
             None => Some(self.book.placed_node(id).ok_or_else(|| {
                 WireError::refusal(ErrorCode::PadDisconnected, format!("{id} isn't connected"))
             })?),
         };
-        if self.book.rumble(id) == Some(false) {
-            return Err(WireError::refusal(
-                ErrorCode::PadWithoutRumble,
-                format!("{id} has no rumble to buzz with"),
-            ));
+        // A Steam Controller a setup reads is rumbled through its raw node,
+        // and can always be. Any other, free or waited for by a setup,
+        // could be only by holding its raw node for the buzz, which would
+        // take its joystick from games and give it back as a pad plugged
+        // in: it is buzzed through its kernel driver, or not at all.
+        if self.rumble_now(id) == Some(false) {
+            let why = if self.book.is_steam_controller(id) {
+                format!(
+                    "{id} is a Steam Controller that this system's kernel gives no rumble of its own: it can be buzzed while a running profile is using it"
+                )
+            } else {
+                format!("{id} has no rumble to buzz with")
+            };
+            return Err(WireError::refusal(ErrorCode::PadWithoutRumble, why));
         }
         let Some((node, syspath)) = node else {
             let setup = self.book.user(id).unwrap_or_default();

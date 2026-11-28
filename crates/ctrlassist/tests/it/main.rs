@@ -11,3 +11,4 @@ mod fake;
 mod pads;
 mod profiles;
 mod setups;
+mod steam;

@@ -110,6 +110,7 @@ fn virtual_rows(setups: &[Setup], identities: &[ctrlassist::Identity]) -> Vec<Pa
                 maker: SharedString::from(match sink.identity.as_str() {
                     "xbox" => "microsoft",
                     "dualsense" => "sony",
+                    "steam-controller" => "valve",
                     _ => "ctrlassist",
                 }),
                 word: SharedString::from(format!("In {}", setup.name)),
@@ -228,10 +229,14 @@ fn real_rows(pads: &[Pad], setups: &[Setup], profiles: &[Profile]) -> Vec<PadRow
                 connected: pad.connected,
                 rumble: SharedString::from(match pad.rumble {
                     Some(true) => "Yes",
+                    // Free, with no rumble from its kernel driver; a
+                    // setup rumbles it through its raw node.
+                    Some(false) if pad.is_steam_controller() => "In a profile",
                     Some(false) => "No",
                     None => "",
                 }),
                 without_rumble: pad.rumble == Some(false),
+                steam_controller: pad.is_steam_controller(),
                 setup: SharedString::from(pad.setup.clone().unwrap_or_default()),
                 role: SharedString::from(role),
                 hidden: pad.hidden,

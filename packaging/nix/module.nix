@@ -113,6 +113,8 @@ in
       # A virtual DualSense is this driver's pad, and the driver has to
       # be there before the pad is.
       "hid-playstation"
+      # And a virtual Steam Controller this one's, from Linux 7.3.
+      "hid-steam"
     ];
     services.udev.packages = [ cfg.package ];
     # udev applies a rule to a device at the device's next event. A switch

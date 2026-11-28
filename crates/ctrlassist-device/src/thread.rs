@@ -69,7 +69,8 @@ enum Kind {
     Pad = 0,
     /// A virtual pad.
     Sink = 1,
-    /// A pad's raw node, read for its motion and touchpad.
+    /// A pad's raw node, read for its motion and touchpad, or for
+    /// everything.
     Raw = 2,
 }
 
@@ -98,18 +99,28 @@ fn is_raw(token: u64) -> bool {
 }
 
 /// Listens to a pad's event node, and its raw node where it is read,
-/// under the pad's source number; or to neither.
-fn listen(epoll: &OwnedFd, pad: &Pad, slot: usize, index: usize) -> io::Result<()> {
-    epoll::add(
-        epoll,
-        pad,
-        EventData::new_u64(token(slot, Kind::Pad, index)),
-        EventFlags::IN,
-    )?;
-    if let Some(raw) = pad.motion_node() {
+/// under the pad's source number; or to neither. A Steam Controller read
+/// from its raw node is listened to there alone: its event node has
+/// gone, and would say so at every wait. The first time, it has what its
+/// raw node kept since it was given it read away, those reports being
+/// from before its setup ran.
+fn listen(epoll: &OwnedFd, pad: &mut Pad, slot: usize, index: usize) -> io::Result<()> {
+    pad.begin();
+    let event = pad.event_node();
+    if let Some(event) = event {
+        epoll::add(
+            epoll,
+            event,
+            EventData::new_u64(token(slot, Kind::Pad, index)),
+            EventFlags::IN,
+        )?;
+    }
+    if let Some(raw) = pad.raw_node() {
         let data = EventData::new_u64(token(slot, Kind::Raw, index));
         if let Err(error) = epoll::add(epoll, raw, data, EventFlags::IN) {
-            let _ = epoll::delete(epoll, pad);
+            if let Some(event) = event {
+                let _ = epoll::delete(epoll, event);
+            }
             return Err(error.into());
         }
     }
@@ -120,8 +131,10 @@ fn listen(epoll: &OwnedFd, pad: &Pad, slot: usize, index: usize) -> io::Result<(
 /// is a duplicate of the one the pad's writer holds, so closing it
 /// wouldn't.
 fn unlisten(epoll: &OwnedFd, pad: &Pad) {
-    let _ = epoll::delete(epoll, pad);
-    if let Some(raw) = pad.motion_node() {
+    if let Some(event) = pad.event_node() {
+        let _ = epoll::delete(epoll, event);
+    }
+    if let Some(raw) = pad.raw_node() {
         let _ = epoll::delete(epoll, raw);
     }
 }
@@ -388,8 +401,8 @@ impl Setup {
         })
     }
 
-    fn register(&self, epoll: &OwnedFd, slot: usize) -> io::Result<()> {
-        for (index, pad) in self.pads.iter().enumerate() {
+    fn register(&mut self, epoll: &OwnedFd, slot: usize) -> io::Result<()> {
+        for (index, pad) in self.pads.iter_mut().enumerate() {
             if let Some(pad) = pad {
                 listen(epoll, pad, slot, index)?;
             }
@@ -464,9 +477,11 @@ impl Setup {
     }
 
     /// A pad's raw node has something to read: each input report is one
-    /// step, with the motion, touchpad and click it says. Returns the pad
-    /// if it has gone. A raw node that can't be read is no longer read,
-    /// and the pad's motion, touchpad and click rest from then on.
+    /// step, with the motion, touchpad and click it says, or, for a Steam
+    /// Controller, everything it says. Returns the pad if it has gone. A
+    /// raw node read beside an event node that can't be read is no
+    /// longer read, and the pad's motion, touchpad and click rest from
+    /// then on; a Steam Controller's that can't be read is its going.
     fn raw_ready(&mut self, index: usize, epoll: &OwnedFd) -> Option<Box<Pad>> {
         let Self {
             graph,
@@ -476,7 +491,7 @@ impl Setup {
             ..
         } = self;
         let pad = pads.get_mut(index)?.as_mut()?;
-        let read = pad.read_motion(|state| {
+        let read = pad.read_raw(|state| {
             graph.update(SourceId(index), *state, &mut |_| {});
             for (index, sink) in sinks.iter_mut().enumerate() {
                 if sink.write(graph.sink(SinkId(index))).is_err() {
@@ -488,7 +503,7 @@ impl Setup {
             Ok(()) => None,
             Err(PadError::Gone) => self.pad_gone(index, epoll),
             Err(PadError::Io(_)) => {
-                if let Some(raw) = pad.motion_node() {
+                if let Some(raw) = pad.raw_node() {
                     let _ = epoll::delete(epoll, raw);
                 }
                 pad.rest_motion();
@@ -518,12 +533,12 @@ impl Setup {
     fn pad_back(
         &mut self,
         index: usize,
-        pad: Box<Pad>,
+        mut pad: Box<Pad>,
         epoll: &OwnedFd,
         slot: usize,
     ) -> Option<Box<Pad>> {
         let free = self.pads.get(index).is_some_and(Option::is_none);
-        if !free || listen(epoll, &pad, slot, index).is_err() {
+        if !free || listen(epoll, &mut pad, slot, index).is_err() {
             return Some(pad);
         }
         self.graph.set_present(SourceId(index), true, &mut |_| {});
@@ -602,7 +617,7 @@ impl Setup {
         // and sent what the games last sent beyond rumble.
         self.router.swap_sources(&mut new.reported);
         self.passed.fill(SourceSet::EMPTY);
-        for (index, pad) in self.pads.iter().enumerate() {
+        for (index, pad) in self.pads.iter_mut().enumerate() {
             let Some(pad) = pad else { continue };
             if listen(epoll, pad, slot, index).is_err() {
                 self.failed = true;
@@ -786,6 +801,19 @@ impl Setup {
             *slot = None;
             if let (Some(Some(pad)), Some(level)) = (pads.get_mut(index), wanted.get(index)) {
                 let _ = pad.rumble(*level);
+            }
+        }
+        // The haptic reports a reader wrote a virtual Steam Controller go
+        // to the pads its feedback goes to, each whole and in order: a
+        // Steam Controller among them is sent it, and no other pad is.
+        for (index, sink) in sinks.iter_mut().enumerate() {
+            let targets = graph.feedback_targets(SinkId(index));
+            while let Some(haptic) = sink.take_haptic() {
+                for source in targets.iter() {
+                    if let Some(Some(pad)) = pads.get_mut(source.0) {
+                        pad.haptic(haptic);
+                    }
+                }
             }
         }
         // What the games set on a virtual pad beyond rumble goes to the
@@ -1552,7 +1580,7 @@ impl State {
 
     fn carry_out(&mut self, command: Command, now: u64) {
         match command {
-            Command::Start(id, setup) => {
+            Command::Start(id, mut setup) => {
                 let free = self.slots.iter().position(Option::is_none);
                 let duplicate = self.slot_of(id).is_some();
                 // More pads than a graph has would break the count of

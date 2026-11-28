@@ -34,7 +34,9 @@ pub enum Hiding {
     Service,
     /// The hiding service isn't there, so each is grabbed: programs that
     /// read its event or joystick node hear nothing, but one that reads
-    /// it some other way, as Steam reads a PlayStation pad, still sees it.
+    /// it some other way, as Steam reads a PlayStation pad or a Steam
+    /// Controller, still sees it. A Steam Controller in a setup is held
+    /// so whichever this is: the hiding service doesn't take it.
     Grab,
     /// The daemon has just started and is still finding out whether the
     /// hiding service is there, which it does without holding up its
@@ -76,13 +78,36 @@ pub struct Pad {
     /// The setup that uses it, if one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<String>,
-    /// Whether it can rumble; absent when the daemon couldn't tell.
+    /// Whether it can rumble now, and so be buzzed by `identify`; absent
+    /// when the daemon couldn't tell. A [Steam
+    /// Controller](Self::is_steam_controller) is rumbled through its raw
+    /// node while a setup holds it, and so can then, whatever its kernel
+    /// driver has; free, it can only where its driver has force feedback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rumble: Option<bool>,
     /// The bus it is connected on now, as the kernel numbers them: 3 is
     /// USB, 5 Bluetooth. Absent while it isn't connected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bus: Option<u16>,
+}
+
+impl Pad {
+    /// Whether it is a Steam Controller (2026), on any of its transports:
+    /// a pad the daemon reads through its raw node, holds rather than
+    /// hides, and can't leave visible to games in a setup.
+    #[must_use]
+    pub const fn is_steam_controller(&self) -> bool {
+        is_steam_controller(self.vendor, self.product)
+    }
+}
+
+/// Whether `vendor` and `product` are a Steam Controller's (2026): on a
+/// cable, over Bluetooth, behind the Puck, or behind a Steam Machine's
+/// receiver. The device crate has the same list, which the daemon's
+/// tests hold this one to.
+#[must_use]
+pub const fn is_steam_controller(vendor: u16, product: u16) -> bool {
+    vendor == 0x28de && matches!(product, 0x1302..=0x1305)
 }
 
 /// A profile the daemon keeps. Its key is
@@ -150,7 +175,8 @@ pub struct Setup {
     pub start: u32,
     /// Where it is in its life.
     pub phase: Phase,
-    /// Why it failed, for a person to read; absent in any other phase.
+    /// Why it failed, for a person to read; or, while it is held, why a
+    /// pad of it was refused as it came back. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// Its pads, in the order of their names in the profile.

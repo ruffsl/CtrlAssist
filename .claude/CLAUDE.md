@@ -45,10 +45,10 @@ crates/
                               # what changes, and the ksni item that renders them
   ctrlassist-test/            # fake pads made through uinput and uhid, one with rumble
                               # motors, and the
-                              # ctrlassist-fixture binary the VM checks drive, and
-                              # ctrlassist-bench, which times the input path
-vendor/                       # third-party crates carried with a fix upstream lacks;
-                              # vendor/README.md lists them
+                              # ctrlassist-fixture binary the VM checks drive,
+                              # ctrlassist-bench, which times the input path, and
+                              # ctrlassist-sdl-probe (feature `sdl-probe`), which says
+                              # what SDL3 makes of a pad
 spikes/                       # throwaway workspaces, each deleted by the build step that
                               # replaces it; excluded from the workspace
 docs/

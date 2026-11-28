@@ -13,8 +13,8 @@ hooks = [
     { id = "check-merge-conflict", priority = 0 },
     { id = "check-toml", priority = 0 },
     { id = "check-yaml", priority = 0 },
-    { id = "end-of-file-fixer", exclude = "^(docs/artwork|vendor|crates/ctrlassist-device/data)/", priority = 0 },
-    { id = "trailing-whitespace", exclude = "^(docs/artwork|vendor|crates/ctrlassist-device/data)/", priority = 0 },
+    { id = "end-of-file-fixer", exclude = "^(docs/artwork|crates/ctrlassist-device/data)/", priority = 0 },
+    { id = "trailing-whitespace", exclude = "^(docs/artwork|crates/ctrlassist-device/data)/", priority = 0 },
 ]
 
 [[repos]]

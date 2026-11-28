@@ -190,7 +190,7 @@ It should say the daemon is alive and which release it runs. Then `ctrlassist pa
 - `ctrlassist-gui`, the GUI, with its entry in your desktop's application launcher (**CtrlAssist**) and a session bus file through which the tray's **Settings**, or a second launch, brings the open window to the front.
 - The daemon and the tray as services of your user, enabled for every user and started at login. To opt out: `systemctl --user mask ctrlassist-daemon ctrlassist-tray`.
 - The hiding service as a system service, started the first time it is needed, with a system user of its own, `ctrlassist-hider`, which it runs as, and a udev rule giving that user what it hides controllers with.
-- A udev rule giving the person at the machine access to `/dev/uinput` and `/dev/uhid`, which virtual pads are made through, and a setting that loads those and the system's PlayStation controller driver at boot.
+- A udev rule giving the person at the machine access to `/dev/uinput` and `/dev/uhid`, which virtual controllers are made through, and to the raw interface of a [Steam Controller](../guide/steam-controller.md), which CtrlAssist reads it through, and a setting that loads those and the system's PlayStation controller driver at boot.
 - A setting that lets users' services ask for real-time scheduling up to priority 10.
 - Shell completions for bash, zsh and fish.
 

@@ -17,7 +17,7 @@ use ctrlassist_test::FakePad;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use crate::virtual_pad::{game_opens, rumble, writable};
-use crate::{can_make_pads, read_until};
+use crate::{can_make_pads, opened, read_until};
 
 const EV_KEY: u16 = 1;
 const EV_ABS: u16 = 3;
@@ -50,15 +50,13 @@ pub(crate) fn mux(mode: Mode) -> Graph {
 }
 
 pub(crate) fn read(fake: &FakePad) -> Pad {
-    let fd: OwnedFd = File::open(fake.event_node()).unwrap().into();
-    Pad::from_fd(fd).unwrap()
+    Pad::from_fd(opened(fake.event_node())).unwrap()
 }
 
 /// A virtual pad, and a reader on it standing in for the game.
 pub(crate) fn sink() -> (VirtualPad, Pad) {
     let sink = VirtualPad::create(Identity::Generic).unwrap();
-    let _ = std::process::Command::new("udevadm").arg("settle").status();
-    let fd: OwnedFd = File::open(sink.event_node()).unwrap().into();
+    let fd = opened(sink.event_node());
     (sink, Pad::from_fd(fd).unwrap())
 }
 
@@ -719,7 +717,7 @@ fn a_game_s_rumble_reaches_the_pad_and_ends_when_the_game_said() {
 
 /// How many times `thread` has been scheduled out, by its own choice or
 /// the kernel's: that thread, and not another test's input thread.
-fn input_thread_switches(thread: &InputThread) -> u64 {
+pub(crate) fn input_thread_switches(thread: &InputThread) -> u64 {
     let task = thread.task().unwrap();
     std::fs::read_to_string(format!("/proc/self/task/{task}/status"))
         .unwrap()

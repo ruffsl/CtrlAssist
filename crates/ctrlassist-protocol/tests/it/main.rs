@@ -9,7 +9,9 @@ use ctrlassist_core::{
     DemuxConfig, DemuxMode, Graph, GraphSpec, Input, Kind, Layout, Mode, MuxConfig, MuxFeedback,
     NodeId, NodeSpec, Rule, SourceId, SourceSpec, Switch, gamepad,
 };
-use ctrlassist_protocol::profile::{Hide, Identity, PadRef, Plan, Profile, ProfileError};
+use ctrlassist_protocol::profile::{
+    Hide, Identity, PadRef, Plan, Profile, ProfileError, button_names,
+};
 
 fn plan(text: &str) -> Result<Plan, ProfileError> {
     Profile::from_toml(text)?.plan()
@@ -186,6 +188,11 @@ fn a_switch_is_a_button_by_name_on_any_input_or_one_or_none() {
         node("switch = { button = \"start\", input = \"a\" }"),
         Ok(on(Some(0), gamepad::START))
     );
+    assert_eq!(
+        node("switch = { button = \"paddle-4\", input = \"b\" }"),
+        Ok(on(Some(1), gamepad::PADDLE_4)),
+        "a back button"
+    );
     assert_eq!(node("switch = false"), Ok(None));
     let error = node("switch = \"sideways\"").unwrap_err();
     assert_eq!(error.at, "node.m.switch");
@@ -248,6 +255,29 @@ fn a_pad_is_an_address_a_known_name_or_a_model() {
         PadRef::parse("model:054C:09CC"),
         Some(PadRef::Model(0x054c, 0x09cc))
     );
+    // An address that is no MAC address, as a Steam Controller's serial
+    // number is, is kept as written.
+    assert_eq!(
+        PadRef::parse("address:FX12AB34CD"),
+        exact("address:FX12AB34CD")
+    );
+    // Typed in other capitals, it is the same pad; another serial isn't.
+    let typed = PadRef::parse("address:fx12ab34cd").unwrap();
+    assert!(typed.matches("address:FX12AB34CD", 0x28de, 0x1302));
+    assert!(!typed.matches("address:FX12AB34CE", 0x28de, 0x1302));
+    assert!(PadRef::names(
+        "address:0a:1b:2c:3d:4e:14",
+        "address:0a:1b:2c:3d:4e:14"
+    ));
+    assert!(!PadRef::names(
+        "serial:054c:09cc:abc",
+        "serial:054c:09cc:ABC"
+    ));
+    // Twelve hex digits are a MAC address without its colons, refused
+    // with how to write it.
+    assert_eq!(PadRef::parse("address:0a1b2c3d4e14"), None);
+    let bare = Profile::check("mode = \"unicast\"\npad = \"address:0A1B2C3D4E14\"\n").unwrap_err();
+    assert!(bare.problem.contains("without its colons"), "{bare:?}");
     let written = PadRef::parse("serial:054C:09CC:abc").unwrap();
     assert!(written.matches("serial:054c:09cc:abc", 0x054c, 0x09cc));
     assert!(!written.matches("serial:054c:09cc:ABC", 0x054c, 0x09cc));
@@ -258,7 +288,8 @@ fn a_pad_is_an_address_a_known_name_or_a_model() {
         "dualshock4",
         "model:dualshock4",
         "model:54c:9cc",
-        "address:nope",
+        "address:no/pe",
+        "address:0a:1b:2c",
         "serial:045e:02dd:",
         "serial:045e",
         "port:",
@@ -655,6 +686,27 @@ fn a_preset_names_the_assists_button_that_takes_the_motion() {
             .map(|gyro| gyro.button),
         Some(gamepad::TOUCHPAD)
     );
+    // So are the back buttons, in SDL's order, and capacitive touch is
+    // not.
+    for (name, paddle) in [
+        ("paddle-1", gamepad::PADDLE_1),
+        ("paddle-2", gamepad::PADDLE_2),
+        ("paddle-3", gamepad::PADDLE_3),
+        ("paddle-4", gamepad::PADDLE_4),
+    ] {
+        assert_eq!(
+            mux_of(&preset("average", &format!("assist-gyro = \"{name}\"\n")))
+                .gyro
+                .map(|gyro| gyro.button),
+            Some(paddle),
+            "{name}"
+        );
+    }
+    assert!(
+        !button_names().any(|name| name.contains("touch") && name != "touchpad"),
+        "{:?}",
+        button_names().collect::<Vec<_>>()
+    );
 
     let said = |text: &str, want_at: &str, want: &str| {
         let (at, problem) = refusal(text);
@@ -704,6 +756,18 @@ fn the_full_form_names_a_muxs_button_that_hands_motion_over() {
             input: Some(0),
             button: gamepad::SOUTH,
         })
+    );
+    assert_eq!(
+        mux_of(&full(
+            "priority",
+            "gyro = { button = \"paddle-2\", input = \"b\" }\n"
+        ))
+        .gyro,
+        Some(Switch {
+            input: Some(1),
+            button: gamepad::PADDLE_2,
+        }),
+        "a back button"
     );
     let said = |text: &str, want_at: &str, want: &str| {
         let (at, problem) = refusal(text);
@@ -1046,6 +1110,79 @@ mod form {
         assert!(toml.contains("outputs = 3\n"), "{toml}");
         assert!(toml.contains("managed = true\n"), "{toml}");
         Profile::check(&toml).unwrap();
+    }
+
+    /// The Gyro field offers every button a profile can name, the back
+    /// buttons among them, and then the capacitive touches, each read
+    /// under "Assist holds".
+    #[test]
+    fn the_gyro_field_offers_the_back_buttons_and_the_touches() {
+        let fields = form::fields();
+        let gyro = fields
+            .iter()
+            .find(|field| field.key == "assist-gyro")
+            .unwrap();
+        let Kind::Choice { choices } = &gyro.kind else {
+            panic!("{gyro:?}");
+        };
+        let read: Vec<(&str, &str, &str, &str)> = choices
+            .iter()
+            .map(|choice| {
+                (
+                    choice.value.as_str(),
+                    choice.label.as_str(),
+                    choice.caption.as_str(),
+                    choice.brief.as_str(),
+                )
+            })
+            .collect();
+        // After no button and the sixteen there were before them, and
+        // the touches last.
+        assert_eq!(read.len(), 25, "{read:?}");
+        assert_eq!(read[0].0, "none");
+        assert_eq!(read[16].0, "touchpad");
+        assert_eq!(
+            read[17..21],
+            [
+                ("paddle-1", "Assist · Paddle 1", "Assist holds", "Paddle 1"),
+                ("paddle-2", "Assist · Paddle 2", "Assist holds", "Paddle 2"),
+                ("paddle-3", "Assist · Paddle 3", "Assist holds", "Paddle 3"),
+                ("paddle-4", "Assist · Paddle 4", "Assist holds", "Paddle 4"),
+            ]
+        );
+        let touches: Vec<&str> = read[21..].iter().map(|choice| choice.0).collect();
+        assert_eq!(
+            touches,
+            [
+                "left-stick-touch",
+                "right-stick-touch",
+                "left-grip-touch",
+                "right-grip-touch"
+            ]
+        );
+        assert_eq!(read[21].3, "Left stick touch");
+        assert!(choices[21].description.contains("with the motion"));
+    }
+
+    /// A touch hands the motion over and is no switch: `assist-gyro`
+    /// takes its name, and a toggle's switch doesn't.
+    #[test]
+    fn a_touch_is_named_for_the_gyro_and_not_for_a_switch() {
+        let gyro = "mode = \"priority\"\nprimary = \"model:0001:0002\"\nassist = \"model:0003:0004\"\nassist-gyro = \"right-stick-touch\"\n";
+        let planned = super::plan(gyro).unwrap();
+        let ctrlassist_core::NodeSpec::Mux { config, .. } = &planned.graph.nodes[0] else {
+            panic!("{planned:?}");
+        };
+        assert_eq!(
+            config.gyro.map(|gyro| gyro.button),
+            Some(ctrlassist_core::gamepad::RIGHT_STICK_TOUCH)
+        );
+        let switch = "[source.a]\npad = \"model:0001:0002\"\n[source.b]\npad = \"model:0003:0004\"\n[node.m]\nmux = \"toggle\"\ninputs = [\"a\", \"b\"]\nswitch = \"right-stick-touch\"\n[sink.out]\ninput = \"m\"\n";
+        let refused = super::plan(switch).unwrap_err().to_string();
+        assert!(
+            refused.contains("no button named `right-stick-touch`"),
+            "{refused}"
+        );
     }
 
     #[test]

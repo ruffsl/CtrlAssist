@@ -28,7 +28,7 @@ Right after installing, log out and back in once.
 
 ## A controller isn't listed
 
-`ctrlassist pads` lists what the system reports as a gamepad. If yours is missing, check that the system sees it at all (`ls /dev/input/js*`). A controller hidden by another running arrangement is still listed, with that arrangement's name.
+`ctrlassist pads` lists what the system reports as a gamepad. If yours is missing, check that the system sees it at all (`ls /dev/input/js*`). A controller hidden by another running arrangement is still listed, with that arrangement's name. A Steam Controller isn't listed while Steam has it ([Steam Controller](../guide/steam-controller.md#steam)), nor on a kernel too old to know it ([Requirements](../reference/requirements.md)).
 
 ## The game sees the real controllers as well as the virtual one
 
@@ -37,6 +37,28 @@ Look at the tray menu's **Hiding:** line, just above **Settings**, or the daemon
 - **Hiding: service** means controllers are truly hidden while an arrangement runs. If the game still shows one, it was probably started before the arrangement; restart the game.
 - **Hiding: grab** means the hiding service hasn't been reachable, so controllers are only grabbed. Most games then see just the virtual controller, but a program that reads controllers its own way still sees the real ones. Steam does this for PlayStation controllers. Check `systemctl status ctrlassist-hider.socket`. The daemon looks for the service again each time an arrangement starts, so once the service is there, stop and start the arrangement. While controllers are only grabbed, CtrlAssist also asks Steam to leave their models alone, by adding them to Steam's controller blacklist for as long as the arrangement runs; Steam takes that up only when it next starts, so restart Steam after starting the arrangement.
 - **Hiding: looking for the service…** means the daemon has only just started and hasn't heard from the hiding service yet. It changes to `service` or `grab` as soon as it has; an arrangement started meanwhile waits for that answer.
+
+## The game sees two controllers with a Steam Controller
+
+The hiding service takes a Steam Controller only on its USB cable. Behind its Puck or over Bluetooth, Steam, and games that read it through SDL's own driver for it, still see it beside the virtual controller. [Steam Controller](../guide/steam-controller.md#visibility) says why and what can be done.
+
+## A Steam Controller's raw interface "isn't yours to open"
+
+A profile with a Steam Controller fails to start, or is held, saying so. CtrlAssist reads the controller through its raw interface, which CtrlAssist's udev rule gives to the person at the machine. The packages and the NixOS module install the rule and apply it to controllers already connected, so after installing either, this means one of these:
+
+- **You aren't the person at the machine:** logged in over SSH, or another user's session is the one in front. The rule serves only the session in front of the seat.
+- **CtrlAssist was installed some other way,** without its udev rule. Install the rule, then unplug the controller and plug it in again.
+
+<details><summary id="raw-interface-from-a-terminal">From a terminal</summary>
+
+```sh
+ls -l /dev/hidraw*     # the controller's raw interface has a + after its mode: yours to open
+loginctl               # is your session the one in front of seat0?
+```
+
+</details>
+
+If it says the raw interface "can't be opened" or "can't be read" instead, unplug the controller and plug it in again; the daemon's log has the details.
 
 ## "no virtual pad can be made"
 

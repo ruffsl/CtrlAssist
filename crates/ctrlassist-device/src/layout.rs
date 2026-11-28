@@ -50,9 +50,20 @@ const BTN_DPAD_LEFT: u16 = 0x222;
 const BTN_DPAD_RIGHT: u16 = 0x223;
 
 /// The first positions past the gamepad's own, where a pad's other
-/// buttons and axes go, in the order of their codes.
+/// buttons and axes go, in the order of their codes. A button passes by
+/// every place with a name: see [`spare_button`].
 const FIRST_SPARE_BUTTON: u8 = 15;
 const FIRST_SPARE_AXIS: u8 = 6;
+
+/// The first button place at or after `from` that no gamepad name has,
+/// if one is left. A pad's other key never lands on a named place, so a
+/// profile that names a back button means a back button, not whatever
+/// key a pad with none happens to have.
+fn spare_button(from: u8) -> Option<u8> {
+    (from..=u8::MAX)
+        .take_while(|place| usize::from(*place) < BUTTONS)
+        .find(|place| !gamepad::NAMED_BUTTONS.contains(&Control::Button(*place)))
+}
 
 /// The values an absolute axis reports, as the pad declares them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -179,8 +190,8 @@ impl Mapping {
 
     /// The mapping for a pad with these key codes and absolute axes,
     /// under the kernel's gamepad layout. Codes beyond the gamepad's own
-    /// take the spare positions in code order until those run out; the
-    /// rest are dropped.
+    /// take the spare positions in code order until those run out,
+    /// passing by every place a gamepad name has; the rest are dropped.
     #[must_use]
     pub fn kernel(keys: &[u16], absolutes: &[(u16, AxisRange)]) -> Self {
         let has = |code: u16| absolutes.iter().any(|(axis, _)| *axis == code);
@@ -222,11 +233,13 @@ impl Mapping {
                 BTN_TL2 | BTN_TR2 if analog_triggers => Key::Unmapped,
                 BTN_TL2 => Key::To(Out::Trigger(index(gamepad::LEFT_TRIGGER))),
                 BTN_TR2 => Key::To(Out::Trigger(index(gamepad::RIGHT_TRIGGER))),
-                _ if usize::from(spare) < BUTTONS => {
-                    spare += 1;
-                    Key::To(Out::Button(spare - 1))
-                }
-                _ => Key::Unmapped,
+                _ => match spare_button(spare) {
+                    Some(place) => {
+                        spare = place + 1;
+                        Key::To(Out::Button(place))
+                    }
+                    None => Key::Unmapped,
+                },
             };
         }
 
@@ -545,13 +558,42 @@ mod tests {
                 .with(Control::Button(15), 1.0)
                 .with(Control::Axis(7), 1.0)
         );
+        // The next free place: 16 to 20 are the back buttons' and the
+        // touchpad's click.
         let state = after(&mapping, &[(EV_KEY, 0x2c1, 1), (EV_ABS, 0x07, 0)]);
         assert_eq!(
             state,
             PadState::NEUTRAL
-                .with(Control::Button(16), 1.0)
+                .with(Control::Button(21), 1.0)
                 .with(Control::Axis(6), -1.0)
         );
+    }
+
+    #[test]
+    fn other_keys_pass_by_every_named_place() {
+        // Twelve keys that aren't a gamepad's own: enough to cross the
+        // back buttons' and the touchpad's click's places, and capacitive
+        // touch's and the second touchpad's click's.
+        let keys: Vec<u16> = (0x2c0..0x2cc).collect();
+        let mapping = Mapping::kernel(&keys, &[]);
+        let places: Vec<u8> = keys
+            .iter()
+            .map(|code| {
+                let state = after(&mapping, &[(EV_KEY, *code, 1)]);
+                let held: Vec<u8> = (0..BUTTONS as u8)
+                    .filter(|index| state.get(Control::Button(*index)) != 0.0)
+                    .collect();
+                assert_eq!(held.len(), 1, "{code:#x}: {held:?}");
+                held[0]
+            })
+            .collect();
+        assert_eq!(places, [15, 21, 22, 23, 24, 25, 31, 32, 33, 34, 35, 36]);
+        for named in gamepad::NAMED_BUTTONS {
+            assert!(
+                !places.iter().any(|place| Control::Button(*place) == named),
+                "{named:?} was given to another key"
+            );
+        }
     }
 
     #[test]
@@ -564,9 +606,10 @@ mod tests {
         all.extend(keys.iter().map(|code| (EV_KEY, *code, 1)));
         all.extend(absolutes.iter().map(|(code, _)| (EV_ABS, *code, 255)));
         let state = after(&mapping, &all);
-        // Every spare position is taken, and no gamepad position was.
+        // Every spare position is taken, and no named position was.
         for index in 0..BUTTONS as u8 {
-            let expected = if index >= FIRST_SPARE_BUTTON {
+            let named = gamepad::NAMED_BUTTONS.contains(&Control::Button(index));
+            let expected = if index >= FIRST_SPARE_BUTTON && !named {
                 1.0
             } else {
                 0.0

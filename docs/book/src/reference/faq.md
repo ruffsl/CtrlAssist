@@ -55,7 +55,7 @@ It sees a real controller beside the virtual one. A running profile keeps its re
 
 ### Which controllers are supported?
 
-CtrlAssist supports most standard gamepads, such as those with a conventional Xbox or PlayStation layout, including those with strong and weak force feedback (rumble) capabilities. Xbox and PlayStation controllers are read through their own drivers, and others through the community controller database that SDL also uses. [Requirements](./requirements.md) has what has been tried, and [How It Works](./how-it-works.md#controller-layouts) how to add a layout.
+CtrlAssist supports most standard gamepads, such as those with a conventional Xbox or PlayStation layout, including those with strong and weak force feedback (rumble) capabilities. Xbox and PlayStation controllers are read through their own drivers, and others through the community controller database that SDL also uses; a [Steam Controller](../guide/steam-controller.md) is read too, though not yet tried on a real one. [Requirements](./requirements.md) has what has been tried, and [How It Works](./how-it-works.md#controller-layouts) how to add a layout.
 
 Specialized controller features are supported for a DualSense and a DualShock 4, [as below](#do-the-gyro-and-the-touchpad-carry-over); other controllers' own extras are not yet. If you have device driver expertise and would like to contribute support for additional controller features, please consider opening a pull request!
 
@@ -71,7 +71,7 @@ Not that you would feel. Measured between a real controller and the virtual one,
 
 ### Do the gyro and the touchpad carry over?
 
-Yes, with a real DualSense or DualShock 4 behind a virtual controller of the **DualSense** identity, and the real one hidden. A game gets one controller's motion at a time, the primary's unless the profile gives the assist a [Gyro](../guide/profiles.md#gyro) button. A game's feedback goes the other way: to a real DualSense its lightbar, player lights and adaptive trigger effects, and to a DualShock 4, which has no such triggers, the lightbar's color. [Identity](../guide/profiles.md#identity) has the details.
+Yes, with a real DualSense or DualShock 4 behind a virtual controller of the **DualSense** identity, and the real one hidden, or with a Steam Controller behind it, whose right trackpad is the touchpad ([Steam Controller](../guide/steam-controller.md)). A game gets one controller's motion at a time, the primary's unless the profile gives the assist a [Gyro](../guide/profiles.md#gyro) button. A game's feedback goes the other way: to a real DualSense its lightbar, player lights and adaptive trigger effects, and to a DualShock 4, which has no such triggers, the lightbar's color. [Identity](../guide/profiles.md#identity) has the details.
 
 ## Setup and safety
 

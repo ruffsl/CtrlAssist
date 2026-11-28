@@ -91,6 +91,14 @@
           crate = "ctrlassist-test";
           mainProgram = "ctrlassist-fixture";
         };
+        # The test crate again with its SDL probe, which links SDL3: what
+        # a game built on SDL makes of a virtual pad, for the device check.
+        packages.sdl-probe = pkgs.callPackage ./packaging/nix/crate.nix {
+          crate = "ctrlassist-test";
+          mainProgram = "ctrlassist-sdl-probe";
+          features = [ "sdl-probe" ];
+          extraBuildInputs = [ pkgs.sdl3 ];
+        };
         packages.hider = pkgs.callPackage ./packaging/nix/crate.nix {
           crate = "ctrlassist-hider";
           mainProgram = "ctrlassist-hider";
@@ -116,7 +124,7 @@
           fixture = self.packages.${system}.fixture;
         };
         checks.device = pkgs.callPackage ./packaging/nix/test-device.nix {
-          fixture = self.packages.${system}.fixture;
+          inherit (self.packages.${system}) fixture sdl-probe;
         };
         checks.hider = pkgs.callPackage ./packaging/nix/test-hider.nix {
           inherit (self.packages.${system}) fixture hider;
@@ -248,6 +256,9 @@
             shellcheck
             # sdl2-jstest: what an SDL game lists, for hardware checks of hiding
             sdl-jstest
+            # SDL3 itself, which the test crate's SDL probe links
+            # (`--all-features` builds it)
+            sdl3
             # The settings window's UI files: slint-lsp for the editor's
             # completion and live preview, slint-viewer to check and
             # render them without the app, both at the workspace's Slint

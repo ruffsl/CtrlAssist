@@ -26,6 +26,8 @@ Deferred work and designs set aside, one file each. An entry says what the idea 
 - [`touchpad-movement-blended.md`](touchpad-movement-blended.md) — in average, one finger that moves by the mean of both pads' fingers' movement.
 - [`larger-pad-state.md`](larger-pad-state.md) — more than 64 buttons or 16 axes.
 - [`split-preset.md`](split-preset.md) — a preset for splitting one pad into several.
+- [`steam-controller-extras-to-games.md`](steam-controller-extras-to-games.md) — a Steam Controller's left trackpad, back buttons and capacitive touch reaching a game.
+- [`steam-controller-held-by-steam.md`](steam-controller-held-by-steam.md) — finding a Steam Controller that Steam already holds, by its HID device.
 
 ## Platform
 
@@ -40,8 +42,10 @@ Deferred work and designs set aside, one file each. An entry says what the idea 
 - [`hider-reload-on-upgrade.md`](hider-reload-on-upgrade.md) — a reload that has the hiding service exit once its last connection closes, so an upgrade shows no hidden pad.
 - [`steam-blacklist-consent.md`](steam-blacklist-consent.md) — a way to keep CtrlAssist out of Steam's config.
 - [`more-identities.md`](more-identities.md) — more virtual pad identities.
+- [`virtual-steam-controller.md`](virtual-steam-controller.md) — a virtual Steam Controller identity: what other projects have shown, what Steam does with one, what it would take.
 - [`custom-modes.md`](custom-modes.md) — documenting custom modes.
 
 ## Feedback
 
 - [`rumble-routing-model.md`](rumble-routing-model.md) — the alternatives to level-based rumble routing and the prior art behind the choice, kept in case it is revisited.
+- [`steam-controller-haptics.md`](steam-controller-haptics.md) — a Haptics choice of its own beside Rumble, for a trackpad's clicks to go to whoever touches it.

@@ -205,11 +205,18 @@ pub enum Identity {
     /// A DualSense, made from one that has been connected.
     #[serde(rename = "dualsense")]
     DualSense,
+    /// A Steam Controller (2026), for what reads one as Steam does.
+    SteamController,
 }
 
 impl Identity {
     /// Every identity, in the order they are listed to a person.
-    pub const ALL: [Self; 3] = [Self::Generic, Self::Xbox, Self::DualSense];
+    pub const ALL: [Self; 4] = [
+        Self::Generic,
+        Self::Xbox,
+        Self::DualSense,
+        Self::SteamController,
+    ];
 
     /// The identity's name, as a profile writes it.
     #[must_use]
@@ -218,6 +225,7 @@ impl Identity {
             Self::Generic => "generic",
             Self::Xbox => "xbox",
             Self::DualSense => "dualsense",
+            Self::SteamController => "steam-controller",
         }
     }
 }
@@ -394,10 +402,21 @@ pub enum PadRef {
     Model(u16, u16),
 }
 
+/// Whether `text` is twelve hex digits and nothing else: a MAC address
+/// written without its colons, almost always, which no pad's driver gives
+/// as its address.
+#[must_use]
+pub fn is_bare_mac(text: &str) -> bool {
+    text.len() == 12 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 impl PadRef {
     /// Reads a pad reference: a bare address, one of the `address:`,
     /// `serial:`, `port:` or `model:` names a pad is known by, or
-    /// `model:<vendor>:<product>` for any pad of that model.
+    /// `model:<vendor>:<product>` for any pad of that model. An address
+    /// is a MAC address, taken in either case, or else what a pad's driver
+    /// gives as its own address, letters and digits kept as written, but
+    /// for [twelve hex digits](is_bare_mac), which are refused.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         // Four hex digits; `from_str_radix` alone would take a sign.
@@ -416,6 +435,14 @@ impl PadRef {
                     }
                 })
         };
+        // What a pad's driver gives as its own address and is no MAC
+        // address: a Steam Controller's is its serial number, the same on
+        // every transport. Letters and digits, kept as written.
+        let is_serial = |text: &str| {
+            !text.is_empty()
+                && !is_bare_mac(text)
+                && text.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        };
         if is_address(text) {
             return Some(Self::Exact(format!(
                 "address:{}",
@@ -427,7 +454,8 @@ impl PadRef {
             return None;
         }
         match kind {
-            "address" => is_address(rest).then(|| Self::Exact(text.to_ascii_lowercase())),
+            "address" if is_address(rest) => Some(Self::Exact(text.to_ascii_lowercase())),
+            "address" => is_serial(rest).then(|| Self::Exact(text.to_string())),
             "model" | "serial" | "port" => {
                 let mut parts = rest.splitn(3, ':');
                 let vendor = hex(parts.next()?)?;
@@ -449,12 +477,25 @@ impl PadRef {
         }
     }
 
+    /// Whether `exact`, a pad's name as [`parse`](Self::parse) gives it,
+    /// is the pad known as `id`: the same, or for an address the same in
+    /// either case, so that a serial typed in other capitals than its
+    /// pad's driver gives it is that pad's.
+    #[must_use]
+    pub fn names(exact: &str, id: &str) -> bool {
+        exact == id
+            || matches!(
+                (exact.strip_prefix("address:"), id.strip_prefix("address:")),
+                (Some(written), Some(known)) if written.eq_ignore_ascii_case(known)
+            )
+    }
+
     /// Whether a connected pad is the one meant, given the name it is
     /// known by and its vendor and product.
     #[must_use]
     pub fn matches(&self, id: &str, vendor: u16, product: u16) -> bool {
         match self {
-            Self::Exact(exact) => exact == id,
+            Self::Exact(exact) => Self::names(exact, id),
             Self::Model(want_vendor, want_product) => {
                 (*want_vendor, *want_product) == (vendor, product)
             }
@@ -528,8 +569,11 @@ pub struct Plan {
     pub hide: Hide,
 }
 
-/// Button names, as profiles write them.
-const BUTTONS: [(&str, Control); 16] = [
+/// Button names, as profiles write them. The back buttons are in SDL's
+/// order: upper right, upper left, lower right, lower left. Capacitive
+/// touch is none of them: a hand resting on a pad is no button to press,
+/// and is named only for what hands the motion over ([`TOUCHES`]).
+const BUTTONS: [(&str, Control); 20] = [
     ("south", gamepad::SOUTH),
     ("east", gamepad::EAST),
     ("north", gamepad::NORTH),
@@ -546,6 +590,21 @@ const BUTTONS: [(&str, Control); 16] = [
     ("dpad-left", gamepad::DPAD_LEFT),
     ("dpad-right", gamepad::DPAD_RIGHT),
     ("touchpad", gamepad::TOUCHPAD),
+    ("paddle-1", gamepad::PADDLE_1),
+    ("paddle-2", gamepad::PADDLE_2),
+    ("paddle-3", gamepad::PADDLE_3),
+    ("paddle-4", gamepad::PADDLE_4),
+];
+
+/// The capacitive touches' names, which only `assist-gyro` and a mux's
+/// `gyro` take: a thumb resting on a stick or a hand on a grip, as a
+/// Steam Controller senses them, hands the motion over while it rests
+/// there, and goes out with it.
+const TOUCHES: [(&str, Control); 4] = [
+    ("left-stick-touch", gamepad::LEFT_STICK_TOUCH),
+    ("right-stick-touch", gamepad::RIGHT_STICK_TOUCH),
+    ("left-grip-touch", gamepad::LEFT_GRIP_TOUCH),
+    ("right-grip-touch", gamepad::RIGHT_GRIP_TOUCH),
 ];
 
 /// What `assist-gyro` says for no button, as leaving it out does.
@@ -554,6 +613,29 @@ pub const NO_BUTTON: &str = "none";
 /// The buttons' names, as profiles write them.
 pub fn button_names() -> impl Iterator<Item = &'static str> {
     BUTTONS.iter().map(|(name, _)| *name)
+}
+
+/// The names of what can hand the motion over: every button, then the
+/// capacitive touches.
+pub fn gyro_button_names() -> impl Iterator<Item = &'static str> {
+    BUTTONS.iter().chain(&TOUCHES).map(|(name, _)| *name)
+}
+
+/// The button or touch `name` that hands the motion over.
+fn gyro_button(at: &str, name: &str) -> Result<Control, ProfileError> {
+    match TOUCHES.iter().find(|(known, _)| *known == name) {
+        Some((_, control)) => Ok(*control),
+        None => button(at, name).or_else(|_| {
+            let known: Vec<&str> = gyro_button_names().collect();
+            error(
+                at,
+                format!(
+                    "no button named `{name}`; the buttons are {}",
+                    known.join(", ")
+                ),
+            )
+        }),
+    }
 }
 
 fn button(at: &str, name: &str) -> Result<Control, ProfileError> {
@@ -714,6 +796,16 @@ impl Profile {
             let at = format!("source.{name}");
             check_name(&at, name)?;
             let Some(pad) = PadRef::parse(&source.pad) else {
+                let bare = source.pad.strip_prefix("address:").unwrap_or(&source.pad);
+                if is_bare_mac(bare) {
+                    return error(
+                        format!("{at}.pad"),
+                        format!(
+                            "`{}` looks like a MAC address without its colons: write it as 0a:1b:2c:3d:4e:5f",
+                            source.pad
+                        ),
+                    );
+                }
                 return error(
                     format!("{at}.pad"),
                     format!(
@@ -728,7 +820,10 @@ impl Profile {
                 .then(|| {
                     sources
                         .iter()
-                        .find(|other: &&PlannedSource| other.pad == pad)
+                        .find(|other: &&PlannedSource| match (&other.pad, &pad) {
+                            (PadRef::Exact(one), PadRef::Exact(two)) => PadRef::names(one, two),
+                            (one, two) => one == two,
+                        })
                 })
                 .flatten();
             if let Some(other) = twice {
@@ -934,7 +1029,7 @@ impl Profile {
                         }
                         // Where the profile wrote it, before the node it
                         // becomes says where it never was.
-                        button("assist-gyro", &name)?;
+                        gyro_button("assist-gyro", &name)?;
                         Some(GyroSpec {
                             button: name,
                             input: "assist".to_string(),
@@ -1135,7 +1230,7 @@ fn mux(
         }
         let handed = Switch {
             input: Some(position("gyro.input", &gyro.input)?),
-            button: button(&format!("{at}.gyro.button"), &gyro.button)?,
+            button: gyro_button(&format!("{at}.gyro.button"), &gyro.button)?,
         };
         config.gyro = Some(handed);
     }
