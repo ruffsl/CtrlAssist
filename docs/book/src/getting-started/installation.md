@@ -1,17 +1,60 @@
 # Installation
 
-CtrlAssist runs on Linux. It installs one command, `ctrlassist`, which is also the daemon and the tray; a GUI, `ctrlassist-gui`; and a small system service that hides controllers from games.
+Most Linux users can install a pre-built package below. Choose the instructions for your distribution.
 
-## NixOS
+## Distro packages (.deb / .rpm / .pkg.tar.zst / Nix)
 
-Add the flake and enable the module:
+Pre-built packages are published on the [releases page](https://github.com/CtrlAssist/CtrlAssist/releases) for each tagged version, for x86_64 and arm64 (aarch64). The commands below pick the one that matches your machine. Each package is signed; to check one before you install it, see [Security & Supply Chain](../reference/security-supply-chain.md). The packages need glibc 2.34 or newer: Debian 12, Ubuntu 22.04, and any current Fedora or Arch.
+
+```sh
+{{#include ../generated/release-version.txt}}
+export BASE=https://github.com/CtrlAssist/CtrlAssist/releases/download/v${VERSION}
+```
+
+### Debian / Ubuntu
+
+```sh
+ARCH=$(dpkg --print-architecture)   # amd64 or arm64
+wget ${BASE}/ctrlassist_${VERSION}-1_${ARCH}.deb
+sudo apt install ./ctrlassist_${VERSION}-1_${ARCH}.deb
+```
+
+### Arch / CachyOS
+
+```sh
+wget ${BASE}/ctrlassist-${VERSION}-1-$(uname -m).pkg.tar.zst
+sudo pacman -U ./ctrlassist-${VERSION}-1-$(uname -m).pkg.tar.zst
+```
+
+### Fedora / RHEL
+
+```sh
+wget ${BASE}/ctrlassist-${VERSION}-1.$(uname -m).rpm
+sudo dnf install ./ctrlassist-${VERSION}-1.$(uname -m).rpm
+```
+
+#### Bazzite / Silverblue
+
+These immutable systems apply package changes after a reboot.
+
+```sh
+sudo rpm-ostree install ./ctrlassist-${VERSION}-1.$(uname -m).rpm
+```
+
+### NixOS
+
+<details>
+<summary id="nixos-module">NixOS module</summary>
+
+The repository provides a NixOS module that wires up the daemon, the tray, the hiding service, the GUI and the CLI together. With flakes, add the repository as an input:
 
 ```nix
+# flake.nix
 {
   inputs.ctrlassist.url = "github:CtrlAssist/CtrlAssist";
 
   outputs = { nixpkgs, ctrlassist, ... }: {
-    nixosConfigurations.my-machine = nixpkgs.lib.nixosSystem {
+    nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
       modules = [
         ctrlassist.nixosModules.default
         { services.ctrlassist.enable = true; }
@@ -50,7 +93,7 @@ By default the module builds CtrlAssist against your system's nixpkgs, so it com
   # and miss the cache.
 
   outputs = { nixpkgs, ctrlassist, ... }: {
-    nixosConfigurations.my-machine = nixpkgs.lib.nixosSystem {
+    nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
       modules = [
         ctrlassist.nixosModules.default
         ({ pkgs, ... }: {
@@ -93,7 +136,7 @@ in
 The `nix.settings` lines take effect once a switch activates them, so pass the cache on the command line for the first switch, or it builds locally (without flakes, drop `--flake`):
 
 ```sh
-sudo nixos-rebuild switch --flake .#my-machine \
+sudo nixos-rebuild switch --flake .#your-host \
   --option extra-substituters https://ctrlassist.cachix.org \
   --option extra-trusted-public-keys ctrlassist.cachix.org-1:bGlpD8WCqOqGDpJH9EEO9YqlCwH1V31N2nNv6IurgNY=
 ```
@@ -102,36 +145,21 @@ Later switches pick the cache up from `nix.settings` alone.
 
 </details>
 
-Rebuild, then log out and back in. The module installs everything below and starts the daemon and the tray with your session. Three options switch parts off, all on by default:
+`services.ctrlassist.enable` installs everything [below](#what-gets-installed) and starts the daemon and the tray with your session. The module's options, all under `services.ctrlassist`:
 
-| Option | What it controls |
-|---|---|
-| `services.ctrlassist.hiding` | The hiding service. Without it, controllers are grabbed instead; see [How It Works](../reference/how-it-works.md#hiding). |
-| `services.ctrlassist.realtime` | Whether users' services may ask for real-time scheduling up to priority 10, which keeps input latency steady on a busy machine. |
-| `services.ctrlassist.tray` | The tray, started with the graphical session. |
+| Option | What it does |
+|--------|--------------|
+| `hiding` | The hiding service (on by default). Without it, controllers are grabbed instead; see [How It Works](../reference/how-it-works.md#hiding). |
+| `realtime` | Lets users' services ask for real-time scheduling up to priority 10 (on by default), which keeps input latency steady on a busy machine. |
+| `tray` | The tray, started with the graphical session (on by default). |
+| `package` | The CtrlAssist package to use; set it for the [prebuilt binaries](#prebuilt-binaries-optional). |
+| `logLevel`, `extraArgs` | The daemon's and the tray's log level, and extra `ctrlassist service daemon` arguments for anything the module doesn't expose. |
 
-Two more are for looking into a problem: `services.ctrlassist.logLevel` (`"debug"`, say) sets how much each user's daemon and tray log, and `services.ctrlassist.extraArgs` adds arguments to the daemon's command.
+Types and defaults are in each option's description in [`module.nix`](https://github.com/CtrlAssist/CtrlAssist/blob/main/packaging/nix/module.nix).
 
-## Debian, Ubuntu, Fedora and Arch
-
-Each release carries a `.deb`, an `.rpm` and an Arch package, for x86_64 and arm64. Download the one for your distribution from the [releases page](https://github.com/CtrlAssist/CtrlAssist/releases), then:
-
-```sh
-{{#include ../generated/release-version.txt}}
-
-# Debian, Ubuntu
-sudo apt install ./ctrlassist_${VERSION}-1_amd64.deb
-
-# Fedora
-sudo dnf install ./ctrlassist-${VERSION}-1.x86_64.rpm
-
-# Arch
-sudo pacman -U ./ctrlassist-${VERSION}-1-x86_64.pkg.tar.zst
-```
+</details>
 
 Log out and back in afterwards: the daemon and the tray start with your session, and the real-time limit takes effect at login.
-
-The packages need glibc 2.34 or newer: Debian 12, Ubuntu 22.04, and any current Fedora or Arch. To check a download before installing it, see [Security & Supply Chain](../reference/security-supply-chain.md).
 
 ## What gets installed
 
