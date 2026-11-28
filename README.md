@@ -132,7 +132,7 @@ Cli -->|socket| Daemon
 Tray -->|socket| Daemon
 Daemon -->|socket| Hider
 Real -.->|input| Daemon
-Daemon -.->|input| Virtual
+Daemon -.->|output| Virtual
 Virtual -.-> Game
 Hider -.->|hides| Real
 ```
