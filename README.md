@@ -171,5 +171,5 @@ The third-party notices ship with the packages. Notable among what CtrlAssist bu
 - [Zenoh](https://zenoh.io), the pub/sub that carries everything between the daemon and its clients over a Unix socket.
 - [ksni](https://github.com/iovxw/ksni), the StatusNotifierItem library behind the tray.
 - [evdev](https://github.com/cmr/evdev), for reading controllers and making virtual ones.
-- [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB), the community controller database, a snapshot of which is built in.
+- [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB), the community controller database.
 - [TisVlay](https://github.com/TisVlay/TisVlay), whose tooling, settings window and conventions this rewrite is built on.
