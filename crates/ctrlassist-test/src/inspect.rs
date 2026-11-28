@@ -114,6 +114,19 @@ pub fn pads() -> io::Result<Vec<Pad>> {
     Ok(found)
 }
 
+/// Whether `file` has something to read before `bound` is over. A test
+/// reading a node that only says something when a pad behind it does asks
+/// this first, so that a pad that is never heard fails the test and
+/// doesn't hold it forever.
+#[must_use]
+pub fn readable_within(file: &impl std::os::fd::AsFd, bound: Duration) -> bool {
+    let Ok(wait) = Timespec::try_from(bound) else {
+        return false;
+    };
+    let mut fds = [PollFd::new(file, PollFlags::IN)];
+    poll(&mut fds, Some(&wait)).is_ok_and(|ready| ready > 0)
+}
+
 /// Whether this process can open a node, for reading or for reading and
 /// writing.
 #[must_use]

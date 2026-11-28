@@ -20,6 +20,7 @@ use ctrlassist_protocol::{bootstrap, keys};
 use ctrlassist_test::{
     FakeSteamController, Received, StateReport, SteamButton, SteamControllerBuilder, SteamState,
     SteamTransport, can_make_pads, can_make_steam_pads, may_open_once_udev_is_done,
+    readable_within,
 };
 use zenoh::Session;
 
@@ -840,6 +841,15 @@ async fn a_steam_controller_behind_a_virtual_one_is_read_whole_at_its_raw_node()
             StateReport::Full,
         )
         .unwrap();
+        // It reports only as the pad behind it does, so a read could wait
+        // forever for a pad that was never heard.
+        assert!(
+            readable_within(
+                &game,
+                Duration::from_secs(20).saturating_sub(started.elapsed())
+            ),
+            "the virtual Steam Controller at {raw:?} said nothing of what the fake sent"
+        );
         assert_eq!(game.read(&mut report).unwrap(), 54);
         assert_eq!(report[0], 0x42);
         buttons = u32::from_le_bytes([report[2], report[3], report[4], report[5]]);

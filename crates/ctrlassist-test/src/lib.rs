@@ -21,7 +21,9 @@ pub use hid::{
     FakeBluetoothDualSense, FakeDualSense, FakeHidPad, playstation_crc32, synthetic_dualsense,
 };
 pub use hider::{Asked, FakeHider, Script, raw_node_of};
-pub use inspect::{NodeKind, Pad, Reads, can_open, count_reads, may_open_once_udev_is_done, pads};
+pub use inspect::{
+    NodeKind, Pad, Reads, can_open, count_reads, may_open_once_udev_is_done, pads, readable_within,
+};
 pub use pad::FakePad;
 pub use raw::{get_feature, set_feature};
 pub use rumble::{Motors, RumblePad};
