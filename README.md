@@ -56,16 +56,21 @@ Combine Primary and Assist controllers into one virtual gamepad.
   - Sticks and D-pad: Prioritize Assist when active (exceeds deadzone)
     - Buttons: Pressed while either controller presses
     - Triggers: Prioritize largest value from either
+    - Touchpad: Prioritize Assist while touched
+    - Gyro: Primary's, or Assist's while a chosen button is held
   - Ideal for partial and asynchronous assistance
     - E.g. Assist for camera while Primary for actions
 - ⚖️ **Average**: Blend inputs from both controllers
   - Sticks: Averaged when both are active (exceed deadzone)
     - Buttons and D-pad: Logically OR'ed between controllers
     - Triggers: Averaged when both are active (exceed deadzone)
+    - Touchpad: First to touch keeps it until lifted
+    - Gyro: Never blended; as in Priority
   - Ideal for cooperative input and subtle corrections
     - E.g. For counter steer/brake assist in racing games
 - 🔃 **Toggle**: Switch Active controller on demand
   - All inputs forwarded from currently active controller
+    - Touchpad and gyro included
     - Toggle Active controller via Mode button on Assist
     - Or hand over from the window or the system tray
   - Ideal when fine-grain conflict-free control is needed
