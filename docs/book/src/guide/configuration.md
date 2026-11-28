@@ -48,7 +48,7 @@ managed = true       # optional
 
 `assist-gyro` is the assist's button that gives a game the assist's motion sensors while it is held, for the `priority` and `average` presets: a button's name (`south`, `east`, `north`, `west`, `left-bumper`, `right-bumper`, `select`, `start`, `mode`, `left-thumb`, `right-thumb`, `dpad-up`, `dpad-down`, `dpad-left`, `dpad-right`, `touchpad`, or on a [Steam Controller](./steam-controller.md#what-carries-over) its back buttons `paddle-1` to `paddle-4`, or a thumb or hand resting on it: `left-stick-touch`, `right-stick-touch`, `left-grip-touch`, `right-grip-touch`), or `none`, the default. See [Gyro](./profiles.md#gyro).
 
-`hide` is how the real controllers are kept from games while the arrangement runs, in any profile, a preset or not: `full` (the default), `grab` or `none`, which the window calls Hidden, Grabbed and Visible. See [Visibility](./profiles.md#visibility).
+`hide` is how the real controllers are kept from games while the arrangement runs, in any profile, a preset or not: `full` (the default), `grab` or `none`, which the GUI calls Hidden, Grabbed and Visible. See [Visibility](./profiles.md#visibility).
 
 `identity` is what the virtual controller presents itself as: `generic` (the default), `xbox`, `dualsense` or `steam-controller`; `ctrlassist identities` lists them and whether each can be made on this machine. See [Identity](./profiles.md#identity).
 

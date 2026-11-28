@@ -11,11 +11,12 @@ use crate::{AppWindow, Clipboard, Icons};
 
 /// Loads the sidebar's icons and the action glyphs the panes share.
 pub(crate) fn load(app: &AppWindow) {
-    // `input-gaming` is CtrlAssist's own icon, the tray's too.
+    // CtrlAssist's own icon, the tray's too: in Breeze one pad in color
+    // and symbolic, where the other two names' forms differ.
     app.set_pads_icon(load_symbolic_icon(&[
+        "applications-games",
         "input-gaming",
         "input-gamepad",
-        "applications-games",
     ]));
     app.set_profiles_icon(load_symbolic_icon(&[
         "view-list-details",
@@ -31,7 +32,7 @@ pub(crate) fn load(app: &AppWindow) {
 
     // In color, for the About pane's header: the icon the desktop entry
     // and the tray carry.
-    app.set_app_logo(load_color_icon(&["input-gaming", "applications-games"]));
+    app.set_app_logo(load_color_icon(&["applications-games", "input-gaming"]));
 
     let icons = app.global::<Icons>();
     icons.set_shutdown(load_symbolic_icon(&["system-shutdown"]));
@@ -60,9 +61,9 @@ pub(crate) fn load(app: &AppWindow) {
         "applications-internet",
     ]));
     icons.set_gamepad(load_symbolic_icon(&[
+        "applications-games",
         "input-gaming",
         "input-gamepad",
-        "applications-games",
     ]));
     icons.set_reset(load_symbolic_icon(&[
         "edit-reset",
@@ -71,11 +72,17 @@ pub(crate) fn load(app: &AppWindow) {
     ]));
     icons.set_start(load_symbolic_icon(&["media-playback-start"]));
     icons.set_stop(load_symbolic_icon(&["media-playback-stop"]));
+    icons.set_pause(load_symbolic_icon(&["media-playback-pause"]));
     icons.set_identify(load_symbolic_icon(&[
         "notifications",
         "preferences-desktop-notification-bell",
         "audio-volume-high",
     ]));
+    // A profile's tile. Breeze's names and no other's: a theme without
+    // them leaves the tile bare.
+    icons.set_join(load_symbolic_icon(&["kr_combine"]));
+    icons.set_split(load_symbolic_icon(&["split"]));
+    icons.set_written(load_symbolic_icon(&["view-list-text"]));
     app.global::<Clipboard>()
         .set_copy_icon(load_symbolic_icon(&["edit-copy"]));
 }

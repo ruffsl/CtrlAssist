@@ -76,9 +76,12 @@ pub mod icon {
 
     /// No icon.
     pub const NONE: Icon = &[];
-    /// A pad, and the tray itself. Adwaita has the first name's
-    /// symbolic form and Breeze the second's.
-    pub const PAD: Icon = &["input-gaming", "input-gamepad"];
+    /// A pad, and the tray itself. The first name's is one pad in
+    /// Breeze whether in color, as the tray's icon is, or symbolic, as a
+    /// row's is; the other two names' are a shaded pad in color and a
+    /// heavier glyph of another shape in symbolic form, where there is
+    /// one at all.
+    pub const PAD: Icon = &["applications-games", "input-gaming", "input-gamepad"];
     /// Start, and a profile that runs.
     pub const START: Icon = &["media-playback-start"];
     /// Stop, and a profile that doesn't run.
@@ -97,6 +100,8 @@ pub mod icon {
     pub const MODE: Icon = &["media-playlist-shuffle"];
     /// Rumble, and a buzz.
     pub const RUMBLE: Icon = &["notification-active", "preferences-desktop-notification"];
+    /// Whose motion sensors a virtual pad carries.
+    pub const GYRO: Icon = &["rotation-allowed", "object-rotate-right"];
     /// Whether the real pads are hidden.
     pub const HIDE: Icon = &["view-visible"];
     /// What a virtual pad presents itself as.
@@ -541,6 +546,7 @@ fn choice_entry(
     let icon = match field.key.as_str() {
         PRESET => icon::MODE,
         "rumble" => icon::RUMBLE,
+        "assist-gyro" => icon::GYRO,
         "hide" => icon::HIDE,
         "identity" => icon::IDENTITY,
         _ => icon::NONE,
@@ -780,9 +786,21 @@ fn pad_entries(view: &View) -> Vec<Entry> {
     }
     pads
 }
+/// Whether the menu ends with Quit: in a build for development, which
+/// is run from a terminal and wants a way to end it there. An installed
+/// tray is a user service, started with the session and stopped through
+/// the service manager; quit from its menu it would stay gone, and its
+/// notifications with it, until the next login. As TisVlay's tray.
+const QUIT: bool = cfg!(debug_assertions);
+
 /// The whole menu for what the daemon publishes now.
 #[must_use]
 pub fn menu(view: &View) -> Vec<Entry> {
+    whole(view, QUIT)
+}
+
+/// The menu, with Quit at its end or without.
+fn whole(view: &View, quit: bool) -> Vec<Entry> {
     let mut entries = Vec::new();
     if !view.alive {
         entries.push(said(icon::FAILED, "The CtrlAssist daemon isn't running"));
@@ -819,7 +837,9 @@ pub fn menu(view: &View) -> Vec<Entry> {
     // There whatever the daemon is doing: the window says more about a
     // daemon that isn't running than the menu can.
     entries.push(action(icon::SETTINGS, "Settings", Command::Settings));
-    entries.push(action(icon::QUIT, "Quit tray", Command::Quit));
+    if quit {
+        entries.push(action(icon::QUIT, "Quit tray", Command::Quit));
+    }
     entries
 }
 
@@ -1082,7 +1102,24 @@ default ✓ (Not set up) >
             unset: vec!["primary".to_string(), "assist".to_string()],
             ..profile("default", None)
         });
-        let menu = outline(&menu(&view));
+        let entries = menu(&view);
+        // Each row that says a choice of the profile's has a glyph.
+        let glyph = |label: &str| {
+            entries.iter().find_map(|entry| match entry {
+                Entry::Sub { entries, .. } => entries.iter().find_map(|entry| match entry {
+                    Entry::Sub {
+                        icon, label: found, ..
+                    } if found.starts_with(label) => Some(*icon),
+                    _ => None,
+                }),
+                _ => None,
+            })
+        };
+        assert_eq!(glyph("Gyro"), Some(icon::GYRO));
+        for label in ["Mode", "Rumble", "Gyro", "Visibility", "Identity"] {
+            assert!(glyph(label).is_some_and(|icon| !icon.is_empty()), "{label}");
+        }
+        let menu = outline(&entries);
         assert!(
             menu.contains(
                 "  Gyro: Assist · Right bumper >\n    ( ) Primary only\n    - Assist holds\n    ( ) South\n"
@@ -1099,7 +1136,7 @@ default ✓ (Not set up) >
     /// pad that left its setup is said so, and can't be handed to.
     #[test]
     fn a_running_profile_s_menu_has_stop_control_and_its_fields() {
-        let menu = outline(&menu(&with_default(Some(Phase::Held))));
+        let menu = outline(&whole(&with_default(Some(Phase::Held)), true));
         let couch = of(&menu, "couch (Held) >");
         assert!(
             couch.starts_with(
@@ -1145,7 +1182,7 @@ default ✓ (Not set up) >
     /// pad is buzzed by its own name, and a pick names its profile.
     #[test]
     fn rows_carry_their_icons_and_their_commands() {
-        let entries = menu(&with_default(Some(Phase::Held)));
+        let entries = whole(&with_default(Some(Phase::Held)), true);
         let top: Vec<(&str, Icon)> = entries
             .iter()
             .filter_map(|entry| match entry {
@@ -1356,12 +1393,31 @@ default ✓ (Not set up) >
         );
     }
 
+    /// An installed tray's menu has no Quit: it ends with Settings, and
+    /// is the same before it. A build for development has it, last.
+    #[test]
+    fn quit_is_in_the_menu_of_a_build_for_development_only() {
+        let view = view(Some(Phase::Running), Hiding::Service);
+        let (with, without) = (whole(&view, true), whole(&view, false));
+        assert_eq!(
+            with.last(),
+            Some(&action(icon::QUIT, "Quit tray", Command::Quit))
+        );
+        assert_eq!(
+            without.last(),
+            Some(&action(icon::SETTINGS, "Settings", Command::Settings))
+        );
+        assert_eq!(with[..with.len() - 1], without[..]);
+        // And the menu is the one of the two this build is for.
+        assert_eq!(menu(&view), whole(&view, QUIT));
+    }
+
     #[test]
     fn without_the_daemon_there_is_only_what_is_wrong_and_the_way_out() {
         let mut down = view(None, Hiding::Service);
         down.alive = false;
         assert_eq!(
-            outline(&menu(&down)),
+            outline(&whole(&down, true)),
             "- The CtrlAssist daemon isn't running\n---\nSettings\nQuit tray\n"
         );
         let mut arriving = view(None, Hiding::Service);

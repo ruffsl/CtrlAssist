@@ -1,33 +1,22 @@
 # Profiles
 
-A profile is an arrangement you keep: which controllers take part, and how they are combined. A profile that is running is what puts a virtual controller in front of your games. You make and change profiles on the window's **Profiles** page or in the tray's menu; this page says what each choice means, by the labels those show.
+A profile is an arrangement you keep: which controllers take part, and how they are combined. A profile that is running is what puts a virtual controller in front of your games. You make and change profiles on the GUI's **Profiles** page or in the tray's menu; this page says what each choice means, by the labels those show.
 
-Each profile is also a short file, which you can write by hand, and which can describe arrangements the window's fields can't. [Configuration Files](./configuration.md) is the reference for that.
+Each profile is also a short file, which you can write by hand, and which can describe arrangements the GUI's fields can't. [Configuration Files](./configuration.md) is the reference for that.
 
 ## Mode
 
-How the controllers are combined. Three modes make two controllers into one, a **Primary**, the main player's, and an **Assist**, the helper's:
+How the controllers are combined: three modes make two controllers into one, a **Primary**, the main player's, and an **Assist**, the helper's, and two go the other way and make one controller, the **Pad**, into several virtual ones.
 
-- 👑 **Priority**, the default: the primary plays, and the assist takes over whatever it touches, for as long as it touches it.
-  - A stick or the D-pad is the assist's while the assist has moved it, and the primary's the rest of the time. A button is pressed while either presses it, and a trigger takes whichever is pulled further.
-  - For help that comes and goes: the helper takes the camera, or the hard jump, and lets go.
-- ⚖️ **Average**: the two are blended.
-  - A stick or a trigger that both are using sits halfway between them; one that only one is using is that one's. A button or a D-pad direction is pressed while either presses it.
-  - For steering together and gentle corrections, as with a counter-steer or a little braking in a racing game.
-- 🔃 **Toggle**: one plays at a time.
-  - Everything comes from whoever has control. The Mode (guide) button on the assist's controller hands over, and so does **Has control** in the window or the tray.
-  - For when two sets of hands would only get in each other's way: menus, or a precise stretch one player does alone.
+{{#include ../../../../README.md:modes}}
 
-Two modes go the other way, and make one controller, the **Pad**, into several virtual ones:
+On the GUI's Profiles page and in the tray's menu, the two controllers of a mux mode are the **Primary** and the **Assist**, and the one controller of a demux mode is the **Pad**. **Outputs** is how many virtual controllers a demux mode makes.
 
-- 🔂 **Unicast**: the controller plays one virtual controller at a time, and its Mode button moves it to the next.
-- 📢 **Multicast**: the controller plays all of them at once.
-
-**Outputs** is how many virtual controllers those two make.
+The button that gives a game the assist's motion sensors is chosen under [Gyro](#gyro). A custom profile, one written by hand to describe an arrangement the fields can't, is in the [full form](./configuration.md#the-full-form).
 
 ## Inputs
 
-**Primary** and **Assist**, or **Pad**, are the controllers that take part. The window and the tray list the ones CtrlAssist knows; one that is unplugged, or busy in another running profile, can't be picked. Picking for one part the controller the other part has swaps the two, so the player and the helper change places in one pick.
+**Primary** and **Assist**, or **Pad**, are the controllers that take part. The GUI and the tray list the ones CtrlAssist knows; one that is unplugged, or busy in another running profile, can't be picked. Picking for one part the controller the other part has swaps the two, so the player and the helper change places in one pick.
 
 A part can be given one particular controller, or any controller of a model; the second is handy, and can't tell two identical controllers apart. [Configuration Files](./configuration.md#naming-a-controller) has the ways to write each. Once a part has taken a controller, it waits for that same one if it disconnects.
 
@@ -83,15 +72,15 @@ A profile is started by hand unless it is **Managed**. A managed profile is star
 
 ## The default profile
 
-CtrlAssist always keeps one profile, `default`: it is there from the first start, with its controllers still to choose, so there is always a profile to fill in from the tray or the window. It is listed first, with a check mark. Change it as you like; it can't be deleted or renamed, and if its file is removed it is made again.
+CtrlAssist always keeps one profile, `default`: it is there from the first start, with its controllers still to choose, so there is always a profile to fill in from the tray or the GUI. It is listed first, with a check mark. Change it as you like; it can't be deleted or renamed, and if its file is removed it is made again.
 
 A profile whose controllers aren't chosen yet is kept and shown as **Not set up**. It isn't wrong; it starts once its controllers are chosen. `ctrlassist profile list` says which ones those are.
 
 ## Changing a running profile
 
-What you pick in the window or the tray is kept at once, and a running profile can take the change up: at once from the tray, and from the window when you press **Update…** on the profile's page.
+What you pick in the GUI or the tray is kept at once, and a running profile can take the change up: at once from the tray, and from the GUI when you press **Update…** on the profile's page.
 
 - **As it runs,** where the virtual controllers stay as many and of the same identities: other controllers, another mode, who feels rumble, the Gyro button. A game notices nothing. A controller that is swapped out is given back to the system and the new one hidden, and a Toggle goes on with whoever had control.
 - **By a restart,** where a virtual controller has to be made anew: another identity, another number of outputs, or another Visibility. A game sees its controller disconnect and another connect.
 
-The window's **Update…** says which it will be before it does it, and the tray tells you afterwards when it was a restart. From a terminal, `ctrlassist update` does the same; see [Configuration Files](./configuration.md#changing-a-running-setup).
+The GUI's **Update…** says which it will be before it does it, and the tray tells you afterwards when it was a restart. From a terminal, `ctrlassist update` does the same; see [Configuration Files](./configuration.md#changing-a-running-setup).

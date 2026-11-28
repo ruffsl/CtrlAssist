@@ -64,7 +64,7 @@ fn toast(
     }
 }
 
-const GOOD: &str = "input-gaming";
+const GOOD: &str = "applications-games";
 const WARNING: &str = "dialog-warning";
 const ERROR: &str = "dialog-error";
 

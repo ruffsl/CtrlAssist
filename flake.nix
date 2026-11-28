@@ -142,6 +142,15 @@
           module = self.nixosModules.default;
         };
 
+        # The tray's pictures for the user guide, from a Plasma session in
+        # a virtual machine. Not a check: it is built when the pictures
+        # are wanted (`just docs-tray-shots`).
+        packages.tray-shots = pkgs.callPackage ./packaging/nix/shots-tray.nix {
+          inherit (self.packages.${system}) fixture;
+          package = self.packages.${system}.default;
+          module = self.nixosModules.default;
+        };
+
         # Every tool a `just` recipe or prek hook calls comes from here, so
         # the checks run the same for everyone. A tool joins this list in
         # the commit that first uses it.

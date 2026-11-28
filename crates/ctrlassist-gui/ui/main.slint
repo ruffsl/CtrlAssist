@@ -12,7 +12,7 @@
 import { VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
-import { Focusable, InlineError } from "widgets.slint";
+import { Focusable, InlineError, SlideText } from "widgets.slint";
 import { Daemon } from "globals/daemon.slint";
 import { Clipboard } from "globals/clipboard.slint";
 import { Errors } from "globals/errors.slint";
@@ -53,9 +53,6 @@ component SidebarItem inherits Focusable {
     in property <image> icon;
     in property <string> label;
     in property <bool> selected;
-    // A dot after the label for trouble in the pane, seen from any
-    // other: "warn" or "danger"; empty for none.
-    in property <string> badge;
     callback clicked();
 
     column: 0;
@@ -118,17 +115,90 @@ component SidebarItem inherits Focusable {
                 font-weight: root.selected ? 600 : 500;
             }
         }
-        if root.badge != "": VerticalLayout {
+    }
+}
+
+// A running profile in the sidebar, seen from every pane: what its
+// setup is in, as a glyph in the state's color, and its name, which
+// slides to show its end while the row is hovered or has focus if it is
+// too long to show whole. The state in words is the row's tip and its accessible
+// label. Activating it opens the profile. The glyphs and colors are the
+// tray icon's.
+component StatusItem inherits Focusable {
+    in property <string> name;
+    // "starting", "running", "held" or "failed".
+    in property <string> phase;
+
+    property <color> tone: root.phase == "failed" ? Theme.danger
+        : root.phase == "held" ? Theme.info
+        : root.phase == "running" ? Theme.success
+        : Theme.sidebar-text-dim;
+    property <string> said: root.phase == "failed" ? @tr("{}: failed", root.name)
+        : root.phase == "held" ? @tr("{}: held, waiting for a pad", root.name)
+        : root.phase == "starting" ? @tr("{}: starting", root.name)
+        : @tr("{}: running", root.name);
+
+    column: 0;
+    // Inside the row: its list clips what is drawn past its edges.
+    ring-inside: true;
+    accessible-label: root.said;
+    height: 24px;
+    border-radius: 5px;
+    background: root.hovered ? Theme.sidebar-hover : transparent;
+    animate background { duration: 150ms; }
+    hover-changed(hovering) => {
+        tip.set-hover(hovering);
+    }
+    // The state in words comes to a row that has focus too, where no
+    // pointer is: by keys and a remote the glyph would be all of it.
+    property <bool> focus-tip: root.focused && Nav.focus-visible;
+    changed focus-tip => {
+        tip.set-hover(root.focus-tip);
+    }
+    /// The shell asks a row to take focus by bumping `focus-tick` with
+    /// `focus-wanted` set on the one it means, as a list does.
+    in property <int> focus-tick;
+    in property <bool> focus-wanted;
+    changed focus-tick => {
+        if (root.focus-wanted) {
+            root.focus();
+        }
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: 10px;
+        padding-right: 6px;
+        spacing: 6px;
+        VerticalLayout {
             alignment: center;
-            Rectangle {
-                width: Design.size-status-dot + 2px;
-                height: Design.size-status-dot + 2px;
-                border-radius: self.width / 2;
-                background: root.badge == "danger" ? Theme.danger : Theme.warn;
-                accessible-role: text;
-                accessible-label: root.badge == "danger" ? @tr("something failed") : @tr("something is held");
+            Image {
+                source: root.phase == "failed" ? Icons.stop
+                    : root.phase == "held" ? Icons.pause
+                    : root.phase == "running" ? Icons.start
+                    : Icons.reload;
+                width: 12px;
+                height: 12px;
+                colorize: root.tone;
             }
         }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            SlideText {
+                text: root.name;
+                text-color: Theme.sidebar-text;
+                font-size: Design.font-caption;
+                running: root.hovered || (root.focused && Nav.focus-visible);
+            }
+        }
+    }
+
+    tip := HelpTrigger {
+        width: 100%;
+        height: 100%;
+        text: root.said;
     }
 }
 
@@ -211,7 +281,7 @@ export component AppWindow inherits Window {
     }
 
     // Up and Down inside the focused region: the sidebar steps its
-    // items and Reload as a rail, a list steps its own stops, and the
+    // items, the running profiles' rows and Reload as a rail, a list steps its own stops, and the
     // detail steps its rows (Rust walks the Tab order to the next
     // row's first stop). All three stop at their ends; Right or Return
     // enters the next column.
@@ -264,28 +334,80 @@ export component AppWindow inherits Window {
             : about-item.focused ? root.pane-index(Pane.about)
             : -1;
     }
+    // The running profiles' rows sit on the rail between the last pane
+    // and Reload. They are made from a model, so the shell can't name
+    // one to focus it: it says which, by its profile's name, and the row
+    // that is takes focus.
+    property <int> status-count: Setups.rows.length;
+    property <string> status-wanted;
+    property <int> status-tick: 0;
+    // The row that has focus; -1 for none. Read only after the panes'
+    // items and Reload, which say for themselves whether they have it:
+    // a row that went with its setup can't say it lost it.
+    property <int> status-focused: -1;
+    // The one row of them Tab stops at, as a list has one: the row last
+    // focused, or the last there is if that one has gone.
+    property <int> status-stop: 0;
+    // The profile whose row has focus. The rows are made again when a
+    // setup comes or goes, and the one made for it takes focus back.
+    property <string> status-held;
+    function focus-status(index: int) {
+        if (index >= 0 && index < root.status-count) {
+            root.status-wanted = Setups.rows[index].name;
+            root.status-tick += 1;
+        }
+    }
+    status-again := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.status-wanted = root.status-held;
+            root.status-tick += 1;
+        }
+    }
     function rail-step(forward: bool) -> bool {
         if (reload.focused) {
             if (!forward) {
-                root.focus-pane-item(Pane.about);
+                if (root.status-count > 0) {
+                    root.focus-status(root.status-count - 1);
+                } else {
+                    root.focus-pane-item(Pane.about);
+                }
             }
             return true;
         }
-        if (root.focused-pane-index() < 0) {
-            return false;
-        }
         // The rail stops at both ends: Up on the first pane and Down
         // past Reload do nothing.
-        if (!forward) {
-            if (root.focused-pane-index() > 0) {
-                root.focus-pane-item(root.pane-at(root.focused-pane-index() - 1));
+        if (root.focused-pane-index() >= 0) {
+            if (!forward) {
+                if (root.focused-pane-index() > 0) {
+                    root.focus-pane-item(root.pane-at(root.focused-pane-index() - 1));
+                }
+            } else if (root.focused-pane-index() < root.pane-index(Pane.about)) {
+                root.focus-pane-item(root.pane-at(root.focused-pane-index() + 1));
+            } else if (root.status-count > 0) {
+                root.focus-status(0);
+            } else if (reload.enabled) {
+                reload.focus();
             }
-        } else if (root.focused-pane-index() < root.pane-index(Pane.about)) {
-            root.focus-pane-item(root.pane-at(root.focused-pane-index() + 1));
-        } else if (reload.enabled) {
-            reload.focus();
+            return true;
         }
-        return true;
+        if (root.status-focused >= 0 && root.status-focused < root.status-count) {
+            if (!forward) {
+                if (root.status-focused > 0) {
+                    root.focus-status(root.status-focused - 1);
+                } else {
+                    root.focus-pane-item(Pane.about);
+                }
+            } else if (root.status-focused < root.status-count - 1) {
+                root.focus-status(root.status-focused + 1);
+            } else if (reload.enabled) {
+                reload.focus();
+            }
+            return true;
+        }
+        return false;
     }
     // A list step nobody served (no list stop has focus, or the wizard's
     // last row was passed) steps the Tab order instead, a tick later
@@ -562,9 +684,6 @@ export component AppWindow inherits Window {
                         icon: root.profiles-icon;
                         label: @tr("Profiles");
                         selected: root.active-pane == Pane.profiles;
-                        // A running profile that is held or failed,
-                        // seen from every pane.
-                        badge: Setups.trouble;
                         accessible-id: "sidebar-profiles";
                         clicked => { root.navigate(Pane.profiles); }
                     }
@@ -583,8 +702,78 @@ export component AppWindow inherits Window {
                         clicked => { root.navigate(Pane.about); }
                     }
 
-                    // Spacer pushes status to bottom
-                    Rectangle { vertical-stretch: 1; }
+                    // With nothing running, a spacer pushes Reload and
+                    // the services to the bottom.
+                    if root.status-count == 0: Rectangle {
+                        vertical-stretch: 1;
+                    }
+
+                    // The running profiles, seen from every pane: a
+                    // row each, which opens its profile, between two
+                    // lines that set them apart from the panes above
+                    // and the services below. They take the room
+                    // between the two, and scroll past it, a row
+                    // coming into view as it takes focus.
+                    if root.status-count > 0: VerticalLayout {
+                        vertical-stretch: 1;
+                        spacing: 4px;
+                        padding-top: 4px;
+                        padding-bottom: 4px;
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.border;
+                        }
+                        status := Flickable {
+                            property <length> row-height: 24px;
+                            vertical-stretch: 1;
+                            // None of its own: in the least window couch
+                            // mode has, the services under it keep their
+                            // room and the rows scroll in what is left.
+                            min-height: 0px;
+                            content-height: root.status-count * self.row-height;
+                            VerticalLayout {
+                                alignment: start;
+                                for setup[index] in Setups.rows: StatusItem {
+                                    name: setup.name;
+                                    phase: setup.phase;
+                                    accessible-id: "sidebar-status-" + setup.name;
+                                    focus-tick: root.status-tick;
+                                    focus-wanted: setup.name == root.status-wanted;
+                                    tab-stop: index == min(root.status-stop, root.status-count - 1);
+                                    // Made again while its profile's row
+                                    // had focus: it takes it back, a tick
+                                    // later, when it can be found.
+                                    init => {
+                                        if (setup.name == root.status-held) {
+                                            status-again.running = true;
+                                        }
+                                    }
+                                    changed focused => {
+                                        if (self.focused) {
+                                            root.status-focused = index;
+                                            root.status-stop = index;
+                                            root.status-held = setup.name;
+                                            if (index * status.row-height < -status.content-y) {
+                                                status.content-y = -index * status.row-height;
+                                            } else if ((index + 1) * status.row-height > status.height - status.content-y) {
+                                                status.content-y = status.height - (index + 1) * status.row-height;
+                                            }
+                                        } else if (root.status-focused == index) {
+                                            root.status-focused = -1;
+                                            root.status-held = "";
+                                        }
+                                    }
+                                    activated => {
+                                        Setups.open(setup.name);
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            height: 1px;
+                            background: Theme.border;
+                        }
+                    }
 
                     // Reload config — power-user action. The daemon rereads
                     // its profiles from disk, and the tray its settings;

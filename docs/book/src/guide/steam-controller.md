@@ -60,7 +60,7 @@ A Steam Controller types and moves the pointer, which Valve calls lizard mode, w
 
 ## Identify
 
-**Identify** buzzes a Steam Controller while a running profile is using it. Otherwise it can buzz it only where the system's kernel was built with rumble for it, which some aren't, NixOS's among them; there the window says the controller can be buzzed while a profile uses it.
+**Identify** buzzes a Steam Controller while a running profile is using it. Otherwise it can buzz it only where the system's kernel was built with rumble for it, which some aren't, NixOS's among them; there the GUI says the controller can be buzzed while a profile uses it.
 
 ## Naming it
 

@@ -2,7 +2,7 @@
 //! which the Profiles pane's STATUS group shows, and what that group asks
 //! of the daemon.
 
-use ctrlassist::{DaemonClient, Phase, Setup};
+use ctrlassist::{DaemonClient, Setup};
 use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
 use tracing::warn;
 
@@ -33,6 +33,7 @@ pub fn rows(setups: &[Setup], kept: &[String]) -> Vec<SetupRow> {
                 .collect();
             SetupRow {
                 name: SharedString::from(setup.name.as_str()),
+                phase: SharedString::from(setup.phase.as_str()),
                 stale: setup.stale,
                 profile_kept: kept.contains(&setup.name),
                 nodes: ModelRc::new(VecModel::from(nodes)),
@@ -41,20 +42,8 @@ pub fn rows(setups: &[Setup], kept: &[String]) -> Vec<SetupRow> {
         .collect()
 }
 
-/// The worst of what the setups are in, for the sidebar's badge.
-#[must_use]
-pub fn trouble(setups: &[Setup]) -> &'static str {
-    if setups.iter().any(|setup| setup.phase == Phase::Failed) {
-        "danger"
-    } else if setups.iter().any(|setup| setup.phase == Phase::Held) {
-        "warn"
-    } else {
-        ""
-    }
-}
-
 /// Puts the rows on the window.
-pub fn show(app: &AppWindow, mut rows: Vec<SetupRow>, trouble: &str) {
+pub fn show(app: &AppWindow, mut rows: Vec<SetupRow>) {
     let setups = app.global::<Setups>();
     // In place, down to each setup's nodes and a node's choices: see
     // `models`.
@@ -72,7 +61,6 @@ pub fn show(app: &AppWindow, mut rows: Vec<SetupRow>, trouble: &str) {
         }
         row.nodes = crate::models::sync(&old.nodes, nodes, |a, b| a.name == b.name);
     }
-    setups.set_trouble(SharedString::from(trouble));
     setups.set_rows(crate::models::sync(&current, rows, |a, b| a.name == b.name));
 }
 
@@ -92,6 +80,17 @@ fn banner(outcome: Result<(), (&str, ctrlassist::Error)>) -> ErrorState {
             }
         }
     }
+}
+
+/// Binds the link from a running profile's row in the sidebar to its
+/// profile. It needs no daemon.
+pub fn bind_links(app: &AppWindow, nav: &crate::nav::NavHandles) {
+    let (weak, go_profile) = (app.as_weak(), nav.go_profile.clone());
+    app.global::<Setups>().on_open(move |profile| {
+        if let Some(app) = weak.upgrade() {
+            go_profile(&app, profile);
+        }
+    });
 }
 
 /// Binds the pane's actions. What each changes comes back through the

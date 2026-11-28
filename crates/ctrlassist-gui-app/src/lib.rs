@@ -191,6 +191,7 @@ pub fn run() -> Result<()> {
     settings::wire(&app, tray.as_ref());
     about::wire(&app, &daemon);
     pads::wire(&app, &daemon, &nav);
+    setups::bind_links(&app, &nav);
     setups::wire(&app, &daemon);
     let profile_writer = profiles::wire(&app, &daemon, &nav);
     rt.spawn(state::follow(daemon, tray, app.as_weak()));

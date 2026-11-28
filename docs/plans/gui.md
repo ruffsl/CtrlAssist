@@ -222,7 +222,7 @@ Duplicate and Show its file moved from the PRESET card's caption to the header, 
 
 **The tray, brought in line with the window** (2026-11-22, the maintainer's).
 
-- **Themed symbolic icons,** on TisVlay's pattern (`themed()` over the icons crate, in its tray at `5ddc2c0d`): each row of the menu model carries icon names, and the tray sends its host the one the desktop's theme has, symbolic first. The glyphs follow 0.4.0's tray where it had one: play and stop, shuffle for the mode, swap-panels for who has control, notification-active for rumble and a buzz, view-visible for hiding, edit-copy for the identity, application-exit. The pad glyph is `input-gaming` with `input-gamepad` after it, Adwaita having the first in symbolic form and Breeze the second. Read from the dev tray over the session bus on the maintainer's Plasma: every row's name resolved to a symbolic one.
+- **Themed symbolic icons,** on TisVlay's pattern (`themed()` over the icons crate, in its tray at `5ddc2c0d`): each row of the menu model carries icon names, and the tray sends its host the one the desktop's theme has, symbolic first. The glyphs follow 0.4.0's tray where it had one: play and stop, shuffle for the mode, swap-panels for who has control, notification-active for rumble and a buzz, view-visible for hiding, edit-copy for the identity, application-exit. Gyro, which 0.4.0 didn't have, takes rotation-allowed, the glyph a desktop has for its own tilt sensor, with object-rotate-right after it. The pad glyph is `input-gaming` with `input-gamepad` after it, Adwaita having the first in symbolic form and Breeze the second. Read from the dev tray over the session bus on the maintainer's Plasma: every row's name resolved to a symbolic one.
 - **A profile's row has an icon for how it is:** play while it runs, pause while held, an error when failed, stop when it isn't running, a warning for one that is wrong.
 - **The window's words:** a phase reads "Running", "Held", "Failed"; a part reads "Primary"; a pad that left its setup is "disconnected" and one known but away is "remembered"; a virtual pad goes by the name a game sees. "Has control" keeps the names as a profile writes them, as the window does.
 - **Virtual pads are under Pads,** after the real ones, each with Identify.
@@ -371,5 +371,7 @@ Each is a commit or a few, with the gates run and the TisVlay commit named. Orde
 
 ## Deviations
 
+- **A pad's detail has no DANGER ZONE:** Forget is a trash can at the end of its header's second line, as a profile's Delete is, with the same dialog before it. A card for one button was more than it wanted.
+- **Changed with the setups' status** (`setup-status.md`): CtrlAssist's icon is the theme's `applications-games`, for the window, the desktop entry, the About header and the glyph of a pad, where this plan has `input-gaming`; a list's rows are 52 high for 64; a profile's rename, duplicate, show and delete are at the end of the row under its name, and its mode is said there without a caption, Custom for one written by hand.
 - **The rebuild's third and fourth steps landed as one commit:** see "The rebuild" under For review.
 - **Build steps 1 and 2 landed as one commit.** The project's rule is that a tool joins in the commit that first gives it something to do, and the Slint tools in the flake have nothing to do before there is a `.slint` file.

@@ -341,6 +341,7 @@ fn rows_show_a_preset_as_a_form_and_anything_else_as_text() {
     // of its text.
     assert_eq!(attic.shape, "merge", "it names more than one pad");
     assert_eq!(attic.word, "Waiting");
+    assert_eq!(attic.mode_label, "Custom");
     // What it names is listed, each pad with its connection.
     assert_eq!(attic.uses.row_count(), 3);
     assert!(attic.uses.iter().all(|used| !used.word.is_empty()));
@@ -405,16 +406,16 @@ fn app() -> AppWindow {
         .iter()
         .map(|profile| profile.name.clone())
         .collect();
-    setups::show(&app, setups::rows(&known.setups, &kept), "");
+    setups::show(&app, setups::rows(&known.setups, &kept));
     profiles::show(&app, known);
     app
 }
 
 /// A profile's name too long for the header at the window's least width
-/// wraps, whole, rather than being cut short where only a pointer could
-/// show the rest: keys and couch mode read it as it is.
+/// is one line cut short, as a pad's title is, and leaves the header's
+/// buttons their room: it slides to show its end under the pointer.
 #[test]
-fn a_long_name_wraps_whole_in_the_header_at_the_least_width() {
+fn a_long_name_is_one_line_cut_short_in_the_header_at_the_least_width() {
     const LONG: &str = "abcdefghijklmnopqrstuvwxyz-01234";
     let app = app();
     let mut known_now = known();
@@ -422,16 +423,82 @@ fn a_long_name_wraps_whole_in_the_header_at_the_least_width() {
     profiles::show(&app, known_now);
     app.window()
         .set_size(slint::LogicalSize::new(720.0, 1600.0));
-    let height_of = |app: &AppWindow, name: &str| {
+    let shown = |app: &AppWindow, name: &str| {
         app.global::<Profiles>().invoke_select(name.into());
         settle();
         let shown = find_by_accessible_id(app, "profiles-name").expect("the header's name");
         assert_eq!(shown.accessible_label().unwrap_or_default(), name);
-        shown.size().height
+        (shown.size(), shown.absolute_position().x)
     };
-    let short = height_of(&app, "couch");
-    let long = height_of(&app, LONG);
-    assert!(long > short, "the long name wraps: {long} against {short}");
+    let (short, _) = shown(&app, "couch");
+    let (long, left) = shown(&app, LONG);
+    assert!(
+        (long.height - short.height).abs() < 0.5,
+        "one line: {} against {}",
+        long.height,
+        short.height
+    );
+    assert!(
+        long.width >= short.width,
+        "it has no less room than a short one"
+    );
+    // Short of the window's edge by the chips beside it.
+    assert!(left + long.width < 720.0 - 60.0, "{left} + {}", long.width);
+
+    // The header keeps to the window at its least width: its chips end
+    // inside it, the buttons beside the mode end short of the chips, and
+    // the mode has room left.
+    let mode_width = |app: &AppWindow| {
+        find_by_accessible_id(app, "profiles-mode")
+            .expect("the header's mode")
+            .size()
+            .width
+    };
+    // Where the buttons start, for each profile shown.
+    let mut starts = Vec::new();
+    app.window().set_size(slint::LogicalSize::new(720.0, 480.0));
+    for name in ["couch", LONG] {
+        app.global::<Profiles>().invoke_select(name.into());
+        settle();
+        let edges = |id: &str| {
+            let found = find_by_accessible_id(&app, id).unwrap_or_else(|| panic!("{id}"));
+            let left = found.absolute_position().x;
+            (left, left + found.size().width)
+        };
+        let (chip_left, chip_right) = edges("profiles-managed-chip");
+        let (_, word_right) = edges("profiles-word");
+        let (_, delete_right) = edges("profiles-delete");
+        assert!(
+            chip_right <= 720.0 && word_right <= 720.0,
+            "{name}: {chip_right}, {word_right}"
+        );
+        assert!(
+            delete_right <= chip_left,
+            "{name}: {delete_right} against {chip_left}"
+        );
+        let mode = find_by_accessible_id(&app, "profiles-mode").unwrap();
+        assert_eq!(
+            mode.accessible_label().unwrap_or_default(),
+            "Mode: Priority"
+        );
+        assert!(mode_width(&app) > 0.0, "{name}: the mode has no room");
+        starts.push(edges("profiles-rename").0);
+    }
+    // One written by hand says Custom, a word of another length, and
+    // the buttons are where they were: they keep to the row's far end.
+    app.global::<Profiles>().invoke_select("attic".into());
+    settle();
+    let custom = find_by_accessible_id(&app, "profiles-mode").unwrap();
+    assert_eq!(
+        custom.accessible_label().unwrap_or_default(),
+        "Mode: Custom"
+    );
+    let rename = find_by_accessible_id(&app, "profiles-rename").unwrap();
+    starts.push(rename.absolute_position().x);
+    assert!(
+        starts.iter().all(|start| (start - starts[0]).abs() < 0.5),
+        "{starts:?}"
+    );
 }
 
 #[test]
@@ -640,7 +707,7 @@ fn the_pane_s_buttons_go_by_what_a_profile_is_and_the_dialogs_name_and_confirm()
     let mode = find_by_accessible_id(&app, "profiles-mode")
         .and_then(|text| text.accessible_label())
         .unwrap_or_default();
-    assert_eq!(mode, "Priority");
+    assert_eq!(mode, "Mode: Priority");
 }
 
 /// A dropdown opens with its cursor on the current choice, the second
@@ -709,7 +776,7 @@ fn a_profile_s_pad_and_a_pad_s_profile_are_a_click_apart_and_back_returns() {
         .iter()
         .map(|profile| profile.name.clone())
         .collect();
-    setups::show(&app, setups::rows(&known.setups, &kept), "");
+    setups::show(&app, setups::rows(&known.setups, &kept));
     pads::show(
         &app,
         pads::rows(&known.pads, &known.setups, &known.profiles, &[]),
@@ -1223,7 +1290,7 @@ fn a_running_profile_that_is_deleted_keeps_a_row_to_stop_it() {
         .iter()
         .map(|profile| profile.name.clone())
         .collect();
-    setups::show(&app, setups::rows(&known_now.setups, &kept), "");
+    setups::show(&app, setups::rows(&known_now.setups, &kept));
     profiles::show(&app, known_now);
     app.global::<Profiles>().invoke_select("quick".into());
     settle();
@@ -1241,4 +1308,223 @@ fn a_running_profile_that_is_deleted_keeps_a_row_to_stop_it() {
     }
     activate_shown(&app, "profiles-stop");
     assert_eq!(*stopped.borrow(), ["quick"]);
+}
+
+/// A running profile has a row in the sidebar, from every pane: what its
+/// setup is in, on the rail between the last pane and Reload, and a way
+/// to its profile.
+#[test]
+fn a_running_profile_s_row_in_the_sidebar_says_its_state_and_opens_it() {
+    use ctrlassist_gui::Nav;
+    use slint::platform::Key;
+
+    use crate::support::{elapse, press};
+
+    /// A name too long for the sidebar to show whole.
+    const LONG: &str = "zz-a-profile-name-far-too-long";
+
+    i_slint_backend_testing::init_no_event_loop();
+    profiles::forget_held();
+    let app = AppWindow::new().expect("the window builds on the testing backend");
+    let handles = nav::wire(&app);
+    keys::bind_key_router(&app);
+    profiles::bind_local(&app, &handles);
+    setups::bind_links(&app, &handles);
+    app.set_daemon_available(true);
+    app.show().expect("the testing backend shows a window");
+    settle();
+
+    // Nothing runs: no rows.
+    assert!(find_by_accessible_id(&app, "sidebar-status-quick").is_none());
+
+    let mut known = known();
+    let held = Setup {
+        name: "couch".to_string(),
+        phase: Phase::Held,
+        ..known.setups[0].clone()
+    };
+    known.setups.push(held);
+    let long = Setup {
+        name: LONG.to_string(),
+        ..known.setups[0].clone()
+    };
+    known.setups.push(long);
+    let kept: Vec<String> = known
+        .profiles
+        .iter()
+        .map(|profile| profile.name.clone())
+        .collect();
+    setups::show(&app, setups::rows(&known.setups, &kept));
+    profiles::show(&app, known);
+    settle();
+    let label = |name: &str| {
+        find_by_accessible_id(&app, &format!("sidebar-status-{name}"))
+            .and_then(|row| row.accessible_label())
+            .map(|label| label.to_string())
+    };
+    assert_eq!(label("quick").as_deref(), Some("quick: running"));
+    assert_eq!(
+        label("couch").as_deref(),
+        Some("couch: held, waiting for a pad")
+    );
+
+    // Down the rail from the last pane: each row in name order, then
+    // Reload, and back up the same way.
+    find_by_accessible_id(&app, "sidebar-about")
+        .unwrap()
+        .invoke_accessible_default_action();
+    settle();
+    app.invoke_focus_active_sidebar_item();
+    settle();
+    let focus = || app.global::<Nav>().get_focus_id().to_string();
+    assert_eq!(focus(), "sidebar-about");
+    let mut walked = Vec::new();
+    for key in [
+        Key::DownArrow,
+        Key::DownArrow,
+        Key::DownArrow,
+        Key::DownArrow,
+        Key::DownArrow,
+        Key::UpArrow,
+        Key::UpArrow,
+        Key::UpArrow,
+        Key::UpArrow,
+    ] {
+        press(&app, key);
+        settle();
+        walked.push(focus());
+    }
+    assert_eq!(
+        walked,
+        [
+            "sidebar-status-couch",
+            "sidebar-status-quick",
+            &format!("sidebar-status-{LONG}"),
+            "sidebar-reload",
+            "sidebar-reload",
+            &format!("sidebar-status-{LONG}"),
+            "sidebar-status-quick",
+            "sidebar-status-couch",
+            "sidebar-about",
+        ]
+    );
+    // The pane didn't follow focus onto a row.
+    assert_eq!(app.get_active_pane(), Pane::About);
+
+    // A name too long to show whole slides to its end while its row has
+    // focus, once, and stays there; it is back, cut short, when the row
+    // hasn't. One that fits never moves.
+    let left_of = |name: &str| {
+        i_slint_backend_testing::ElementHandle::find_by_accessible_label(&app, name)
+            .filter(|text| text.size().width > 0.0)
+            .map(|text| text.absolute_position().x)
+            .fold(f32::INFINITY, f32::min)
+    };
+    let (still, fits) = (left_of(LONG), left_of("couch"));
+    for _ in 0..3 {
+        press(&app, Key::DownArrow);
+        settle();
+    }
+    assert_eq!(focus(), format!("sidebar-status-{LONG}"));
+    elapse(500);
+    assert_eq!(left_of(LONG), still, "it waits before it sets off");
+    elapse(1000);
+    let going = left_of(LONG);
+    assert!(going < still, "it slides toward its end");
+    elapse(60_000);
+    let there = left_of(LONG);
+    assert!(there <= going);
+    elapse(60_000);
+    assert_eq!(left_of(LONG), there, "and stays there");
+    for _ in 0..3 {
+        press(&app, Key::UpArrow);
+        settle();
+    }
+    assert_eq!(left_of(LONG), still, "it is back at once");
+    assert_eq!(left_of("couch"), fits);
+
+    // One that fits stays where it is with focus on its row, however
+    // long; and Return on a row opens its profile.
+    press(&app, Key::DownArrow);
+    settle();
+    assert_eq!(focus(), "sidebar-status-couch");
+    elapse(60_000);
+    assert_eq!(left_of("couch"), fits);
+    press(&app, Key::Return);
+    settle();
+    assert_eq!(app.get_active_pane(), Pane::Profiles);
+    let pane = app.global::<Profiles>();
+    let shown = pane
+        .get_rows()
+        .row_data(usize::try_from(pane.get_selected_index()).unwrap())
+        .unwrap()
+        .name;
+    assert_eq!(shown, "couch");
+
+    // Back on the sidebar: Tab stops at one row of them, the one last
+    // focused, on its way from the active item to Reload.
+    find_by_accessible_id(&app, "sidebar-about")
+        .unwrap()
+        .invoke_accessible_default_action();
+    settle();
+    app.invoke_focus_active_sidebar_item();
+    settle();
+    let mut tabbed = Vec::new();
+    for _ in 0..2 {
+        press(&app, Key::Tab);
+        settle();
+        tabbed.push(focus());
+    }
+    assert_eq!(tabbed, ["sidebar-status-couch", "sidebar-reload"]);
+
+    // The state in words comes to a row with focus, as to one under a
+    // pointer, once focus has rested on it.
+    press(&app, Key::UpArrow);
+    settle();
+    assert_eq!(focus(), format!("sidebar-status-{LONG}"));
+    press(&app, Key::UpArrow);
+    settle();
+    assert_eq!(focus(), "sidebar-status-quick");
+    let help = app.global::<ctrlassist_gui::Help>();
+    assert!(!help.get_shown());
+    elapse(800);
+    assert!(help.get_shown());
+    assert_eq!(help.get_text(), "quick: running");
+
+    // Another profile starts while a row has focus, and the rows are
+    // made again: the row of the same profile has focus still.
+    let mut more = self::known().setups;
+    more.push(Setup {
+        name: "attic".to_string(),
+        ..more[0].clone()
+    });
+    setups::show(&app, setups::rows(&more, &kept));
+    for _ in 0..4 {
+        settle();
+    }
+    assert_eq!(label("attic").as_deref(), Some("attic: running"));
+    assert_eq!(focus(), "sidebar-status-quick");
+
+    // A setup that failed and one still starting say so too, and the
+    // rows go as their setups do.
+    let state = |name: &str, phase: Phase| Setup {
+        name: name.to_string(),
+        phase,
+        ..self::known().setups[0].clone()
+    };
+    setups::show(
+        &app,
+        setups::rows(
+            &[state("den", Phase::Failed), state("nook", Phase::Starting)],
+            &kept,
+        ),
+    );
+    settle();
+    assert_eq!(label("den").as_deref(), Some("den: failed"));
+    assert_eq!(label("nook").as_deref(), Some("nook: starting"));
+    assert_eq!(label("couch"), None, "its setup ended");
+    setups::show(&app, Vec::new());
+    settle();
+    assert_eq!(label("den"), None);
+    assert_eq!(label("nook"), None);
 }

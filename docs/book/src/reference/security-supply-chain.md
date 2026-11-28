@@ -2,7 +2,7 @@
 
 ## What runs with privilege
 
-Nothing runs as root. One piece is a system service rather than yours: the hiding service, `ctrlassist-hider`, which runs as a user of its own, also named `ctrlassist-hider`, with no special capabilities. Everything else runs as you: the daemon, the tray, the settings window and the command.
+Nothing runs as root. One piece is a system service rather than yours: the hiding service, `ctrlassist-hider`, which runs as a user of its own, also named `ctrlassist-hider`, with no special capabilities. Everything else runs as you: the daemon, the tray, the GUI and the command.
 
 The hiding service is kept small so it can be read in one sitting, and is closed in on purpose:
 

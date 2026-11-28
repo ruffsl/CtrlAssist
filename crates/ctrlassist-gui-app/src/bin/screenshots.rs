@@ -69,13 +69,12 @@ enum Scheme {
 
 /// The desktop's accent color, as red, green and blue: what the window
 /// is told under Breeze Dark for a swatch of Plasma's color settings
-/// (`AccentColorUI.qml`: `#e8cb2d`, `#3dd425`, `#926ee4`, `#e93d58`).
+/// (`AccentColorUI.qml`: `#3dd425`, `#926ee4`, `#e93d58`).
 /// Plasma darkens a swatch for a dark scheme before it reports it, and
 /// these are the reported colors, read off TisVlay's screenshots, which
 /// were taken on such a desktop. Blue is the scheme's own, unchanged.
 type Accent = (u8, u8, u8);
 const BLUE: Accent = (0x3d, 0xae, 0xe9);
-const YELLOW: Accent = (0xa8, 0x94, 0x26);
 const GREEN: Accent = (0x30, 0x9b, 0x21);
 const LAVENDER: Accent = (0x6c, 0x53, 0xa6);
 const RED: Accent = (0xa9, 0x31, 0x44);
@@ -101,8 +100,9 @@ struct Shot {
     view: View,
 }
 
-/// The accents follow the order of TisVlay's screenshots, so the two
-/// projects' pages look of a kind.
+/// The accents are those of TisVlay's screenshots, so the two projects'
+/// pages look of a kind, but for its yellow, which is hard to read
+/// under white text.
 const SHOTS: &[Shot] = &[
     Shot {
         file: "pads_pane.png",
@@ -119,7 +119,7 @@ const SHOTS: &[Shot] = &[
     Shot {
         file: "pads_pane_virtual.png",
         scheme: Scheme::Dark,
-        accent: YELLOW,
+        accent: LAVENDER,
         view: View::VirtualPad,
     },
     Shot {

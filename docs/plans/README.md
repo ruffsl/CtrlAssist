@@ -26,6 +26,7 @@ Working space for in-progress plan docs. Which changes need one, and the steps f
 - [`gui.md`](gui.md) — the settings window, on TisVlay's GUI: what is copied, the panes, and the build steps.
 - [`bluetooth-output.md`](bluetooth-output.md) — whole output reports for a DualSense on Bluetooth: lights and trigger effects, not rumble alone.
 - [`user-guide.md`](user-guide.md) — the user guide reshaped after TisVlay's now that there is a settings window, with screenshots a command makes from made-up state.
+- [`setup-status.md`](setup-status.md) — what the running setups are doing, said alike by a mark drawn into the tray's icon and a line for each in the window's sidebar.
 - [`steam-controller.md`](steam-controller.md) — Valve's new Steam Controller as a pad CtrlAssist reads, and whether it can present one: research, a fake, the build, and an identity behind a spike.
 - [`review.md`](review.md) — a workspace review before 0.5.0: every finding triaged by area, the hiding service without root, and the fix batches.
 
