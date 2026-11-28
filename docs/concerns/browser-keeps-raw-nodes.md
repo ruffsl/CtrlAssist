@@ -34,13 +34,40 @@ Chrome opens the raw nodes of pads it knows, and was seen to keep them open afte
 
 **Risk.** Low for a person playing. A place is lost only when a pad's raw node goes and another takes its number before Chrome has heard of the first, with a page open that asks for pads. A setup stopped and started again at once, fifteen times for each kind of virtual pad, lost none; started and stopped with a pause, twenty times, none. It isn't none: two setups changing together, or a pad that drops and returns as a setup starts, could be caught, each time one place until the browser is closed, and with none left the next virtual DualSense or Steam Controller has no raw node, which a game reading it that way sees as no pad, and a real pad plugged in has none either. High for whoever runs the tests on a desktop with a browser open on such a page: they fail, and for no reason a failure names.
 
-**Mitigation.** Closing the browser frees every place it held. A test that reads a virtual Steam Controller's raw node now fails within its own twenty seconds where it waited without end.
+**Mitigation.** Closing the browser frees every place it held, and [testing.md](../testing.md) names a browser among what to close before a run. A test that reads a virtual Steam Controller's raw node now fails within its own twenty seconds where it waited without end.
 
 **What could be done,** none of it decided:
 
 - A fake pad made without the raw node its test needs could say how many of the 64 places are taken, and by which programs where that can be read.
 - The daemon could say the same where a virtual pad it makes has no raw node, if it doesn't already notice: unchecked.
-- [testing.md](../testing.md) could name a browser beside Steam among what to close before a run.
-- It is Chromium's to fix: a removal shouldn't open anything, and a pad whose parent can't be read shouldn't pass for one on the list. It hasn't been reported.
+- It is Chromium's to fix: a removal shouldn't open anything, and a pad whose parent can't be read shouldn't pass for one on the list. It hasn't been reported; a report is drafted below.
 
-**Closes when** Chromium no longer opens a raw node on its removal, in a release the distributions carry; or, short of that, when a fake pad made without the raw node its test needs says why, and [testing.md](../testing.md) names a browser among what to close before a run.
+**Closes when** Chromium no longer opens a raw node on its removal, in a release the distributions carry; or, short of that, when a fake pad made without the raw node its test needs says why.
+
+## A report for Chromium, drafted and not filed
+
+For the maintainer to file at [issues.chromium.org](https://issues.chromium.org) (component Blink>GamepadAPI), in their own words where these don't fit. That the parent's `HID_ID` can't be read for a removed node is inferred from the source and from what was seen, not observed directly; the report says so.
+
+> **Title:** Linux: a removed hidraw gamepad node is reopened by path and never closed, leaking a hidraw minor
+>
+> **Chrome version:** 158 (also seen in 157). **OS:** Linux 7.3, x86_64.
+>
+> **Summary.** On Linux, when a hidraw device is removed and another HID device is given the same hidraw minor before Chrome handles the removal, Chrome opens the new device's `/dev/hidrawN` and keeps the descriptor open after that device is removed too, until the browser exits. The kernel has 64 hidraw minors (`HIDRAW_MAX_DEVICES`) and frees one only when its last descriptor closes, so each leak takes one from the whole machine. With all 64 taken, a HID device plugged in gets no hidraw node at all, and nothing reports an error.
+>
+> **Steps to reproduce.**
+>
+> 1. Open a page that polls the Gamepad API, for example one that calls `navigator.getGamepads()` every 200 ms.
+> 2. Create and destroy HID gamepads so that each is created as the previous one is removed, and so takes its hidraw minor. We did it with uhid devices carrying a DualSense's descriptor and IDs (`054c:0ce6`), one alive at a time, eight in a row.
+> 3. Destroy the last one, then look at what Chrome holds: `ls -l /proc/<pid>/fd | grep hidraw` for the browser's processes.
+>
+> **Expected.** Chrome holds no hidraw descriptor: the device isn't on the hidraw allowlist (`kAllowlistHidrawGamepads`), and every device is gone.
+>
+> **Actual.** Chrome holds `/dev/hidrawN (deleted)`, and keeps it until it exits. In our trial one of eight swaps leaked; with three seconds between devices, none of five did. A test suite that creates dozens of such devices in parallel left Chrome 158 (headless, fresh profile, that one page) holding 12, 26 and 38 deleted nodes after one, two and three runs, and a Chrome 157 in daily use held 43.
+>
+> **Cause, as we read it** in `device/gamepad/gamepad_platform_data_fetcher_linux.cc`:
+>
+> - `OnDeviceRemoved` calls `RefreshDevice`, the same as `OnDeviceAdded`, and for a hidraw node `RefreshDevice` calls `RefreshHidrawDevice`, which opens the node by its path (`OpenHidrawNode`).
+> - `RefreshHidrawDevice` applies the allowlist only if `GetVendorProduct` returns a value. `GetVendorProduct` reads `HID_ID` from the parent udev device; for a removed device we believe that fails (inferred, not observed), and the node is then opened unfiltered.
+> - For a removed node the open normally fails, as the path is gone. If another device has taken the same minor it succeeds, on the new device's node. That descriptor is stored under the removed device's syspath, which no later event matches, so it is never closed.
+>
+> **Suggested fix.** Don't open anything on a remove event, and treat a device whose vendor and product can't be read as not on the allowlist.
