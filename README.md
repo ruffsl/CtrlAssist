@@ -104,28 +104,28 @@ The window and the tray follow your desktop's theme and accent color.
 
 ## 🏛️ Architecture
 
-CtrlAssist is a few cooperating parts:
+CtrlAssist is comprised of a collection of cooperating components:
 
 ```mermaid
 graph LR
 
 subgraph User
-    Gui["ctrlassist-gui<br/><i>settings window</i>"]
-    Cli["ctrlassist<br/><i>CLI</i>"]
-    Tray["ctrlassist tray<br/><i>system tray</i>"]
-    Daemon["ctrlassist daemon<br/><i>user daemon</i>"]
+    Gui["GUI<br/><i>settings window</i>"]
+    Cli["CLI<br/><i>command line</i>"]
+    Tray["Tray<br/><i>system tray</i>"]
+    Daemon["Daemon<br/><i>user daemon</i>"]
 end
 
 subgraph System
-    Hider["ctrlassist-hider<br/><i>hiding service</i>"]
+    Hider["Hider<br/><i>hiding service</i>"]
 end
 
 subgraph Controllers
-    Real["Real controllers"]
-    Virtual["Virtual controller"]
+    Real["Real"]
+    Virtual["Virtual"]
 end
 
-Game["Game"]
+Games["Games"]
 
 Gui -->|socket| Daemon
 Cli -->|socket| Daemon
@@ -133,24 +133,21 @@ Tray -->|socket| Daemon
 Daemon -->|socket| Hider
 Real -.->|input| Daemon
 Daemon -.->|output| Virtual
-Virtual -.-> Game
+Virtual -.-> Games
 Hider -.->|hides| Real
 ```
 
 | Component | Description |
 |-----------|-------------|
-| `ctrlassist` | CLI for everything the window and the tray do |
-| `ctrlassist service daemon` | Reads the real controllers, combines them, makes the virtual ones, keeps the profiles |
-| `ctrlassist service tray` | System tray for quick access and desktop notifications |
-| `ctrlassist-gui` | Controllers, profile editor, settings |
-| `ctrlassist-hider` | Hides a running profile's real controllers from games |
+| `Daemon` | Combines real controllers into virtual ones via profiles |
+| `Hider` | Hides a running profile's real controllers from games |
+| `Tray` | System tray for quick access and desktop notifications |
+| `GUI` | Controller status, profile editor, and stack settings |
+| `CLI` | Command line for everything the GUI and Tray can do |
 
-The daemon and the tray ship as `ctrlassist` subcommands and run as you; `ctrlassist-gui` and `ctrlassist-hider` are binaries of their own. The hiding service is the one system service: it runs as a user of its own, with no special capabilities, and is started on demand.
+Services ship as `ctrlassist` CLI subcommands; `ctrlassist-gui` as separate binary.
 
 <!-- ANCHOR_END: overview -->
-
-> [!NOTE]
-> This branch is 0.5.0, a clean rewrite that hasn't been released yet. The last release, 0.4.0, is at the [`v0.4.0`](https://github.com/CtrlAssist/CtrlAssist/tree/v0.4.0) tag, with its own README and install instructions. Nothing from 0.4.0's configuration carries over.
 
 ## 📖 Documentation
 
@@ -166,7 +163,6 @@ Rendered docs available at [ctrlassist.readthedocs.io](https://ctrlassist.readth
 ## 🙏 Acknowledgments
 
 The third-party notices ship with the packages. Notable among what CtrlAssist builds on:
-
 
 - [Slint](https://slint-ui.com) – Declarative GUI toolkit powering `ctrlassist-gui`'s responsive interface
 - [Zenoh](https://www.zenoh.io) – Zero-overhead pub/sub unifying socket IPC across the `ctrlassist` stack
