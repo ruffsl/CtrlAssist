@@ -176,7 +176,7 @@ Rendered docs available at [ctrlassist.readthedocs.io](https://ctrlassist.readth
 
 Full third-party notice included with releases. Notable third-parties include:
 
-- [Slint](https://slint-ui.com) – Declarative GUI toolkit powering `ctrlassist-gui`'s responsive interface
+- [Slint](https://slint.dev) – Declarative GUI toolkit powering `ctrlassist-gui`'s responsive interface
 - [Zenoh](https://www.zenoh.io) – Zero-overhead pub/sub unifying socket IPC across the `ctrlassist` stack
 - [ksni](https://github.com/iovxw/ksni) – StatusNotifierItem library behind the system tray
 - [evdev](https://github.com/cmr/evdev) – Reading real controllers and making virtual ones
