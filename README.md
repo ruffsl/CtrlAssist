@@ -11,12 +11,12 @@
 
 ## ✨ Features
 
-- 🎮 Combine physical controllers into one virtual gamepad
-  - Assign controllers as either Primary or Assist
+- 🎮 Combine or split controllers into virtual gamepads
+  - Merge a Primary and an Assist into one virtual gamepad
+  - Or split one controller across several virtual gamepads
 - 🎛️ Customizable multiplexing modes for buttons and axes
   - Logically merging or preempting events is flexible
-- 🔁 Split one controller into several virtual gamepads
-  - Route to one at a time, or to all at once
+  - Route to one virtual gamepad at a time, or to all at once
 - 🙈 Real controllers hidden while it runs
   - A game never sees a press twice, Steam included
   - They come back when the profile stops
