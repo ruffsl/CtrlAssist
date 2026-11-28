@@ -14,17 +14,17 @@ Chrome opens the raw nodes of pads it knows, and was seen to keep them open afte
 **What wasn't.**
 
 - **One pad at a time.** A fake DualSense, a fake Steam Controller, a virtual Steam Controller and a uinput pad, each made alone by the fixture and held for up to seven seconds, six times each: Chrome opened none of their raw nodes and kept none. What differs between that and a test run, in which Chrome opened dozens, isn't known: how many pads there are at once, how quickly they come and go, or something a test does to its pad.
-- **One setup at a time.** A daemon with two uinput fakes behind a virtual DualSense, the setup started and stopped twenty times under the same Chrome and page: the virtual pad's raw node was there each time, and Chrome opened it not once and kept nothing.
+- **One setup at a time.** A daemon with two uinput fakes behind a virtual DualSense, the setup started and stopped twenty times under the same Chrome and page: the virtual pad's raw node was there each time, and Chrome opened it not once and kept nothing. The same again with the machine's two real pads unplugged, and then with a virtual Steam Controller: nothing opened, nothing kept.
+- **The tests one at a time.** With the real pads unplugged, the DualSense's tests and then the Steam Controller's, each run with one test at a time, left Chrome holding nothing. The same tests run together, as they are by default, left it holding eight.
 
 **What isn't known.**
 
-- **Why the tests' pads and not these.** The machine had two real pads connected throughout, one of which Chrome held open, and Chrome gives a page four pads at most; whether it opens a pad's raw node only when it has a place for the pad wasn't tried, since that means unplugging the real ones.
-- **A virtual Steam Controller in a setup of its own,** which was opened and kept in the tests and was tried alone only from the fixture.
+- **What it is about many pads at once.** Chrome opens and keeps raw nodes when the tests run together and not when they run singly, so it is how many pads there are at a time, or how fast they come and go, and neither was measured: a try at making several fake DualSense pads at once from the fixture made none that counted, all having one address.
 - **A person's own use over days,** with a browser's own windows and tabs, not a headless one with one page.
 - **Whether a page must ask for pads.** The trial's page did. Which of the maintainer's own tabs did, if any, wasn't looked at.
 - **Other browsers,** and other programs that read pads through raw nodes.
 
-**Risk.** Low for a person playing, by the one trial: a setup's virtual DualSense cost no place in twenty starts. Not none, while what made Chrome open the tests' pads is unknown: were it to keep a virtual pad's raw node as it kept theirs, each start of a setup would cost a place until the browser is closed, and after some forty the next virtual DualSense or Steam Controller would have no raw node, which a game reading it that way sees as no pad, and a real pad plugged in would have none either. High for whoever runs the tests on a desktop with a browser open: they fail, and for no reason a failure names.
+**Risk.** Low for a person playing: a setup's virtual pad, of either kind, cost no place in twenty starts, with real pads connected and without. Not none, while how many pads at once it takes is unknown: someone with several setups running, their pads coming and going together, is nearer the tests than the trial was. Where Chrome does keep a virtual pad's raw node, each costs a place until the browser is closed, and with none left the next virtual DualSense or Steam Controller has no raw node, which a game reading it that way sees as no pad, and a real pad plugged in has none either. High for whoever runs the tests on a desktop with a browser open: they fail, and for no reason a failure names.
 
 **Mitigation.** Closing the browser frees every place it held. A test that reads a virtual Steam Controller's raw node now fails within its own twenty seconds where it waited without end.
 
@@ -35,4 +35,4 @@ Chrome opens the raw nodes of pads it knows, and was seen to keep them open afte
 - [testing.md](../testing.md) could name a browser beside Steam among what to close before a run.
 - If Chrome keeps the node of a pad that is simply unplugged, that is Chromium's to fix, and theirs to be told.
 
-**Closes when** what makes Chrome open a pad's raw node is known, and a setup with a virtual DualSense and one with a virtual Steam Controller have each been started and stopped some twenty times where it does, with no real pad connected, and the nodes Chrome holds counted after each (`ls -l /proc/<pid>/fd | grep hidraw`, the browser's own process): either it keeps none, and this is the tests' concern alone, or it keeps them, and the daemon says so where a virtual pad gets no raw node and the user guide's troubleshooting page says what to close.
+**Closes when** how many pads at once, or how fast, it takes for Chrome to open and keep their raw nodes is known (`ls -l /proc/<pid>/fd | grep hidraw`, the browser's own process, as pads are made and removed in step): either it is more than setups make, and this is the tests' concern alone, or setups can reach it, and the daemon says so where a virtual pad gets no raw node and the user guide's troubleshooting page says what to close.
