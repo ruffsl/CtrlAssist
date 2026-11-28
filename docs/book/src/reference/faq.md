@@ -45,7 +45,7 @@ Even in games that natively support multiple controllers, simultaneous input fro
 
 ### Does it work with Steam and with Proton?
 
-A virtual controller is an ordinary controller to the system, which is what Steam, SDL and games under Proton read. Each [identity](../guide/profiles.md#identity) has been recognized by Steam and by SDL, with rumble reaching the real controllers, and a game has been played through a virtual DualSense. Not every identity has been played in both a native game and one under Proton, and the motion sensors have been watched moving in Steam's controller test but not yet aimed with in a game. If something doesn't land where it should, [say so](https://github.com/CtrlAssist/CtrlAssist/issues).
+A virtual controller is an ordinary controller to the system, which is what Steam, SDL and games under Proton read. Each [identity](../guide/profiles.md#identity) has been recognized by Steam and by SDL, with rumble and other feedback such as trigger and color effects reaching the real controllers.
 
 ### Why does my game see two controllers, or a press twice?
 
@@ -57,7 +57,7 @@ It sees a real controller beside the virtual one. A running profile keeps its re
 
 CtrlAssist supports most standard gamepads, such as those with a conventional Xbox or PlayStation layout, including those with strong and weak force feedback (rumble) capabilities. Xbox and PlayStation controllers are read through their own drivers, and others through the community controller database that SDL also uses. [Requirements](./requirements.md) has what has been tried, and [How It Works](./how-it-works.md#controller-layouts) how to add a layout.
 
-Specialized controller features such as adaptive triggers, the lightbar, the touchpad, and gyroscopic and accelerometer motion tracking are supported for a DualSense, and in part for a DualShock 4; [see below](#do-the-gyro-and-the-touchpad-carry-over). Other controllers' own extras are not yet supported. If you have device driver expertise and would like to contribute support for additional controller features, please consider opening a pull request!
+Specialized controller features such as adaptive triggers, the lightbar, the touchpad, and gyroscopic and accelerometer motion tracking are supported for a DualSense and DualShock 4; [see below](#do-the-gyro-and-the-touchpad-carry-over). Other controllers' own extras are not yet supported. If you have device driver expertise and would like to contribute support for additional controller features, please consider opening a pull request!
 
 ### Are mice or keyboards supported?
 
