@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** the fix branches are on the fork, a fourth for the resync on a blocking device among them, and this repository builds from the fork's `ctrlassist` branch at a pinned commit, `vendor/` gone (steps 2 to 5); nothing sent upstream.
-- **Next action:** the maintainer's word on whether the pin takes the fourth resync branch, then the pull requests' text (step 6) for the maintainer to post.
+- **Status:** the fix branches are on the fork, this repository builds from the fork's `ctrlassist` branch at a pinned commit with `vendor/` gone, and the pull requests' text is written (steps 2 to 6); nothing sent upstream.
+- **Next action:** the maintainer opens the six pull requests on emberian/evdev from the links under [The pull requests](#the-pull-requests).
 
 ## Goal
 
@@ -33,6 +33,7 @@ The fixes move to branches of a fork, [CtrlAssist/evdev](https://github.com/Ctrl
 
 - **CtrlAssist depends on the fork by a pinned git commit,** `[patch.crates-io] evdev = { git = "https://github.com/CtrlAssist/evdev", rev = "…" }`, and `vendor/` is deleted. Weighed against a submodule and a subtree: a submodule isn't fetched by a flake or by `fetchTarball` unless the person installing asks for it, which the installation page's two NixOS forms don't; a subtree keeps a second copy here to fall out of step with the fork. The pin costs a `rev` here, a hash in the two Nix files and one allowance in `deny.toml`, each changed when the pin moves.
 - **The fork's `main` follows upstream's and carries nothing of ours.** Each fix is a branch off it, named for what it does. One more branch, `ctrlassist`, is every fix branch merged, and is what CtrlAssist pins: it is rebuilt, never the place a fix is written.
+- **The resync is one pull request of four commits,** from the top of its stack, and all six pull requests are opened together, as the maintainer chose; the first plan had the small ones go ahead of the rest.
 - **One pull request for each fix, the resync's three parts as a stack.** The small ones (B, D, F) can be taken while the larger are talked over. C is offered apart from the rest because it breaks the public interface and so waits for upstream's next minor release.
 - **Upstream's tests are run in a virtual machine, never on the maintainer's desktop,** as this repository's own are kept from making pads while Steam is open: they make keyboards through uinput and grab them.
 - **Each fix is redone on upstream's `main`,** not carried across as the diff it is here: written against the current code, with the crate's own tests and workflow passing, upstream's style and its least Rust kept, a line in its `CHANGELOG.md`, and a test of the fix where one can be written without a device.
@@ -58,6 +59,115 @@ The fixes move to branches of a fork, [CtrlAssist/evdev](https://github.com/Ctrl
 5. **`ctrlassist` built from all of them, and CtrlAssist pinned to it** in a pull request here: the `[patch]` line, `cargoLock.outputHashes` in `package.nix` and `crate.nix`, the fork allowed in `deny.toml`, `vendor/` and its mentions removed (`docs/build.md`, `packaging/nix/README.md`, `.claude/CLAUDE.md`, `prek.toml`), and what `vendor/README.md` says of each fix moved to where it belongs (`docs/architecture.md` for what the platform was seen to do, the pull requests' text for the rest). Verified by: every gate, the Nix package and the VM checks building, and the tests that exercise each fix through CtrlAssist (the hotplug and resync tests, the fake pads' rumble) still passing. This step needs the branches pushed to the fork, so it waits for the maintainer's word.
 6. **The pull requests' text, drafted in this plan,** one section for each, for the maintainer to read and to post or have posted.
 7. **Afterwards, as upstream answers:** a fix that is merged leaves `ctrlassist`; when a release has them all, the `[patch]` line, the hash and the allowance go, and this plan is retired into `docs/architecture.md` and `docs/build.md`.
+
+## The pull requests
+
+To be opened on emberian/evdev by the maintainer, all at once, each from its branch of the fork by its link. Written for upstream's readers, in their terms and not this repository's. `#LINT` in a note stands for the first one's number, to be filled in once it has one, so open that first.
+
+### 1. `fix/tokio-asyncfd-deprecation`
+
+Open: <https://github.com/emberian/evdev/compare/main...CtrlAssist:evdev:fix/tokio-asyncfd-deprecation?expand=1>
+
+**Title:** Allow the deprecated `AsyncFd::new` so clippy passes with current tokio
+
+````markdown
+tokio 1.53.3 deprecated `AsyncFd::new` in favor of the new, `unsafe` `AsyncFd::register`. The workflow runs clippy with `RUSTFLAGS=-D warnings`, so `cargo clippy --all-features` now fails on `main` at the three places an `AsyncFd` is made (`raw_stream.rs`, `sync_stream.rs`, `uinput.rs`), and every pull request's checks fail with it.
+
+This allows the lint at those three calls. In each, the wrapped type owns its file descriptor for as long as the `AsyncFd` holds it, which is the condition `register` asks its caller to uphold.
+
+The alternative is to switch to `AsyncFd::register`. That would raise the minimum tokio from 1.17 to 1.53.3 and add three `unsafe` blocks, so I left it as a decision for you. Happy to change this PR to do that instead if you prefer.
+````
+
+### 2. `perf/preallocate-event-buffers`
+
+Open: <https://github.com/emberian/evdev/compare/main...CtrlAssist:evdev:perf/preallocate-event-buffers?expand=1>
+
+**Title:** Allocate event buffers when a device is created
+
+````markdown
+`RawDevice` and `VirtualDevice` start with an empty `event_buf` and grow it on the first read. This reserves the space when the device is created instead: one batch for `VirtualDevice`, whose fetch drains the buffer, and two for `RawDevice`, where a partial frame can be carried over from the previous batch.
+
+The effect is that reading doesn't allocate after construction, unless a frame is longer than a batch. That matters to callers that read on a real-time thread; for everyone else it moves one allocation earlier.
+
+No API change.
+
+CI note: `cargo clippy --all-features` currently fails on `main` because tokio deprecated `AsyncFd::new`; #LINT fixes that separately.
+````
+
+### 3. `fix/ff-upload-dup-before-upload`
+
+Open: <https://github.com/emberian/evdev/compare/main...CtrlAssist:evdev:fix/ff-upload-dup-before-upload?expand=1>
+
+**Title:** Duplicate the descriptor before uploading a force feedback effect
+
+````markdown
+`RawDevice::upload_ff_effect` uploads the effect with `EVIOCSFF` and then duplicates the device's descriptor for the `FFEffect` it returns. If that `try_clone` fails (for example with `EMFILE`), the function returns the error with the effect already on the device and no `FFEffect` to erase it on drop.
+
+This duplicates the descriptor first, so a failure leaves nothing behind.
+
+No test: I couldn't find a way to make `dup` fail on a real device from a test.
+
+CI note: `cargo clippy --all-features` currently fails on `main` because tokio deprecated `AsyncFd::new`; #LINT fixes that separately.
+````
+
+### 4. `fix/drop-without-printing`
+
+Open: <https://github.com/emberian/evdev/compare/main...CtrlAssist:evdev:fix/drop-without-printing?expand=1>
+
+**Title:** Don't print from `Device`'s drop when ungrab fails
+
+````markdown
+`Device`'s `Drop` calls `ungrab()` and prints the error with `eprintln!`. Two problems:
+
+- The call fails with `ENODEV` for every device that was unplugged while open, so the message is noise in the most common case. #172 addresses this part.
+- `eprintln!` panics if writing to stderr fails, as it does for a daemon whose stderr pipe has been closed. That panic happens inside a destructor. We hit this in a long-running daemon.
+
+The grab is released when the descriptor is closed regardless, so this ignores the result and prints nothing. It goes one step further than #172, which keeps the print for errors other than `ENODEV`; if you would rather keep some reporting, a `log`-style hook or returning the error from an explicit `ungrab()` would avoid the panic too, and I can rework this on top of #172.
+
+CI note: `cargo clippy --all-features` currently fails on `main` because tokio deprecated `AsyncFd::new`; #LINT fixes that separately.
+````
+
+### 5. `feat/ff-events-borrow-fd`
+
+Open: <https://github.com/emberian/evdev/compare/main...CtrlAssist:evdev:feat/ff-events-borrow-fd?expand=1>
+
+**Title:** Borrow the device's descriptor in `FFUploadEvent` and `FFEraseEvent` (breaking)
+
+````markdown
+`VirtualDevice::process_ff_upload` and `process_ff_erase` call `UI_BEGIN_FF_UPLOAD`/`UI_BEGIN_FF_ERASE` and then duplicate the device's descriptor, so that the returned event can call `UI_END_*` when it is dropped. If that `try_clone` fails, the function returns the error after the request has begun and with nothing to end it. The process that asked for the effect then stays blocked in its ioctl until the kernel's 30 second timeout.
+
+This makes both event types borrow the `VirtualDevice`'s descriptor instead. Nothing can fail between begin and end, and no descriptor is duplicated per request.
+
+**This is a breaking change:** `FFUploadEvent` and `FFEraseEvent` gain a lifetime parameter, and hold a borrow of the `VirtualDevice` while they are alive. The `virtual_ff` example compiles unchanged, since it already handles each event before fetching the next.
+
+If you would rather not break the API, an alternative is to keep the owned descriptor and end the request before returning the `dup` error. That fixes the 30 second hang but keeps a `dup` per request. I can redo it that way.
+
+CI note: `cargo clippy --all-features` currently fails on `main` because tokio deprecated `AsyncFd::new`; #LINT fixes that separately.
+````
+
+### 6. `fix/resync-returned-without-reading`
+
+Open: <https://github.com/emberian/evdev/compare/main...CtrlAssist:evdev:fix/resync-returned-without-reading?expand=1>
+
+**Title:** Fix lost and stale events in the resync after `SYN_DROPPED`
+
+````markdown
+Four fixes to how `Device::fetch_events` recovers after the kernel drops events, one commit each, each with a test. We found these running a daemon that reads gamepads on a busy machine, where a dropped key release left a button held.
+
+**1. Keep the resync when a non-blocking read finds nothing.** After fetching the state, `fetch_events_inner` called `fill_events()`. On a non-blocking device whose queue was emptied by the read that carried the `SYN_DROPPED`, that fails with `EAGAIN`; the error was returned and the resync, already taken into the cached state, was never produced. Test: `test_compensate_without_further_events`.
+
+**2. Discard stale events, and apply only whole frames.** Events read in the same batch as the `SYN_DROPPED`, after the dropped frame, were replayed after the state fetch although they are older than it. The kernel also removes queued key, switch and LED events from its buffer when their state is read (`evdev_handle_get_val`), so a replayed press could have had its release removed and stay pressed. The buffer is now cleared before the fetch, as libevdev drains its queue before syncing. Separately, a frame's events were applied to the cached state while the frame was being scanned, before it was known whether part of it had been dropped; since the resync is computed against that state, such a change was never reported. A frame is now applied once its `SYN_REPORT` is reached. A failed state fetch also leaves the resync pending instead of clearing it. Tests: `test_compensate_discards_stale_events`, `test_state_takes_whole_frames_only`.
+
+**3. Fetch the state into a separate copy.** The state was fetched straight into the cache with up to four ioctls. If a later one failed (say with `EINTR`), the keys were already written, and the retry treated them as already handed to the caller. The state is now fetched into a third `DeviceState` and swapped in only when every ioctl has succeeded. Test: `test_resync_takes_nothing_from_a_failed_fetch`.
+
+**4. Hand the resync over without reading first.** On a blocking device, the read in (1) doesn't fail, it waits: the resync is held until the device next reports, so a key released during the drop reads as held until something else happens. The existing compensation tests press a key before looking for the resync for this reason. The resync is now returned as soon as the state is fetched, and the next fetch reads. This supersedes the `EAGAIN` handling from (1). Test: `test_compensate_does_not_wait_for_the_device`, which fails rather than hangs without the change.
+
+**Behavior change in (4):** a fetch that carries a resync no longer also carries newly read events; they arrive with the next fetch. The three existing compensation tests pass unchanged. If you'd rather not change that, commits 1 to 3 stand on their own and I can drop the fourth.
+
+The device tests each fail without their commit and pass with it, run as root with `--features device-test`.
+
+CI note: `cargo clippy --all-features` currently fails on `main` because tokio deprecated `AsyncFd::new`; #LINT fixes that separately.
+````
 
 ## Found
 
@@ -91,5 +201,5 @@ The fixes move to branches of a fork, [CtrlAssist/evdev](https://github.com/Ctrl
 ## Deviations
 
 - **Upstream's lint is fixed by allowing the deprecated call,** not by the call tokio now names. `AsyncFd::register` came in tokio 1.53.3, of October 2026, and is unsafe; the crate asks for tokio 1.17 or newer. Moving to it raises that floor past almost every release of tokio, which is upstream's to choose, so the branch allows the lint at the three calls and says why the old one is sound there. The pull request's text should offer the other way.
-- **E has a fourth part, for a blocking device, which the copy never had.** `fix/resync-returned-without-reading`, on the third: a resync is handed over as soon as the state is fetched, with no read before it, and the next fetch reads. Its device test releases a key inside an overflow on a blocking device and gives the resync two seconds, on a thread of its own so that it fails where it would hang; it fails without the change and passes with it, and upstream's own three tests of the compensation pass unchanged. A fetch that carries a resync then carries no newly read events, which is the one thing a caller could notice. It is not in `ctrlassist`: this repository never reads a blocking device, and the pin stays on what it has run. Why it was wanted:
+- **E has a fourth part, for a blocking device, which the copy never had.** `fix/resync-returned-without-reading`, on the third: a resync is handed over as soon as the state is fetched, with no read before it, and the next fetch reads. Its device test releases a key inside an overflow on a blocking device and gives the resync two seconds, on a thread of its own so that it fails where it would hang; it fails without the change and passes with it, and upstream's own three tests of the compensation pass unchanged. A fetch that carries a resync then carries no newly read events, which is the one thing a caller could notice. It is not in `ctrlassist`, by the maintainer's choice: this repository never reads a blocking device, and the pin stays on what it has run. Why it was wanted:
 - **E's first part is carried as it is here, and leaves a blocking device as it was.** On a device that isn't set non-blocking, the read after a resync waits for the device's next report with the resync in hand, where a non-blocking one failed with `EAGAIN`. Upstream's own tests are written around that wait: they press a key again before they look for the resync. Not reading at all while a resync is owed would cover both, and is a larger change to offer in the pull request's discussion than to make unasked.
