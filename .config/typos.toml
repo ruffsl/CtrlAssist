@@ -27,8 +27,6 @@ extend-exclude = [
     "target/",
     ".git/",
     ".direnv/",
-    # Carried as upstream wrote them; see vendor/README.md.
-    "vendor/",
     # Pad names as their makers and the community spelled them.
     "crates/ctrlassist-device/data/",
 ]

@@ -11,7 +11,7 @@ default-members = [
 ]
 # The spikes are throwaway workspaces of their own, deleted as the crates
 # that replace them land.
-exclude = ["spikes", "vendor"]
+exclude = ["spikes"]
 
 [workspace.package]
 version = "0.5.0"
@@ -194,6 +194,8 @@ lto = "thin"
 codegen-units = 1
 opt-level = "s"
 
-# Crates carried with a fix upstream doesn't have yet; see vendor/README.md.
+# evdev from the project's fork, at one commit of its `ctrlassist` branch:
+# upstream's main with the fixes that are on their way to it. See
+# docs/build.md, "Dependencies carried ahead of upstream".
 [patch.crates-io]
-evdev = { path = "vendor/evdev" }
+evdev = { git = "https://github.com/CtrlAssist/evdev", rev = "7756d65c810e874d112ce3676ff6f95daba3c67f" }

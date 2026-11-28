@@ -27,6 +27,7 @@ Working space for in-progress plan docs. Which changes need one, and the steps f
 - [`bluetooth-output.md`](bluetooth-output.md) — whole output reports for a DualSense on Bluetooth: lights and trigger effects, not rumble alone.
 - [`user-guide.md`](user-guide.md) — the user guide reshaped after TisVlay's now that there is a settings window, with screenshots a command makes from made-up state.
 - [`setup-status.md`](setup-status.md) — what the running setups are doing, said alike by a mark drawn into the tray's icon and a line for each in the window's sidebar.
+- [`evdev-upstream.md`](evdev-upstream.md) — the fixes carried in `vendor/evdev` moved to a fork, pinned from there, and offered upstream one pull request each.
 - [`review.md`](review.md) — a workspace review before 0.5.0: every finding triaged by area, the hiding service without root, and the fix batches.
 
 Remove the entry when the plan retires and its file deletes (per Convention above). Git history is the archive, so there is no retired-plans list here.

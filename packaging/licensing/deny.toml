@@ -67,6 +67,7 @@ skip = [
 
     # Exact versions: each names the older one and what pins it, so the
     # entry fails the gate as unnecessary once that catches up.
+    { crate = "nix@0.29.0", reason = "zenoh-link-unixsock_stream pins nix 0.29; evdev's main, which the fork follows, is on 0.31" },
     { crate = "rand_core@0.6.4", reason = "rand 0.8 counterpart (zenoh-keyexpr)" },
     { crate = "socket2@0.5.10", reason = "zenoh pins socket2 0.5; tokio is on 0.6" },
     { crate = "spin@0.9.9", reason = "flume 0.11 (zenoh's channel) pins spin 0.9; uhlc (zenoh's timestamps) is on 0.10" },
@@ -136,3 +137,6 @@ ignore = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# evdev, from the project's own fork while its fixes are on their way
+# upstream (docs/build.md).
+allow-git = ["https://github.com/CtrlAssist/evdev"]

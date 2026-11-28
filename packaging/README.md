@@ -55,7 +55,7 @@ The drop-in is the narrowest that works, user services only, priority 10 only, w
 
 Two files in [`licensing/`](licensing/) say what may be depended on, and two say what was:
 
-- `deny.toml` is the policy: `just deny` fails on a license outside its list, a crate in two versions, or a source that isn't crates.io.
+- `deny.toml` is the policy: `just deny` fails on a license outside its list, a crate in two versions, or a source that is neither crates.io nor a fork `deny.toml` allows.
 - `about.toml` and `about.html.hbs` drive cargo-about, which writes `THIRD-PARTY-LICENSES.html` for the packages (`just licenses-html`, and the Nix package's own build). It fails on a crate whose license `about.toml` doesn't accept, so the two lists are kept the same; a dependency that brings a new license fails both until it is looked at.
 - `NOTICE` is the project's own, and carries the license of the one thing bundled that isn't a crate: the controller database snapshot.
 
