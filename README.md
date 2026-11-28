@@ -1,7 +1,7 @@
 <!-- ANCHOR: overview -->
 ![Banner](docs/artwork/banner.png)
 
-**CtrlAssist** brings "controller assist" to Linux gaming, as Xbox's Controller Assist and PlayStation's Second Controller Assistance do on consoles: several controllers act as one, so a second person can help someone play. It works below the game, which sees one ordinary controller and needs no support for any of it. It makes games easier to share for players of all ages and abilities: a parent taking the hard jumps for a child, a friend steering while you handle the buttons, a player with limited mobility sharing a game's controls with a helper.
+**CtrlAssist** brings "controller assist" to Linux gaming by allowing multiple physical controllers to operate as a single virtual input device. This enables collaborative play and customizable gamepad setups, making it easier for players of all ages and abilities to enjoy games together: a parent taking the hard jumps for a child, a friend steering while you handle the buttons, a player with limited mobility sharing a game's controls with a partner. While similar features exist on modern game consoles, CtrlAssist is an open source project that enhances accessibility for PC gaming, offering additional quality-of-life improvements through virtual input devices on Linux.
 
 [![CI Pipeline](https://github.com/CtrlAssist/CtrlAssist/actions/workflows/ci.yml/badge.svg)](https://github.com/CtrlAssist/CtrlAssist/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/CtrlAssist/CtrlAssist/branch/main/graph/badge.svg)](https://codecov.io/gh/CtrlAssist/CtrlAssist)
