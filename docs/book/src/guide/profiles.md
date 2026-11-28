@@ -10,7 +10,9 @@ How the controllers are combined: three modes make two controllers into one, a *
 
 {{#include ../../../../README.md:modes}}
 
-**Outputs** is how many virtual controllers those two make.
+On the GUI's Profiles page and in the tray's menu, the two controllers of a mux mode are the **Primary** and the **Assist**, and the one controller of a demux mode is the **Pad**. **Outputs** is how many virtual controllers a demux mode makes.
+
+The button that gives a game the assist's motion sensors is chosen under [Gyro](#gyro). A custom profile, one written by hand to describe an arrangement the fields can't, is in the [full form](./configuration.md#the-full-form).
 
 ## Inputs
 
