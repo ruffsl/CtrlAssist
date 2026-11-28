@@ -38,10 +38,10 @@
 - 🛋️ Couch mode for the big screen
   - Drive the GUI from a TV remote or a gamepad, no mouse needed
   - Scaled-up 10-foot layout, automatic under Plasma Bigscreen
-- ⌨️ Scriptable
+- ⌨️ Scriptable for custom automation
   - A `ctrlassist` command for everything, with shell completions
   - Profiles as short files, for arrangements of your own
-- ⚡ Low latency
+- ⚡ Low latency and minimal overhead
   - One thread carries all input, real-time where the system allows
   - Tens of microseconds from a real controller to the virtual one
 
