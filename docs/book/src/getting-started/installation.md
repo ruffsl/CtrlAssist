@@ -159,19 +159,17 @@ Types and defaults are in each option's description in [`module.nix`](https://gi
 
 </details>
 
-Log out and back in afterwards: the daemon and the tray start with your session, and the real-time limit takes effect at login.
+## After installation
 
-## What gets installed
+After a fresh install, the daemon and the tray start at your next graphical login, and the real-time limit takes effect then too. To start them now:
 
-- `ctrlassist`, the command, daemon and tray, and `ctrlassist-hider`, the hiding service.
-- `ctrlassist-gui`, the GUI, with its entry in your desktop's application launcher (**CtrlAssist**) and a session bus file through which the tray's **Settings**, or a second launch, brings the open window to the front.
-- The daemon and the tray as services of your user, enabled for every user and started at login. To opt out: `systemctl --user mask ctrlassist-daemon ctrlassist-tray`.
-- The hiding service as a system service, started the first time it is needed, with a system user of its own, `ctrlassist-hider`, which it runs as, and a udev rule giving that user what it hides controllers with.
-- A udev rule giving the person at the machine access to `/dev/uinput` and `/dev/uhid`, which virtual pads are made through, and a setting that loads those and the system's PlayStation controller driver at boot.
-- A setting that lets users' services ask for real-time scheduling up to priority 10.
-- Shell completions for bash, zsh and fish.
+```sh
+systemctl --user start ctrlassist-daemon ctrlassist-tray
+```
 
-## Check that it works
+Packages also install shell completion for the `ctrlassist` CLI (bash, zsh, fish); see the [Command Line](../guide/cli.md) page.
+
+### Check that it works
 
 Open **CtrlAssist** from your application menu. At the foot of its sidebar, **Daemon** and **Tray** should each have a green dot, and **Hiding** too where the hiding service is installed, and the **Pads** page should list your controllers. The **About** page says which release each part runs. If something is missing, see [Troubleshooting](../operations/troubleshooting.md).
 
@@ -185,6 +183,28 @@ It should say the daemon is alive and which release it runs. Then `ctrlassist pa
 
 </details>
 
+<details>
+<summary id="what-gets-installed">What gets installed</summary>
+
+- `ctrlassist`, the command, daemon and tray, and `ctrlassist-hider`, the hiding service.
+- `ctrlassist-gui`, the GUI, with its entry in your desktop's application launcher (**CtrlAssist**) and a session bus file through which the tray's **Settings**, or a second launch, brings the open window to the front.
+- The daemon and the tray as services of your user, enabled for every user and started at login. To opt out: `systemctl --user mask ctrlassist-daemon ctrlassist-tray`.
+- The hiding service as a system service, started the first time it is needed, with a system user of its own, `ctrlassist-hider`, which it runs as, and a udev rule giving that user what it hides controllers with.
+- A udev rule giving the person at the machine access to `/dev/uinput` and `/dev/uhid`, which virtual pads are made through, and a setting that loads those and the system's PlayStation controller driver at boot.
+- A setting that lets users' services ask for real-time scheduling up to priority 10.
+- Shell completions for bash, zsh and fish.
+
+</details>
+
+## Optional Additions
+
+<details>
+<summary id="gnome-tray-icon-optional">GNOME tray icon (optional)</summary>
+
+GNOME has no place for tray icons unless an extension adds one. Install and enable the AppIndicator extension (`gnome-shell-extension-appindicator`) to see the tray. Without it everything else works, notifications included, and you use the command.
+
+</details>
+
 ## Removing it
 
 On NixOS, set `services.ctrlassist.enable = false` and rebuild. Elsewhere, remove the package with your package manager. A daemon and a tray that are already running may carry on until you log out; to stop yours sooner, which gives back any controllers it hid:
@@ -194,7 +214,3 @@ systemctl --user stop ctrlassist-daemon ctrlassist-tray
 ```
 
 Your profiles and what CtrlAssist remembers of your controllers stay, in `~/.config/ctrlassist` and `~/.local/state/ctrlassist`; delete those to remove them too.
-
-## GNOME
-
-GNOME has no place for tray icons unless an extension adds one. Install and enable the AppIndicator extension (`gnome-shell-extension-appindicator`) to see the tray. Without it everything else works, notifications included, and you use the command.
