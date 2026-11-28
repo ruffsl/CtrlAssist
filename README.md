@@ -160,9 +160,15 @@ Rendered docs available at [ctrlassist.readthedocs.io](https://ctrlassist.readth
 - 🏗️ Curious how it works? See [How It Works](docs/book/src/reference/how-it-works.md), and the design in [docs/architecture.md](docs/architecture.md).
 - 🤝 Want to help? See the [Contributing Guide](.github/CONTRIBUTING.md).
 
+## 📚 Background
+
+- [Controller Assist on Xbox and Windows](https://support.xbox.com/en-US/help/account-profile/accessibility/copilot)
+- [Second Controller Assistance on PlayStation](https://www.playstation.com/en-us/support/hardware/second-controller-assistance/)
+- [InputPlumber](https://github.com/ShadowBlip/InputPlumber): Open source input router and remapper daemon for Linux
+
 ## 🙏 Acknowledgments
 
-The third-party notices ship with the packages. Notable among what CtrlAssist builds on:
+Full third-party notice included with releases. Notable third-parties include:
 
 - [Slint](https://slint-ui.com) – Declarative GUI toolkit powering `ctrlassist-gui`'s responsive interface
 - [Zenoh](https://www.zenoh.io) – Zero-overhead pub/sub unifying socket IPC across the `ctrlassist` stack
