@@ -619,7 +619,7 @@ A machine with Steam's or Sunshine's udev rules installed opens more of these, w
 
 - Copying a PlayStation pad's IDs onto a uinput pad is worse than not copying them.
 - On binding, the PlayStation driver reads three feature reports: pairing information, firmware version and calibration.
-- uinput cannot set a device's `uniq`; it can set `phys`. The `evdev` crate's call for that (0.13.2) is refused by the kernel, because it declares the request with the size of a character where the kernel expects that of a pointer; the copy in `vendor/` carries the fix.
+- uinput cannot set a device's `uniq`; it can set `phys`. The `evdev` crate's call for that (0.13.2) is refused by the kernel, because it declares the request with the size of a character where the kernel expects that of a pointer; upstream fixed it after that release, and the fork CtrlAssist builds from has the fix.
 - The kernel ends a report frame itself once the frame holds about as many changes as the device has axes (16 for a gamepad's eight), so one write that changes nearly every control reaches a reader as two frames.
 - Before erasing a force-feedback effect, the kernel sends a stop for it.
 - The uhid interface is a handful of fixed-layout events, written by hand here; the available binding crate needs libclang at build time.

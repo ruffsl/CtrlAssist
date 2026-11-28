@@ -30,10 +30,14 @@ rustPlatform.buildRustPackage {
       ../../Cargo.lock
       ../../.cargo
       ../../crates
-      ../../vendor
     ];
   };
-  cargoLock.lockFile = ../../Cargo.lock;
+  cargoLock = {
+    lockFile = ../../Cargo.lock;
+    # The one dependency from git: evdev from the project's fork, at the
+    # commit the root Cargo.toml pins. Changed with that pin.
+    outputHashes."evdev-0.13.2" = "sha256-nhPHH5gkIccxWwzxRWgomokwbeUL4a2/s3XYll/7KPw=";
+  };
 
   cargoBuildFlags = [
     "--package"

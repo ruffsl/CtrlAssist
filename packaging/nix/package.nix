@@ -41,14 +41,18 @@ rustPlatform.buildRustPackage {
       ../../Cargo.lock
       ../../.cargo
       ../../crates
-      ../../vendor
       ../../packaging/licensing
       ../../packaging/systemd
       ../../packaging/udev
       ../../packaging/sysusers
     ];
   };
-  cargoLock.lockFile = ../../Cargo.lock;
+  cargoLock = {
+    lockFile = ../../Cargo.lock;
+    # The one dependency from git: evdev from the project's fork, at the
+    # commit the root Cargo.toml pins. Changed with that pin.
+    outputHashes."evdev-0.13.2" = "sha256-nhPHH5gkIccxWwzxRWgomokwbeUL4a2/s3XYll/7KPw=";
+  };
 
   # Which crates are built comes from `workspace.default-members` in the
   # root Cargo.toml, the shipping binaries, so the list lives in one place.

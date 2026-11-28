@@ -1597,11 +1597,12 @@ dependencies = [
 [[package]]
 name = "evdev"
 version = "0.13.2"
+source = "git+https://github.com/CtrlAssist/evdev?rev=6b0830968db9e29692496ea475af8e252e06807d#6b0830968db9e29692496ea475af8e252e06807d"
 dependencies = [
  "bitvec",
  "cfg-if",
  "libc",
- "nix 0.29.0",
+ "nix 0.31.4",
 ]
 
 [[package]]

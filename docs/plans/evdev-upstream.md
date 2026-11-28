@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** every fix is a branch in a local clone of the fork (steps 2 to 4), tested; nothing pushed to the fork, nothing sent upstream.
-- **Next action:** the maintainer's read of the branches, in `../evdev` beside this repository, and their word to push them to the fork.
+- **Status:** the fix branches are on the fork, and this repository builds from its `ctrlassist` branch at a pinned commit, `vendor/` gone (steps 2 to 5); nothing sent upstream.
+- **Next action:** a further branch for a blocking device's resync, as the maintainer chose, then the pull requests' text (step 6) for the maintainer to post.
 
 ## Goal
 
@@ -83,8 +83,9 @@ The fixes move to branches of a fork, [CtrlAssist/evdev](https://github.com/Ctrl
   | `ctrlassist` | all of them merged | upstream's formatting and both clippy commands clean; seven unit tests and six device tests pass in the machine; this repository's workspace compiles against it with every target (`cargo check`, the patch given on the command line and `Cargo.lock` put back) |
 
   Each has a line in upstream's `CHANGELOG.md` under its next release, which makes every merge into `ctrlassist` conflict there; they are resolved by keeping both sides, and one commit on `ctrlassist` puts the lines under their headings.
-- **Not tried:** this repository's own tests against `ctrlassist`. They make pads, and the pin they would run through is step 5.
-- **The `nix` crate stays at two versions** with `ctrlassist` in place of the copy: something else in the workspace asks for 0.29. Not looked into further.
+- **The pin, made** (`6b08309` of `ctrlassist`): every gate passes, this repository's tests among them, which make pads and read them through the fork's resync and force feedback; the Nix package and the fixture build from it; and the six VM checks pass. The fork's commit is fetched by Nix under a hash in `package.nix` and `crate.nix`.
+- **This repository reads a `Device` in one place, and never blocking:** `ctrlassist-device`'s `pad.rs` sets it non-blocking as it is opened. Its other two reads are of a `VirtualDevice`, which has no resync. So a blocking device's resync, below, is upstream's concern and not one this repository meets.
+- **The `nix` crate is at two versions with the pin,** where the copy kept it at one: zenoh's Unix socket link pins 0.29, which the copy of evdev 0.13.2 shared, and upstream's `main` has moved to 0.31. The one-version gate failed on it. It is allowed by an entry of its own in `deny.toml`, beside zenoh's other pins, which the gate reports as unnecessary once zenoh catches up.
 - **The copy's diff still applies.** Against upstream's `main` every hunk but `sys.rs`'s applies with small offsets; that one is A, which upstream fixed its own way. Upstream's changes to `sync_stream.rs` since the tag are two lines of a call's arguments. So redoing each fix on `main` is a matter of splitting and testing, not of rewriting.
 
 ## Deviations
