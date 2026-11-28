@@ -61,7 +61,7 @@ shear:
 # `-D unnecessary-skip -D unmatched-skip` make a stale skip-list entry an
 # error too, so the list can't outlive the duplicates it excuses.
 #
-# Check licenses, one version per crate, and that everything comes from crates.io
+# Check licenses, one version per crate, and that everything comes from crates.io or an allowed fork
 [group('check')]
 deny:
     cargo deny --config packaging/licensing/deny.toml check \
@@ -360,17 +360,19 @@ docs-screenshots:
 # (packaging/nix/evdev-tests.nix). Prints each test binary's result.
 #
 # Run a checkout of the evdev fork's tests in a virtual machine
-[group('test')]
+[group('ci')]
 evdev-test checkout="../evdev":
     #!/usr/bin/env bash
     set -euo pipefail
     src="$(realpath "{{ checkout }}")"
-    [ -f "$src/Cargo.lock" ] || cargo generate-lockfile --manifest-path "$src/Cargo.toml"
+    # Made again each time: the crate keeps none, and one left from
+    # another branch may not match this one's manifest.
+    cargo generate-lockfile --manifest-path "$src/Cargo.toml"
     system="$(nix eval --raw --impure --expr builtins.currentSystem)"
     out="$(nix build --no-link --print-out-paths --impure --expr "
       import ./packaging/nix/evdev-tests.nix {
         pkgs = (builtins.getFlake \"git+file://$PWD\").inputs.nixpkgs.legacyPackages.$system;
-        src = $src;
+        src = /. + \"$src\";
       }")"
     failed=0
     for report in "$out"/*.txt; do

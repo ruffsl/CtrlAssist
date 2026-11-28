@@ -36,7 +36,7 @@ rustPlatform.buildRustPackage {
     lockFile = ../../Cargo.lock;
     # The one dependency from git: evdev from the project's fork, at the
     # commit the root Cargo.toml pins. Changed with that pin.
-    outputHashes."evdev-0.13.2" = "sha256-nhPHH5gkIccxWwzxRWgomokwbeUL4a2/s3XYll/7KPw=";
+    outputHashes."evdev-0.13.2" = "sha256-/bezu9rIIBthpGEuhalEvl1FoN43Ro4Q3oulDt2e7XU=";
   };
 
   cargoBuildFlags = [

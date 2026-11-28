@@ -8,7 +8,7 @@ Every project command is a `just` recipe, and each prek hook runs the recipe of 
 
 | Recipe | Checks |
 |---|---|
-| `just deny` | Licenses against the allow-list, one version of each crate, everything from crates.io |
+| `just deny` | Licenses against the allow-list, one version of each crate, everything from crates.io or a fork `deny.toml` names |
 | `just shear` | No unused or misplaced dependencies |
 | `just typos` | Spelling, American English |
 | `just fmt` | rustfmt, and tombi for TOML (formatting only: it doesn't sort, since the manifests group dependencies under comments) |
@@ -96,11 +96,9 @@ Recorded so nobody re-scouts. TisVlay's build notes have the measurements.
 
 Every dependency is declared once in `[workspace.dependencies]` and inherited, but for `slint-build` and `i-slint-backend-testing`, which are pinned exactly to Slint's release in the one crate each that uses them, as in TisVlay; the three move together. The core crate has none. zenoh, the control plane, brings most of the tree and every exception in `packaging/licensing/deny.toml`; its pin and feature set are TisVlay's, and the two move together.
 
-**Dependencies carried ahead of upstream.** A crate that needs a fix upstream doesn't have yet is built from a fork in the project's organization, pinned by commit with `[patch.crates-io]` in the root `Cargo.toml`; nothing of it is copied into this repository. The fork's `main` follows upstream's, each fix is a branch off it offered upstream as a pull request, and a branch named `ctrlassist` is those merged, which is what is pinned. Moving the pin is three edits: the `rev` in `Cargo.toml`, `outputHashes` in `packaging/nix/package.nix` and `crate.nix`, and, for a new fork, `allow-git` in `packaging/licensing/deny.toml`. The pin goes when a release has the fixes. Today that is `evdev`, from [CtrlAssist/evdev](https://github.com/CtrlAssist/evdev): the resync after `SYN_DROPPED`, force feedback requests that never duplicate a descriptor, event buffers sized before the first read, and a drop that doesn't print. `just evdev-test` runs that crate's own tests in a virtual machine.
+**Dependencies carried ahead of upstream.** A crate that needs a fix upstream doesn't have yet is built from a fork in the project's organization, pinned by commit with `[patch.crates-io]` in the root `Cargo.toml`; nothing of it is copied into this repository. The fork's `main` follows upstream's, each fix is a branch off it, to be offered upstream as a pull request, and a branch named `ctrlassist` is those merged onto upstream's `main`, which is what is pinned. Every commit pinned is given a tag on the fork (`ctrlassist-pin-<date>`), so that rebuilding `ctrlassist` can't leave an older commit of this repository with nothing to fetch. Moving the pin is four edits: the `rev` in `Cargo.toml`; `Cargo.lock`, which any cargo command rewrites to match; `outputHashes` in `packaging/nix/package.nix` and `crate.nix`, the new one read from the mismatch `nix build .#default` reports with `lib.fakeHash` in its place; and, for a new fork, `allow-git` in `packaging/licensing/deny.toml`. The hash is keyed by the crate's name and version and not by the commit, and nothing on a pull request builds the Nix package, so a hash left stale is found by `just vm` or not until a release: build the package when the pin moves. The pin goes when a release has the fixes; a release whose version the workspace's requirement doesn't match would leave the patch unused, which cargo only warns of. Today that is `evdev`, from [CtrlAssist/evdev](https://github.com/CtrlAssist/evdev), upstream's `main` since 0.13.2 with: the resync after `SYN_DROPPED`, force feedback requests that share the pad's descriptor and an effect uploaded after its descriptor is duplicated, event buffers sized before the first read, switches and LEDs kept in the cached state, and a drop that doesn't print. `just evdev-test` runs that crate's own tests in a virtual machine.
 
 The controller database snapshot in `crates/ctrlassist-device/data` is data under the zlib license, kept beside it; `just update-controller-db` refreshes it from upstream at a named commit, and its diff is reviewed like code.
-
-Vendored code keeps upstream's formatting and is outside the workspace's lints, the typos gate and the coverage figure, so its diff against upstream is the fix alone.
 
 `just deny` holds the graph to one version of each crate. When an update brings a second version of something, first try to move the crates that pin the old one; only if upstream forces the duplicate does it go in `packaging/licensing/deny.toml`'s skip-list, with its reason. A skip that no longer matches anything fails the gate, so the list can't outlive what it excuses.
 
@@ -112,7 +110,7 @@ Things to look at again when the stated condition changes.
 
 | Watch | Because | Revisit when |
 |---|---|---|
-| `evdev` | The crate chosen for reading pads and creating uinput pads had gone over a year without a release when it was picked, though its repository was active. `evdevil` is a newer alternative with force feedback, hotplug and async built in. | A needed fix sits unreleased. |
+| `evdev` | The crate chosen for reading pads and creating uinput pads had gone over a year without a release when it was picked, though its repository was active. `evdevil` is a newer alternative with force feedback, hotplug and async built in. | A needed fix sits unreleased, as now: it is built from the project's fork, as under Dependencies carried ahead of upstream. |
 | `gilrs` | Not used: it opens pads by path, owns its own polling, and keeps its controller-database parser private. | It gains a way to take a descriptor and lend its mappings. |
 | uhid bindings | The uhid events are laid out by hand, because `uhid-virt`'s FFI layer runs bindgen and needs libclang at build time. | A binding without that cost appears. |
 | `zbus` | `ksni` holds the tray at zbus 5. | `ksni` moves to a newer zbus. |
