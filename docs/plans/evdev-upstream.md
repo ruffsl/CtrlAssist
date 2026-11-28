@@ -120,7 +120,7 @@ Open: <https://github.com/emberian/evdev/compare/main...CtrlAssist:evdev:fix/dro
 `Device`'s `Drop` calls `ungrab()` and prints the error with `eprintln!`. Two problems:
 
 - The call fails with `ENODEV` for every device that was unplugged while open, so the message is noise in the most common case. #172 addresses this part.
-- `eprintln!` panics if writing to stderr fails, as it does for a daemon whose stderr pipe has been closed. That panic happens inside a destructor. We hit this in a long-running daemon.
+- `eprintln!` panics if writing to stderr fails, as it does for a daemon whose stderr pipe has been closed. That panic happens inside a destructor, which for a long-running daemon takes down everything it holds.
 
 The grab is released when the descriptor is closed regardless, so this ignores the result and prints nothing. It goes one step further than #172, which keeps the print for errors other than `ENODEV`; if you would rather keep some reporting, a `log`-style hook or returning the error from an explicit `ungrab()` would avoid the panic too, and I can rework this on top of #172.
 
@@ -152,11 +152,11 @@ Open: <https://github.com/emberian/evdev/compare/main...CtrlAssist:evdev:fix/res
 **Title:** Fix lost and stale events in the resync after `SYN_DROPPED`
 
 ````markdown
-Four fixes to how `Device::fetch_events` recovers after the kernel drops events, one commit each, each with a test. We found these running a daemon that reads gamepads on a busy machine, where a dropped key release left a button held.
+Four fixes to how `Device::fetch_events` recovers after the kernel drops events, one commit each, each with a test. We found these while hardening a daemon that reads gamepads, by reading this code against the kernel's `drivers/input/evdev.c`; the tests below reproduce each on a uinput device.
 
 **1. Keep the resync when a non-blocking read finds nothing.** After fetching the state, `fetch_events_inner` called `fill_events()`. On a non-blocking device whose queue was emptied by the read that carried the `SYN_DROPPED`, that fails with `EAGAIN`; the error was returned and the resync, already taken into the cached state, was never produced. Test: `test_compensate_without_further_events`.
 
-**2. Discard stale events, and apply only whole frames.** Events read in the same batch as the `SYN_DROPPED`, after the dropped frame, were replayed after the state fetch although they are older than it. The kernel also removes queued key, switch and LED events from its buffer when their state is read (`evdev_handle_get_val`), so a replayed press could have had its release removed and stay pressed. The buffer is now cleared before the fetch, as libevdev drains its queue before syncing. Separately, a frame's events were applied to the cached state while the frame was being scanned, before it was known whether part of it had been dropped; since the resync is computed against that state, such a change was never reported. A frame is now applied once its `SYN_REPORT` is reached. A failed state fetch also leaves the resync pending instead of clearing it. Tests: `test_compensate_discards_stale_events`, `test_state_takes_whole_frames_only`.
+**2. Discard stale events, and apply only whole frames.** Events read in the same batch as the `SYN_DROPPED`, after the dropped frame, were replayed after the state fetch although they are older than it. The kernel also removes queued key, switch and LED events from its buffer when their state is read (`evdev_handle_get_val`), so a replayed press could have had its release removed and stay pressed. The buffer is now cleared before the fetch. Separately, a frame's events were applied to the cached state while the frame was being scanned, before it was known whether part of it had been dropped; since the resync is computed against that state, such a change was never reported. A frame is now applied once its `SYN_REPORT` is reached. A failed state fetch also leaves the resync pending instead of clearing it. Tests: `test_compensate_discards_stale_events`, `test_state_takes_whole_frames_only`.
 
 **3. Fetch the state into a separate copy.** The state was fetched straight into the cache with up to four ioctls. If a later one failed (say with `EINTR`), the keys were already written, and the retry treated them as already handed to the caller. The state is now fetched into a third `DeviceState` and swapped in only when every ioctl has succeeded. Test: `test_resync_takes_nothing_from_a_failed_fetch`.
 
