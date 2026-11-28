@@ -18,7 +18,7 @@ let
     cargoLock.lockFile = src + "/Cargo.lock";
     doCheck = false;
     buildPhase = ''
-      cargo test --offline --no-run --lib --tests --features device-test 2>&1 | tee build.log
+      cargo test --offline --no-run --lib --tests --features device-test,tokio 2>&1 | tee build.log
     '';
     # Each test binary, by the path cargo says it built.
     installPhase = ''
