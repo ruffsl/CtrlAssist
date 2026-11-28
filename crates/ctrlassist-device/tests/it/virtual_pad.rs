@@ -3,7 +3,7 @@
 
 use std::fs::File;
 use std::os::fd::OwnedFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ctrlassist_core::{Effect, FeedbackError, Level, PadState, gamepad};
 use ctrlassist_device::{Identity, Pad, Request, VirtualPad, Writes};
@@ -89,6 +89,34 @@ fn serve_until(
         })
         .unwrap();
     }
+}
+
+/// What the kernel has at `node`, as `opened` and sysfs say it: for a
+/// failure's message.
+fn what_is_at(node: &Path, opened: &Device) -> String {
+    let event = node.file_name().unwrap_or_default().to_string_lossy();
+    let input = PathBuf::from(format!("/sys/class/input/{event}/device"));
+    let read = |file: &str| {
+        std::fs::read_to_string(input.join(file))
+            .map_or_else(|error| error.to_string(), |text| text.trim().to_string())
+    };
+    let driver = std::fs::read_link(input.join("device/driver")).map_or_else(
+        |error| error.to_string(),
+        |link| {
+            link.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        },
+    );
+    format!(
+        "opened as {:?} with force feedback {:?}; sysfs has name {:?}, uniq {:?}, ff bits {:?}, driver {driver:?}",
+        opened.name(),
+        opened.supported_ff(),
+        read("name"),
+        read("uniq"),
+        read("capabilities/ff"),
+    )
 }
 
 pub(crate) fn game_opens(node: &Path) -> Device {
@@ -445,7 +473,17 @@ fn a_virtual_dualsense_is_a_dualsense_to_the_kernel_s_driver() {
         // A game rumbles the pad through the driver, and stops.
         let game = move || {
             let mut pad = game_opens(&node);
-            let mut effect = pad.upload_ff_effect(rumble(0x8000, 0x4000, 0, 0)).unwrap();
+            let uploaded = pad.upload_ff_effect(rumble(0x8000, 0x4000, 0, 0));
+            // Refused now and then where the tests run for a pull request,
+            // with ENOSYS, which the kernel answers for a node that takes no
+            // force feedback. What the node was is said, to find out why.
+            let mut effect = uploaded.unwrap_or_else(|error| {
+                panic!(
+                    "the upload was refused ({error}) at {}, newer firmware: {newer}: {}",
+                    node.display(),
+                    what_is_at(&node, &pad)
+                )
+            });
             effect.play(1).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(200));
             effect.stop().unwrap();
