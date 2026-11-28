@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** upstream read (step 1); nothing built, nothing pushed to the fork, nothing sent upstream.
-- **Next action:** the maintainer's read of what was found, and their word on F and on upstream's failing lint.
+- **Status:** every fix is a branch in a local clone of the fork (steps 2 to 4), tested; nothing pushed to the fork, nothing sent upstream.
+- **Next action:** the maintainer's read of the branches, in `../evdev` beside this repository, and their word to push them to the fork.
 
 ## Goal
 
@@ -37,6 +37,9 @@ The fixes move to branches of a fork, [CtrlAssist/evdev](https://github.com/Ctrl
 - **Upstream's tests are run in a virtual machine, never on the maintainer's desktop,** as this repository's own are kept from making pads while Steam is open: they make keyboards through uinput and grab them.
 - **Each fix is redone on upstream's `main`,** not carried across as the diff it is here: written against the current code, with the crate's own tests and workflow passing, upstream's style and its least Rust kept, a line in its `CHANGELOG.md`, and a test of the fix where one can be written without a device.
 - **Nothing reaches upstream without the maintainer's word,** and nothing is pushed to the fork before this plan is read. Pull requests upstream are opened by the maintainer, or by Claude on their say for each one; their text is drafted here first.
+- **Upstream's failing lint is offered a fix first,** so that the pull requests after it are checked for what they change.
+- **F is offered as a pull request of its own,** naming their #172, which stops the print for a device that has gone and keeps it otherwise.
+- **The machine that runs the crate's tests is kept here,** `packaging/nix/evdev-tests.nix` behind `just evdev-test`, and leaves with this plan.
 - **An issue goes with a pull request only where the bug wants explaining:** E, whose three parts are each a sequence of kernel and library steps. The others say what is wrong in their own description.
 
 ## Open
@@ -65,8 +68,26 @@ The fixes move to branches of a fork, [CtrlAssist/evdev](https://github.com/Ctrl
   - **Its lint fails on its own `main` today.** With a current tokio, `AsyncFd::new` is deprecated, in three places (`raw_stream.rs`, `sync_stream.rs`, `uinput.rs`), and the workflow denies warnings. So a pull request's checks will be red for a reason that isn't its own until that is fixed, which is one more small pull request to offer, or to wait for. Formatting is clean.
   - **Its maintainers answer.** Fourteen pull requests looked at: small fixes were merged within a day to a few weeks through 2026 (their #177 in a day, #178 in a day, #171 in three, #173 in five weeks), by two people. Four are open, the oldest since December 2025. So it takes pull requests, the small sooner.
 - **F is half offered already.** Their open #172, "Squash ENODEV in Device::Drop", from April 2026 with no review yet, stops the print for a device that has gone, which is the case this repository meets. It keeps the print for any other failure, and a print to a closed stream is what panics. So F is a comment on #172, or a pull request after it, not a rival to it.
+- **The branches,** each off upstream's `main` at `f90916d`, in the clone at `../evdev`:
+
+  | Branch | Fix | Tests |
+  |---|---|---|
+  | `fix/tokio-asyncfd-deprecation` | upstream's failing lint | the workflow's two clippy commands pass with warnings denied, which fail on `main` |
+  | `perf/preallocate-event-buffers` | B | builds; nothing to assert without counting allocations |
+  | `fix/ff-upload-dup-before-upload` | D | builds; a failing `dup` can't be provoked on a device |
+  | `fix/drop-without-printing` | F | builds |
+  | `feat/ff-events-borrow-fd` | C | builds with every feature and the examples, `virtual_ff` among them unchanged |
+  | `fix/resync-kept-on-empty-read` | E, first part | a device test, `test_compensate_without_further_events`: a key released inside an overflow on a non-blocking device. Fails on upstream's `main` (the release never comes), passes with the fix |
+  | `fix/resync-discards-stale-events`, on the one above | E, second part | a device test, `test_compensate_discards_stale_events` (fails without the fix: the key reads as pressed), and a unit test, `test_state_takes_whole_frames_only` (fails with that half of the fix taken out) |
+  | `fix/resync-fetches-state-apart`, on the one above | E, third part | the unit test this repository's copy has, carried across: a fetch that fails after the keys |
+  | `ctrlassist` | all of them merged | upstream's formatting and both clippy commands clean; seven unit tests and six device tests pass in the machine; this repository's workspace compiles against it with every target (`cargo check`, the patch given on the command line and `Cargo.lock` put back) |
+
+  Each has a line in upstream's `CHANGELOG.md` under its next release, which makes every merge into `ctrlassist` conflict there; they are resolved by keeping both sides, and one commit on `ctrlassist` puts the lines under their headings.
+- **Not tried:** this repository's own tests against `ctrlassist`. They make pads, and the pin they would run through is step 5.
+- **The `nix` crate stays at two versions** with `ctrlassist` in place of the copy: something else in the workspace asks for 0.29. Not looked into further.
 - **The copy's diff still applies.** Against upstream's `main` every hunk but `sys.rs`'s applies with small offsets; that one is A, which upstream fixed its own way. Upstream's changes to `sync_stream.rs` since the tag are two lines of a call's arguments. So redoing each fix on `main` is a matter of splitting and testing, not of rewriting.
 
 ## Deviations
 
-None yet.
+- **Upstream's lint is fixed by allowing the deprecated call,** not by the call tokio now names. `AsyncFd::register` came in tokio 1.53.3, of October 2026, and is unsafe; the crate asks for tokio 1.17 or newer. Moving to it raises that floor past almost every release of tokio, which is upstream's to choose, so the branch allows the lint at the three calls and says why the old one is sound there. The pull request's text should offer the other way.
+- **E's first part is carried as it is here, and leaves a blocking device as it was.** On a device that isn't set non-blocking, the read after a resync waits for the device's next report with the resync in hand, where a non-blocking one failed with `EAGAIN`. Upstream's own tests are written around that wait: they press a key again before they look for the resync. Not reading at all while a resync is owed would cover both, and is a larger change to offer in the pull request's discussion than to make unasked.
