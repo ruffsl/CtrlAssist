@@ -6,22 +6,9 @@ Each profile is also a short file, which you can write by hand, and which can de
 
 ## Mode
 
-How the controllers are combined. Three modes make two controllers into one, a **Primary**, the main player's, and an **Assist**, the helper's:
+How the controllers are combined: three modes make two controllers into one, a **Primary**, the main player's, and an **Assist**, the helper's, and two go the other way and make one controller, the **Pad**, into several virtual ones.
 
-- 👑 **Priority**, the default: the primary plays, and the assist takes over whatever it touches, for as long as it touches it.
-  - A stick or the D-pad is the assist's while the assist has moved it, and the primary's the rest of the time. A button is pressed while either presses it, and a trigger takes whichever is pulled further.
-  - For help that comes and goes: the helper takes the camera, or the hard jump, and lets go.
-- ⚖️ **Average**: the two are blended.
-  - A stick or a trigger that both are using sits halfway between them; one that only one is using is that one's. A button or a D-pad direction is pressed while either presses it.
-  - For steering together and gentle corrections, as with a counter-steer or a little braking in a racing game.
-- 🔃 **Toggle**: one plays at a time.
-  - Everything comes from whoever has control. The Mode (guide) button on the assist's controller hands over, and so does **Has control** in the window or the tray.
-  - For when two sets of hands would only get in each other's way: menus, or a precise stretch one player does alone.
-
-Two modes go the other way, and make one controller, the **Pad**, into several virtual ones:
-
-- 🔂 **Unicast**: the controller plays one virtual controller at a time, and its Mode button moves it to the next.
-- 📢 **Multicast**: the controller plays all of them at once.
+{{#include ../../../../README.md:modes}}
 
 **Outputs** is how many virtual controllers those two make.
 

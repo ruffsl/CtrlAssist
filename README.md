@@ -11,15 +11,12 @@
 
 ## ✨ Features
 
-- 🎮 Two controllers as one virtual controller
-  - A Primary for the main player and an Assist for the helper
-  - Swap who is who, or hand over, without the game noticing
-- 🎛️ Modes for how the two combine
-  - 👑 Priority: the assist takes over whatever it touches
-  - ⚖️ Average blends the two, 🔃 Toggle takes turns
-- 🔁 One controller as several
-  - 🔂 Unicast plays one virtual controller at a time
-  - 📢 Multicast plays them all at once
+- 🎮 Combine physical controllers into one virtual gamepad
+  - Assign controllers as either Primary or Assist
+- 🎛️ Customizable multiplexing modes for buttons and axes
+  - Logically merging or preempting events is flexible
+- 🔁 Split one controller into several virtual gamepads
+  - Route to one at a time, or to all at once
 - 🙈 Real controllers hidden while it runs
   - A game never sees a press twice, Steam included
   - They come back when the profile stops
@@ -47,6 +44,49 @@
 - ⚡ Low latency
   - One thread carries all input, real-time where the system allows
   - Tens of microseconds from a real controller to the virtual one
+
+## 🎛️ Modes
+
+<!-- ANCHOR: modes -->
+### 🔀 mux
+
+Combine Primary and Assist controllers into one virtual gamepad.
+
+- 👑 **Priority** (default): Assist controller overrides when active
+  - Sticks and D-pad: Prioritize Assist when active (exceeds deadzone)
+    - Buttons: Pressed while either controller presses
+    - Triggers: Prioritize largest value from either
+  - Ideal for partial and asynchronous assistance
+    - E.g. Assist for movement while Primary for actions
+- ⚖️ **Average**: Blend inputs from both controllers
+  - Sticks: Averaged when both are active (exceed deadzone)
+    - Buttons and D-pad: Logically OR'ed between controllers
+    - Triggers: Averaged when both are active (exceed deadzone)
+  - Ideal for cooperative input and subtle corrections
+    - E.g. For counter steer/brake assist in racing games
+- 🔃 **Toggle**: Switch Active controller on demand
+  - All inputs forwarded from currently active controller
+    - Toggle Active controller via Mode button on Assist
+    - Or hand over from the window or the system tray
+  - Ideal when fine-grain conflict-free control is needed
+    - E.g. Game menu navigation or precise interventions
+
+### 🔁 demux
+
+Split one controller into multiple virtual gamepads.
+
+- 🔂 **Unicast**: Route controller to Active gamepad
+  - All inputs forwarded to currently active virtual gamepad
+    - Cycle Active gamepad via Mode button on the controller
+    - The other virtual gamepads rest meanwhile
+  - Ideal for switching between multiple virtual gamepads
+    - E.g. One player taking turns at several seats of a game
+- 📢 **Multicast**: Route controller to all virtual gamepads
+  - All inputs forwarded to all virtual gamepads simultaneously
+    - Including Mode button events from the controller
+  - Ideal for replicating input across multiple devices
+    - E.g. For more advanced input multiplexing pipelines
+<!-- ANCHOR_END: modes -->
 
 ## 📸 Screenshots
 
