@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** the fix branches are on the fork, and this repository builds from its `ctrlassist` branch at a pinned commit, `vendor/` gone (steps 2 to 5); nothing sent upstream.
-- **Next action:** a further branch for a blocking device's resync, as the maintainer chose, then the pull requests' text (step 6) for the maintainer to post.
+- **Status:** the fix branches are on the fork, a fourth for the resync on a blocking device among them, and this repository builds from the fork's `ctrlassist` branch at a pinned commit, `vendor/` gone (steps 2 to 5); nothing sent upstream.
+- **Next action:** the maintainer's word on whether the pin takes the fourth resync branch, then the pull requests' text (step 6) for the maintainer to post.
 
 ## Goal
 
@@ -91,4 +91,5 @@ The fixes move to branches of a fork, [CtrlAssist/evdev](https://github.com/Ctrl
 ## Deviations
 
 - **Upstream's lint is fixed by allowing the deprecated call,** not by the call tokio now names. `AsyncFd::register` came in tokio 1.53.3, of October 2026, and is unsafe; the crate asks for tokio 1.17 or newer. Moving to it raises that floor past almost every release of tokio, which is upstream's to choose, so the branch allows the lint at the three calls and says why the old one is sound there. The pull request's text should offer the other way.
+- **E has a fourth part, for a blocking device, which the copy never had.** `fix/resync-returned-without-reading`, on the third: a resync is handed over as soon as the state is fetched, with no read before it, and the next fetch reads. Its device test releases a key inside an overflow on a blocking device and gives the resync two seconds, on a thread of its own so that it fails where it would hang; it fails without the change and passes with it, and upstream's own three tests of the compensation pass unchanged. A fetch that carries a resync then carries no newly read events, which is the one thing a caller could notice. It is not in `ctrlassist`: this repository never reads a blocking device, and the pin stays on what it has run. Why it was wanted:
 - **E's first part is carried as it is here, and leaves a blocking device as it was.** On a device that isn't set non-blocking, the read after a resync waits for the device's next report with the resync in hand, where a non-blocking one failed with `EAGAIN`. Upstream's own tests are written around that wait: they press a key again before they look for the resync. Not reading at all while a resync is owed would cover both, and is a larger change to offer in the pull request's discussion than to make unasked.
