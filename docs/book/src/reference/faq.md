@@ -39,17 +39,17 @@ Following its initial release and personal household success, as well as the bro
 
 ### What games are compatible?
 
-CtrlAssist works with most Linux games that support standard gamepad input, and a game needs no support or setting for it: it reads the virtual controller as it would any other. Some games or launchers may require restarting after a profile starts or its virtual controller changes. Note that many games have no explicit setting for controller selection, thus the motivation for [hiding](../guide/profiles.md#visibility) the real controllers to avoid input conflicts between physical and virtual devices.
+CtrlAssist works with most Linux games that support standard gamepad input, and a game needs no support or setting for it. Note that many games have no explicit setting for controller selection, thus the motivation for [hiding](../guide/profiles.md#visibility) the real controllers to avoid input conflicts between physical and virtual devices.
 
 Even in games that natively support multiple controllers, simultaneous input from multiple devices is often not handled. Most games prioritize one controller at a time, only switching after a period of inactivity. CtrlAssist overcomes this limitation by merging inputs into a single virtual device and providing advanced multiplexing [modes](../guide/profiles.md#mode) for input events, going beyond simple first-come, first-served behavior.
 
 ### Does it work with Steam and with Proton?
 
-A virtual controller is an ordinary controller to the system, which is what Steam, SDL and games under Proton read. Each [identity](../guide/profiles.md#identity) has been recognized by Steam and by SDL, with rumble and other feedback such as trigger and color effects reaching the real controllers.
+A virtual controller is an ordinary controller to the system, which is what Steam, SDL and games under Proton read. Each [identity](../guide/profiles.md#identity) has been recognized by Steam and by SDL, with rumble reaching the real controllers. What more a DualSense carries is [below](#do-the-gyro-and-the-touchpad-carry-over).
 
 ### Why does my game see two controllers, or a press twice?
 
-It sees a real controller beside the virtual one. A running profile keeps its real controllers from games, but a game or a launcher that was already running may have held on to one: start the profile first, then the game. [Troubleshooting](../operations/troubleshooting.md#the-game-sees-the-real-controllers-as-well-as-the-virtual-one) has the rest, the hiding service among it.
+It sees a real controller beside the virtual one. A running profile keeps its real controllers from games, but a game or a launcher that was already running may have held on to one: start the profile first, then the game, or restart the game or launcher. [Troubleshooting](../operations/troubleshooting.md#the-game-sees-the-real-controllers-as-well-as-the-virtual-one) has the rest, the hiding service among it.
 
 ## Controllers and latency
 
@@ -57,7 +57,7 @@ It sees a real controller beside the virtual one. A running profile keeps its re
 
 CtrlAssist supports most standard gamepads, such as those with a conventional Xbox or PlayStation layout, including those with strong and weak force feedback (rumble) capabilities. Xbox and PlayStation controllers are read through their own drivers, and others through the community controller database that SDL also uses. [Requirements](./requirements.md) has what has been tried, and [How It Works](./how-it-works.md#controller-layouts) how to add a layout.
 
-Specialized controller features such as adaptive triggers, the lightbar, the touchpad, and gyroscopic and accelerometer motion tracking are supported for a DualSense and DualShock 4; [see below](#do-the-gyro-and-the-touchpad-carry-over). Other controllers' own extras are not yet supported. If you have device driver expertise and would like to contribute support for additional controller features, please consider opening a pull request!
+Specialized controller features are supported for a DualSense and a DualShock 4, [as below](#do-the-gyro-and-the-touchpad-carry-over); other controllers' own extras are not yet. If you have device driver expertise and would like to contribute support for additional controller features, please consider opening a pull request!
 
 ### Are mice or keyboards supported?
 
@@ -71,17 +71,17 @@ Not that you would feel. Measured between a real controller and the virtual one,
 
 ### Do the gyro and the touchpad carry over?
 
-Yes, with a real DualSense or DualShock 4 behind a virtual controller of the **DualSense** identity, and the real one hidden. A game gets one controller's motion at a time, the primary's unless the profile gives the assist a [Gyro](../guide/profiles.md#gyro) button. With a real DualSense behind it, the game's lightbar, player lights and trigger effects reach it too. [Identity](../guide/profiles.md#identity) has the details.
+Yes, with a real DualSense or DualShock 4 behind a virtual controller of the **DualSense** identity, and the real one hidden. A game gets one controller's motion at a time, the primary's unless the profile gives the assist a [Gyro](../guide/profiles.md#gyro) button. A game's feedback goes the other way: to a real DualSense its lightbar, player lights and adaptive trigger effects, and to a DualShock 4, which has no such triggers, the lightbar's color. [Identity](../guide/profiles.md#identity) has the details.
 
 ## Setup and safety
 
 ### Does it need root?
 
-No. The daemon, the tray, the window and the command all run as you. One small part, the hiding service, is a system service, and it too runs without root: as a user of its own, with no special capabilities, serving only the person sitting at the machine. Installing a package needs root, as any package does. [Security & Supply Chain](./security-supply-chain.md) says what runs with which rights.
+No. The daemon, the tray, the GUI and the command all run as you. One small part, the hiding service, is a system service, and it too runs without root: as a user of its own, with no special capabilities, serving only the person sitting at the machine. Installing a package needs root, as any package does. [Security & Supply Chain](./security-supply-chain.md) says what runs with which rights.
 
 ### Where are my profiles kept?
 
-In `~/.config/ctrlassist/profiles/`, one file each, which the window's **Show its file** opens. [How It Works](./how-it-works.md#what-is-kept-where) lists everything CtrlAssist keeps.
+As one short file each, which the GUI's **Show its file** opens. [How It Works](./how-it-works.md#what-is-kept-where) lists where everything CtrlAssist keeps is.
 
 ### Is running multiple profiles possible?
 

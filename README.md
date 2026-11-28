@@ -145,13 +145,13 @@ Hider -.->|hides| Real
 
 | Component | Description |
 |-----------|-------------|
-| `Daemon` | Combines real controllers into virtual ones via profiles |
-| `Hider` | Hides a running profile's real controllers from games |
-| `Tray` | System tray for quick access and desktop notifications |
-| `GUI` | Controller status, profile editor, and stack settings |
-| `CLI` | Command line for everything the GUI and Tray can do |
+| **Daemon** | Combines real controllers into virtual ones via profiles |
+| **Hider** | Hides a running profile's real controllers from games |
+| **Tray** | System tray for quick access and desktop notifications |
+| **GUI** | Controller status, profile editor, and stack settings |
+| **CLI** | Command line for everything the GUI and Tray can do |
 
-Services ship as `ctrlassist` CLI subcommands; `ctrlassist-gui` as separate binary.
+The daemon and the tray ship as `ctrlassist` CLI subcommands; `ctrlassist-gui` and `ctrlassist-hider` as separate binaries.
 
 <!-- ANCHOR_END: overview -->
 
@@ -178,7 +178,7 @@ Full third-party notice included with releases. Notable third-parties include:
 
 - [Slint](https://slint-ui.com) – Declarative GUI toolkit powering `ctrlassist-gui`'s responsive interface
 - [Zenoh](https://www.zenoh.io) – Zero-overhead pub/sub unifying socket IPC across the `ctrlassist` stack
-- [ksni](https://github.com/iovxw/ksni), the StatusNotifierItem library behind the tray.
-- [evdev](https://github.com/cmr/evdev), for reading controllers and making virtual ones.
-- [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB), the community controller database.
-- [TisVlay](https://github.com/TisVlay/TisVlay), whose tooling, settings window and conventions this rewrite is built on.
+- [ksni](https://github.com/iovxw/ksni) – StatusNotifierItem library behind the system tray
+- [evdev](https://github.com/cmr/evdev) – Reading real controllers and making virtual ones
+- [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB) – Community controller layout database
+- [TisVlay](https://github.com/TisVlay/TisVlay) – Tooling, GUI and conventions this rewrite is built on

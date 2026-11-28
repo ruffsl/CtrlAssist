@@ -1,8 +1,8 @@
 # Profiles
 
-A profile is an arrangement you keep: which controllers take part, and how they are combined. A profile that is running is what puts a virtual controller in front of your games. You make and change profiles on the window's **Profiles** page or in the tray's menu; this page says what each choice means, by the labels those show.
+A profile is an arrangement you keep: which controllers take part, and how they are combined. A profile that is running is what puts a virtual controller in front of your games. You make and change profiles on the GUI's **Profiles** page or in the tray's menu; this page says what each choice means, by the labels those show.
 
-Each profile is also a short file, which you can write by hand, and which can describe arrangements the window's fields can't. [Configuration Files](./configuration.md) is the reference for that.
+Each profile is also a short file, which you can write by hand, and which can describe arrangements the GUI's fields can't. [Configuration Files](./configuration.md) is the reference for that.
 
 ## Mode
 
@@ -14,7 +14,7 @@ How the controllers are combined: three modes make two controllers into one, a *
 
 ## Inputs
 
-**Primary** and **Assist**, or **Pad**, are the controllers that take part. The window and the tray list the ones CtrlAssist knows; one that is unplugged, or busy in another running profile, can't be picked. Picking for one part the controller the other part has swaps the two, so the player and the helper change places in one pick.
+**Primary** and **Assist**, or **Pad**, are the controllers that take part. The GUI and the tray list the ones CtrlAssist knows; one that is unplugged, or busy in another running profile, can't be picked. Picking for one part the controller the other part has swaps the two, so the player and the helper change places in one pick.
 
 A part can be given one particular controller, or any controller of a model; the second is handy, and can't tell two identical controllers apart. [Configuration Files](./configuration.md#naming-a-controller) has the ways to write each. Once a part has taken a controller, it waits for that same one if it disconnects.
 
@@ -67,15 +67,15 @@ A profile is started by hand unless it is **Managed**. A managed profile is star
 
 ## The default profile
 
-CtrlAssist always keeps one profile, `default`: it is there from the first start, with its controllers still to choose, so there is always a profile to fill in from the tray or the window. It is listed first, with a check mark. Change it as you like; it can't be deleted or renamed, and if its file is removed it is made again.
+CtrlAssist always keeps one profile, `default`: it is there from the first start, with its controllers still to choose, so there is always a profile to fill in from the tray or the GUI. It is listed first, with a check mark. Change it as you like; it can't be deleted or renamed, and if its file is removed it is made again.
 
 A profile whose controllers aren't chosen yet is kept and shown as **Not set up**. It isn't wrong; it starts once its controllers are chosen. `ctrlassist profile list` says which ones those are.
 
 ## Changing a running profile
 
-What you pick in the window or the tray is kept at once, and a running profile can take the change up: at once from the tray, and from the window when you press **Update…** on the profile's page.
+What you pick in the GUI or the tray is kept at once, and a running profile can take the change up: at once from the tray, and from the GUI when you press **Update…** on the profile's page.
 
 - **As it runs,** where the virtual controllers stay as many and of the same identities: other controllers, another mode, who feels rumble, the Gyro button. A game notices nothing. A controller that is swapped out is given back to the system and the new one hidden, and a Toggle goes on with whoever had control.
 - **By a restart,** where a virtual controller has to be made anew: another identity, another number of outputs, or another Visibility. A game sees its controller disconnect and another connect.
 
-The window's **Update…** says which it will be before it does it, and the tray tells you afterwards when it was a restart. From a terminal, `ctrlassist update` does the same; see [Configuration Files](./configuration.md#changing-a-running-setup).
+The GUI's **Update…** says which it will be before it does it, and the tray tells you afterwards when it was a restart. From a terminal, `ctrlassist update` does the same; see [Configuration Files](./configuration.md#changing-a-running-setup).

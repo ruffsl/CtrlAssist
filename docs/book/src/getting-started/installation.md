@@ -1,6 +1,6 @@
 # Installation
 
-CtrlAssist runs on Linux. It installs one command, `ctrlassist`, which is also the daemon and the tray; a settings window, `ctrlassist-gui`; and a small system service that hides controllers from games.
+CtrlAssist runs on Linux. It installs one command, `ctrlassist`, which is also the daemon and the tray; a GUI, `ctrlassist-gui`; and a small system service that hides controllers from games.
 
 ## NixOS
 
@@ -136,7 +136,7 @@ The packages need glibc 2.34 or newer: Debian 12, Ubuntu 22.04, and any current 
 ## What gets installed
 
 - `ctrlassist`, the command, daemon and tray, and `ctrlassist-hider`, the hiding service.
-- `ctrlassist-gui`, the settings window, with its entry in your desktop's application launcher (**CtrlAssist**) and a session bus file through which the tray's **Settings**, or a second launch, brings the open window to the front.
+- `ctrlassist-gui`, the GUI, with its entry in your desktop's application launcher (**CtrlAssist**) and a session bus file through which the tray's **Settings**, or a second launch, brings the open window to the front.
 - The daemon and the tray as services of your user, enabled for every user and started at login. To opt out: `systemctl --user mask ctrlassist-daemon ctrlassist-tray`.
 - The hiding service as a system service, started the first time it is needed, with a system user of its own, `ctrlassist-hider`, which it runs as, and a udev rule giving that user what it hides controllers with.
 - A udev rule giving the person at the machine access to `/dev/uinput` and `/dev/uhid`, which virtual pads are made through, and a setting that loads those and the system's PlayStation controller driver at boot.
