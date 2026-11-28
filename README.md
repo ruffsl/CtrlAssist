@@ -167,8 +167,9 @@ Rendered docs available at [ctrlassist.readthedocs.io](https://ctrlassist.readth
 
 The third-party notices ship with the packages. Notable among what CtrlAssist builds on:
 
-- [Slint](https://slint.dev), the declarative toolkit of the settings window.
-- [Zenoh](https://zenoh.io), the pub/sub that carries everything between the daemon and its clients over a Unix socket.
+
+- [Slint](https://slint-ui.com) – Declarative GUI toolkit powering `ctrlassist-gui`'s responsive interface
+- [Zenoh](https://www.zenoh.io) – Zero-overhead pub/sub unifying socket IPC across the `ctrlassist` stack
 - [ksni](https://github.com/iovxw/ksni), the StatusNotifierItem library behind the tray.
 - [evdev](https://github.com/cmr/evdev), for reading controllers and making virtual ones.
 - [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB), the community controller database.
