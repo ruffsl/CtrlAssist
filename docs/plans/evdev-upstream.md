@@ -2,8 +2,8 @@
 
 ## State
 
-- **Status:** planned; nothing built, nothing pushed to the fork, nothing sent upstream.
-- **Next action:** the maintainer's read of this plan.
+- **Status:** upstream read (step 1); nothing built, nothing pushed to the fork, nothing sent upstream.
+- **Next action:** the maintainer's read of what was found, and their word on F and on upstream's failing lint.
 
 ## Goal
 
@@ -34,15 +34,16 @@ The fixes move to branches of a fork, [CtrlAssist/evdev](https://github.com/Ctrl
 - **CtrlAssist depends on the fork by a pinned git commit,** `[patch.crates-io] evdev = { git = "https://github.com/CtrlAssist/evdev", rev = "…" }`, and `vendor/` is deleted. Weighed against a submodule and a subtree: a submodule isn't fetched by a flake or by `fetchTarball` unless the person installing asks for it, which the installation page's two NixOS forms don't; a subtree keeps a second copy here to fall out of step with the fork. The pin costs a `rev` here, a hash in the two Nix files and one allowance in `deny.toml`, each changed when the pin moves.
 - **The fork's `main` follows upstream's and carries nothing of ours.** Each fix is a branch off it, named for what it does. One more branch, `ctrlassist`, is every fix branch merged, and is what CtrlAssist pins: it is rebuilt, never the place a fix is written.
 - **One pull request for each fix, the resync's three parts as a stack.** The small ones (B, D, F) can be taken while the larger are talked over. C is offered apart from the rest because it breaks the public interface and so waits for upstream's next minor release.
+- **Upstream's tests are run in a virtual machine, never on the maintainer's desktop,** as this repository's own are kept from making pads while Steam is open: they make keyboards through uinput and grab them.
 - **Each fix is redone on upstream's `main`,** not carried across as the diff it is here: written against the current code, with the crate's own tests and workflow passing, upstream's style and its least Rust kept, a line in its `CHANGELOG.md`, and a test of the fix where one can be written without a device.
 - **Nothing reaches upstream without the maintainer's word,** and nothing is pushed to the fork before this plan is read. Pull requests upstream are opened by the maintainer, or by Claude on their say for each one; their text is drafted here first.
 - **An issue goes with a pull request only where the bug wants explaining:** E, whose three parts are each a sequence of kernel and library steps. The others say what is wrong in their own description.
 
 ## Open
 
-- **Whether upstream is taking pull requests.** Its last commit is from May 2026 and its last release older. If the small ones sit unanswered, the pin on the fork is where CtrlAssist stays, and the question becomes whether to publish the fork under another name; not decided here.
+- **If upstream stops answering.** It takes pull requests today (Found), though it has made no release since 0.13.2. If ours sit unanswered, or are merged and never released, the pin on the fork is where CtrlAssist stays, and the question becomes whether to publish the fork under another name. To be decided when it happens, by the maintainer's choice.
 - **What C should look like to upstream.** A lifetime on two public types is the smallest change that never duplicates a descriptor. Upstream may prefer a new pair of types beside the old, or the old kept with the failure of `dup` handled; the pull request should say what CtrlAssist needs (no descriptor duplicated on the path a game's request takes) and offer the lifetime as one way.
-- **How E is tested upstream.** Here its last part is tested through a seam that fails a fetch part way. Upstream's tests make real devices through uinput, which its workflow may not have. To be found in step 1.
+- **How E is tested upstream.** Upstream has both kinds of test (Found): unit tests of the resync that need no device, and device tests of the compensation that its workflow runs as root. E's first two parts can have a device test each; its last, a fetch failing part way, has no way to be provoked on a real device, and is tested here through a seam, which upstream would have to accept in its code.
 - **The `nix` crate.** `Cargo.lock` has both 0.29 and 0.31 today. Upstream's `main` uses 0.31, so the move may leave one; to be read from the lock file in step 5, with cargo-deny's one-version gate.
 
 ## Steps
@@ -57,7 +58,14 @@ The fixes move to branches of a fork, [CtrlAssist/evdev](https://github.com/Ctrl
 
 ## Found
 
-Nothing yet.
+- **Upstream as it is, read at `f90916d`** (its `main`, 28 May 2026):
+  - **Its checks.** One workflow, on pull requests to `main`: `cargo fmt --check`; `cargo clippy` plain and with every feature, warnings denied by `RUSTFLAGS`; a build and `cargo test`; docs; then the device tests as root, `cargo test --tests --features device-test`. Cross builds for aarch64, arm and i386 run the plain tests under QEMU, and a FreeBSD machine builds and tests.
+  - **Its tests.** Five unit tests, two of them of the resync (`sync_stream::tests`), which need no device. Four device tests behind the `device-test` feature, in `tests/`, each making a keyboard through uinput and reading it back with a grab: three of the compensation after a resync (`compensate.rs`), one of a key's state. A fifth, of a virtual device's events, wants the `tokio` feature and isn't run by the workflow's command.
+  - **Run here,** in a NixOS virtual machine as root with `uinput` loaded, the binaries built by Nix from a lock file made for the purpose (upstream keeps none): all nine pass. Nothing was made on the host. The expression is kept outside the repository, in the session's scratch directory; step 2 wants it somewhere durable if the fork's branches are to be checked the same way.
+  - **Its lint fails on its own `main` today.** With a current tokio, `AsyncFd::new` is deprecated, in three places (`raw_stream.rs`, `sync_stream.rs`, `uinput.rs`), and the workflow denies warnings. So a pull request's checks will be red for a reason that isn't its own until that is fixed, which is one more small pull request to offer, or to wait for. Formatting is clean.
+  - **Its maintainers answer.** Fourteen pull requests looked at: small fixes were merged within a day to a few weeks through 2026 (their #177 in a day, #178 in a day, #171 in three, #173 in five weeks), by two people. Four are open, the oldest since December 2025. So it takes pull requests, the small sooner.
+- **F is half offered already.** Their open #172, "Squash ENODEV in Device::Drop", from April 2026 with no review yet, stops the print for a device that has gone, which is the case this repository meets. It keeps the print for any other failure, and a print to a closed stream is what panics. So F is a comment on #172, or a pull request after it, not a rival to it.
+- **The copy's diff still applies.** Against upstream's `main` every hunk but `sys.rs`'s applies with small offsets; that one is A, which upstream fixed its own way. Upstream's changes to `sync_stream.rs` since the tag are two lines of a call's arguments. So redoing each fix on `main` is a matter of splitting and testing, not of rewriting.
 
 ## Deviations
 
