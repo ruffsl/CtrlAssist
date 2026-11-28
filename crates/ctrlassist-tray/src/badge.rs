@@ -7,6 +7,11 @@
 //! icon under one sent as pixels (KDE bug 520235). A file of the tray's
 //! own is drawn by the desktop from its vector, as sharp as any icon.
 //!
+//! The pad alone is written the same way, for when there is no state to
+//! say. Named in the theme, it is the file a desktop picks for its
+//! panel's size, and Breeze's small one is a line drawing where the one
+//! the states are drawn into is in color.
+//!
 //! Nothing is rendered here. Each theme file is read by usvg, which
 //! takes what a theme may ship (compressed files, colors said by a
 //! stylesheet, by `currentColor` or outright) and writes it back as
@@ -95,6 +100,9 @@ const SIDE: f32 = 64.0;
 /// under it, and its color.
 const EDGE: f32 = 2.4;
 const EDGE_COLOR: &str = "#1b1e20";
+
+/// The name of the pad alone, composed as the others are.
+const PLAIN: &str = "ctrlassist-pad";
 
 /// A theme's file as usvg wrote it back: what is inside its root
 /// element, and the side of the square its drawing fills.
@@ -190,6 +198,22 @@ fn recolored(body: &str, color: &str, edge: Option<f32>) -> String {
     out
 }
 
+/// The pad alone at the composed icons' size, as one SVG file: `None`
+/// if the file isn't a drawing.
+fn alone(pad: &[u8]) -> Option<String> {
+    let pad = drawing(pad, "pad-")?;
+    Some(format!(
+        concat!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" "#,
+            r#"viewBox="0 0 {side} {side}" width="{side}" height="{side}">"#,
+            r#"<g transform="scale({scale})">{pad}</g></svg>"#
+        ),
+        side = SIDE,
+        scale = SIDE / pad.side,
+        pad = pad.body,
+    ))
+}
+
 /// The pad with `badge`'s glyph at its lower right, as one SVG file:
 /// `None` if either file isn't a drawing to join.
 pub(crate) fn compose(pad: &[u8], glyph: &[u8], badge: Badge) -> Option<String> {
@@ -236,6 +260,7 @@ pub(crate) fn compose(pad: &[u8], glyph: &[u8], badge: Badge) -> Option<String> 
 pub(crate) struct Icons {
     dir: PathBuf,
     made: [bool; Badge::ALL.len()],
+    plain: bool,
 }
 
 impl Icons {
@@ -274,6 +299,7 @@ impl Icons {
         let mut icons = Self {
             dir,
             made: [false; Badge::ALL.len()],
+            plain: false,
         };
         let Some(pad) = pad.and_then(|path| std::fs::read(path).ok()) else {
             debug!(
@@ -291,17 +317,29 @@ impl Icons {
             debug!(dir = %icons.dir.display(), %error, "the tray's icons have nowhere to be kept");
             return icons;
         }
+        // Written beside its name and moved onto it, so that a desktop
+        // never reads half a file.
+        let write = |name: &str, svg: Option<String>| {
+            let file = icons.dir.join(format!("{name}.svg"));
+            let draft = icons.dir.join(format!("{name}.svg.new"));
+            svg.is_some_and(|svg| {
+                std::fs::write(&draft, svg).is_ok() && std::fs::rename(&draft, &file).is_ok()
+            })
+        };
+        // The pad alone too, from the same file: named in the theme, a
+        // desktop picks the file for its panel's size, which in Breeze
+        // is a line drawing where the one the states are drawn into is
+        // in color, and the icon would change its looks as a setup
+        // starts.
+        let plain = write(PLAIN, alone(&pad));
+        if !plain {
+            debug!("the pad alone couldn't be made, and is the theme's own");
+        }
         for badge in Badge::ALL {
             let composed = glyph(badge)
                 .and_then(|path| std::fs::read(path).ok())
                 .and_then(|glyph| compose(&pad, &glyph, badge));
-            // Written beside its name and moved onto it, so that a
-            // desktop never reads half a file.
-            let name = icons.dir.join(format!("{}.svg", badge.name()));
-            let draft = icons.dir.join(format!("{}.svg.new", badge.name()));
-            let written = composed.is_some_and(|svg| {
-                std::fs::write(&draft, svg).is_ok() && std::fs::rename(&draft, &name).is_ok()
-            });
+            let written = write(badge.name(), composed);
             if !written {
                 debug!(
                     badge = badge.name(),
@@ -312,17 +350,23 @@ impl Icons {
                 *made = written;
             }
         }
+        icons.plain = plain;
         icons
     }
 
     /// Where the icons are, for the tray's icon theme path: empty if
     /// none was made.
     pub(crate) fn dir(&self) -> &Path {
-        if self.made.contains(&true) {
+        if self.plain || self.made.contains(&true) {
             &self.dir
         } else {
             Path::new("")
         }
+    }
+
+    /// The name of the pad alone, if it was made.
+    pub(crate) fn plain(&self) -> Option<&'static str> {
+        self.plain.then_some(PLAIN)
     }
 
     /// The icon's name with `badge`, if it was made.
@@ -510,6 +554,13 @@ mod tests {
         let held = std::fs::read_to_string(out.join("ctrlassist-held.svg")).unwrap();
         assert_eq!(held, compose(PAD, GLYPH, Badge::Held).unwrap());
         assert!(!out.join("ctrlassist-failed.svg").exists());
+        // The pad alone is made beside them, at the same size.
+        assert_eq!(icons.plain(), Some("ctrlassist-pad"));
+        let plain = std::fs::read_to_string(out.join("ctrlassist-pad.svg")).unwrap();
+        assert_eq!(plain, alone(PAD).unwrap());
+        assert!(plain.contains(r#"viewBox="0 0 64 64""#));
+        assert!(plain.contains(r#"<g transform="scale(2)">"#));
+        assert!(held.starts_with(plain.trim_end_matches("</svg>")));
 
         // Without a pad to join to, or a directory to write in, none is
         // made, and no path is named.
@@ -523,6 +574,7 @@ mod tests {
         ] {
             assert_eq!(none.dir(), Path::new(""));
             assert!(Badge::ALL.iter().all(|badge| none.name(*badge).is_none()));
+            assert_eq!(none.plain(), None);
         }
     }
 

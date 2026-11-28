@@ -536,10 +536,14 @@ impl Tray for PadTray {
         }
     }
 
-    /// The pad with the state drawn into it, where that icon was made,
-    /// and the theme's pad alone otherwise.
+    /// The pad with the state drawn into it, or alone with nothing to
+    /// say, where that icon was made, and the theme's pad otherwise.
     fn icon_name(&self) -> String {
-        if let Some(name) = self.badge().and_then(|badge| self.icons.name(badge)) {
+        let made = match self.badge() {
+            Some(badge) => self.icons.name(badge),
+            None => self.icons.plain(),
+        };
+        if let Some(name) = made {
             return name.to_string();
         }
         let (name, variant) = Self::glyph();
@@ -768,9 +772,17 @@ mod tests {
         } else {
             assert_eq!(held.icon_name(), plain);
         }
+        // With nothing running it names the pad alone, made from the
+        // same file as the others, so the pad looks the same in every
+        // state.
         let (mut idle, _clicked) = tray(None);
         idle.compose_icons(dir.path());
-        assert_eq!(idle.icon_name(), plain);
+        if dir.path().join("ctrlassist-pad.svg").exists() {
+            assert_eq!(idle.icon_name(), "ctrlassist-pad");
+            assert_eq!(idle.icon_theme_path(), dir.path().to_string_lossy());
+        } else {
+            assert_eq!(idle.icon_name(), plain);
+        }
 
         let (mut down, _clicked) = tray(Some(Phase::Running));
         down.view.alive = false;
