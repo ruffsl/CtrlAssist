@@ -83,12 +83,13 @@ Split one controller into multiple virtual gamepads.
 - 🔂 **Unicast**: Route controller to Active gamepad
   - All inputs forwarded to currently active virtual gamepad
     - Cycle Active gamepad via Mode button on the controller
-    - The other virtual gamepads rest meanwhile
+    - Force feedback synchronized with Active gamepad
   - Ideal for switching between multiple virtual gamepads
-    - E.g. One player taking turns at several seats of a game
+    - E.g. Assist multiple players in turn, in a custom profile
 - 📢 **Multicast**: Route controller to all virtual gamepads
   - All inputs forwarded to all virtual gamepads simultaneously
     - Including Mode button events from the controller
+    - Force feedback synchronized with all virtual gamepads
   - Ideal for replicating input across multiple devices
     - E.g. For more advanced input multiplexing pipelines
 <!-- ANCHOR_END: modes -->
